@@ -984,3 +984,7 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Décision : clé minisign de production `C92BB7C1E788B0AC` créée par l'utilisateur (script), publique dans `install/ciphera.pub`, secrète hors ligne + environnement `release`.
 - Décision : tri des 63 alertes CodeQL : 0 faille réelle ; 62 fermées avec motif public (accord utilisateur) ; #63 renforcée (limite de corps 16 Kio sur le domaine du panneau) puis fermée.
 - Décision : signalement privé de failles activé sur le dépôt ; `SECURITY.md` et `CONTRIBUTING.md` ajoutés.
+
+## 2026-11-24 — Remédiation de l'audit de sécurité (décisions utilisateur)
+- Décision : corriger tout l'audit externe du 2026-11-24 avant le tag v0.1.0 (plan de 55 tâches R1–R55, non versionné car le dépôt est public) ; changements de spec du plan approuvés en bloc ; gestion d'équipe (API + écran) en v0.1.
+- Décision R1 : protocole v6 en une seule montée (accusés de suppression, ordre par projet, identifiants de projet/environnement, réglages d'exécution par service) ; une charge tronquée au milieu d'un champ, y compris d'une longueur, est une erreur.

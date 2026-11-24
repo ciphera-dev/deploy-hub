@@ -1,12 +1,16 @@
-# État courant — mis à jour le 2026-11-24 12:22
+# État courant — mis à jour le 2026-11-24 14:48
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
+Task R1 : Remédiation audit — protocole v6 — statut : TERMINÉ (relecture propre après 1 tour ; CI à confirmer)
+
+## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R1 : Remédiation audit — protocole v6
 - Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md
 - Task 35 : Préparation de la publication (signature de production, cosign, SLSA, site get.ciphera.dev)
 - Task N : E-mails de notification et sources Git hors GitHub en v0.2 (décisions utilisateur)
@@ -14,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task 34c-1 : Filtrage réseau des builds et durcissement du proxy
 - Task 34b : Parcours complet e2e en CI
 - Task 34a : Matrice d'autorisation, fuzzing du codec, threat model
-- Task 33 : Mises à jour de Ciphera
 
 ## Prochaine étape exacte
-Attendre CI et Release (test) verts, fermer l'alerte #63, vérifier Enforce HTTPS sur Pages ; puis l'utilisateur crée le tag v0.1.0 et approuve release puis github-pages
+R2 : cloisonnement des caches BuildKit par projet (.superpowers/sdd/audit-2026-11-24/plan.md)
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune

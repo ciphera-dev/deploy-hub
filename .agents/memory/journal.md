@@ -226,3 +226,11 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 12:22 — Session v0.1-sdd — claude-code (orchestrateur) — Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md
 - fait : domaine passé à get.ciphera.ch ; clé publique de production poussée ; 62 alertes CodeQL fermées, #63 corrigée ; signalement privé activé ; SECURITY.md, CONTRIBUTING.md
 - résultat : relectures propres ; CI à confirmer sur le dernier commit
+
+## 2026-11-24 — Session remediation audit — claude-code (implementeur) — Task R1 : Protocole v6
+- fait : PROTO_VERSION 6 ; RemoveProject, DeploymentRemoved, ProjectRemoved (variantes en dernier) ; champs de fin BuildSpec.project_id/environment_id, DeploySpec.environment_id/run_as/read_only_rootfs, RunningDeployment.runs_as_root ; visiteur strict (champ absent seulement a la frontiere exacte, coupe au milieu d'un champ ou octets en trop = erreur) ; plan de controle remplit les identifiants, journalise les accuses ; agent ignore RemoveProject
+- resultat : cargo fmt, clippy, tests proto/agent verts ; tests control-plane (Docker) en CI
+
+## 2026-11-24 14:48 — Session v0.1-sdd — claude-code (orchestrateur) — Task R1 : Remédiation audit — protocole v6
+- fait : PROTO_VERSION 6 ; variantes et champs de fin pour les tâches suivantes ; charges tronquées refusées
+- résultat : relecture propre après 1 tour ; CI à confirmer
