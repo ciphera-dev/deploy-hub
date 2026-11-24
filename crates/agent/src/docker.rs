@@ -403,7 +403,7 @@ impl Canonical {
     }
 }
 
-/// Etiquettes reservees de portee (`deployment`, `compose`, `project`) de
+/// Etiquettes reservees de portee (`deployment`, `compose`, `project`, `role`) de
 /// tout conteneur cree par l'agent. Toujours toutes presentes, vides si sans
 /// objet : une etiquette absente se lirait dans l'image, et le cycle de vie
 /// (redemarrer, arreter, supprimer) s'etendrait alors a un autre projet.
@@ -412,7 +412,7 @@ pub fn scope_labels(
     deployment: Option<DeploymentId>,
     compose: &str,
     project: Option<ProjectId>,
-) -> [(&'static str, String); 3] {
+) -> [(&'static str, String); 4] {
     [
         (
             DEPLOYMENT_LABEL,
@@ -423,6 +423,7 @@ pub fn scope_labels(
             PROJECT_LABEL,
             project.map(|p| p.to_string()).unwrap_or_default(),
         ),
+        (ROLE_LABEL, String::new()),
     ]
 }
 

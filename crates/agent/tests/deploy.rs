@@ -1802,6 +1802,8 @@ fn compose_services_are_forced_onto_the_project_network() {
         assert_eq!(labels[MANAGED_LABEL], "true");
         assert_eq!(labels[COMPOSE_LABEL], "shop-production");
         assert_eq!(labels[PROJECT_LABEL], project.to_string());
+        assert_eq!(labels[ROLE_LABEL], "", "{name} : role");
+        assert_eq!(labels[ROLE_LABEL], "");
         // Toujours posee, vide hors du service expose : jamais celle de l'image.
         assert_eq!(
             labels[DEPLOYMENT_LABEL],
