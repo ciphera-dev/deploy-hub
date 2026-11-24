@@ -309,3 +309,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 23:26 — Session v0.1-sdd — claude-code (orchestrateur) — Task R46 : Remédiation audit — utilisateur et racine en lecture seule des conteneurs
 - fait : run_as et read_only_rootfs par service, migration 0039, option sans root à la création, badge root rafraîchi après déploiement, capacités réduites
 - résultat : relecture : 3 Importants puis 1, corrigés en 2 tours, approuvée
+
+## 2026-11-24 23:30 — Session v0.1-sdd — claude-code (orchestrateur) — Task R12 : Remédiation audit — 2FA imposée aux sessions ouvertes, sécurité réservée au propriétaire
+- fait : Sessions ouvertes basculées en enrôlement, mot de passe toujours exigé pour un facteur, réglages de sécurité réservés au propriétaire
+- résultat : relecture : 1 Important corrigé, approuvée ; vérifiée avec R13
