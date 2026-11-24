@@ -253,3 +253,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 17:06 — Session v0.1-sdd — claude-code (orchestrateur) — Task R8 : Remédiation audit — proxy : échéance d'en-têtes par requête, plafonds de connexions, unité bornée
 - fait : rebasé sur 31b0ef3, intégré (5272ae5, 68e14da)
 - résultat : relecture approuvée (6 mineurs, consignés) ; tests proxy locaux sous podman verts
+
+## 2026-11-24 17:13 — Session v0.1-sdd — claude-code (orchestrateur) — Task R10 : Remédiation audit — limites des services Compose
+- fait : rebasé sur 289aeca, intégré (cf7675a, b604c6b)
+- résultat : relecture : 1 Important corrigé (tmpfs de taille nulle), relecture ciblée approuvée

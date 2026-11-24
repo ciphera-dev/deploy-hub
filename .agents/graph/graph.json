@@ -1516,7 +1516,7 @@
    "kind": "session",
    "created": "2026-11-21T13:21:26",
    "agent": "claude",
-   "updated": "2026-11-24T17:07:07",
+   "updated": "2026-11-24T17:15:02",
    "last_event": "SubagentStop",
    "transcript": "44bb7ee7-218a-4800-8b31-40b1d121dbdb.jsonl"
   },
@@ -4614,6 +4614,24 @@
    "created": "2026-11-24T16:53:40",
    "path": ".superpowers/sdd/audit-2026-11-24/task-R8-review.md",
    "updated": "2026-11-24T16:53:40"
+  },
+  "file:.superpowers/sdd/audit-2026-11-24/task-R10-review.md": {
+   "kind": "file",
+   "created": "2026-11-24T17:07:34",
+   "path": ".superpowers/sdd/audit-2026-11-24/task-R10-review.md",
+   "updated": "2026-11-24T17:07:34"
+  },
+  "file:.superpowers/sdd/audit-2026-11-24/task-R5-review.md": {
+   "kind": "file",
+   "created": "2026-11-24T17:08:17",
+   "path": ".superpowers/sdd/audit-2026-11-24/task-R5-review.md",
+   "updated": "2026-11-24T17:08:17"
+  },
+  "file:.superpowers/sdd/audit-2026-11-24/task-R10-rereview.md": {
+   "kind": "file",
+   "created": "2026-11-24T17:13:02",
+   "path": ".superpowers/sdd/audit-2026-11-24/task-R10-rereview.md",
+   "updated": "2026-11-24T17:13:02"
   }
  },
  "edges": [
@@ -8621,6 +8639,21 @@
    "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
    "rel": "TOUCHED",
    "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R8-review.md"
+  },
+  {
+   "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
+   "rel": "TOUCHED",
+   "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R10-review.md"
+  },
+  {
+   "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
+   "rel": "TOUCHED",
+   "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R5-review.md"
+  },
+  {
+   "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
+   "rel": "TOUCHED",
+   "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R10-rereview.md"
   }
  ]
 }
