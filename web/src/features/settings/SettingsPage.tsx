@@ -14,9 +14,10 @@ import { GeneralSection } from "./sections/General";
 import { NotificationsSection } from "./sections/Notifications";
 import { OrgSecuritySection } from "./sections/OrgSecurity";
 import { PanelDomainSection } from "./sections/PanelDomain";
+import { TeamSection } from "./sections/Team";
 import { lbl, SECTION_FORM_ID } from "./ui";
 
-export type SectionKey = "general" | "panel-domain" | "deployments" | "notifications" | "security" | "danger";
+export type SectionKey = "general" | "panel-domain" | "deployments" | "notifications" | "security" | "team" | "danger";
 
 interface SectionDef {
   key: SectionKey;
@@ -34,6 +35,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "deployments", name: "Déploiements", icon: "Rocket", render: () => <DeploymentsSection /> },
   { key: "notifications", name: "Notifications", icon: "Bell", render: () => <NotificationsSection /> },
   { key: "security", name: "Sécurité", icon: "Lock", render: () => <OrgSecuritySection /> },
+  { key: "team", name: "Équipe", icon: "Users", render: () => <TeamSection /> },
   { key: "danger", name: "Zone de danger", icon: "TriangleExclamationPoint", owner: true, render: () => <DangerSection /> },
 ];
 
@@ -64,7 +66,7 @@ function Header({ section }: { section: SectionKey }) {
           <span style={{ font: "600 18px/1 var(--font-sans)", color: "var(--text-strong)" }}>{g?.name ?? "Paramètres"}</span>
           <span style={lbl}>{g ? [g.slug, g.timezone].filter(Boolean).join(" · ") : " "}</span>
         </span>
-        {section !== "danger" && (
+        {section !== "danger" && section !== "team" && (
           <Button type="submit" form={SECTION_FORM_ID} variant="inverse">
             Enregistrer
           </Button>

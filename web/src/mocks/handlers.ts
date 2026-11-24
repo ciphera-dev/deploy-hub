@@ -7,7 +7,7 @@ import { createdHook, DEPLOY_HOOKS, gitSettings } from "./fixtures/git";
 import { GITHUB_DISCONNECTED } from "./fixtures/github";
 import { emptyOverview, WEB_OVERVIEW, WEB_SERVICES } from "./fixtures/overview";
 import { PROJECT_SUMMARIES, projectDetail } from "./fixtures/projects";
-import { DANGER, DEPLOY, GENERAL, NOTIFICATIONS, PANEL_DOMAIN, SECURITY } from "./fixtures/settings";
+import { DANGER, DEPLOY, GENERAL, NOTIFICATIONS, PANEL_DOMAIN, SECURITY, TEAM_INVITATIONS, TEAM_MEMBERS } from "./fixtures/settings";
 import { exportedGlobals, GLOBAL_VARIABLES, PROJECT_VARIABLES } from "./fixtures/variables";
 
 const NOT_FOUND = { error: { code: "not_found", message: "Déploiement introuvable." } };
@@ -89,6 +89,13 @@ export const handlers: RequestHandler[] = [
   http.get("*/api/settings/panel-domain", () => HttpResponse.json(PANEL_DOMAIN)),
   http.get("*/api/settings/notifications", () => HttpResponse.json(NOTIFICATIONS)),
   http.put("*/api/settings/notifications", () => HttpResponse.json(NOTIFICATIONS)),
+  http.get("*/api/team/members", () => HttpResponse.json(TEAM_MEMBERS)),
+  http.get("*/api/team/invitations", () => HttpResponse.json(TEAM_INVITATIONS)),
+  http.post("*/api/team/invitations", () => HttpResponse.json({ link: "/invite/jeton-factice" }, { status: 201 })),
+  http.delete("*/api/team/invitations/:id", () => new HttpResponse(null, { status: 204 })),
+  http.patch("*/api/team/members/:id", () => new HttpResponse(null, { status: 204 })),
+  http.delete("*/api/team/members/:id", () => HttpResponse.json({ deleted_hooks: 0, deleted_invitations: 0 })),
+  http.post("*/api/team/members/:id/reset-link", () => HttpResponse.json({ link: "/reset/jeton-factice" }, { status: 201 })),
   http.post("*/api/organization/export", () => HttpResponse.json({ format: "ciphera-export", version: 1, organization: GENERAL })),
 ];
 

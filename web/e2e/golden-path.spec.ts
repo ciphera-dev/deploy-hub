@@ -7,7 +7,7 @@ import { expect, test, type BrowserContext, type Locator, type Page } from "@pla
 /**
  * Parcours complet sur une instance reelle (job CI e2e-golden-path) :
  * setup -> connexion + enrolement TOTP -> GitHub App simulee -> nouveau projet
- * -> deploiement reussi -> domaine via Pebble -> HTTPS 200 -> rollback.
+ * -> equipe (invitation) -> deploiement reussi -> domaine via Pebble -> HTTPS 200 -> rollback.
  *
  * La machine est preparee par install/tests/golden-path/setup.sh, qui ecrit
  * les variables CIPHERA_E2E_* ; sans CIPHERA_E2E_URL, ce fichier est ignore
@@ -168,6 +168,21 @@ test("parcours complet : setup, TOTP, GitHub, déploiement, HTTPS, rollback", as
     const { code } = await freshCode(totpSecret, lastStep);
     for (const [i, digit] of [...code].entries()) await page.getByLabel(`Chiffre ${i + 1}`).fill(digit);
     await expect(nav).toBeVisible({ timeout: MINUTE });
+  });
+
+  await test.step("équipe : inviter un lecteur, voir l'invitation en attente, l'annuler", async () => {
+    await page.goto("/settings/team");
+    await page.getByRole("button", { name: "Inviter" }).click();
+    const dialog = page.getByRole("dialog", { name: "Inviter un membre" });
+    await dialog.getByLabel("E-mail").fill("lecteur@ciphera-e2e.org");
+    await dialog.getByRole("radio", { name: "Lecteur" }).click();
+    await dialog.getByRole("button", { name: "Envoyer l'invitation" }).click();
+    const link = page.getByRole("dialog", { name: "Invitation créée" });
+    await expect(link.getByLabel("Lien")).toContainText("/invite/");
+    await link.getByRole("button", { name: "Terminé" }).click();
+    await expect(page.getByText("lecteur@ciphera-e2e.org")).toBeVisible();
+    await page.getByRole("button", { name: "Annuler l'invitation de lecteur@ciphera-e2e.org" }).click();
+    await expect(page.getByText("lecteur@ciphera-e2e.org")).toBeHidden();
   });
 
   await test.step("GitHub App simulée : création puis installation", async () => {

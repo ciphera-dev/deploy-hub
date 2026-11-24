@@ -88,11 +88,11 @@ function mount(url: string) {
 
 const nav = () => screen.findByRole("navigation", { name: "Sections des paramètres" }, { timeout: 5000 });
 
-it("/settings ouvre Général ; en-tête et navigation latérale du propriétaire (six sections)", async () => {
+it("/settings ouvre Général ; en-tête et navigation latérale du propriétaire (sept sections)", async () => {
   const router = mount("/settings");
   const sections = await nav();
   await waitFor(() => expect(router.state.location.pathname).toBe("/settings/general"));
-  expect(within(sections).getAllByRole("link").map((a) => a.textContent)).toEqual(["Général", "Domaine du panel", "Déploiements", "Notifications", "Sécurité", "Zone de danger"]);
+  expect(within(sections).getAllByRole("link").map((a) => a.textContent)).toEqual(["Général", "Domaine du panel", "Déploiements", "Notifications", "Sécurité", "Équipe", "Zone de danger"]);
   expect(within(sections).getByRole("link", { name: "Général" })).toHaveAttribute("aria-current", "page");
   expect(within(sections).getByRole("link", { name: "Zone de danger" })).toHaveAttribute("href", "/settings/danger");
   // En-tête : organisation, membres, fuseau, 2FA.
@@ -112,7 +112,7 @@ it("administrateur : ni domaine du panel ni zone de danger ; autres rôles : acc
   me = { ...OWNER, role: "admin" };
   mount("/settings/security");
   const sections = await nav();
-  expect(within(sections).getAllByRole("link").map((a) => a.textContent)).toEqual(["Général", "Déploiements", "Notifications", "Sécurité"]);
+  expect(within(sections).getAllByRole("link").map((a) => a.textContent)).toEqual(["Général", "Déploiements", "Notifications", "Sécurité", "Équipe"]);
   cleanupAndMount({ ...OWNER, role: "developer" });
   expect(await screen.findByText(/les paramètres sont réservés aux administrateurs/, undefined, { timeout: 5000 })).toBeInTheDocument();
   expect(screen.queryByRole("navigation", { name: "Sections des paramètres" })).toBeNull();

@@ -12,6 +12,10 @@ export type OrgSecurityUpdate = components["schemas"]["UpdateOrgSecurity"];
 export type DangerZone = components["schemas"]["DangerZone"];
 export type OrganizationDeleted = components["schemas"]["OrganizationDeleted"];
 export type PanelDomain = components["schemas"]["PanelDomain"];
+export type TeamMember = components["schemas"]["TeamMember"];
+export type PendingInvitation = components["schemas"]["PendingInvitation"];
+export type RemovedMember = components["schemas"]["RemovedMember"];
+export type TeamRole = "owner" | "admin" | "ops" | "developer" | "viewer";
 
 export const NOTIFICATIONS_QUERY_KEY = ["settings", "notifications"] as const;
 export const GENERAL_QUERY_KEY = ["settings", "general"] as const;
@@ -19,6 +23,8 @@ export const DEPLOY_QUERY_KEY = ["settings", "deployments"] as const;
 export const SECURITY_QUERY_KEY = ["settings", "security"] as const;
 export const DANGER_QUERY_KEY = ["settings", "danger"] as const;
 export const PANEL_DOMAIN_QUERY_KEY = ["settings", "panel-domain"] as const;
+export const TEAM_MEMBERS_QUERY_KEY = ["team", "members"] as const;
+export const TEAM_INVITATIONS_QUERY_KEY = ["team", "invitations"] as const;
 
 /** Echec d'une ecriture : message affichable et code de l'API (ex. `ip_allowlist_lockout`). */
 export type Failure = { ok: false; status: number; code: string; message: string };
@@ -126,6 +132,36 @@ export function confirmPanelDomain(githubSetupUrlUpdated: boolean): Promise<Resu
 
 export function removePanelDomain(): Promise<Result<null>> {
   return settle(() => api.DELETE("/api/settings/panel-domain"), null);
+}
+
+export async function fetchTeamMembers(): Promise<TeamMember[]> {
+  return unwrap(await api.GET("/api/team/members"));
+}
+
+export async function fetchTeamInvitations(): Promise<PendingInvitation[]> {
+  return unwrap(await api.GET("/api/team/invitations"));
+}
+
+export function changeMemberRole(id: string, role: TeamRole): Promise<Result<null>> {
+  return settle(() => api.PATCH("/api/team/members/{id}", { params: { path: { id } }, body: { role } }), null);
+}
+
+/** Retire le membre : ses sessions sont revoquees, ses deploy hooks et invitations non utilisees supprimes. */
+export function removeMember(id: string): Promise<Result<RemovedMember>> {
+  return settle(() => api.DELETE("/api/team/members/{id}", { params: { path: { id } } }));
+}
+
+/** Lien a usage unique (30 minutes) ; il n'est jamais redonne. */
+export function createResetLink(id: string): Promise<Result<{ link: string }>> {
+  return settle(() => api.POST("/api/team/members/{id}/reset-link", { params: { path: { id } } }));
+}
+
+export function inviteMember(body: { email: string; name?: string; role: TeamRole }): Promise<Result<{ link: string }>> {
+  return settle(() => api.POST("/api/team/invitations", { body }));
+}
+
+export function cancelInvitation(id: string): Promise<Result<null>> {
+  return settle(() => api.DELETE("/api/team/invitations/{id}", { params: { path: { id } } }), null);
 }
 
 /** Telecharge `text` sous le nom `name` (fichier genere dans le navigateur, rien n'est stocke). */
