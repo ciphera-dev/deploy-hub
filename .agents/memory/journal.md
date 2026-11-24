@@ -245,3 +245,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 16:22 — Session v0.1-sdd — claude-code (orchestrateur) — Task R3 : Remédiation audit — ressources du build
 - fait : limites buildkitd, builds en série, plafonds d'image et de clone, groupe de processus
 - résultat : relecture propre après 1 tour ; agent-docker à confirmer
+
+## 2026-11-24 16:43 — Session v0.1-sdd — claude-code (orchestrateur) — Task R9 : Remédiation audit — Compose : redémarrage et étiquettes réservées
+- fait : portée du redémarrage par projet, étiquettes réservées posées par l'agent
+- résultat : relecture propre ; agent-docker à confirmer
