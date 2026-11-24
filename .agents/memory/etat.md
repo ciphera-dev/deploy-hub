@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-24 20:54
+# État courant — mis à jour le 2026-11-24 21:06
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R16 : Remédiation audit — secrets liés à leur ligne, contrôle d'age.key — statut : TERMINÉ (relecture : 1 Critique corrigé (clé lue par l'updater root), relecture ciblée approuvée)
+Task R20 : Remédiation audit — anti-rejeu des webhooks sur l'empreinte du corps — statut : TERMINÉ (relecture : 1 Important corrigé, relecture ciblée approuvée)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R20 : Remédiation audit — anti-rejeu des webhooks sur l'empreinte du corps
 - Task R16 : Remédiation audit — secrets liés à leur ligne, contrôle d'age.key
 - Task R3b : Profil AppArmor appliqué au buildkitd
 - Task R7 : Remédiation audit — ré-authentification avant un second facteur
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R45 : Remédiation audit — un état BuildKit par projet
 - Task R6 : Remédiation audit — écran Équipe
 - Task R5 : Remédiation audit — gestion de l'équipe (API)
-- Task R10 : Remédiation audit — limites des services Compose
 
 ## Prochaine étape exacte
-Corriger R20 (test des hooks) ; intégrer R4 ; R11, R12, R18 en cours
+Intégrer R4 (rebase en cours) ; R11, R12, R15, R18, R46 en cours
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,9 +32,10 @@ Corriger R20 (test des hooks) ; intégrer R4 ; R11, R12, R18 en cours
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/shared`
-- `crates/control-plane`
-- `install/tests`
+- `crates/control-plane/src/http/webhook.rs`
+- `crates/control-plane/tests/github.rs`
+- `crates/control-plane/tests/deploy_hooks.rs`
+- `.github/workflows/ci.yml`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

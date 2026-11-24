@@ -285,3 +285,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 20:54 — Session v0.1-sdd — claude-code (orchestrateur) — Task R16 : Remédiation audit — secrets liés à leur ligne, contrôle d'age.key
 - fait : rebasé sur 4269329, intégré, compilation vérifiée après rebase
 - résultat : relecture : 1 Critique corrigé (clé lue par l'updater root), relecture ciblée approuvée
+
+## 2026-11-24 21:06 — Session v0.1-sdd — claude-code (orchestrateur) — Task R20 : Remédiation audit — anti-rejeu des webhooks sur l'empreinte du corps
+- fait : Empreinte du corps des push GitHub stockée 24 h 5 min, doublon refusé ; tests à corps unique ; correctif actionlint du job AppArmor
+- résultat : relecture : 1 Important corrigé, relecture ciblée approuvée
