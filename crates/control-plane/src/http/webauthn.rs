@@ -13,7 +13,7 @@
 //! journalises, ecrits dans l'audit ou renvoyes au-dela de ce que le
 //! navigateur doit recevoir pour la ceremonie.
 
-use api_types::mfa::MfaVerified;
+use api_types::mfa::{AddFactor, MfaVerified};
 use api_types::webauthn::{
     AssertMode, AssertOptionsRequest, AssertVerify, DeleteWebauthn, WebauthnCredential,
     WebauthnCredentials, WebauthnOptions, WebauthnRegister, WebauthnRegistered, WebauthnStatus,
@@ -135,8 +135,20 @@ async fn register_options(
     headers: HeaderMap,
     uri: Uri,
     user: CurrentUser,
+    body: Result<Json<AddFactor>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let (_, webauthn) = relying_party(&state, &headers, &uri)?;
+    if let Some(limited) = super::me::require_password_for_factor(
+        &state,
+        &user,
+        &ip.to_string(),
+        body,
+        "mfa.webauthn.register.failure",
+    )
+    .await?
+    {
+        return Ok(limited);
+    }
     let exclude: Vec<_> = store::passkeys(&state.db, user.id)
         .await
         .map_err(|e| internal("lecture des passkeys", e))?
@@ -275,6 +287,7 @@ async fn register_verify(
         csrf_token: csrf::token_for(token.expose()),
         recovery_codes,
     };
+    super::me::notify_factor_added(&state, &user.email, crate::mail::Factor::Passkey).await;
     Ok(with_session(&token, user.session.persistent, Json(body)))
 }
 

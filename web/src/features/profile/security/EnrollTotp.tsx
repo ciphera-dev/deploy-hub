@@ -17,7 +17,7 @@ export interface EnrollTotpProps {
   signOutError?: string;
 }
 
-type Stage = { kind: "loading" } | { kind: "failed" } | { kind: "scan"; setup: TotpStart } | { kind: "codes"; codes: string[] };
+type Stage = { kind: "password" } | { kind: "loading" } | { kind: "failed" } | { kind: "scan"; setup: TotpStart } | { kind: "codes"; codes: string[] };
 
 const FILE_NAME = "ciphera-codes-de-secours.txt";
 
@@ -67,25 +67,38 @@ const muted = { margin: 0, font: "400 12px/1.5 var(--font-sans)", color: "var(--
  * codes de secours affichés une seule fois.
  */
 export function EnrollTotp({ forced = false, onClose, onDone, onSignOut, signOutError }: EnrollTotpProps) {
-  const [stage, setStage] = useState<Stage>({ kind: "loading" });
+  const [stage, setStage] = useState<Stage>({ kind: forced ? "loading" : "password" });
+  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const started = useRef(false);
 
-  const start = () => {
+  // Mot de passe actuel redemande avant d'ajouter un second facteur (sauf
+  // enrolement impose : session restreinte, le serveur ne l'exige pas).
+  const start = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
     setStage({ kind: "loading" });
-    startTotp().then(
-      (setup) => setStage({ kind: "scan", setup }),
-      () => setStage({ kind: "failed" }),
-    );
+    const result = await startTotp(forced ? undefined : password);
+    setBusy(false);
+    if (result.ok) {
+      setPassword("");
+      setStage({ kind: "scan", setup: result.setup });
+    } else if (result.reason === "password" || result.reason === "rate_limited") {
+      setStage({ kind: "password" });
+      setError(result.reason === "password" ? "Mot de passe incorrect." : "Trop de tentatives. Réessayez dans quelques minutes.");
+    } else setStage({ kind: "failed" });
   };
 
-  // Une seule graine par ouverture (le double montage du mode strict n'en cree pas deux).
+  // Enrolement impose : une seule graine par ouverture (le double montage du
+  // mode strict n'en cree pas deux).
   useEffect(() => {
-    if (started.current) return;
+    if (!forced || started.current) return;
     started.current = true;
-    start();
+    void start();
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const valid = /^\d{6}$/.test(code);
@@ -106,7 +119,7 @@ export function EnrollTotp({ forced = false, onClose, onDone, onSignOut, signOut
   return (
     <Modal
       title="Activer la vérification en deux étapes"
-      description="Scannez le QR code avec votre application d'authentification (Google Authenticator, 1Password…), puis saisissez le code affiché."
+      description={stage.kind === "password" ? "Confirmez avec votre mot de passe pour ajouter un second facteur." : "Scannez le QR code avec votre application d'authentification (Google Authenticator, 1Password…), puis saisissez le code affiché."}
       onClose={forced ? undefined : onClose}
       footer={
         <>
@@ -116,9 +129,15 @@ export function EnrollTotp({ forced = false, onClose, onDone, onSignOut, signOut
               Se déconnecter
             </Button>
           )}
+          {stage.kind === "password" ? (
+            <Button variant="inverse" disabled={!password || busy} aria-busy={busy || undefined} onClick={() => void start()}>
+              Continuer
+            </Button>
+          ) : (
           <Button variant="inverse" disabled={!valid || busy || stage.kind !== "scan"} aria-busy={busy || undefined} onClick={() => void verify()}>
             Vérifier
           </Button>
+          )}
         </>
       }
     >
@@ -133,6 +152,20 @@ export function EnrollTotp({ forced = false, onClose, onDone, onSignOut, signOut
           {signOutError}
         </span>
       )}
+      {stage.kind === "password" && (
+        <>
+          <TextField label="Mot de passe" type="password" value={password} onChange={(v) => {
+            setPassword(v);
+            setError("");
+          }} />
+          {error && (
+            <span role="alert" style={{ display: "flex", alignItems: "center", gap: 6, font: "400 12px/1.3 var(--font-sans)", color: "var(--text-negative)" }}>
+              <Icon name="CircleX" size={13} />
+              {error}
+            </span>
+          )}
+        </>
+      )}
       {stage.kind === "loading" && (
         <span role="status" style={{ display: "flex", alignItems: "center", gap: 8, ...muted }}>
           <Icon name="Loader" size={14} />
@@ -142,7 +175,7 @@ export function EnrollTotp({ forced = false, onClose, onDone, onSignOut, signOut
       {stage.kind === "failed" && (
         <div role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, ...muted, color: "var(--text-negative)" }}>
           Impossible de démarrer l'activation.
-          <Button size="sm" onClick={start}>
+          <Button size="sm" onClick={() => void start()}>
             Réessayer
           </Button>
         </div>

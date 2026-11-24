@@ -410,6 +410,12 @@ async fn every_endpoint_enforces_its_guard() {
                     cookie: Some(token),
                     csrf: Some(csrf_token),
                     headers: headers(),
+                    // Ajouter un second facteur redemande le mot de passe.
+                    body: matches!(
+                        template,
+                        "/api/me/mfa/totp/start" | "/api/me/webauthn/register/options"
+                    )
+                    .then(|| json!({ "current_password": PASSWORD })),
                     ..Req::default()
                 },
             )

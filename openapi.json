@@ -1708,6 +1708,17 @@
             }
           }
         ],
+        "requestBody": {
+          "description": "Mot de passe actuel (sauf session d'enrolement obligatoire)",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddFactor"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Graine creee, a confirmer",
@@ -1720,13 +1731,16 @@
             }
           },
           "401": {
-            "description": "Pas de session complete"
+            "description": "Pas de session complete, ou mot de passe absent ou incorrect"
           },
           "403": {
             "description": "Jeton CSRF absent ou invalide"
           },
           "409": {
             "description": "`totp_already_enabled` : la desactiver d'abord"
+          },
+          "429": {
+            "description": "Trop de tentatives de mot de passe"
           }
         }
       }
@@ -1963,6 +1977,17 @@
             }
           }
         ],
+        "requestBody": {
+          "description": "Mot de passe actuel (sauf session d'enrolement obligatoire)",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddFactor"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Options de creation",
@@ -1975,13 +2000,16 @@
             }
           },
           "401": {
-            "description": "Pas de session complete"
+            "description": "Pas de session complete, ou mot de passe absent ou incorrect"
           },
           "403": {
             "description": "Jeton CSRF absent ou invalide"
           },
           "409": {
             "description": "`webauthn_unavailable` : panneau joint par une adresse IP"
+          },
+          "429": {
+            "description": "Trop de tentatives de mot de passe"
           }
         }
       }
@@ -4733,6 +4761,20 @@
             "description": "Efface de la memoire a la destruction. Jamais renvoye ni journalise.",
             "maxLength": 1024,
             "minLength": 12
+          }
+        }
+      },
+      "AddFactor": {
+        "type": "object",
+        "description": "Corps de `POST /api/me/mfa/totp/start` et de `POST /api/me/webauthn/register/options` :\nmot de passe actuel, redemande avant l'ajout d'un second facteur (inutile\npour une session restreinte a l'enrolement obligatoire).",
+        "required": [
+          "current_password"
+        ],
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "format": "password",
+            "maxLength": 1024
           }
         }
       },

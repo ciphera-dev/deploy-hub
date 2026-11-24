@@ -70,6 +70,8 @@ fn roles_round_trip_and_grant_order() {
         Role::Viewer,
     ] {
         assert_eq!(Role::parse(role.as_str()), Some(role));
+        // `can_grant` (invitations) autorise le meme rang ; la gestion d'un
+        // membre (`can_manage`, liens de reinitialisation) est testee a part.
         assert!(role.can_grant(role), "{role:?}");
         assert!(role.can_grant(Role::Viewer), "{role:?}");
     }
@@ -83,6 +85,21 @@ fn roles_round_trip_and_grant_order() {
     assert!(!Role::Ops.can_grant(Role::Developer));
     assert!(!Role::Developer.can_grant(Role::Ops));
     assert!(!Role::Viewer.can_grant(Role::Developer));
+}
+
+#[test]
+fn can_manage_needs_a_strictly_lower_rank_below_owner() {
+    assert!(Role::Owner.can_manage(Role::Admin));
+    assert!(!Role::Admin.can_manage(Role::Admin), "pas un autre admin");
+    assert!(!Role::Admin.can_manage(Role::Owner));
+    for target in [Role::Ops, Role::Developer, Role::Viewer] {
+        assert!(Role::Admin.can_manage(target), "{target:?}");
+    }
+    for actor in [Role::Ops, Role::Developer, Role::Viewer] {
+        for target in [Role::Viewer, Role::Developer, Role::Ops, actor] {
+            assert!(!actor.can_manage(target), "{actor:?} {target:?}");
+        }
+    }
 }
 
 async fn user(state: &AppState, email: &str, role: &str) {

@@ -6,9 +6,27 @@ import { creationOptions, isCancellation, registrationJson } from "@/features/au
 
 export type TotpStart = components["schemas"]["TotpStart"];
 
-/** Nouvelle graine TOTP (remplace un enrolement non confirme). */
-export async function startTotp(): Promise<TotpStart> {
-  return unwrap(await api.POST("/api/me/mfa/totp/start"));
+export type FactorFailure = "password" | "rate_limited" | "unavailable";
+export type StartResult = { ok: true; setup: TotpStart } | { ok: false; reason: FactorFailure };
+
+function failure(status: number): FactorFailure {
+  return status === 401 ? "password" : status === 429 ? "rate_limited" : "unavailable";
+}
+
+/**
+ * Nouvelle graine TOTP (remplace un enrolement non confirme). Le mot de passe
+ * actuel est redemande, sauf pour l'enrolement impose (session restreinte :
+ * le serveur ignore alors le champ).
+ */
+export async function startTotp(password?: string): Promise<StartResult> {
+  let result;
+  try {
+    result = await api.POST("/api/me/mfa/totp/start", { body: { current_password: password ?? "" } });
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+  if (result.data) return { ok: true, setup: result.data };
+  return { ok: false, reason: failure(result.response.status) };
 }
 
 export type ConfirmResult = { ok: true; recoveryCodes: string[] } | { ok: false; reason: "invalid" | "unavailable" };
@@ -37,17 +55,17 @@ export async function listPasskeys(): Promise<Passkey[]> {
   return unwrap(await api.GET("/api/me/webauthn")).credentials;
 }
 
-export type RegisterResult = { ok: true; recoveryCodes: string[] } | { ok: false; reason: "cancelled" | "exists" | "invalid" | "unavailable" };
+export type RegisterResult = { ok: true; recoveryCodes: string[] } | { ok: false; reason: "cancelled" | "exists" | "invalid" | "password" | "rate_limited" | "unavailable" };
 
 /**
  * Enregistre une cle : options du serveur, creation par le navigateur,
  * verification ; la session tourne. `recoveryCodes` : codes de secours emis
  * quand le compte n'en avait plus (premiere cle sans application), vide sinon.
  */
-export async function registerPasskey(name: string): Promise<RegisterResult> {
+export async function registerPasskey(name: string, password: string): Promise<RegisterResult> {
   try {
-    const options = await api.POST("/api/me/webauthn/register/options");
-    if (!options.data) return { ok: false, reason: "unavailable" };
+    const options = await api.POST("/api/me/webauthn/register/options", { body: { current_password: password } });
+    if (!options.data) return { ok: false, reason: failure(options.response.status) };
     const created = await navigator.credentials.create({ publicKey: creationOptions(options.data.options) });
     if (!created) return { ok: false, reason: "cancelled" };
     const result = await api.POST("/api/me/webauthn/register/verify", {

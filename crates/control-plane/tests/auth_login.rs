@@ -649,7 +649,7 @@ async fn session_id_rotated_after_login_and_mfa() {
         &env.state,
         "POST",
         "/api/me/mfa/totp/start",
-        with_session(json!({})),
+        with_session(json!({ "current_password": PASSWORD })),
     )
     .await;
     assert_eq!(start.status, 200, "{}", start.raw);

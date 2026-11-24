@@ -157,6 +157,7 @@ use utoipa::OpenApi;
         mfa::MfaVerified,
         mfa::MfaMethods,
         mfa::DisableTotp,
+        mfa::AddFactor,
         webauthn::WebauthnStatus,
         webauthn::WebauthnOptions,
         webauthn::WebauthnRegister,

@@ -12,6 +12,7 @@ const KEY = { id: "k1", name: "YubiKey bureau", created_at: 1_763_700_000, last_
 
 let keys: (typeof KEY)[];
 let available: boolean;
+let optionBodies: unknown[];
 let verifies: { csrf: string | null; body: unknown }[];
 let verifyReply: () => Response;
 let deletes: { id: string; csrf: string | null; body: unknown }[];
@@ -21,12 +22,13 @@ const server = setupServer(
   http.get("*/api/me/webauthn", () => HttpResponse.json({ credentials: keys })),
   http.get("*/api/auth/webauthn/status", () => HttpResponse.json({ available })),
   http.get("*/api/me", () => HttpResponse.json({})),
-  http.post("*/api/me/webauthn/register/options", () =>
-    HttpResponse.json({
+  http.post("*/api/me/webauthn/register/options", async ({ request }) => {
+    optionBodies.push(await request.json().catch(() => null));
+    return HttpResponse.json({
       ceremony_id: "r-1",
       options: { publicKey: { challenge: "AQID", rp: { id: "localhost", name: "Ciphera" }, user: { id: "BwgJ", name: "a@b.c", displayName: "A" }, pubKeyCredParams: [], excludeCredentials: [{ type: "public-key", id: "BAUG" }] } },
-    }),
-  ),
+    });
+  }),
   http.post("*/api/me/webauthn/register/verify", async ({ request }) => {
     verifies.push({ csrf: request.headers.get("x-csrf-token"), body: await request.json() });
     return verifyReply();
@@ -42,6 +44,7 @@ afterAll(() => server.close());
 beforeEach(() => {
   keys = [];
   available = true;
+  optionBodies = [];
   verifies = [];
   verifyReply = () => HttpResponse.json({ id: "k2", csrf_token: "csrf-2", recovery_codes: [] });
   deletes = [];
@@ -72,6 +75,10 @@ function stubCreate(error?: DOMException) {
   return create;
 }
 
+function typePassword(value = "mon mot de passe") {
+  fireEvent.change(screen.getByLabelText("Mot de passe"), { target: { value } });
+}
+
 function renderCard() {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -88,11 +95,13 @@ it("sans cle : inactive, ajout par le navigateur puis liste relue", async () => 
   fireEvent.click(await screen.findByRole("button", { name: "Ajouter" }));
   fireEvent.change(screen.getByLabelText("Nom de la clé"), { target: { value: "YubiKey bureau" } });
   keys = [KEY];
+  typePassword();
   fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
   expect(await screen.findByText("YubiKey, Touch ID · 1 clé")).toBeInTheDocument();
   expect(screen.getByText("Active")).toBeInTheDocument();
   const publicKey = create.mock.calls[0] as unknown as [CredentialCreationOptions];
   expect(new Uint8Array(publicKey[0].publicKey!.excludeCredentials![0].id as ArrayBuffer)).toEqual(new Uint8Array([4, 5, 6]));
+  expect(optionBodies).toEqual([{ current_password: "mon mot de passe" }]);
   expect(verifies).toEqual([
     {
       csrf: "csrf-1",
@@ -115,6 +124,7 @@ it("premiere cle d'un compte sans codes : les codes de secours sont affiches une
   renderCard();
   fireEvent.click(await screen.findByRole("button", { name: "Ajouter" }));
   keys = [KEY];
+  typePassword();
   fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
   expect(await screen.findByText("Codes de secours")).toBeInTheDocument();
   expect(screen.getByText(/plus accès à votre clé de sécurité/)).toBeInTheDocument();
@@ -130,9 +140,11 @@ it("ajout annule ou cle deja enregistree : message dans la fenetre", async () =>
   stubCreate(new DOMException("x", "NotAllowedError"));
   renderCard();
   fireEvent.click(await screen.findByRole("button", { name: "Ajouter" }));
+  typePassword();
   fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Opération annulée ou délai dépassé. Réessayez.");
   stubCreate(new DOMException("x", "InvalidStateError"));
+  typePassword();
   fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cette clé est déjà enregistrée."));
   expect(verifies).toEqual([]);
@@ -166,4 +178,18 @@ it("panneau ouvert par une adresse IP : pas de bouton d'ajout, explication", asy
   renderCard();
   expect(await screen.findByText(/par son nom de domaine/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Ajouter" })).not.toBeInTheDocument();
+});
+
+it("ajout : le bouton Continuer attend le mot de passe, un mot de passe faux est signale", async () => {
+  const create = stubCreate();
+  server.use(http.post("*/api/me/webauthn/register/options", () => HttpResponse.json({ error: { code: "invalid_credentials", message: "x" } }, { status: 401 })));
+  renderCard();
+  fireEvent.click(await screen.findByRole("button", { name: "Ajouter" }));
+  const dialog = screen.getByRole("dialog", { name: "Ajouter une clé de sécurité" });
+  expect(within(dialog).getByLabelText("Mot de passe")).toHaveAttribute("type", "password");
+  expect(within(dialog).getByRole("button", { name: "Continuer" })).toBeDisabled();
+  typePassword("mauvais");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Continuer" }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("Mot de passe incorrect.");
+  expect(create).not.toHaveBeenCalled();
 });

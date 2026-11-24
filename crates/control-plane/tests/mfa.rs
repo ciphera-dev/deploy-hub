@@ -1,11 +1,14 @@
 mod common;
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use common::api::{Reply, Req, call};
 use control_plane::auth::password;
+use control_plane::mail::{Delivery, OutgoingMail};
 use control_plane::state::AppState;
 use serde_json::{Value, json};
+use shared::config::Config;
 use totp_rs::{Builder, Secret, Totp};
 use uuid::Uuid;
 
@@ -129,7 +132,7 @@ async fn enrol(state: &AppState, token: &str, csrf: &str) -> Enrolled {
         "/api/me/mfa/totp/start",
         token,
         Some(csrf),
-        json!({}),
+        json!({ "current_password": PASSWORD }),
     )
     .await;
     assert_eq!(start.status, 200, "{}", start.raw);
@@ -225,7 +228,7 @@ async fn enrolment_returns_ten_recovery_codes_once() {
         "/api/me/mfa/totp/start",
         &token,
         Some(&csrf),
-        json!({}),
+        json!({ "current_password": PASSWORD }),
     )
     .await;
     assert_eq!(start.status, 200, "{}", start.raw);
@@ -323,7 +326,7 @@ async fn enrolment_returns_ten_recovery_codes_once() {
         "/api/me/mfa/totp/start",
         &new_token,
         Some(&new_csrf),
-        json!({}),
+        json!({ "current_password": PASSWORD }),
     )
     .await;
     assert_eq!(r.status, 409);
@@ -345,7 +348,7 @@ async fn new_start_replaces_pending_secret() {
         "/api/me/mfa/totp/start",
         &token,
         Some(&csrf),
-        json!({}),
+        json!({ "current_password": PASSWORD }),
     )
     .await;
     let second = post(
@@ -353,7 +356,7 @@ async fn new_start_replaces_pending_secret() {
         "/api/me/mfa/totp/start",
         &token,
         Some(&csrf),
-        json!({}),
+        json!({ "current_password": PASSWORD }),
     )
     .await;
     assert_eq!(second.status, 200);
@@ -827,7 +830,7 @@ async fn verify_requires_pending_session() {
         "/api/me/mfa/totp/start",
         &pending,
         Some(&csrf),
-        json!({}),
+        json!({ "current_password": PASSWORD }),
     )
     .await;
     assert_eq!(r.status, 401, "{}", r.raw);
@@ -1060,4 +1063,110 @@ async fn org_mfa_required_forces_enrollment() {
 
     // Connexion suivante : second facteur exige.
     assert!(login(&env.state).await.2);
+}
+
+#[tokio::test]
+async fn totp_start_requires_password() {
+    let env = env().await;
+    let (token, csrf, _) = login(&env.state).await;
+    let start = |body| {
+        post(
+            &env.state,
+            "/api/me/mfa/totp/start",
+            &token,
+            Some(&csrf),
+            body,
+        )
+    };
+
+    let r = start(json!({})).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    let r = start(json!({ "current_password": "" })).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    let r = start(json!({ "current_password": "mauvais mot de passe" })).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_credentials");
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM user_totp")
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+    assert_eq!(pending, 0, "aucune graine creee sans mot de passe");
+
+    let r = start(json!({ "current_password": PASSWORD })).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn enrollment_session_can_start_totp_without_password() {
+    let env = env().await;
+    sqlx::query("INSERT INTO instance (id, name, mfa_required) VALUES ($1, 'Acme', true)")
+        .bind(Uuid::new_v4())
+        .execute(&env.state.db)
+        .await
+        .unwrap();
+    let (token, csrf, mfa) = login(&env.state).await;
+    assert!(!mfa);
+    let m = me(&env.state, &token).await;
+    assert_eq!(m.json()["mfa_enrollment_required"], true);
+    let r = post(
+        &env.state,
+        "/api/me/mfa/totp/start",
+        &token,
+        Some(&csrf),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn factor_added_mail_sent() {
+    let (mut state, _pg) = common::state().await;
+    let outbox: Arc<Mutex<Vec<OutgoingMail>>> = Arc::default();
+    let sink = outbox.clone();
+    state.mail = Delivery::from_fn(move |_mailer, mail| {
+        sink.lock().unwrap().push(mail);
+        Box::pin(async { Ok(()) })
+    });
+    state.cfg = Arc::new(
+        Config::from_lookup(|name| match name {
+            "CIPHERA_DATABASE_URL" => Some("postgres://u:p@127.0.0.1/c".to_string()),
+            "CIPHERA_PUBLIC_URL" => Some("https://panel.example.com".to_string()),
+            _ => None,
+        })
+        .unwrap(),
+    );
+    sqlx::query(
+        "INSERT INTO smtp_settings (enabled, host, port, tls, from_address, from_name) \
+         VALUES (true, 'smtp.example.com', 587, 'starttls', 'ciphera@example.com', 'Ciphera')",
+    )
+    .execute(&state.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, 'admin', 'Alice Martin')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(EMAIL)
+    .bind(password::hash(PASSWORD).unwrap())
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let (token, csrf, _) = login(&state).await;
+    enrol(&state, &token, &csrf).await;
+    for _ in 0..100 {
+        if !outbox.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mails = outbox.lock().unwrap().clone();
+    assert_eq!(mails.len(), 1, "un seul avis");
+    assert_eq!(mails[0].to, EMAIL);
+    assert!(mails[0].subject.contains("Nouveau facteur ajouté"));
+    assert!(
+        !mails[0].text.contains("https://"),
+        "aucun lien dans l'avis"
+    );
 }

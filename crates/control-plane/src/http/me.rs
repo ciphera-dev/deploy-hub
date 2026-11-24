@@ -19,6 +19,7 @@ use api_types::me::{
     AvatarUpdated, ChangePassword, NotificationPrefs, NotificationPrefsView, SessionInfo, Sessions,
     UpdateMe,
 };
+use api_types::mfa::AddFactor;
 use axum::body::Bytes;
 use axum::extract::rejection::{BytesRejection, JsonRejection};
 use axum::extract::{DefaultBodyLimit, Path, State};
@@ -220,6 +221,64 @@ pub(crate) async fn reauthenticate(
         "invalid_credentials",
         "Mot de passe actuel incorrect.",
     ))
+}
+
+/// Mot de passe actuel exige avant d'ajouter un second facteur (passkey ou
+/// TOTP), sauf pour une session restreinte a l'enrolement obligatoire (le
+/// compte n'a alors aucun facteur et vient de se connecter par mot de
+/// passe). `Ok(Some(reponse))` : limite atteinte, reponse 429 prete. Une
+/// verification reussie ne compte pas comme un echec.
+pub(crate) async fn require_password_for_factor(
+    state: &AppState,
+    user: &CurrentUser,
+    ip: &str,
+    body: Result<Json<AddFactor>, JsonRejection>,
+    failure_action: &str,
+) -> Result<Option<Response>, ApiError> {
+    if user.session.enrollment_required {
+        return Ok(None);
+    }
+    let missing = || {
+        ApiError::new(
+            401,
+            "invalid_credentials",
+            "Saisissez votre mot de passe actuel pour ajouter un second facteur.",
+        )
+    };
+    let Json(input) = body.map_err(|_| missing())?;
+    if input.current_password.is_empty() {
+        return Err(missing());
+    }
+    match reauthenticate(state, user, ip, input.current_password, failure_action).await? {
+        Reauth::Verified(attempt, _) => {
+            let mut conn = state
+                .db
+                .acquire()
+                .await
+                .map_err(|e| internal("connexion a la base", e))?;
+            rate_limit::mark_mfa_success(&mut conn, attempt)
+                .await
+                .map_err(|e| internal("enregistrement de la tentative", e))?;
+            Ok(None)
+        }
+        Reauth::Limited(res) => Ok(Some(res)),
+    }
+}
+
+/// Avis au titulaire apres l'ajout d'un second facteur, hors du chemin de la
+/// requete, si l'instance peut envoyer des e-mails. Aucun echec ne remonte.
+pub(crate) async fn notify_factor_added(state: &AppState, email: &str, factor: mail::Factor) {
+    match mail::ready(state).await {
+        Ok(Some(mailer)) => {
+            state.mail.spawn(
+                mailer,
+                mail::factor_added_mail(email, factor),
+                "factor_added",
+            );
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "avis d'ajout de facteur non envoye"),
+    }
 }
 
 fn clean_name(name: &str) -> Result<String, ApiError> {

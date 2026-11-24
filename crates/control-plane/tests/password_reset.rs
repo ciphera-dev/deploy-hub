@@ -550,6 +550,67 @@ async fn admin_reset_link_respects_roles() {
 }
 
 #[tokio::test]
+async fn admin_reset_link_self_forbidden() {
+    let (state, _pg) = common::state().await;
+    let admin_id = user(&state, "admin@example.com", "admin").await;
+    let owner_id = user(&state, "owner@example.com", "owner").await;
+    let admin = session(&state, "admin@example.com").await;
+    let owner = session(&state, "owner@example.com").await;
+    for (who, id) in [(&admin, admin_id), (&owner, owner_id)] {
+        let r = as_user(
+            &state,
+            who,
+            "POST",
+            &format!("/api/team/members/{id}/reset-link"),
+            None,
+        )
+        .await;
+        assert_eq!(r.status, 403, "{}", r.raw);
+        assert_eq!(r.code(), "use_password_change");
+    }
+    let issued: i64 = sqlx::query_scalar("SELECT count(*) FROM password_resets")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(issued, 0, "aucun lien emis");
+}
+
+#[tokio::test]
+async fn admin_reset_link_other_admin_403() {
+    let (state, _pg) = common::state().await;
+    user(&state, "admin@example.com", "admin").await;
+    let other = user(&state, "admin2@example.com", "admin").await;
+    let admin = session(&state, "admin@example.com").await;
+    let r = as_user(
+        &state,
+        &admin,
+        "POST",
+        &format!("/api/team/members/{other}/reset-link"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(r.code(), "forbidden");
+}
+
+#[tokio::test]
+async fn owner_reset_link_admin_201() {
+    let (state, _pg) = common::state().await;
+    user(&state, "owner@example.com", "owner").await;
+    let admin_id = user(&state, "admin@example.com", "admin").await;
+    let owner = session(&state, "owner@example.com").await;
+    let r = as_user(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/team/members/{admin_id}/reset-link"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+}
+
+#[tokio::test]
 async fn smtp_password_write_only() {
     let (state, _pg) = common::state().await;
     user(&state, "owner@example.com", "owner").await;

@@ -146,6 +146,8 @@ test("parcours complet : setup, TOTP, GitHub, déploiement, HTTPS, rollback", as
     const toggle = page.getByRole("switch", { name: "Application d'authentification" });
     await toggle.click();
     const dialog = page.getByRole("dialog", { name: "Activer la vérification en deux étapes" });
+    await dialog.getByLabel("Mot de passe").fill(ADMIN.password);
+    await dialog.getByRole("button", { name: "Continuer" }).click();
     const key = dialog.locator("code");
     await expect(key).toHaveText(/^[A-Z2-7 ]{16,}$/);
     totpSecret = (await key.textContent())!.replace(/\s/g, "");

@@ -361,6 +361,32 @@ pub fn email_changed_mail(to: &str) -> OutgoingMail {
     }
 }
 
+/// Type de second facteur ajoute (pour l'avis du titulaire).
+#[derive(Clone, Copy, Debug)]
+pub enum Factor {
+    Totp,
+    Passkey,
+}
+
+/// Avis envoye au titulaire quand un second facteur vient d'etre ajoute.
+pub fn factor_added_mail(to: &str, factor: Factor) -> OutgoingMail {
+    let what = match factor {
+        Factor::Totp => "une application d'authentification (code à usage unique)",
+        Factor::Passkey => "une passkey ou une clé de sécurité",
+    };
+    OutgoingMail {
+        to: to.to_string(),
+        subject: "Nouveau facteur ajouté à votre compte Ciphera".to_string(),
+        text: format!(
+            "Bonjour,\n\n\
+             Un nouveau facteur de connexion vient d'être ajouté à votre compte Ciphera : {what}.\n\n\
+             Si vous n'êtes pas à l'origine de cet ajout, changez votre mot de passe, \
+             retirez ce facteur depuis votre profil et contactez sans attendre \
+             un administrateur de votre instance.\n"
+        ),
+    }
+}
+
 /// E-mail d'invitation (72 heures).
 pub fn invitation_mail(to: &str, link: &str) -> OutgoingMail {
     OutgoingMail {

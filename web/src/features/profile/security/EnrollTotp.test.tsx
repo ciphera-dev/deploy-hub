@@ -17,15 +17,18 @@ const CODES = Array.from({ length: 10 }, (_, i) => `AAAA${i}-BBBBB`.replace(/\d/
 const ME = { id: "u1", name: "Alice Martin", email: "alice@example.com", role: "owner", csrf_token: "csrf-1", totp_enabled: false, mfa_enrollment_required: false };
 
 let starts: (string | null)[];
+let startBodies: unknown[];
+let startReply: (() => Response) | null;
 let confirms: { csrf: string | null; body: unknown }[];
 let confirmReply: () => Response;
 let me: typeof ME;
 let logouts: (string | null)[];
 
 const server = setupServer(
-  http.post("*/api/me/mfa/totp/start", ({ request }) => {
+  http.post("*/api/me/mfa/totp/start", async ({ request }) => {
     starts.push(request.headers.get("x-csrf-token"));
-    return HttpResponse.json({ otpauth_uri: URI, qr_svg: SVG });
+    startBodies.push(await request.json().catch(() => null));
+    return startReply ? startReply() : HttpResponse.json({ otpauth_uri: URI, qr_svg: SVG });
   }),
   http.post("*/api/me/mfa/totp/confirm", async ({ request }) => {
     confirms.push({ csrf: request.headers.get("x-csrf-token"), body: await request.json() });
@@ -45,6 +48,8 @@ beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterAll(() => server.close());
 beforeEach(() => {
   starts = [];
+  startBodies = [];
+  startReply = null;
   confirms = [];
   confirmReply = () => HttpResponse.json({ recovery_codes: CODES, csrf_token: "csrf-2" });
   me = ME;
@@ -52,6 +57,12 @@ beforeEach(() => {
   setCsrfToken("csrf-1");
 });
 afterEach(() => server.resetHandlers());
+
+/** Saisit le mot de passe demande avant l'ajout d'un second facteur. */
+async function givePassword(value = "mon mot de passe") {
+  fireEvent.change(await screen.findByLabelText("Mot de passe"), { target: { value } });
+  fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+}
 
 function renderEnroll(props: { forced?: boolean } = {}) {
   const onDone = vi.fn();
@@ -70,17 +81,32 @@ it("affiche le QR code en image data: et la cle de saisie manuelle", async () =>
       <EnrollTotp onDone={() => undefined} onClose={() => undefined} />
     </QueryClientProvider>,
   );
+  await givePassword();
   const img = await screen.findByRole("img", { name: /QR code/ });
   expect(img.getAttribute("src")).toBe(`data:image/svg+xml;base64,${btoa(SVG)}`);
   // Le SVG du serveur n'est jamais injecte dans le DOM.
   expect(container.ownerDocument.querySelector('path[d="M4,4h1v1h-1z"]')).toBeNull();
   expect(screen.getByText("JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP")).toBeInTheDocument();
   expect(starts).toEqual(["csrf-1"]);
+  expect(startBodies).toEqual([{ current_password: "mon mot de passe" }]);
+});
+
+it("la modale demande le mot de passe avant toute graine ; mot de passe faux : message, aucune graine", async () => {
+  startReply = () => HttpResponse.json({ error: { code: "invalid_credentials", message: "x" } }, { status: 401 });
+  renderEnroll();
+  expect(await screen.findByLabelText("Mot de passe")).toHaveAttribute("type", "password");
+  expect(screen.getByRole("button", { name: "Continuer" })).toBeDisabled();
+  expect(starts).toEqual([]);
+  expect(screen.queryByRole("img", { name: /QR code/ })).not.toBeInTheDocument();
+  await givePassword("mauvais");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Mot de passe incorrect.");
+  expect(screen.queryByRole("img", { name: /QR code/ })).not.toBeInTheDocument();
 });
 
 it("code refuse : message, rien n'est active", async () => {
   confirmReply = () => HttpResponse.json({ error: { code: "invalid_code", message: "x" } }, { status: 422 });
   const { onDone } = renderEnroll();
+  await givePassword();
   await screen.findByRole("img", { name: /QR code/ });
   const verify = screen.getByRole("button", { name: "Vérifier" });
   expect(verify).toBeDisabled();
@@ -102,6 +128,7 @@ it("code accepte : les 10 codes de secours s'affichent une fois, a copier ou tel
   Object.assign(URL, { createObjectURL, revokeObjectURL });
   const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
   const { onDone } = renderEnroll();
+  await givePassword();
   await screen.findByRole("img", { name: /QR code/ });
   fireEvent.change(screen.getByLabelText("Code à 6 chiffres"), { target: { value: "123456" } });
   fireEvent.click(screen.getByRole("button", { name: "Vérifier" }));
@@ -145,6 +172,7 @@ it("profil › Sécurité : l'interrupteur de l'application ouvre l'enrolement",
   const toggle = await screen.findByRole("switch", { name: "Application d'authentification" });
   expect(toggle).not.toBeChecked();
   fireEvent.click(toggle);
+  await givePassword();
   expect(await screen.findByRole("img", { name: /QR code/ })).toBeInTheDocument();
 });
 

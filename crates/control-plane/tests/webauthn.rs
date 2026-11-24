@@ -148,7 +148,7 @@ async fn register(state: &AppState, auth: &mut SoftPasskey, token: &str, csrf: &
         "/api/me/webauthn/register/options",
         Some(token),
         Some(csrf),
-        Some(json!({})),
+        Some(json!({ "current_password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 200, "{}", r.raw);
@@ -662,7 +662,7 @@ async fn ip_literal_rp_id_is_unavailable() {
         "/api/me/webauthn/register/options",
         Some(&token),
         Some(&csrf),
-        Some(json!({})),
+        Some(json!({ "current_password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 409, "{}", r.raw);
@@ -694,7 +694,7 @@ async fn registration_requires_csrf_and_excludes_existing_credentials() {
         "/api/me/webauthn/register/options",
         Some(&reg.token),
         Some(&reg.csrf),
-        Some(json!({})),
+        Some(json!({ "current_password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 200, "{}", r.raw);
@@ -1246,4 +1246,55 @@ async fn passwordless_is_rate_limited_per_ip() {
     )
     .await;
     assert_eq!(r.status, 429, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn register_options_without_password_is_401() {
+    let env = env().await;
+    let s = &env.state;
+    let (token, csrf, _) = login(s).await;
+    let options = |body| {
+        send(
+            s,
+            "POST",
+            "/api/me/webauthn/register/options",
+            Some(&token),
+            Some(&csrf),
+            body,
+        )
+    };
+    let r = options(None).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    let r = options(Some(json!({}))).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    let r = options(Some(json!({ "current_password": "mauvais mot de passe" }))).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_credentials");
+    let ceremonies: i64 = sqlx::query_scalar("SELECT count(*) FROM webauthn_ceremonies")
+        .fetch_one(&s.db)
+        .await
+        .unwrap();
+    assert_eq!(ceremonies, 0);
+    let r = options(Some(json!({ "current_password": PASSWORD }))).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn enrollment_session_can_register_without_password() {
+    let env = env().await;
+    let s = &env.state;
+    require_mfa(s).await;
+    let (token, csrf, mfa) = login(s).await;
+    assert!(!mfa);
+    assert_eq!(me(s, &token).await.json()["mfa_enrollment_required"], true);
+    let r = send(
+        s,
+        "POST",
+        "/api/me/webauthn/register/options",
+        Some(&token),
+        Some(&csrf),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
 }

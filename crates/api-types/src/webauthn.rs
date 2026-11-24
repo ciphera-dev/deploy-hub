@@ -136,10 +136,12 @@ pub fn webauthn_status() {}
     post,
     path = "/api/me/webauthn/register/options",
     tag = "webauthn",
+    request_body(content = crate::mfa::AddFactor, description = "Mot de passe actuel (sauf session d'enrolement obligatoire)"),
     params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
     responses(
         (status = 200, description = "Options de creation", body = WebauthnOptions),
-        (status = 401, description = "Pas de session complete"),
+        (status = 401, description = "Pas de session complete, ou mot de passe absent ou incorrect"),
+        (status = 429, description = "Trop de tentatives de mot de passe"),
         (status = 403, description = "Jeton CSRF absent ou invalide"),
         (status = 409, description = "`webauthn_unavailable` : panneau joint par une adresse IP"),
     )

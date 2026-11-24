@@ -8,7 +8,9 @@
 //! Ni les codes, ni la graine, ni le mot de passe ne sont journalises ou
 //! ecrits dans l'audit.
 
-use api_types::mfa::{DisableTotp, MfaCode, MfaMethods, MfaVerified, TotpConfirmed, TotpStart};
+use api_types::mfa::{
+    AddFactor, DisableTotp, MfaCode, MfaMethods, MfaVerified, TotpConfirmed, TotpStart,
+};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -90,7 +92,23 @@ pub(super) fn with_session(
 }
 
 /// `POST /api/me/mfa/totp/start`
-async fn start(State(state): State<AppState>, user: CurrentUser) -> Result<Response, ApiError> {
+async fn start(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    user: CurrentUser,
+    body: Result<Json<AddFactor>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    if let Some(limited) = super::me::require_password_for_factor(
+        &state,
+        &user,
+        &ip.to_string(),
+        body,
+        "mfa.totp.start.failure",
+    )
+    .await?
+    {
+        return Ok(limited);
+    }
     let already = || {
         ApiError::new(
             409,
@@ -199,6 +217,7 @@ async fn confirm(
         recovery_codes: codes.iter().map(|c| c.to_string()).collect(),
         csrf_token: csrf::token_for(token.expose()),
     };
+    super::me::notify_factor_added(&state, &user.email, crate::mail::Factor::Totp).await;
     Ok(with_session(&token, user.session.persistent, Json(body)))
 }
 

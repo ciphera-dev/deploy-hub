@@ -1535,6 +1535,15 @@ export interface components {
             password: string;
         };
         /**
+         * @description Corps de `POST /api/me/mfa/totp/start` et de `POST /api/me/webauthn/register/options` :
+         *     mot de passe actuel, redemande avant l'ajout d'un second facteur (inutile
+         *     pour une session restreinte a l'enrolement obligatoire).
+         */
+        AddFactor: {
+            /** Format: password */
+            current_password: string;
+        };
+        /**
          * @description Usage d'une assertion.
          * @enum {string}
          */
@@ -4674,7 +4683,12 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Mot de passe actuel (sauf session d'enrolement obligatoire) */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddFactor"];
+            };
+        };
         responses: {
             /** @description Graine creee, a confirmer */
             200: {
@@ -4685,7 +4699,7 @@ export interface operations {
                     "application/json": components["schemas"]["TotpStart"];
                 };
             };
-            /** @description Pas de session complete */
+            /** @description Pas de session complete, ou mot de passe absent ou incorrect */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4701,6 +4715,13 @@ export interface operations {
             };
             /** @description `totp_already_enabled` : la desactiver d'abord */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives de mot de passe */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4924,7 +4945,12 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Mot de passe actuel (sauf session d'enrolement obligatoire) */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddFactor"];
+            };
+        };
         responses: {
             /** @description Options de creation */
             200: {
@@ -4935,7 +4961,7 @@ export interface operations {
                     "application/json": components["schemas"]["WebauthnOptions"];
                 };
             };
-            /** @description Pas de session complete */
+            /** @description Pas de session complete, ou mot de passe absent ou incorrect */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4951,6 +4977,13 @@ export interface operations {
             };
             /** @description `webauthn_unavailable` : panneau joint par une adresse IP */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives de mot de passe */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

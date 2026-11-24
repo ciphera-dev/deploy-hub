@@ -22,6 +22,23 @@ impl fmt::Debug for MfaCode {
     }
 }
 
+/// Corps de `POST /api/me/mfa/totp/start` et de `POST /api/me/webauthn/register/options` :
+/// mot de passe actuel, redemande avant l'ajout d'un second facteur (inutile
+/// pour une session restreinte a l'enrolement obligatoire).
+#[derive(Deserialize, ToSchema)]
+pub struct AddFactor {
+    #[schema(value_type = String, format = Password, max_length = 1024)]
+    pub current_password: Zeroizing<String>,
+}
+
+impl fmt::Debug for AddFactor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AddFactor")
+            .field("current_password", &"***")
+            .finish()
+    }
+}
+
 /// Reponse de `POST /api/me/mfa/totp/start`.
 #[derive(Serialize, ToSchema)]
 pub struct TotpStart {
@@ -91,12 +108,14 @@ impl fmt::Debug for DisableTotp {
     post,
     path = "/api/me/mfa/totp/start",
     tag = "mfa",
+    request_body(content = AddFactor, description = "Mot de passe actuel (sauf session d'enrolement obligatoire)"),
     params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
     responses(
         (status = 200, description = "Graine creee, a confirmer", body = TotpStart),
-        (status = 401, description = "Pas de session complete"),
+        (status = 401, description = "Pas de session complete, ou mot de passe absent ou incorrect"),
         (status = 403, description = "Jeton CSRF absent ou invalide"),
         (status = 409, description = "`totp_already_enabled` : la desactiver d'abord"),
+        (status = 429, description = "Trop de tentatives de mot de passe"),
     )
 )]
 #[allow(dead_code)]

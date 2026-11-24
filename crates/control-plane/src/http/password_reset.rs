@@ -427,7 +427,11 @@ async fn member_link(
     let Path(id) = id.map_err(|_| member_not_found())?;
     // Jamais pour son propre compte (le flux « mot de passe oublie » existe).
     if id == auth.user.id {
-        return Err(forbidden());
+        return Err(ApiError::new(
+            403,
+            "use_password_change",
+            "Pour votre propre compte, changez votre mot de passe depuis le profil.",
+        ));
     }
     let mut tx = state
         .db

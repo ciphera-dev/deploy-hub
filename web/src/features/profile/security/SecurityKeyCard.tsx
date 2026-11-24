@@ -13,6 +13,8 @@ const dateFormat = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "sh
 const day = (unix: number) => dateFormat.format(new Date(unix * 1000));
 
 function registerMessage(result: Extract<RegisterResult, { ok: false }>): string {
+  if (result.reason === "password") return "Mot de passe incorrect.";
+  if (result.reason === "rate_limited") return "Trop de tentatives. Réessayez dans quelques minutes.";
   if (result.reason === "cancelled") return "Opération annulée ou délai dépassé. Réessayez.";
   if (result.reason === "exists") return "Cette clé est déjà enregistrée.";
   if (result.reason === "invalid") return "La clé n'a pas pu être vérifiée. Réessayez.";
@@ -41,15 +43,17 @@ function Alert({ children }: { children: string }) {
  */
 function AddKey({ onClose, onAdded, onDone }: { onClose: () => void; onAdded: () => void; onDone: () => void }) {
   const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
   const [codes, setCodes] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const add = async () => {
-    if (busy) return;
+    if (busy || !password) return;
     setBusy(true);
     setError("");
-    const result = await registerPasskey(name.trim());
+    const result = await registerPasskey(name.trim(), password);
     setBusy(false);
+    setPassword("");
     if (!result.ok) return setError(registerMessage(result));
     onAdded();
     if (result.recoveryCodes.length > 0) setCodes(result.recoveryCodes);
@@ -59,18 +63,19 @@ function AddKey({ onClose, onAdded, onDone }: { onClose: () => void; onAdded: ()
   return (
     <Modal
       title="Ajouter une clé de sécurité"
-      description="YubiKey, Touch ID, Windows Hello ou passkey de votre téléphone : votre navigateur vous demandera de la confirmer."
+      description="Confirmez avec votre mot de passe. YubiKey, Touch ID, Windows Hello ou passkey de votre téléphone : votre navigateur vous demandera ensuite de la confirmer."
       onClose={onClose}
       footer={
         <>
           <Button onClick={onClose}>Annuler</Button>
-          <Button variant="inverse" disabled={busy} aria-busy={busy || undefined} onClick={() => void add()}>
+          <Button variant="inverse" disabled={busy || !password} aria-busy={busy || undefined} onClick={() => void add()}>
             Continuer
           </Button>
         </>
       }
     >
       <TextField label="Nom de la clé" value={name} placeholder="Clé de sécurité" onChange={(v) => setName(v.slice(0, 64))} />
+      <TextField label="Mot de passe" type="password" value={password} onChange={setPassword} />
       {busy && (
         <span role="status" style={{ display: "flex", alignItems: "center", gap: 8, ...muted }}>
           <Icon name="Loader" size={14} />
