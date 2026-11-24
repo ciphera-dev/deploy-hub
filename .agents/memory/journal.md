@@ -301,3 +301,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 23:01 — Session v0.1-sdd — claude-code (orchestrateur) — Task fix-ci-zombie : CI : buildkitd zombie à la désinstallation
 - fait : Arrêt propre avant suppression, init en PID 1, essais bornés, uninstall sort en erreur si des conteneurs restent, avertissement docker-init
 - résultat : relecture approuvée après un tour
+
+## 2026-11-24 23:10 — Session v0.1-sdd — claude-code (orchestrateur) — Task R13 : Remédiation audit — limites du second facteur, de la ré-authentification et de la connexion
+- fait : Compteurs par compte et IP, plafond quotidien TOTP, un seul calcul Argon2 par compte sans blocage du titulaire, migration 0040
+- résultat : relecture : 3 Importants corrigés en 2 tours, approuvée
