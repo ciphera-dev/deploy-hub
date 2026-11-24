@@ -382,6 +382,50 @@ async fn update(
     {
         return Err(password_changed());
     }
+    // Delai entre deux demandes de changement d'adresse, mesure sur les
+    // demandes (adresse libre, prise ou autre) et verifie avant toute ecriture :
+    // la reponse ne depend ni de l'adresse ni de celle de la demande precedente.
+    // Les liens precedents sont annules dans tous les cas.
+    if new_email.is_some() {
+        let now = state.clock.unix_secs();
+        let remaining: Option<f64> = sqlx::query_scalar(
+            "SELECT extract(epoch FROM email_change_requested_at) + $2 - $3 FROM users WHERE id = $1",
+        )
+        .bind(user.id)
+        .bind(email_verification::MAIL_COOLDOWN_SECS)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| internal("lecture du delai de changement d'adresse", e))?;
+        email_verification::cancel_unused(&mut tx, user.id, email_verification::PURPOSE_CHANGE)
+            .await
+            .map_err(|e| internal("annulation des liens de verification", e))?;
+        if let Some(secs) = remaining.filter(|secs| *secs > 0.0) {
+            if let Some((attempt, _)) = attempt {
+                rate_limit::mark_mfa_success(&mut tx, attempt)
+                    .await
+                    .map_err(|e| internal("enregistrement de la tentative", e))?;
+            }
+            tx.commit()
+                .await
+                .map_err(|e| internal("transaction du profil", e))?;
+            let mut res = ApiError::new(
+                429,
+                "rate_limited",
+                "Une demande de changement d'adresse vient d'être faite : patientez une minute avant d'en refaire une. Les liens précédents sont annulés et rien n'a été modifié.",
+            )
+            .into_response();
+            res.headers_mut()
+                .insert(header::RETRY_AFTER, (secs.ceil().max(1.0) as u64).into());
+            return Ok(res);
+        }
+        sqlx::query("UPDATE users SET email_change_requested_at = to_timestamp($2) WHERE id = $1")
+            .bind(user.id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| internal("enregistrement de la demande", e))?;
+    }
     sqlx::query(
         "UPDATE users SET name = coalesce($2, name), language = coalesce($3, language), \
                 timezone = coalesce($4, timezone) \
@@ -416,7 +460,6 @@ async fn update(
     // Meme reponse qu'elle soit libre ou deja prise : rien n'est envoye si
     // elle l'est, sans le dire.
     let mut verification = None;
-    let mut cooling: Option<u64> = None;
     if let Some(email) = &new_email {
         let taken: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower($1) AND id <> $2)",
@@ -426,26 +469,17 @@ async fn update(
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| internal("lecture des comptes", e))?;
-        let now = state.clock.unix_secs();
-        // Une nouvelle demande annule toujours les liens precedents, qu'un
-        // nouveau lien parte ou non (adresse prise, delai en cours).
-        cooling = email_verification::cooldown_remaining(&mut tx, user.id, now)
-            .await
-            .map_err(|e| internal("lecture des liens de verification", e))?;
-        email_verification::cancel_unused(&mut tx, user.id, email_verification::PURPOSE_CHANGE)
-            .await
-            .map_err(|e| internal("annulation des liens de verification", e))?;
-        if !taken && cooling.is_none() {
-            let token = email_verification::issue(
+        if !taken {
+            let token = email_verification::insert_link(
                 &mut tx,
                 user.id,
                 email,
                 email_verification::PURPOSE_CHANGE,
-                now,
+                state.clock.unix_secs(),
             )
             .await
             .map_err(|e| internal("creation du lien de verification", e))?;
-            verification = token.map(|token| (email.clone(), token));
+            verification = Some((email.clone(), token));
         }
         audit(
             &mut tx,
@@ -472,19 +506,6 @@ async fn update(
             mail::email_verification_mail(&email, &link, false),
             "email_verification",
         );
-    }
-    if let Some(retry_after) = cooling {
-        // Les anciens liens sont annules, aucun nouveau n'est envoye. Les autres
-        // champs du profil, eux, sont deja enregistres.
-        let mut res = ApiError::new(
-            429,
-            "rate_limited",
-            "Un lien de confirmation vient d'être envoyé : patientez une minute avant de redemander un changement d'adresse. Les liens précédents sont annulés.",
-        )
-        .into_response();
-        res.headers_mut()
-            .insert(header::RETRY_AFTER, retry_after.into());
-        return Ok(res);
     }
     let body = no_store(Json(load_me(&state, &user).await?));
     if new_email.is_some() {

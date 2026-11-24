@@ -647,6 +647,15 @@ async fn reregistration_cannot_hijack_and_keeps_existing_links_valid() {
             .status,
         401
     );
+    // Les autres liens d'inscription sont supprimes a l'activation.
+    let info = call(
+        &state,
+        "GET",
+        &format!("/api/auth/email-verification/{second}"),
+        Req::default(),
+    )
+    .await;
+    assert_eq!(info.status, 404, "{}", info.raw);
     assert_eq!(
         confirm_with(&state, &second, Some("un autre mot de passe long"))
             .await

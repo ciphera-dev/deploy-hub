@@ -15,8 +15,8 @@
 //! l'audit : la base n'en garde que le SHA-256. Consommation par
 //! `UPDATE ... WHERE used_at IS NULL AND expires_at > maintenant`, atomique. Au
 //! plus un lien par minute et par compte (`MAIL_COOLDOWN_SECS`) : au-dela, la
-//! reponse est la meme (429 explicite pour un changement d'adresse, l'appelant
-//! etant authentifie) mais rien n'est envoye. Les comptes d'inscription jamais
+//! reponse est la meme mais rien n'est envoye (changement d'adresse : delai
+//! mesure sur les demandes, `users.email_change_requested_at`, 429 explicite). Les comptes d'inscription jamais
 //! confirmes sont supprimes quand leur dernier lien a expire (`purge_pending`).
 //! La confirmation n'exige pas de session (le lien s'ouvre souvent ailleurs) ;
 //! une ouverture par GET ne change rien : seule la confirmation du POST agit.
@@ -147,6 +147,20 @@ pub async fn issue(
     {
         return Ok(None);
     }
+    insert_link(conn, user_id, new_email, purpose, now)
+        .await
+        .map(Some)
+}
+
+/// Insere un lien sans controle de delai (le changement d'adresse mesure le
+/// sien sur les demandes : `users.email_change_requested_at`).
+pub async fn insert_link(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    new_email: &str,
+    purpose: &str,
+    now: f64,
+) -> Result<SessionToken, sqlx::Error> {
     let token = SessionToken::generate().map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
     sqlx::query(
         "INSERT INTO email_verifications (id, token_hash, user_id, new_email, purpose, created_at, expires_at) \
@@ -161,7 +175,7 @@ pub async fn issue(
     .bind(TTL_SECS as f64)
     .execute(conn)
     .await?;
-    Ok(Some(token))
+    Ok(token)
 }
 
 /// Supprime les comptes d'inscription ouverte jamais confirmes : adresse non
@@ -328,6 +342,10 @@ async fn confirm(
         rate_limit::mark_success(&mut tx, attempt)
             .await
             .map_err(|e| internal("enregistrement de la tentative", e))?;
+        // Les autres liens d'inscription ne servent plus a rien.
+        cancel_unused(&mut tx, user_id, PURPOSE_SIGNUP)
+            .await
+            .map_err(|e| internal("suppression des liens de verification", e))?;
         audit(&mut tx, Some(user_id), "auth.email.verified", json!({}))
             .await
             .map_err(|e| internal("audit de verification", e))?;

@@ -689,6 +689,7 @@ async fn email_change_requires_confirmation() {
         0
     );
     assert!(outbox.lock().unwrap().is_empty());
+    age_change_requests(&state).await;
 
     // Meme adresse que l'actuelle : rien a changer.
     let r = send(
@@ -822,7 +823,7 @@ async fn email_change_revokes_other_sessions() {
     );
 
     // Confirmation sans session : toutes les sessions tombent.
-    sqlx::query("UPDATE email_verifications SET created_at = created_at - interval '5 minutes'")
+    sqlx::query("UPDATE users SET email_change_requested_at = email_change_requested_at - interval '5 minutes'")
         .execute(&state.db)
         .await
         .unwrap();
@@ -1140,7 +1141,7 @@ async fn second_email_change_within_the_minute_cancels_the_first_link() {
     assert_eq!(me(&state, &who).await.json()["email"], json!(EMAIL));
 
     // Meme annulation quand la nouvelle adresse est celle d'un autre compte.
-    sqlx::query("UPDATE email_verifications SET created_at = created_at - interval '5 minutes'")
+    sqlx::query("UPDATE users SET email_change_requested_at = email_change_requested_at - interval '5 minutes'")
         .execute(&state.db)
         .await
         .unwrap();
@@ -1154,7 +1155,7 @@ async fn second_email_change_within_the_minute_cancels_the_first_link() {
     .await;
     assert_eq!(r.status, 202, "{}", r.raw);
     let later = verification_token(&wait_for_mail(&outbox, 2).await[1]);
-    sqlx::query("UPDATE email_verifications SET created_at = created_at - interval '5 minutes'")
+    sqlx::query("UPDATE users SET email_change_requested_at = email_change_requested_at - interval '5 minutes'")
         .execute(&state.db)
         .await
         .unwrap();
@@ -1168,4 +1169,63 @@ async fn second_email_change_within_the_minute_cancels_the_first_link() {
     .await;
     assert_eq!(r.status, 202, "{}", r.raw);
     assert_eq!(confirm_email(&state, &later, None).await.status, 404);
+}
+
+async fn age_change_requests(state: &AppState) {
+    sqlx::query("UPDATE users SET email_change_requested_at = email_change_requested_at - interval '5 minutes'")
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn email_change_delay_counts_requests_not_links() {
+    let (mut state, _pg) = common::state().await;
+    let outbox = capture(&mut state);
+    with_smtp(&mut state).await;
+    add_user(&state, EMAIL).await;
+    add_user(&state, "bob@example.com").await;
+    let who = session(&state, EMAIL).await;
+    let ask = |email: &'static str| {
+        let (state, who) = (state.clone(), who.clone());
+        async move { send(&state, &who, "PATCH", "/api/me", change_email(email)).await }
+    };
+
+    // Adresse prise, puis adresse libre dans la minute : 429 (comme apres une adresse libre).
+    assert_eq!(ask("bob@example.com").await.status, 202);
+    let r = ask("alice@free.example.com").await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+    assert!(r.retry_after.is_some());
+    assert!(outbox.lock().unwrap().is_empty());
+
+    // Adresse libre, puis adresse prise dans la minute : 429.
+    age_change_requests(&state).await;
+    assert_eq!(ask("alice@free.example.com").await.status, 202);
+    let r = ask("bob@example.com").await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+
+    // Trois demandes dans la minute (libre, libre, prise) : un seul e-mail.
+    age_change_requests(&state).await;
+    assert_eq!(ask("alice@a.example.com").await.status, 202);
+    assert_eq!(ask("alice@b.example.com").await.status, 429);
+    assert_eq!(ask("bob@example.com").await.status, 429);
+    assert_eq!(ask("alice@c.example.com").await.status, 429);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mails = outbox.lock().unwrap().clone();
+    assert_eq!(
+        mails.iter().filter(|m| m.to.starts_with("alice@")).count(),
+        2,
+        "un envoi pour la 2e suite, un pour la 3e : {:?}",
+        mails.iter().map(|m| m.to.clone()).collect::<Vec<_>>()
+    );
+    // Aucun lien n'est valable apres les annulations successives, hors le dernier envoi.
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM email_verifications WHERE used_at IS NULL"
+        )
+        .await,
+        0,
+        "la 429 annule aussi le dernier lien"
+    );
 }
