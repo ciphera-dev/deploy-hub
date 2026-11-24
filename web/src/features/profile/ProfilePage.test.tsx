@@ -108,6 +108,19 @@ it("e-mail : le mot de passe actuel est redemande, l'adresse ne change qu'a la c
   expect(screen.queryByText("alice@new.example.com")).not.toBeInTheDocument();
 });
 
+it("e-mail : délai en cours (429) : message du serveur, pas de « lien envoyé »", async () => {
+  patchReply = () => HttpResponse.json({ error: { code: "rate_limited", message: "Un lien de confirmation vient d'être envoyé : patientez une minute." } }, { status: 429, headers: { "Retry-After": "42" } });
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "Modifier adresse e-mail" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Adresse e-mail" }), { target: { value: "alice@new.example.com" } });
+  fireEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.change(within(dialog).getByLabelText("Mot de passe actuel"), { target: { value: "mon mot de passe" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Confirmer" }));
+  expect(await within(dialog).findByText(/patientez une minute/)).toBeInTheDocument();
+  expect(screen.queryByText(/Lien de confirmation envoyé/)).not.toBeInTheDocument();
+});
+
 it("notifications : canal e-mail seulement, chaque case enregistree", async () => {
   renderPage();
   fireEvent.click(await screen.findByRole("button", { name: "Notifications" }));

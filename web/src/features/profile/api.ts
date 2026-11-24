@@ -39,7 +39,7 @@ export async function updateProfile(body: ProfileUpdate): Promise<ProfileOutcome
   if (result.data) return { ok: true, emailPending: result.response.status === 202 };
   const { status } = result.response;
   if (status === 401) return { ok: false, message: "Mot de passe actuel incorrect." };
-  if (status === 429) return { ok: false, message: RATE_LIMITED };
+  if (status === 429) return { ok: false, message: serverMessage(result.error) ?? RATE_LIMITED };
   if (status === 409 || status === 422) return { ok: false, message: serverMessage(result.error) ?? "Valeur refusée." };
   return { ok: false, message: "Modification impossible pour le moment. Réessayez." };
 }

@@ -507,13 +507,15 @@ async fn register(
     .map_err(|e| internal("lecture des comptes", e))?;
     // Adresse libre : compte en attente. Compte encore en attente a cette
     // adresse : il reste tel quel (ni nom ni mot de passe ne sont repris) et
-    // un nouveau lien remplace l'ancien. Compte deja verifie : rien ne change,
+    // un nouveau lien peut partir (hors delai ; les anciens restent valables
+    // jusqu'a leur expiration). Compte deja verifie : rien ne change,
     // rien n'est envoye. Dans tous les cas, la reponse est la meme.
     let user_id = match existing {
         None => {
             let user_id = Uuid::new_v4();
             sqlx::query(
-                "INSERT INTO users (id, email, password_hash, role, name, email_verified_at)                  VALUES ($1, $2, $3, $4, $5, NULL)",
+                "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) \
+                 VALUES ($1, $2, $3, $4, $5, NULL)",
             )
             .bind(user_id)
             .bind(&email)

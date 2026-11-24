@@ -584,7 +584,7 @@ async fn register_same_response_existing_email() {
 }
 
 #[tokio::test]
-async fn reregistration_cannot_hijack_and_replaces_the_old_link() {
+async fn reregistration_cannot_hijack_and_keeps_existing_links_valid() {
     let (state, _pg, outbox) = signup_env().await;
     // La victime s'inscrit, puis un tiers refait l'inscription de la meme adresse.
     let r = register(&state, "Victime", "eve@example.com", "198.51.100.1:1000").await;
@@ -596,10 +596,19 @@ async fn reregistration_cannot_hijack_and_replaces_the_old_link() {
             .await
             .unwrap();
 
-    // Delai minimal entre deux liens : meme reponse, rien n'est envoye, l'ancien lien vaut toujours.
+    // Delai minimal entre deux liens : meme reponse, rien n'est envoye.
     let again = register(&state, "Tiers", "eve@example.com", "198.51.100.2:1000").await;
     assert_eq!(again.raw, r.raw);
     assert_eq!(mails_to(&outbox, "eve@example.com", 1).await.len(), 1);
+
+    // Apres le delai : un nouveau lien part, l'ancien reste valable jusqu'a son expiration.
+    age_links(&state).await;
+    let again = register(&state, "Tiers", "eve@example.com", "198.51.100.2:1000").await;
+    assert_eq!(again.raw, r.raw);
+    let mails = mails_to(&outbox, "eve@example.com", 2).await;
+    assert_eq!(mails.len(), 2);
+    let second = verification_token(&mails[1]);
+    assert_ne!(first, second);
     let info = call(
         &state,
         "GET",
@@ -608,22 +617,6 @@ async fn reregistration_cannot_hijack_and_replaces_the_old_link() {
     )
     .await;
     assert_eq!(info.status, 200, "{}", info.raw);
-
-    // Apres le delai : nouveau lien, l'ancien tombe.
-    age_links(&state).await;
-    let again = register(&state, "Tiers", "eve@example.com", "198.51.100.2:1000").await;
-    assert_eq!(again.raw, r.raw);
-    let mails = mails_to(&outbox, "eve@example.com", 2).await;
-    assert_eq!(mails.len(), 2);
-    let second = verification_token(&mails[1]);
-    assert_ne!(first, second);
-    assert_eq!(
-        confirm_with(&state, &first, Some(NEW_PASSWORD))
-            .await
-            .status,
-        404,
-        "l'ancien lien est invalide"
-    );
     // Ni le nom ni le mot de passe du compte en attente n'ont ete repris par le tiers.
     let (name, password_after): (String, String) =
         sqlx::query_as("SELECT name, password_hash FROM users WHERE email = 'eve@example.com'")
@@ -634,9 +627,10 @@ async fn reregistration_cannot_hijack_and_replaces_the_old_link() {
     assert_eq!(password_after, password_before);
     assert_eq!(users_with(&state, "eve@example.com").await, 1);
 
-    // Seul le titulaire de la boite, avec le nouveau lien, fixe le mot de passe.
+    // Le titulaire de la boite fixe le mot de passe avec le lien qu'il ouvre ;
+    // l'autre lien ne sert plus a rien une fois le compte active.
     assert_eq!(
-        confirm_with(&state, &second, Some(NEW_PASSWORD))
+        confirm_with(&state, &first, Some(NEW_PASSWORD))
             .await
             .status,
         204
@@ -652,6 +646,19 @@ async fn reregistration_cannot_hijack_and_replaces_the_old_link() {
             .await
             .status,
         401
+    );
+    assert_eq!(
+        confirm_with(&state, &second, Some("un autre mot de passe long"))
+            .await
+            .status,
+        404
+    );
+    assert_eq!(
+        login_as(&state, "eve@example.com", NEW_PASSWORD)
+            .await
+            .status,
+        200,
+        "le mot de passe choisi n'a pas change"
     );
 }
 

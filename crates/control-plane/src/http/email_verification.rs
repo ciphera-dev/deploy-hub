@@ -15,7 +15,8 @@
 //! l'audit : la base n'en garde que le SHA-256. Consommation par
 //! `UPDATE ... WHERE used_at IS NULL AND expires_at > maintenant`, atomique. Au
 //! plus un lien par minute et par compte (`MAIL_COOLDOWN_SECS`) : au-dela, la
-//! reponse est la meme mais rien n'est envoye. Les comptes d'inscription jamais
+//! reponse est la meme (429 explicite pour un changement d'adresse, l'appelant
+//! etant authentifie) mais rien n'est envoye. Les comptes d'inscription jamais
 //! confirmes sont supprimes quand leur dernier lien a expire (`purge_pending`).
 //! La confirmation n'exige pas de session (le lien s'ouvre souvent ailleurs) ;
 //! une ouverture par GET ne change rien : seule la confirmation du POST agit.
@@ -88,10 +89,51 @@ pub fn link(state: &AppState, token: &str) -> String {
     state.public_link(&format!("/verify-email/{token}"))
 }
 
+/// Secondes restantes avant qu'un nouveau lien puisse etre envoye a ce compte
+/// (`MAIL_COOLDOWN_SECS` apres le dernier), `None` si le delai est ecoule.
+pub async fn cooldown_remaining(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    now: f64,
+) -> Result<Option<u64>, sqlx::Error> {
+    let remaining: Option<f64> = sqlx::query_scalar(
+        "SELECT extract(epoch FROM max(created_at)) + $2 - $3 FROM email_verifications \
+         WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .bind(MAIL_COOLDOWN_SECS)
+    .bind(now)
+    .fetch_one(conn)
+    .await?;
+    Ok(remaining
+        .filter(|secs| *secs > 0.0)
+        .map(|secs| secs.ceil().max(1.0) as u64))
+}
+
+/// Supprime les liens non utilises de ce motif : un changement d'adresse
+/// annule toujours les liens precedents, qu'un nouveau soit envoye ou non.
+pub async fn cancel_unused(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    purpose: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM email_verifications WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .bind(purpose)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Cree un lien de verification de `new_email` pour ce compte, dans la
-/// transaction de l'appelant, et supprime les liens inutilises du meme motif.
-/// `None` (rien n'est cree ni envoye) si le dernier lien du compte a moins de
-/// `MAIL_COOLDOWN_SECS` : pas de rafale d'e-mails vers une meme adresse.
+/// transaction de l'appelant. `None` (rien n'est cree ni envoye) si le dernier
+/// lien du compte a moins de `MAIL_COOLDOWN_SECS` : pas de rafale d'e-mails
+/// vers une meme adresse. Les liens deja envoyes restent valables jusqu'a leur
+/// expiration (chacun exige que le titulaire de la boite choisisse le mot de
+/// passe) ; pour un changement d'adresse, l'appelant annule d'abord les
+/// precedents (`cancel_unused`).
 pub async fn issue(
     conn: &mut PgConnection,
     user_id: Uuid,
@@ -99,26 +141,13 @@ pub async fn issue(
     purpose: &str,
     now: f64,
 ) -> Result<Option<SessionToken>, sqlx::Error> {
-    let recent: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM email_verifications WHERE user_id = $1 \
-                          AND created_at > to_timestamp($2) - make_interval(secs => $3))",
-    )
-    .bind(user_id)
-    .bind(now)
-    .bind(MAIL_COOLDOWN_SECS)
-    .fetch_one(&mut *conn)
-    .await?;
-    if recent {
+    if cooldown_remaining(&mut *conn, user_id, now)
+        .await?
+        .is_some()
+    {
         return Ok(None);
     }
     let token = SessionToken::generate().map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-    sqlx::query(
-        "DELETE FROM email_verifications WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL",
-    )
-    .bind(user_id)
-    .bind(purpose)
-    .execute(&mut *conn)
-    .await?;
     sqlx::query(
         "INSERT INTO email_verifications (id, token_hash, user_id, new_email, purpose, created_at, expires_at) \
          VALUES ($1, $2, $3, $4, $5, to_timestamp($6), to_timestamp($6) + make_interval(secs => $7))",

@@ -416,6 +416,7 @@ async fn update(
     // Meme reponse qu'elle soit libre ou deja prise : rien n'est envoye si
     // elle l'est, sans le dire.
     let mut verification = None;
+    let mut cooling: Option<u64> = None;
     if let Some(email) = &new_email {
         let taken: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower($1) AND id <> $2)",
@@ -425,13 +426,22 @@ async fn update(
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| internal("lecture des comptes", e))?;
-        if !taken {
+        let now = state.clock.unix_secs();
+        // Une nouvelle demande annule toujours les liens precedents, qu'un
+        // nouveau lien parte ou non (adresse prise, delai en cours).
+        cooling = email_verification::cooldown_remaining(&mut tx, user.id, now)
+            .await
+            .map_err(|e| internal("lecture des liens de verification", e))?;
+        email_verification::cancel_unused(&mut tx, user.id, email_verification::PURPOSE_CHANGE)
+            .await
+            .map_err(|e| internal("annulation des liens de verification", e))?;
+        if !taken && cooling.is_none() {
             let token = email_verification::issue(
                 &mut tx,
                 user.id,
                 email,
                 email_verification::PURPOSE_CHANGE,
-                state.clock.unix_secs(),
+                now,
             )
             .await
             .map_err(|e| internal("creation du lien de verification", e))?;
@@ -462,6 +472,19 @@ async fn update(
             mail::email_verification_mail(&email, &link, false),
             "email_verification",
         );
+    }
+    if let Some(retry_after) = cooling {
+        // Les anciens liens sont annules, aucun nouveau n'est envoye. Les autres
+        // champs du profil, eux, sont deja enregistres.
+        let mut res = ApiError::new(
+            429,
+            "rate_limited",
+            "Un lien de confirmation vient d'être envoyé : patientez une minute avant de redemander un changement d'adresse. Les liens précédents sont annulés.",
+        )
+        .into_response();
+        res.headers_mut()
+            .insert(header::RETRY_AFTER, retry_after.into());
+        return Ok(res);
     }
     let body = no_store(Json(load_me(&state, &user).await?));
     if new_email.is_some() {

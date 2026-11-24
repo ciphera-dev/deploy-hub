@@ -1090,3 +1090,82 @@ async fn avatar_uploads_are_rate_limited_per_account() {
     let r = upload(&state, &bob, "image/png", png(8, 8)).await;
     assert_eq!(r.status, 200, "{}", r.raw);
 }
+
+#[tokio::test]
+async fn second_email_change_within_the_minute_cancels_the_first_link() {
+    let (mut state, _pg) = common::state().await;
+    let outbox = capture(&mut state);
+    with_smtp(&mut state).await;
+    add_user(&state, EMAIL).await;
+    add_user(&state, "bob@example.com").await;
+    let who = session(&state, EMAIL).await;
+
+    let r = send(
+        &state,
+        &who,
+        "PATCH",
+        "/api/me",
+        change_email("alice@gmial.example.com"),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    let typo = verification_token(&wait_for_mail(&outbox, 1).await[0]);
+
+    // Correction dans la minute : 429 explicite avec Retry-After, rien n'est
+    // envoye, et le premier lien est annule.
+    let r = send(
+        &state,
+        &who,
+        "PATCH",
+        "/api/me",
+        change_email("alice@gmail.example.com"),
+    )
+    .await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+    assert_eq!(r.code(), "rate_limited");
+    let retry: u64 = r
+        .retry_after
+        .as_deref()
+        .expect("Retry-After")
+        .parse()
+        .unwrap();
+    assert!((1..=60).contains(&retry), "{retry}");
+    assert_eq!(wait_for_mail(&outbox, 1).await.len(), 1);
+    let r = confirm_email(&state, &typo, None).await;
+    assert_eq!(r.status, 404, "{}", r.raw);
+    assert_eq!(
+        count(&state, "SELECT count(*) FROM email_verifications").await,
+        0
+    );
+    assert_eq!(me(&state, &who).await.json()["email"], json!(EMAIL));
+
+    // Meme annulation quand la nouvelle adresse est celle d'un autre compte.
+    sqlx::query("UPDATE email_verifications SET created_at = created_at - interval '5 minutes'")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let r = send(
+        &state,
+        &who,
+        "PATCH",
+        "/api/me",
+        change_email("alice@later.example.com"),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    let later = verification_token(&wait_for_mail(&outbox, 2).await[1]);
+    sqlx::query("UPDATE email_verifications SET created_at = created_at - interval '5 minutes'")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let r = send(
+        &state,
+        &who,
+        "PATCH",
+        "/api/me",
+        change_email("bob@example.com"),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    assert_eq!(confirm_email(&state, &later, None).await.status, 404);
+}
