@@ -161,6 +161,11 @@ export function createResetLink(id: string): Promise<Result<{ link: string }>> {
   return settle(() => api.POST("/api/team/members/{id}/reset-link", { params: { path: { id } } }));
 }
 
+/** Supprime TOTP, passkeys et codes de secours du membre et revoque ses sessions ; mot de passe de l'auteur exige. */
+export function resetMemberMfa(id: string, password: string): Promise<Result<null>> {
+  return settle(() => api.POST("/api/team/members/{id}/reset-mfa", { params: { path: { id } }, body: { password } }), null);
+}
+
 export function inviteMember(body: { email: string; name?: string; role: TeamRole }): Promise<Result<{ link: string }>> {
   return settle(() => api.POST("/api/team/invitations", { body }));
 }

@@ -1529,6 +1529,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/team/members/{id}/reset-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remet a zero le second facteur d'un membre (TOTP, passkeys, codes de
+         *     secours) et revoque ses sessions.
+         */
+        post: operations["member_reset_mfa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/variables": {
         parameters: {
             query?: never;
@@ -2645,6 +2665,14 @@ export interface components {
              *     `CIPHERA_PUBLIC_URL` quand il est defini).
              */
             link: string;
+        };
+        /** @description Corps de `POST /api/team/members/{id}/reset-mfa`. */
+        ResetMfa: {
+            /**
+             * Format: password
+             * @description Mot de passe de l'auteur (re-authentification).
+             */
+            password: string;
         };
         /** @description Corps de `POST /api/auth/password/reset`. */
         ResetPassword: {
@@ -7656,6 +7684,69 @@ export interface operations {
             };
             /** @description Compte introuvable */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    member_reset_mfa: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Jeton CSRF de la session (obligatoire) */
+                "X-CSRF-Token"?: string | null;
+            };
+            path: {
+                /** @description Identifiant du compte */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetMfa"];
+            };
+        };
+        responses: {
+            /** @description Second facteur supprime, sessions du membre revoquees */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Pas de session complete, ou `invalid_credentials` (mot de passe de l'auteur) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden` (Equipe : Admin requis, ou compte de rang egal ou superieur au sien) ; `use_profile` (son propre compte : utiliser le profil) ; ou jeton CSRF invalide */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Compte introuvable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requete invalide */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives ; en-tete Retry-After */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

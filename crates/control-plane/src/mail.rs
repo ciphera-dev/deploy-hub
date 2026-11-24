@@ -415,6 +415,24 @@ pub fn email_verification_mail(to: &str, link: &str, signup: bool) -> OutgoingMa
     }
 }
 
+/// Avis envoye au titulaire quand un administrateur remet a zero son second
+/// facteur (TOTP, passkeys, codes de secours supprimes, sessions revoquees).
+pub fn mfa_reset_mail(to: &str) -> OutgoingMail {
+    OutgoingMail {
+        to: to.to_string(),
+        subject: "Second facteur de votre compte Ciphera réinitialisé".to_string(),
+        text: "Bonjour,\n\n\
+               Un administrateur vient de supprimer le second facteur de votre compte Ciphera \
+               (application d'authentification, passkeys et codes de secours). \
+               Vos sessions ont été fermées.\n\n\
+               Reconnectez-vous avec votre mot de passe, puis ajoutez un nouveau facteur \
+               depuis votre profil. Si vous n'êtes pas à l'origine de cette demande, \
+               changez votre mot de passe et contactez sans attendre un administrateur \
+               de votre instance.\n"
+            .to_string(),
+    }
+}
+
 /// E-mail d'invitation (72 heures).
 pub fn invitation_mail(to: &str, link: &str) -> OutgoingMail {
     OutgoingMail {

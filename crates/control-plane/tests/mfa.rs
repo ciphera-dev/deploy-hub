@@ -680,10 +680,16 @@ async fn password_reset_clears_second_factor_failures() {
     reach_daily_totp_cap(&env.state, &pending).await;
 
     let mut tx = env.state.db.begin().await.unwrap();
-    let issued = control_plane::http::password_reset::issue(&mut tx, EMAIL, now() as f64, 0.0)
-        .await
-        .unwrap()
-        .expect("lien cree");
+    let issued = control_plane::http::password_reset::issue(
+        &mut tx,
+        EMAIL,
+        now() as f64,
+        0.0,
+        control_plane::http::password_reset::Origin::Admin,
+    )
+    .await
+    .unwrap()
+    .expect("lien cree");
     tx.commit().await.unwrap();
     const NEW: &str = "un tout autre mot de passe";
     let r = call(

@@ -901,3 +901,259 @@ async fn cli_reset_password_prints_link() {
     assert_eq!(audit.len(), 1);
     assert!(!audit[0].contains(&token));
 }
+
+#[tokio::test]
+async fn anonymous_forgot_keeps_cli_link() {
+    let (mut state, _pg) = common::state().await;
+    let outbox = capture(&mut state);
+    with_public_url(&mut state);
+    let offset = Arc::new(AtomicU64::new(0));
+    let o = offset.clone();
+    state.clock =
+        Clock::from_fn(move || SystemTime::now() + Duration::from_secs(o.load(Ordering::SeqCst)));
+    user(&state, "owner@example.com", "owner").await;
+    user(&state, "nora@example.com", "developer").await;
+    let owner = session(&state, "owner@example.com").await;
+    configure_smtp(&state, &owner).await;
+
+    let cli = control_plane::cli::admin::reset_password(&state.db, &state.cfg, "nora@example.com")
+        .await
+        .expect("lien");
+    let cli_token = reset_token_in(&cli);
+    let origin: String = sqlx::query_scalar("SELECT origin FROM password_resets")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(origin, "cli");
+
+    offset.store(61, Ordering::SeqCst);
+    assert_eq!(forgot(&state, "nora@example.com").await.status, 202);
+    let mails = wait_for_mail(&outbox, 1).await;
+    assert_eq!(mails.len(), 1, "le lien « oublie » est bien envoye");
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM password_resets WHERE origin = 'cli' AND used_at IS NULL"
+        )
+        .await,
+        1,
+        "le lien de la CLI n'est pas supprime par une demande anonyme"
+    );
+    let r = reset(&state, &cli_token, NEW_PASSWORD).await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+
+    // Un lien d'administrateur ou de la CLI remplace tous les liens inutilises.
+    assert_eq!(forgot(&state, "nora@example.com").await.status, 202);
+    offset.store(200, Ordering::SeqCst);
+    assert_eq!(forgot(&state, "nora@example.com").await.status, 202);
+    wait_for_mail(&outbox, 3).await;
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM password_resets WHERE used_at IS NULL"
+        )
+        .await,
+        1,
+        "une demande anonyme remplace les liens « oublie »"
+    );
+    control_plane::cli::admin::reset_password(&state.db, &state.cfg, "nora@example.com")
+        .await
+        .expect("lien");
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM password_resets WHERE used_at IS NULL"
+        )
+        .await,
+        1,
+        "le lien de la CLI remplace tous les liens inutilises"
+    );
+}
+
+async fn add_factors(state: &AppState, id: Uuid) {
+    sqlx::query(
+        "INSERT INTO user_totp (user_id, secret_sealed, confirmed_at) VALUES ($1, '\\x00', now())",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO webauthn_credentials (id, user_id, credential_id, passkey, name) \
+         VALUES ($1, $2, $3, '{}'::jsonb, 'cle')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(id)
+    .bind(Uuid::new_v4().as_bytes().to_vec())
+    .execute(&state.db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO recovery_codes (id, user_id, code_hash) VALUES ($1, $2, 'x')")
+        .bind(Uuid::new_v4())
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+async fn factor_rows(state: &AppState, id: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM user_totp WHERE user_id = $1) \
+              + (SELECT count(*) FROM webauthn_credentials WHERE user_id = $1) \
+              + (SELECT count(*) FROM recovery_codes WHERE user_id = $1)",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn reset_mfa_rank_rules() {
+    let (state, _pg) = common::state().await;
+    let owner_id = user(&state, "owner@example.com", "owner").await;
+    let admin_id = user(&state, "admin@example.com", "admin").await;
+    let other_admin = user(&state, "admin2@example.com", "admin").await;
+    let dev_id = user(&state, "dev@example.com", "developer").await;
+    let owner = session(&state, "owner@example.com").await;
+    let admin = session(&state, "admin@example.com").await;
+    let dev = session(&state, "dev@example.com").await;
+    for id in [owner_id, other_admin, dev_id] {
+        add_factors(&state, id).await;
+    }
+    let path = |id: Uuid| format!("/api/team/members/{id}/reset-mfa");
+    let ok = Some(json!({ "password": PASSWORD }));
+
+    let r = as_user(&state, &admin, "POST", &path(owner_id), ok.clone()).await;
+    assert_eq!(r.status, 403, "un admin ne touche pas au proprietaire");
+    let r = as_user(&state, &admin, "POST", &path(other_admin), ok.clone()).await;
+    assert_eq!(r.status, 403, "un admin ne touche pas a un autre admin");
+    let r = as_user(&state, &dev, "POST", &path(dev_id), ok.clone()).await;
+    assert_eq!(r.status, 403, "Equipe : Admin requis");
+    let r = as_user(&state, &admin, "POST", &path(admin_id), ok.clone()).await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(r.code(), "use_profile");
+    let r = as_user(&state, &owner, "POST", &path(owner_id), ok.clone()).await;
+    assert_eq!(r.status, 403, "jamais pour son propre compte");
+    let r = as_user(&state, &admin, "POST", &path(Uuid::new_v4()), ok.clone()).await;
+    assert_eq!(r.status, 404, "{}", r.raw);
+    assert_eq!(factor_rows(&state, dev_id).await, 3, "rien supprime");
+
+    let r = as_user(
+        &state,
+        &admin,
+        "POST",
+        &path(dev_id),
+        Some(json!({ "password": "mauvais mot de passe" })),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_credentials");
+    assert_eq!(factor_rows(&state, dev_id).await, 3, "mot de passe exige");
+    let r = as_user(&state, &admin, "POST", &path(dev_id), None).await;
+    assert!(r.status == 422 || r.status == 400, "{}", r.raw);
+    assert_eq!(factor_rows(&state, dev_id).await, 3);
+
+    let r = as_user(&state, &admin, "POST", &path(dev_id), ok.clone()).await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    assert_eq!(factor_rows(&state, dev_id).await, 0);
+    let r = as_user(&state, &owner, "POST", &path(other_admin), ok).await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    assert_eq!(factor_rows(&state, other_admin).await, 0);
+    let r = call(
+        &state,
+        "POST",
+        &path(dev_id),
+        Req {
+            cookie: Some(&admin.0),
+            body: Some(json!({ "password": PASSWORD })),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(r.status, 403, "jeton CSRF exige");
+    let audit: Vec<String> = sqlx::query_scalar(
+        "SELECT detail::text FROM audit_events WHERE action = 'team.member.reset_mfa'",
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(audit.len(), 2);
+    assert!(audit.iter().all(|d| !d.contains(PASSWORD)));
+}
+
+#[tokio::test]
+async fn reset_mfa_revokes_sessions() {
+    let (mut state, _pg) = common::state().await;
+    let outbox = capture(&mut state);
+    with_public_url(&mut state);
+    user(&state, "owner@example.com", "owner").await;
+    let dev_id = user(&state, "dev@example.com", "developer").await;
+    let owner = session(&state, "owner@example.com").await;
+    configure_smtp(&state, &owner).await;
+    // Sessions du membre ouvertes avant l'ajout des facteurs (connexion sans MFA).
+    let dev = session(&state, "dev@example.com").await;
+    let _second = session(&state, "dev@example.com").await;
+    add_factors(&state, dev_id).await;
+
+    let r = as_user(&state, &dev, "GET", "/api/me", None).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let r = as_user(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/team/members/{dev_id}/reset-mfa"),
+        Some(json!({ "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    let r = as_user(&state, &dev, "GET", "/api/me", None).await;
+    assert_eq!(r.status, 401, "session revoquee : {}", r.raw);
+    assert_eq!(
+        count(
+            &state,
+            &format!("SELECT count(*) FROM sessions WHERE user_id = '{dev_id}'")
+        )
+        .await,
+        0
+    );
+    assert_eq!(factor_rows(&state, dev_id).await, 0);
+    let mails = wait_for_mail(&outbox, 1).await;
+    assert_eq!(mails.len(), 1);
+    assert_eq!(mails[0].to, "dev@example.com");
+    // Le membre se reconnecte avec son seul mot de passe.
+    assert_eq!(
+        login_as(&state, "dev@example.com", PASSWORD).await.status,
+        200
+    );
+}
+
+#[tokio::test]
+async fn cli_reset_mfa_clears_factors() {
+    let (state, _pg) = common::state().await;
+    let id = user(&state, "Nora@Example.com", "developer").await;
+    let other = user(&state, "other@example.com", "developer").await;
+    add_factors(&state, id).await;
+    add_factors(&state, other).await;
+    let report = control_plane::cli::admin::reset_mfa(&state.db, "nora@example.com")
+        .await
+        .expect("remise a zero");
+    assert_eq!(
+        (report.totp, report.passkeys, report.recovery_codes),
+        (1, 1, 1)
+    );
+    assert_eq!(factor_rows(&state, id).await, 0);
+    assert_eq!(factor_rows(&state, other).await, 3, "autre compte intact");
+    let err = control_plane::cli::admin::reset_mfa(&state.db, "x@example.com")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("aucun compte"), "{err}");
+    let audit: Vec<String> = sqlx::query_scalar(
+        "SELECT detail::text FROM audit_events WHERE action = 'auth.mfa.reset.cli'",
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(audit.len(), 1);
+    assert!(!audit[0].contains("nora"));
+}

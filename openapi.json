@@ -4694,6 +4694,68 @@
         }
       }
     },
+    "/api/team/members/{id}/reset-mfa": {
+      "post": {
+        "tags": [
+          "team"
+        ],
+        "summary": "Remet a zero le second facteur d'un membre (TOTP, passkeys, codes de\nsecours) et revoque ses sessions.",
+        "operationId": "member_reset_mfa",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Identifiant du compte",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "Jeton CSRF de la session (obligatoire)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetMfa"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Second facteur supprime, sessions du membre revoquees"
+          },
+          "401": {
+            "description": "Pas de session complete, ou `invalid_credentials` (mot de passe de l'auteur)"
+          },
+          "403": {
+            "description": "`forbidden` (Equipe : Admin requis, ou compte de rang egal ou superieur au sien) ; `use_profile` (son propre compte : utiliser le profil) ; ou jeton CSRF invalide"
+          },
+          "404": {
+            "description": "Compte introuvable"
+          },
+          "422": {
+            "description": "Requete invalide"
+          },
+          "429": {
+            "description": "Trop de tentatives ; en-tete Retry-After"
+          }
+        }
+      }
+    },
     "/api/variables": {
       "get": {
         "tags": [
@@ -7473,6 +7535,22 @@
             "description": "Lien a usage unique, valable 30 minutes : `/reset/<jeton>` (prefixe de\n`CIPHERA_PUBLIC_URL` quand il est defini)."
           }
         }
+      },
+      "ResetMfa": {
+        "type": "object",
+        "description": "Corps de `POST /api/team/members/{id}/reset-mfa`.",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "Mot de passe de l'auteur (re-authentification).",
+            "maxLength": 1024
+          }
+        },
+        "additionalProperties": false
       },
       "ResetPassword": {
         "type": "object",

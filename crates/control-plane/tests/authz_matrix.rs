@@ -113,6 +113,7 @@ const MATRIX: &[(&str, &str, Guard)] = &[
     ("POST", "/api/team/invitations", R(Team, A)),
     ("DELETE", "/api/team/invitations/{id}", R(Team, A)),
     ("POST", "/api/team/members/{id}/reset-link", R(Team, A)),
+    ("POST", "/api/team/members/{id}/reset-mfa", R(Team, A)),
     // Projets.
     ("GET", "/api/overview", R(Projects, Rd)),
     ("GET", "/api/projects", R(Projects, Rd)),

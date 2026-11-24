@@ -49,6 +49,12 @@ enum AdminCommand {
         #[arg(long)]
         email: String,
     },
+    /// Supprime le second facteur d'un compte (TOTP, passkeys, codes de
+    /// secours) et revoque ses sessions.
+    ResetMfa {
+        /// E-mail du compte.
+        email: String,
+    },
     /// Retire le domaine du panneau (domaine qui ne repond plus) ; l'acces
     /// 8443 se rouvre au redemarrage du service.
     ResetPanelDomain,
@@ -98,6 +104,9 @@ async fn main() {
         Some(Command::Init(args)) => std::process::exit(run_init(args)),
         Some(Command::Admin(AdminCommand::ResetPassword { email })) => {
             std::process::exit(run_reset_password(&email).await)
+        }
+        Some(Command::Admin(AdminCommand::ResetMfa { email })) => {
+            std::process::exit(run_reset_mfa(&email).await)
         }
         Some(Command::Admin(AdminCommand::ResetPanelDomain)) => {
             std::process::exit(run_reset_panel_domain().await)
@@ -171,6 +180,29 @@ async fn run_reset_password(email: &str) -> i32 {
                 );
             }
             eprintln!("valable 30 minutes, usage unique");
+            0
+        }
+        Err(e) => {
+            eprintln!("erreur : {e}");
+            1
+        }
+    }
+}
+
+/// Remise a zero du second facteur ; messages sans e-mail ni secret.
+async fn run_reset_mfa(email: &str) -> i32 {
+    let result = async {
+        let cfg = control_plane::cli::env::admin_config()?;
+        let db = admin_db(&cfg).await?;
+        Ok::<_, Box<dyn std::error::Error>>(admin::reset_mfa(&db, email).await?)
+    }
+    .await;
+    match result {
+        Ok(r) => {
+            println!(
+                "second facteur supprime (TOTP : {}, passkeys : {}, codes de secours : {}) ; sessions revoquees : {}",
+                r.totp, r.passkeys, r.recovery_codes, r.sessions_revoked
+            );
             0
         }
         Err(e) => {

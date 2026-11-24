@@ -10,16 +10,20 @@
 //!   compte revoquees, double authentification conservee, aucune session
 //!   ouverte ;
 //! - `POST /api/team/members/{id}/reset-link` : lien genere par un
-//!   administrateur (jamais pour un role au-dessus du sien), a transmettre.
+//!   administrateur (jamais pour un role au-dessus du sien), a transmettre ;
+//! - `POST /api/team/members/{id}/reset-mfa` : remise a zero du second
+//!   facteur d'un membre (memes regles de rang, mot de passe de l'auteur
+//!   exige), sessions du membre revoquees.
 //!
 //! Lien a usage unique valable 30 minutes. Le jeton (32 octets aleatoires)
 //! n'est jamais stocke, journalise ni ecrit dans l'audit : la base n'en garde
-//! que le SHA-256. Une nouvelle demande supprime les liens inutilises du
-//! compte. Consommation par `UPDATE ... WHERE used_at IS NULL AND expires_at
+//! que le SHA-256. Une nouvelle demande anonyme supprime les liens `forgot`
+//! inutilises du compte ; un lien d'administrateur ou de la CLI remplace tous
+//! les liens inutilises. Consommation par `UPDATE ... WHERE used_at IS NULL AND expires_at
 //! > maintenant`, atomique. Echeances : horloge injectable de `AppState`.
 
 use api_types::password::{
-    ForgotPassword, PasswordResetStatus, ResetLink, ResetPassword, ResetTokenInfo,
+    ForgotPassword, PasswordResetStatus, ResetLink, ResetMfa, ResetPassword, ResetTokenInfo,
 };
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{DefaultBodyLimit, Path, State};
@@ -37,6 +41,7 @@ use crate::auth::session::{self, SessionToken};
 use crate::auth::{internal, password, rate_limit};
 use crate::authz::{Require, Role, forbidden, lvl, res};
 use crate::http::client_ip::ClientIp;
+use crate::http::me::{Reauth, reauthenticate};
 use crate::mail;
 use crate::state::AppState;
 
@@ -60,6 +65,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/auth/password/reset/{token}", get(info))
         .route("/api/auth/password/reset", post(reset))
         .route("/api/team/members/{id}/reset-link", post(member_link))
+        .route("/api/team/members/{id}/reset-mfa", post(member_reset_mfa))
         .layer(DefaultBodyLimit::max(MAX_BODY))
 }
 
@@ -125,6 +131,24 @@ pub(crate) async fn audit(
     Ok(())
 }
 
+/// Origine d'un lien : une demande anonyme ne supprime que les liens `forgot`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    Forgot,
+    Admin,
+    Cli,
+}
+
+impl Origin {
+    fn as_str(self) -> &'static str {
+        match self {
+            Origin::Forgot => "forgot",
+            Origin::Admin => "admin",
+            Origin::Cli => "cli",
+        }
+    }
+}
+
 /// Lien cree pour un compte.
 pub struct Issued {
     pub user_id: Uuid,
@@ -135,13 +159,16 @@ pub struct Issued {
 
 /// Cree un lien pour le compte de cet e-mail (casse ignoree), s'il existe, et
 /// supprime ses liens encore inutilises ; dans la transaction de l'appelant.
-/// Rien n'est cree si le dernier lien du compte a moins de `cooldown_secs`
+/// Une demande anonyme (`Origin::Forgot`) ne supprime que les liens `forgot` ;
+/// un lien `admin` ou `cli` remplace tous les liens inutilises. Rien n'est
+/// cree si le dernier lien `forgot` du compte a moins de `cooldown_secs`
 /// secondes (0 : pas de delai, liens generes par un administrateur).
 pub async fn issue(
     conn: &mut PgConnection,
     email: &str,
     now: f64,
     cooldown_secs: f64,
+    origin: Origin,
 ) -> Result<Option<Issued>, sqlx::Error> {
     let token = SessionToken::generate().map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
     // Serialise les demandes d'un meme e-mail : un seul lien reste valable.
@@ -153,13 +180,14 @@ pub async fn issue(
         "WITH target AS (SELECT id, email FROM users \
                          WHERE lower(email) = lower($1) AND email_verified_at IS NOT NULL \
                            AND NOT EXISTS (SELECT 1 FROM password_resets r \
-                                           WHERE r.user_id = users.id \
-                                             AND r.created_at > to_timestamp($4) - make_interval(secs => $6))), \
+                                           WHERE r.user_id = users.id AND r.origin = 'forgot' \
+                                             AND $6::float8 > 0 \n                                             AND r.created_at > to_timestamp($4) - make_interval(secs => $6))), \
               superseded AS (DELETE FROM password_resets \
-                             WHERE used_at IS NULL AND user_id IN (SELECT id FROM target)), \
-              inserted AS (INSERT INTO password_resets (id, token_hash, user_id, created_at, expires_at) \
+                             WHERE used_at IS NULL AND user_id IN (SELECT id FROM target) \
+                               AND (origin = 'forgot' OR $7::text <> 'forgot')), \
+              inserted AS (INSERT INTO password_resets (id, token_hash, user_id, created_at, expires_at, origin) \
                            SELECT $2, $3, id, to_timestamp($4), \
-                                  to_timestamp($4) + make_interval(secs => $5) \
+                                  to_timestamp($4) + make_interval(secs => $5), $7::text \
                            FROM target RETURNING user_id) \
          SELECT target.id, target.email FROM target JOIN inserted ON inserted.user_id = target.id",
     )
@@ -169,6 +197,7 @@ pub async fn issue(
     .bind(now)
     .bind(RESET_TTL_SECS as f64)
     .bind(cooldown_secs)
+    .bind(origin.as_str())
     .fetch_optional(&mut *conn)
     .await?;
     Ok(issued.map(|(user_id, email)| Issued {
@@ -228,7 +257,7 @@ async fn forgot(
     tokio::spawn(async move {
         let issued = async {
             let mut tx = db.begin().await?;
-            let issued = issue(&mut tx, &email, now, FORGOT_COOLDOWN_SECS).await?;
+            let issued = issue(&mut tx, &email, now, FORGOT_COOLDOWN_SECS, Origin::Forgot).await?;
             tx.commit().await?;
             Ok::<_, sqlx::Error>(issued)
         }
@@ -454,7 +483,7 @@ async fn member_link(
     if super::team::is_pending(&mut tx, id).await? {
         return Err(super::team::account_pending());
     }
-    let issued = issue(&mut tx, &email, state.clock.unix_secs(), 0.0)
+    let issued = issue(&mut tx, &email, state.clock.unix_secs(), 0.0, Origin::Admin)
         .await
         .map_err(|e| internal("creation du lien de reinitialisation", e))?
         .ok_or_else(member_not_found)?;
@@ -478,4 +507,116 @@ async fn member_link(
         Json(body),
     )
         .into_response())
+}
+
+/// `POST /api/team/members/{id}/reset-mfa`
+async fn member_reset_mfa(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    auth: Require<res::Team, lvl::Admin>,
+    id: Result<Path<Uuid>, PathRejection>,
+    body: Result<Json<ResetMfa>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let Path(id) = id.map_err(|_| member_not_found())?;
+    if id == auth.user.id {
+        return Err(ApiError::new(
+            403,
+            "use_profile",
+            "Pour votre propre compte, gérez vos facteurs depuis le profil.",
+        ));
+    }
+    let Json(input) = body.map_err(|_| invalid("Requête invalide."))?;
+    let target: Option<(String, String)> =
+        sqlx::query_as("SELECT email, role FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| internal("lecture du membre", e))?;
+    let (email, role) = target.ok_or_else(member_not_found)?;
+    // Memes regles de rang que `reset-link` ; un role inconnu n'est gere par
+    // personne.
+    if !Role::parse(&role).is_some_and(|role| auth.role.can_manage(role)) {
+        return Err(forbidden());
+    }
+    let ip = ip.to_string();
+    let attempt = match reauthenticate(
+        &state,
+        &auth.user,
+        &ip,
+        input.password,
+        "team.member.reset_mfa.failure",
+    )
+    .await?
+    {
+        Reauth::Verified(attempt, _) => attempt,
+        Reauth::Limited(response) => return Ok(response),
+    };
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| internal("transaction de remise a zero du second facteur", e))?;
+    let mut removed = [0_u64; 3];
+    for (slot, (context, sql)) in [
+        ("TOTP", "DELETE FROM user_totp WHERE user_id = $1"),
+        (
+            "passkeys",
+            "DELETE FROM webauthn_credentials WHERE user_id = $1",
+        ),
+        (
+            "codes de secours",
+            "DELETE FROM recovery_codes WHERE user_id = $1",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        removed[slot] = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| internal(context, e))?
+            .rows_affected();
+    }
+    let revoked = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| internal("revocation des sessions", e))?
+        .rows_affected();
+    // Les echecs de second facteur d'avant ne bloquent plus le titulaire.
+    rate_limit::clear_mfa(&mut tx, id)
+        .await
+        .map_err(|e| internal("remise a zero du second facteur", e))?;
+    rate_limit::mark_mfa_success(&mut tx, attempt)
+        .await
+        .map_err(|e| internal("enregistrement de la tentative", e))?;
+    audit(
+        &mut tx,
+        Some(auth.user.id),
+        "team.member.reset_mfa",
+        json!({
+            "user_id": id,
+            "totp": removed[0],
+            "passkeys": removed[1],
+            "recovery_codes": removed[2],
+            "sessions_revoked": revoked,
+            "ip": ip,
+        }),
+    )
+    .await
+    .map_err(|e| internal("audit de la remise a zero du second facteur", e))?;
+    tx.commit()
+        .await
+        .map_err(|e| internal("transaction de remise a zero du second facteur", e))?;
+    state.access.notify();
+    // Avis au titulaire, hors du chemin de la requete ; aucun echec ne remonte.
+    match mail::ready(&state).await {
+        Ok(Some(mailer)) => state
+            .mail
+            .spawn(mailer, mail::mfa_reset_mail(&email), "mfa_reset"),
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "avis de remise a zero du second facteur non envoye"),
+    }
+    Ok(no_store(StatusCode::NO_CONTENT))
 }

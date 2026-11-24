@@ -37,6 +37,13 @@ const server = setupServer(
     calls.push({ method: "POST", path: `reset:${String(params.id)}`, body: null });
     return HttpResponse.json({ link: "/reset/abc" }, { status: 201 });
   }),
+  http.post("*/api/team/members/:id/reset-mfa", async ({ request, params }) => {
+    const body = (await request.json()) as { password: string };
+    calls.push({ method: "POST", path: `reset-mfa:${String(params.id)}`, body });
+    if (body.password !== "bon") return HttpResponse.json({ error: { code: "invalid_credentials", message: "Mot de passe actuel incorrect." } }, { status: 401 });
+    members = members.map((m) => (m.id === params.id ? { ...m, two_factor: false } : m));
+    return new HttpResponse(null, { status: 204 });
+  }),
   http.post("*/api/team/invitations", async ({ request }) => {
     const body = (await request.json()) as { email: string; role: string; name?: string };
     calls.push({ method: "POST", path: "invitations", body });
@@ -180,4 +187,22 @@ it("annule une invitation en attente", async () => {
   await waitFor(() => expect(calls).toContainEqual({ method: "DELETE", path: `invitation:${ID(8)}`, body: null }));
   await waitFor(() => expect(screen.queryByText("eva@example.com")).not.toBeInTheDocument());
   expect(screen.getByText("Aucune invitation en attente.")).toBeInTheDocument();
+});
+
+it("réinitialise le 2FA après confirmation par mot de passe", async () => {
+  mount();
+  await screen.findByText("Bruno");
+  fireEvent.keyDown(screen.getByRole("button", { name: "Actions de Bruno" }), { key: "ArrowDown" });
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Réinitialiser le 2FA" }));
+  const dialog = await screen.findByRole("dialog", { name: "Réinitialiser le 2FA de Bruno ?" });
+  const go = within(dialog).getByRole("button", { name: "Réinitialiser" });
+  expect(go).toBeDisabled();
+  expect(calls).toHaveLength(0);
+  fireEvent.change(within(dialog).getByLabelText("Votre mot de passe"), { target: { value: "faux" } });
+  fireEvent.click(go);
+  expect(await within(dialog).findByText("Mot de passe actuel incorrect.")).toBeInTheDocument();
+  fireEvent.change(within(dialog).getByLabelText("Votre mot de passe"), { target: { value: "bon" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Réinitialiser" }));
+  await waitFor(() => expect(calls).toContainEqual({ method: "POST", path: `reset-mfa:${ID(2)}`, body: { password: "bon" } }));
+  expect(await screen.findByText("2FA de Bruno réinitialisé")).toBeInTheDocument();
 });

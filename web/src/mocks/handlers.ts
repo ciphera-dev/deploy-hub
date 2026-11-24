@@ -95,6 +95,7 @@ export const handlers: RequestHandler[] = [
   http.delete("*/api/team/invitations/:id", () => new HttpResponse(null, { status: 204 })),
   http.patch("*/api/team/members/:id", () => new HttpResponse(null, { status: 204 })),
   http.delete("*/api/team/members/:id", () => HttpResponse.json({ deleted_hooks: 0, deleted_invitations: 0 })),
+  http.post("*/api/team/members/:id/reset-mfa", () => new HttpResponse(null, { status: 204 })),
   http.post("*/api/team/members/:id/reset-link", () => HttpResponse.json({ link: "/reset/jeton-factice" }, { status: 201 })),
   http.post("*/api/organization/export", () => HttpResponse.json({ format: "ciphera-export", version: 1, organization: GENERAL })),
 ];

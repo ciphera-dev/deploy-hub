@@ -4,6 +4,10 @@
 //! n'est journalise (ni jeton ni e-mail). Meme base et meme configuration
 //! que le serveur.
 //!
+//! `ciphera admin reset-mfa <email>` : supprime le second facteur du compte
+//! (TOTP, passkeys, codes de secours) et revoque ses sessions ; audite sans
+//! e-mail ni secret.
+//!
 //! `ciphera admin reset-panel-domain` : retire le domaine du panneau quand il
 //! ne repond plus (DNS change, certificat perdu). L'acces 8443 se rouvre au
 //! redemarrage du service. Domaine confirme avec une GitHub App : son webhook
@@ -22,7 +26,7 @@ use sqlx::PgPool;
 
 use crate::connectors::github::{self, app::GithubClient};
 use crate::domain::domains::panel::{self, PanelSwitch};
-use crate::http::password_reset::{self, audit};
+use crate::http::password_reset::{self, Origin, audit};
 use crate::secrets::SecretBox;
 use crate::state::Clock;
 
@@ -49,10 +53,16 @@ pub async fn reset_password(db: &PgPool, cfg: &Config, email: &str) -> Result<St
         return Err(AdminError("e-mail manquant".into()));
     }
     let mut tx = db.begin().await.map_err(database)?;
-    let issued = password_reset::issue(&mut tx, email, Clock::system().unix_secs(), 0.0)
-        .await
-        .map_err(database)?
-        .ok_or_else(|| AdminError("aucun compte pour cet e-mail".into()))?;
+    let issued = password_reset::issue(
+        &mut tx,
+        email,
+        Clock::system().unix_secs(),
+        0.0,
+        Origin::Cli,
+    )
+    .await
+    .map_err(database)?
+    .ok_or_else(|| AdminError("aucun compte pour cet e-mail".into()))?;
     audit(
         &mut tx,
         None,
@@ -70,6 +80,73 @@ pub async fn reset_password(db: &PgPool, cfg: &Config, email: &str) -> Result<St
         public_url.as_deref(),
         issued.token.expose(),
     ))
+}
+
+/// Second facteur supprime par `reset-mfa`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MfaReset {
+    pub totp: u64,
+    pub passkeys: u64,
+    pub recovery_codes: u64,
+    pub sessions_revoked: u64,
+}
+
+/// Remet a zero le second facteur du compte de cet e-mail (casse ignoree) et
+/// revoque ses sessions ; commande de secours (root, sur le serveur).
+pub async fn reset_mfa(db: &PgPool, email: &str) -> Result<MfaReset, AdminError> {
+    let email = email.trim();
+    if email.is_empty() {
+        return Err(AdminError("e-mail manquant".into()));
+    }
+    let mut tx = db.begin().await.map_err(database)?;
+    let id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE lower(email) = lower($1)")
+        .bind(email)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database)?
+        .ok_or_else(|| AdminError("aucun compte pour cet e-mail".into()))?;
+    let mut removed = [0_u64; 4];
+    for (slot, sql) in [
+        "DELETE FROM user_totp WHERE user_id = $1",
+        "DELETE FROM webauthn_credentials WHERE user_id = $1",
+        "DELETE FROM recovery_codes WHERE user_id = $1",
+        "DELETE FROM sessions WHERE user_id = $1",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        removed[slot] = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database)?
+            .rows_affected();
+    }
+    crate::auth::rate_limit::clear_mfa(&mut tx, id)
+        .await
+        .map_err(database)?;
+    let report = MfaReset {
+        totp: removed[0],
+        passkeys: removed[1],
+        recovery_codes: removed[2],
+        sessions_revoked: removed[3],
+    };
+    audit(
+        &mut tx,
+        None,
+        "auth.mfa.reset.cli",
+        json!({
+            "user_id": id,
+            "totp": report.totp,
+            "passkeys": report.passkeys,
+            "recovery_codes": report.recovery_codes,
+            "sessions_revoked": report.sessions_revoked,
+        }),
+    )
+    .await
+    .map_err(database)?;
+    tx.commit().await.map_err(database)?;
+    Ok(report)
 }
 
 /// Webhook de la GitHub App au retrait du domaine du panneau.

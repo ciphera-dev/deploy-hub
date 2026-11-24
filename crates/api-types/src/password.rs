@@ -151,3 +151,43 @@ pub fn reset_password() {}
 )]
 #[allow(dead_code)]
 pub fn member_reset_link() {}
+
+/// Corps de `POST /api/team/members/{id}/reset-mfa`.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResetMfa {
+    /// Mot de passe de l'auteur (re-authentification).
+    #[schema(value_type = String, format = Password, max_length = 1024)]
+    pub password: Zeroizing<String>,
+}
+
+impl fmt::Debug for ResetMfa {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResetMfa")
+            .field("password", &"***")
+            .finish()
+    }
+}
+
+/// Remet a zero le second facteur d'un membre (TOTP, passkeys, codes de
+/// secours) et revoque ses sessions.
+#[utoipa::path(
+    post,
+    path = "/api/team/members/{id}/reset-mfa",
+    tag = "team",
+    request_body = ResetMfa,
+    params(
+        ("id" = String, Path, description = "Identifiant du compte"),
+        ("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)"),
+    ),
+    responses(
+        (status = 204, description = "Second facteur supprime, sessions du membre revoquees"),
+        (status = 401, description = "Pas de session complete, ou `invalid_credentials` (mot de passe de l'auteur)"),
+        (status = 403, description = "`forbidden` (Equipe : Admin requis, ou compte de rang egal ou superieur au sien) ; `use_profile` (son propre compte : utiliser le profil) ; ou jeton CSRF invalide"),
+        (status = 404, description = "Compte introuvable"),
+        (status = 422, description = "Requete invalide"),
+        (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),
+    )
+)]
+#[allow(dead_code)]
+pub fn member_reset_mfa() {}

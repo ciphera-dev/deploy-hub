@@ -13,6 +13,7 @@ import {
   fetchTeamMembers,
   inviteMember,
   removeMember,
+  resetMemberMfa,
   TEAM_INVITATIONS_QUERY_KEY,
   TEAM_MEMBERS_QUERY_KEY,
   type PendingInvitation,
@@ -209,8 +210,47 @@ function RemoveModal({ member, onClose, onRemoved }: { member: TeamMember; onClo
   );
 }
 
+/** Remise a zero du second facteur : le mot de passe de l'auteur est redemande (re-authentification). */
+function ResetMfaModal({ member, onClose, onDone }: { member: TeamMember; onClose: () => void; onDone: () => void }) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const who = member.name || member.email;
+  const go = async () => {
+    if (!password || busy) return;
+    setBusy(true);
+    const result = await resetMemberMfa(member.id, password);
+    setBusy(false);
+    if (!result.ok) {
+      setErr(result.message);
+      return;
+    }
+    onDone();
+  };
+  return (
+    <Modal
+      title={`Réinitialiser le 2FA de ${who} ?`}
+      description="L'application d'authentification, les passkeys et les codes de secours sont supprimés, et ses sessions sont fermées. Il se reconnecte avec son mot de passe, puis ajoute un nouveau facteur."
+      width={460}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Annuler</Button>
+          <Button variant="inverse" icon={busy ? "Loader" : "ShieldX"} disabled={!password || busy} onClick={() => void go()}>
+            Réinitialiser
+          </Button>
+        </>
+      }
+    >
+      <TextField label="Votre mot de passe" type="password" autoComplete="current-password" value={password} onChange={(v) => { setPassword(v); setErr(""); }} />
+      {err && <FormError>{err}</FormError>}
+    </Modal>
+  );
+}
+
 type Dialog =
   | { kind: "invite" }
+  | { kind: "reset-mfa"; member: TeamMember }
   | { kind: "remove"; member: TeamMember }
   | { kind: "link"; title: string; description: string; link: string };
 
@@ -273,7 +313,14 @@ function MembersView({ me, members, invitations }: { me: { id: string; role: str
           const manage = !self && canManage(me.role, m.role);
           // Compte d'inscription ouverte dont l'adresse n'est pas confirmee : ni role ni lien de reinitialisation.
           const removal: MenuItem = { icon: "Trash", label: "Retirer", danger: true, onSelect: () => setDialog({ kind: "remove", member: m }) };
-          const items: MenuItem[] = m.pending ? [removal] : [{ icon: "KeyRound", label: "Lien de réinitialisation", onSelect: () => void resetLink(m) }, "separator", removal];
+          const items: MenuItem[] = m.pending
+            ? [removal]
+            : [
+                { icon: "KeyRound", label: "Lien de réinitialisation", onSelect: () => void resetLink(m) },
+                { icon: "ShieldX", label: "Réinitialiser le 2FA", onSelect: () => setDialog({ kind: "reset-mfa", member: m }) },
+                "separator",
+                removal,
+              ];
           return (
             <div key={m.id} style={{ display: "grid", gridTemplateColumns: COLS, gap: 16, alignItems: "center", padding: "12px 18px", borderTop: hair }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
@@ -346,6 +393,18 @@ function MembersView({ me, members, invitations }: { me: { id: string; role: str
         />
       )}
       {dialog?.kind === "link" && <LinkModal title={dialog.title} description={dialog.description} link={dialog.link} onClose={() => setDialog(null)} />}
+      {dialog?.kind === "reset-mfa" && (
+        <ResetMfaModal
+          member={dialog.member}
+          onClose={() => setDialog(null)}
+          onDone={() => {
+            const who = dialog.member.name || dialog.member.email;
+            setDialog(null);
+            flash(`2FA de ${who} réinitialisé`);
+            void refresh();
+          }}
+        />
+      )}
       {dialog?.kind === "remove" && (
         <RemoveModal
           member={dialog.member}
