@@ -36,7 +36,9 @@ use bollard::query_parameters::{
 use futures_util::StreamExt;
 use shared::ids::ProjectId;
 
-use crate::docker::{BollardDocker, DockerError, DockerOps, MANAGED_LABEL, ROLE_LABEL};
+use crate::docker::{
+    BollardDocker, ContainerId, DockerError, DockerOps, Health, MANAGED_LABEL, ROLE_LABEL,
+};
 use crate::infra::{self, BUILDKIT_PROJECT_LABEL, BUILDKITD_ROLE, InfraConfig, InfraError};
 
 /// Un buildkitd sans build depuis ce delai est arrete.
@@ -63,7 +65,8 @@ pub enum BuildkitError {
     /// Dossiers du projet (creation, suppression) ou fichier d'usage.
     Fs(String),
     /// Le socket n'est pas apparu a temps.
-    SocketTimeout(PathBuf),
+    /// Socket absent ou muet ; `diagnostic` : etat et journaux du conteneur.
+    SocketTimeout(PathBuf, String),
     /// Un autre projet a un build en cours sur son buildkitd (sans le
     /// nommer : le message finit dans le journal d'un autre projet).
     Busy,
@@ -75,7 +78,7 @@ impl fmt::Display for BuildkitError {
             Self::Infra(e) => write!(f, "{e}"),
             Self::Docker(e) => write!(f, "{e}"),
             Self::Fs(m) => write!(f, "etat de buildkitd : {m}"),
-            Self::SocketTimeout(p) => write!(f, "buildkitd n'a pas cree {}", p.display()),
+            Self::SocketTimeout(p, d) => write!(f, "buildkitd n'a pas cree {} ({d})", p.display()),
             Self::Busy => write!(f, "un autre build utilise deja buildkitd"),
         }
     }
@@ -200,6 +203,9 @@ pub struct BuildkitManager<D: DockerOps, F: ProjectFs> {
     started: tokio::sync::OnceCell<()>,
     socket_wait: Duration,
     ready: fn(&Path) -> bool,
+    /// Longueur du chemin du socket verifiee (fausse avec un test de
+    /// disponibilite simule : les chemins des tests sont longs).
+    check_path: bool,
 }
 
 /// Gestionnaire de production.
@@ -216,6 +222,7 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
             started: tokio::sync::OnceCell::new(),
             socket_wait: SOCKET_WAIT,
             ready: socket_ready,
+            check_path: true,
         }
     }
 
@@ -224,6 +231,7 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
     pub fn with_readiness(mut self, wait: Duration, ready: fn(&Path) -> bool) -> Self {
         self.socket_wait = wait;
         self.ready = ready;
+        self.check_path = false;
         self
     }
 
@@ -310,9 +318,9 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
         }
         let socket = self.cfg.buildkit_project_socket(project);
         let spec = infra::buildkit_spec(&self.cfg, project, projects)?;
-        self.docker.run(&spec).await?;
+        let id = self.docker.run(&spec).await?;
         locked(&self.usage).running.insert(project);
-        self.wait_ready(&socket).await?;
+        self.wait_ready(&socket, &id).await?;
         {
             let mut u = locked(&self.usage);
             *u.in_use.entry(project).or_insert(0) += 1;
@@ -328,15 +336,68 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
         })
     }
 
-    async fn wait_ready(&self, socket: &Path) -> Result<(), BuildkitError> {
+    async fn wait_ready(&self, socket: &Path, id: &ContainerId) -> Result<(), BuildkitError> {
+        // Un socket Unix tient dans 107 octets : au-dela, ni buildctl ni
+        // l'agent ne peuvent s'y connecter (chemin de production : ~80).
+        if self.check_path && socket.as_os_str().len() > 107 {
+            return Err(BuildkitError::Fs(format!(
+                "chemin du socket trop long ({} octets, 107 au plus) : {}",
+                socket.as_os_str().len(),
+                socket.display()
+            )));
+        }
         let start = Instant::now();
+        let mut down = 0;
+        let mut last_check = Instant::now();
         while !(self.ready)(socket) {
-            if start.elapsed() >= self.socket_wait {
-                return Err(BuildkitError::SocketTimeout(socket.to_path_buf()));
+            // Conteneur arrete ou disparu trois fois de suite (verifie toutes
+            // les 2 s) : inutile d'attendre la fin du delai.
+            if last_check.elapsed() >= Duration::from_secs(2) {
+                last_check = Instant::now();
+                let gone = matches!(
+                    self.docker.health(id).await,
+                    Ok(Health::Stopped | Health::Missing)
+                );
+                down = if gone { down + 1 } else { 0 };
+            }
+            if down >= 3 || start.elapsed() >= self.socket_wait {
+                return Err(BuildkitError::SocketTimeout(
+                    socket.to_path_buf(),
+                    self.diagnostic(socket, id).await,
+                ));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Ok(())
+    }
+
+    /// Etat du conteneur, du dossier du socket et dernieres lignes du journal
+    /// de buildkitd, pour le message d'erreur.
+    async fn diagnostic(&self, socket: &Path, id: &ContainerId) -> String {
+        let state = match self.docker.health(id).await {
+            Ok(h) => format!("conteneur {h:?}"),
+            Err(e) => format!("conteneur illisible : {e}"),
+        };
+        let dir = socket.parent().map_or_else(
+            || "dossier inconnu".to_string(),
+            |d| {
+                let mut names: Vec<String> = std::fs::read_dir(d)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                format!("dossier du socket : {names:?}")
+            },
+        );
+        let mut lines: Vec<String> = Vec::new();
+        let mut logs = self.docker.logs(id, 40, false).await;
+        while let Some(l) = logs.next().await {
+            lines.push(l.line);
+        }
+        let start = lines.len().saturating_sub(25);
+        format!("{state} ; {dir} ; journal : {}", lines[start..].join(" | "))
     }
 
     /// Arrete les buildkitd sans build depuis `max_idle` (leur etat reste) ;

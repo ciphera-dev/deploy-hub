@@ -49,7 +49,10 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("ciphera-docker-it-{}", DeploymentId::new()));
+        // Court : le chemin du socket d'un projet doit tenir dans les 107
+        // octets d'un socket Unix.
+        let dir =
+            std::env::temp_dir().join(format!("cdit-{}", &DeploymentId::new().to_string()[..8]));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }

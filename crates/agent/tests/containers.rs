@@ -581,10 +581,13 @@ async fn without_build_account_only_postgres_runs() {
 #[tokio::test]
 async fn legacy_shared_buildkitd_removed() {
     let docker = FakeDocker::default();
+    // Dossier d'identite jetable : celui de production n'est pas inscriptible.
+    let scratch = Scratch::new("legacy");
     docker.add_container("legacy", "ciphera-buildkitd", &[], None);
     docker.add_container("per-project", BK_NAME, &[], None);
     for account in [true, false] {
         let mut c = cfg();
+        c.buildkit_identity_dir = scratch.0.join("identity");
         if !account {
             c.buildkit_account = None;
         }

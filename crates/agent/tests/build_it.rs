@@ -31,7 +31,6 @@ use proto::{AgentToControl, BuildMethod, BuildSource, BuildSpec, ImageRef, Stage
 use shared::ids::{DeploymentId, EnvironmentId, ProjectId};
 use tokio::sync::mpsc;
 
-const WAIT: Duration = Duration::from_secs(180);
 const BUILD_UID: u32 = 10003;
 const BUILD_SUBIDS: SubIds = SubIds {
     start: 400000,
@@ -45,7 +44,10 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("ciphera-build-it-{}", DeploymentId::new()));
+        // Court : le chemin du socket d'un projet (`<tmp>/buildkit/<uuid>/
+        // buildkitd.sock`) doit tenir dans les 107 octets d'un socket Unix.
+        let dir =
+            std::env::temp_dir().join(format!("cbit-{}", &DeploymentId::new().to_string()[..8]));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }

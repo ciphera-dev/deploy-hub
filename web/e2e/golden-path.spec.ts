@@ -178,7 +178,7 @@ test("parcours complet : setup, TOTP, GitHub, déploiement, HTTPS, rollback", as
     await dialog.getByRole("radio", { name: "Lecteur" }).click();
     await dialog.getByRole("button", { name: "Envoyer l'invitation" }).click();
     const link = page.getByRole("dialog", { name: "Invitation créée" });
-    await expect(link.getByLabel("Lien")).toContainText("/invite/");
+    await expect(link.getByLabel("Lien", { exact: true })).toContainText("/invite/");
     await link.getByRole("button", { name: "Terminé" }).click();
     await expect(page.getByText("lecteur@ciphera-e2e.org")).toBeVisible();
     await page.getByRole("button", { name: "Annuler l'invitation de lecteur@ciphera-e2e.org" }).click();

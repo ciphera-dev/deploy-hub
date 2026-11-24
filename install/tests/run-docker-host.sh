@@ -158,7 +158,7 @@ diagnose() {
 	journalctl -u ciphera-agent -u ciphera -u ciphera-proxy -u ciphera-proxy.socket --no-pager -n 80 || true
 	docker ps -a || true
 	docker logs --tail 40 ciphera-postgres 2>&1 || true
-	docker logs --tail 40 $bk 2>&1 || true
+	docker logs --tail 40 "$bk" 2>&1 || true
 }
 
 # Avant l'installation : un compte (et son groupe) dont l'id tombe dans la
@@ -206,7 +206,7 @@ check "(a) buildkitd du projet demarre a la demande" \
 rm -f "$bk_up"
 check "(a) $bk en marche" wait_for 300 "test \"\$(docker inspect -f '{{.State.Running}}' $bk 2>/dev/null)\" = true"
 check "(a) image epinglee de PostgreSQL" pinned_image ciphera-postgres postgres.digest
-check "(a) image epinglee de BuildKit" pinned_image $bk buildkit.digest
+check "(a) image epinglee de BuildKit" pinned_image "$bk" buildkit.digest
 check "(a) outils de build installes (railpack, buildctl, mise)" \
 	sh -c '/usr/local/lib/ciphera/bin/railpack --version >/dev/null && /usr/local/lib/ciphera/bin/buildctl --version >/dev/null && /usr/local/lib/ciphera/bin/mise-2026.10.14 --version | grep -q 2026.10.14'
 check "(a) ciphera-internal est interne" \
@@ -222,7 +222,7 @@ if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && command -v a
 		sh -c 'docker inspect -f "{{json .HostConfig.SecurityOpt}}" "$bk" | grep -q "apparmor=ciphera-buildkitd"'
 fi
 check "(a) PostgreSQL sans port publie" no_published_ports ciphera-postgres
-check "(a) buildkitd sans port publie" no_published_ports $bk
+check "(a) buildkitd sans port publie" no_published_ports "$bk"
 check "(a) mot de passe absent de docker inspect" \
 	sh -c '! docker inspect ciphera-postgres | grep -qF "$(cat /etc/ciphera/db_password)"'
 check "(a) socket Unix de PostgreSQL" wait_for 120 'test -S /run/ciphera/postgres/.s.PGSQL.5432'
@@ -248,7 +248,7 @@ else
 	stat /run/ciphera-agent /run/ciphera-agent/buildkit "$bk_sock" || true
 	getfacl -p /run/ciphera-agent/buildkit "$bk_sock" 2>&1 || true
 	ls -lan /run/ciphera-agent/buildkit || true
-	docker inspect -f '{{json .Config.Cmd}} {{json .HostConfig.Binds}}' $bk || true
+	docker inspect -f '{{json .Config.Cmd}} {{json .HostConfig.Binds}}' "$bk" || true
 	diagnose
 fi
 check "(a) socket de buildkitd ferme aux autres comptes" sh -c "! runuser -u nobody -- test -w $bk_sock"
@@ -269,7 +269,7 @@ subids_ok() { # <fichier>
 # « uid nom » (uid reel de l'hote) de chaque processus du conteneur buildkitd.
 bk_process_uids() {
 	local pid
-	for pid in $(docker top $bk -eo pid | tail -n +2); do
+	for pid in $(docker top "$bk" -eo pid | tail -n +2); do
 		awk '/^Name:/ { n = $2 } /^Uid:/ { u = $2 } END { if (u != "") print u, n }' "/proc/$pid/status" 2>/dev/null || true
 	done
 }
@@ -315,13 +315,13 @@ else
 	check "(a) processus de buildkitd sous l'uid de ciphera-build (ni 1000 ni root)" false
 	printf -- '--- uid des processus de buildkitd (attendu : %s) ---\n' "$(id -u ciphera-build 2>/dev/null)"
 	bk_process_uids || true
-	docker top $bk || true
+	docker top "$bk" || true
 fi
 check "(a) buildkitd : seules capacites SETUID et SETGID" \
 	sh -c 'test "$(awk "/^CapBnd:/ { print \$2 }" /proc/"$(docker inspect -f "{{.State.Pid}}" $bk)"/status)" = 00000000000000c0'
 # Build reel par le socket (buildctl de l'image, sous le compte du conteneur).
 bk_build() {
-	docker exec $bk sh -c 'set -e; d=$(mktemp -d)
+	docker exec "$bk" sh -c 'set -e; d=$(mktemp -d)
 		printf "FROM docker.io/library/busybox:1.37\nRUN echo ok > /ok\n" >"$d/Dockerfile"
 		buildctl --addr unix:///run/buildkit/buildkitd.sock build --frontend dockerfile.v0 \
 			--local context="$d" --local dockerfile="$d"' >"$work/build.log" 2>&1
@@ -379,7 +379,7 @@ probe_ok() { # <journal> <cible> <reached|blocked>
 	grep -q "PROBE $2 $3" "$1"
 }
 egress_build() {
-	docker exec -i $bk sh -c 'set -e; d=$(mktemp -d); cat >"$d/probe.sh"
+	docker exec -i "$bk" sh -c 'set -e; d=$(mktemp -d); cat >"$d/probe.sh"
 		printf "FROM docker.io/library/busybox:1.37\nCOPY probe.sh /probe.sh\nRUN echo %s && sh /probe.sh %s\n" \
 			"$(date +%s%N)" "$1" >"$d/Dockerfile"
 		buildctl --addr unix:///run/buildkit/buildkitd.sock build --progress plain \
