@@ -546,7 +546,7 @@ pub(crate) fn buildctl_command(
     args.extend(frontend);
     args.push(ValidatedArg::lit("--output"));
     args.push(ValidatedArg::concat(&[
-        &ValidatedArg::lit("type=docker,name="),
+        &ValidatedArg::lit("type=docker,compression=uncompressed,name="),
         staging,
     ]));
     let mut cmd = argv::command(AllowedBin::Buildctl, &args);
@@ -847,6 +847,9 @@ async fn run_stages<B: BuildBackend>(
                 stages.start(Stage::Build).await;
                 return Err(BuildError::Unavailable(UNAVAILABLE));
             }
+            // Pris avant le clone et tenu jusqu'a la fin du build : un build
+            // en attente ne garde aucun depot clone sur le disque.
+            let _slot = acquire_slot(&BUILD_SLOTS, sink).await;
             stages.start(Stage::Clone).await;
             let checkout = clone::Checkout::new(url, branch, commit_sha)?;
             let targets = Targets::new(spec)?;
@@ -908,6 +911,9 @@ pub async fn build_checkout<B: BuildBackend>(
 ) -> Result<BuiltImages, BuildError> {
     let sink = sink.redacting(spec.git_token.as_ref());
     let mut stages = Stages::new(&sink);
+    // Tenu jusqu'a la fin du build ; `Build` n'est rapporte qu'une fois le
+    // creneau obtenu.
+    let _slot = acquire_slot(&BUILD_SLOTS, &sink).await;
     stages.start(Stage::Build).await;
     let result = async {
         let targets = Targets::new(spec)?;
@@ -964,8 +970,6 @@ async fn build_stages<B: BuildBackend>(
     method: &Method,
     root: Option<&ValidatedArg>,
 ) -> Result<BuiltImages, BuildError> {
-    // Tenu jusqu'a la fin des etapes `Build` et `Image` de ce build.
-    let _slot = acquire_slot(&BUILD_SLOTS, sink).await;
     if stages.current != Some(Stage::Build) {
         stages.start(Stage::Build).await;
     }

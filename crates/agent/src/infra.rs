@@ -88,7 +88,7 @@
 //!   50 % de la memoire du noeud (1 Gio au moins) et tous les CPU sauf un
 //!   (un au moins), pour qu'un `RUN` hostile n'affame ni l'agent, ni le plan
 //!   de controle, ni les applications ; le ramasse-miettes garde au plus 10 %
-//!   du disque de l'etat (entre 5 et 50 Gio, `gckeepstorage`). Un seul build
+//!   du disque de l'etat (entre 5 et 50 Gio, `reservedSpace`). Un seul build
 //!   a la fois par noeud (`build::BUILD_SLOTS`).
 //!
 //! Les montages de l'hote sont etiquetes pour SELinux (`z`) : sous Fedora,
@@ -422,14 +422,14 @@ pub fn buildkit_identity(account: &BuildkitAccount) -> [(&'static str, String); 
 ///   `docker/dockerfile` (une directive `syntax` vers un autre depot fait
 ///   echouer le build) ;
 /// - `dockerfile.v0` (frontend integre) actif ;
-/// - ramasse-miettes du worker OCI actif, avec `gckeepstorage` (le cache
+/// - ramasse-miettes du worker OCI actif, avec `reservedSpace` (le cache
 ///   garde au plus ce volume, en Gio : `BuildkitResources::gc_keep_gib`).
 pub fn buildkitd_config(resources: &BuildkitResources) -> String {
     let railpack = crate::build::railpack::FRONTEND_REPOSITORY;
     let keep = resources.gc_keep_gib;
     format!(
         "# Ecrit par ciphera-agent a chaque demarrage : ne pas modifier.\n\
-         [worker.oci]\n  gc = true\n  gckeepstorage = \"{keep}GB\"\n\n\
+         [worker.oci]\n  gc = true\n  reservedSpace = \"{keep}GB\"\n\n\
          [frontend.\"dockerfile.v0\"]\n  enabled = true\n\n\
          [frontend.\"gateway.v0\"]\n  enabled = true\n  \
          allowedRepositories = [\"{railpack}\", \"docker/dockerfile\"]\n"
@@ -775,7 +775,7 @@ mod tests {
         let r = BuildkitResources::compute(16 * GIB, 8, 200 * GIB);
         let toml = buildkitd_config(&r);
         assert!(
-            toml.contains("[worker.oci]\n  gc = true\n  gckeepstorage = \"20GB\"\n"),
+            toml.contains("[worker.oci]\n  gc = true\n  reservedSpace = \"20GB\"\n"),
             "{toml}"
         );
         // Le seuil change l'empreinte, donc recree buildkitd.
