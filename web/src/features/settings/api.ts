@@ -130,6 +130,11 @@ export function confirmPanelDomain(githubSetupUrlUpdated: boolean): Promise<Resu
   return settle(() => api.POST("/api/settings/panel-domain/confirm", { body: githubSetupUrlUpdated ? { github_setup_url_updated: true } : {} }));
 }
 
+/** Revérifie le DNS et replanifie tout de suite le certificat (reprise après une panne). */
+export function recheckPanelDomain(): Promise<Result<PanelDomain>> {
+  return settle(() => api.POST("/api/settings/panel-domain/recheck"));
+}
+
 export function removePanelDomain(): Promise<Result<null>> {
   return settle(() => api.DELETE("/api/settings/panel-domain"), null);
 }

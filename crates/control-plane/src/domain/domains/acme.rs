@@ -12,9 +12,13 @@
 //!   cours libere sa cle puis planifie la suivante ;
 //! - un certificat valide a plus de 30 jours de son expiration n'est jamais
 //!   re-emis (verification repetee, renouvellement manuel refuse) ;
-//! - le DNS est **reverifie juste avant chaque emission** : s'il ne pointe
-//!   plus vers le noeud, le domaine passe en erreur DNS, sa route est
-//!   retiree et la chaine s'arrete (une nouvelle verification la relance) ;
+//! - le DNS est **reverifie juste avant chaque emission** : apres
+//!   [`DNS_NEGATIVE_VERDICTS`] verdicts negatifs consecutifs (espaces par le
+//!   delai croissant), le domaine passe en erreur DNS, sa route est retiree
+//!   et la chaine s'arrete (une nouvelle verification la relance) ; un
+//!   verdict positif remet le compteur a zero. Une panne du resolveur n'est
+//!   jamais un verdict. Le domaine du panneau confirme ne passe jamais en
+//!   erreur DNS : seulement reprise et notification ;
 //! - un echec ACME est repris avec un delai croissant borne (5 min doublees,
 //!   24 h au plus), jamais en rafale.
 //!
@@ -68,6 +72,8 @@ const RETRY_MAX_SECS: i64 = 86_400;
 /// file de l'agent pleine).
 pub const TRANSIENT_SECS: i64 = 60;
 const MAX_TEXT: usize = 300;
+/// Verdicts DNS negatifs consecutifs avant l'erreur DNS d'un domaine.
+pub const DNS_NEGATIVE_VERDICTS: i16 = 3;
 
 /// Gestionnaire des taches `acme_issue`.
 pub fn register(handlers: Handlers, state: AppState) -> Handlers {
@@ -108,6 +114,26 @@ pub async fn expires_at(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Optio
     .fetch_optional(conn)
     .await
     .map(Option::flatten)
+}
+
+/// Replanifie tout de suite la tache du domaine (verification DNS puis
+/// emission ou controle du certificat) et remet le compteur de verdicts
+/// negatifs a zero : revérification demandee par le proprietaire.
+pub async fn recheck(conn: &mut PgConnection, id: Uuid, now: i64) -> sqlx::Result<()> {
+    sqlx::query("UPDATE domains SET dns_failures = 0 WHERE id = $1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    if !request(&mut *conn, id, now).await? {
+        check(&mut *conn, id).await?;
+    }
+    sqlx::query(
+        "UPDATE jobs SET run_at = now()          WHERE dedupe_key = $1 AND status = 'queued' AND run_at > now()",
+    )
+    .bind(key(id))
+    .execute(conn)
+    .await
+    .map(|_| ())
 }
 
 /// Demande l'emission du certificat du domaine, sauf s'il est encore valide
@@ -227,6 +253,9 @@ struct Target {
     /// Sans environnement : domaine du panneau, servi par le serveur local.
     environment: Option<Uuid>,
     expires_at: Option<i64>,
+    /// Domaine du panneau confirme : jamais mis en erreur DNS (le panneau
+    /// reste servi), un verdict negatif passe par `failed`.
+    panel_confirmed: bool,
 }
 
 async fn target(state: &AppState, id: Uuid) -> Result<Option<Target>, HandlerError> {
@@ -237,7 +266,7 @@ async fn target(state: &AppState, id: Uuid) -> Result<Option<Target>, HandlerErr
         .map_err(|e| db_error("connexion a la base", e))?;
     sqlx::query_as::<_, Target>(
         "SELECT host, generated, dns_status = 'ok' AS dns_ok, environment_id AS environment, \
-         extract(epoch FROM cert_expires_at)::bigint AS expires_at FROM domains WHERE id = $1",
+         extract(epoch FROM cert_expires_at)::bigint AS expires_at,          panel_confirmed_at IS NOT NULL AS panel_confirmed FROM domains WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&mut *conn)
@@ -290,8 +319,22 @@ pub async fn issue(state: &AppState, job: Job) -> Result<(), HandlerError> {
             let reason = "Résolution DNS impossible pour le moment : nouvel essai automatique.";
             return failed(state, &job, id, &t.host, now, failures, reason).await;
         }
-        Ok(Some(why)) => return dns_moved(state, id, &t.host, now, &why).await,
-        Ok(None) => {}
+        Ok(Some(why)) => {
+            // Domaine du panneau confirme : jamais d'erreur DNS, seulement
+            // une reprise avec delai croissant et la notification.
+            if t.panel_confirmed {
+                return failed(state, &job, id, &t.host, now, failures, &clean(&why)).await;
+            }
+            // Verdict negatif : le domaine ne bouge qu'apres
+            // `DNS_NEGATIVE_VERDICTS` verdicts d'affilee, espaces par le
+            // delai croissant de la tache.
+            let negatives = count_negative(state, id).await?;
+            if negatives >= DNS_NEGATIVE_VERDICTS {
+                return dns_moved(state, id, &t.host, now, &why).await;
+            }
+            return failed(state, &job, id, &t.host, now, failures, &clean(&why)).await;
+        }
+        Ok(None) => reset_negatives(state, id).await?,
     }
 
     let placed = {
@@ -526,6 +569,28 @@ async fn installed(
         super::push_routes(state).await;
     }
     Ok(())
+}
+
+/// Compte un verdict DNS negatif de plus ; renvoie le total consecutif.
+async fn count_negative(state: &AppState, id: Uuid) -> Result<i16, HandlerError> {
+    sqlx::query_scalar(
+        "UPDATE domains SET dns_failures = LEAST(dns_failures + 1, 100) WHERE id = $1          RETURNING dns_failures",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    .map(|n| n.unwrap_or(0))
+    .map_err(|e| db_error("verdicts DNS du domaine", e))
+}
+
+/// Verdict positif : le compteur de verdicts negatifs repart de zero.
+async fn reset_negatives(state: &AppState, id: Uuid) -> Result<(), HandlerError> {
+    sqlx::query("UPDATE domains SET dns_failures = 0 WHERE id = $1 AND dns_failures <> 0")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map(|_| ())
+        .map_err(|e| db_error("verdicts DNS du domaine", e))
 }
 
 /// Le DNS ne pointe plus vers le noeud : erreur DNS visible, route retiree,

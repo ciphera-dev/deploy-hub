@@ -807,7 +807,7 @@ pub async fn record_dns(
 ) -> sqlx::Result<()> {
     sqlx::query(
         "UPDATE domains SET dns_status = CASE WHEN $2::text IS NULL THEN 'ok' ELSE 'error' END, \
-         dns_error = $2, dns_checked_at = now(), updated_at = now() WHERE id = $1",
+         dns_error = $2, dns_checked_at = now(), updated_at = now(),          dns_failures = CASE WHEN $2::text IS NULL THEN 0 ELSE dns_failures END WHERE id = $1",
     )
     .bind(id)
     .bind(error)

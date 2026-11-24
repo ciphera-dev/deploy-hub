@@ -3858,6 +3858,50 @@
         }
       }
     },
+    "/api/settings/panel-domain/recheck": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Revérifie le DNS du domaine du panneau et replanifie tout de suite son\ncertificat (reprise après une panne passagère). DNS faux : 422, rien\nn'est modifié.",
+        "operationId": "recheck_panel_domain",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "Jeton CSRF de la session (obligatoire)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Vérification et certificat replanifiés",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PanelDomain"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Proprietaire seulement, ou jeton CSRF absent ou invalide"
+          },
+          "404": {
+            "description": "Aucun domaine du panneau"
+          },
+          "422": {
+            "description": "`dns_error`"
+          }
+        }
+      }
+    },
     "/api/settings/security": {
       "get": {
         "tags": [

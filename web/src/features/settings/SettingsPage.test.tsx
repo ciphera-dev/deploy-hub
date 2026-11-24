@@ -46,6 +46,12 @@ const server = setupServer(
   }),
   http.get("*/api/settings/danger", () => HttpResponse.json({ name: "Acme", projects: 3, members: 6, github_app: "Ciphera X" })),
   http.get("*/api/settings/panel-domain", () => HttpResponse.json(panel)),
+  http.post("*/api/settings/panel-domain/recheck", async ({ request }) => {
+    await record(request);
+    if (panel.status === "error") return HttpResponse.json({ error: { code: "dns_error", message: "panel.example.org pointe vers 198.51.100.9 au lieu de 203.0.113.7." } }, { status: 422 });
+    panel = { ...panel, error: null };
+    return HttpResponse.json(panel, { status: 202 });
+  }),
   http.delete("*/api/settings/panel-domain", async ({ request }) => {
     await record(request);
     return new HttpResponse(null, { status: 204 });
@@ -220,6 +226,23 @@ it("domaine du panel : confirmation depuis le domaine, retrait qui ramène l'acc
   fireEvent.click(within(dialog).getByRole("button", { name: "Annuler la bascule" }));
   expect(await screen.findByText("Domaine du panneau retiré")).toBeInTheDocument();
   expect(requests[0]).toMatchObject({ method: "DELETE", path: "/api/settings/panel-domain", csrf: "csrf-1" });
+});
+
+it("domaine du panel confirmé : l'erreur de vérification s'affiche et « Revérifier » appelle la route", async () => {
+  panel = { domain: "panel.example.org", status: "active", error: "Résolution DNS impossible pour le moment : nouvel essai automatique." };
+  mount("/settings/panel-domain");
+  expect(await screen.findByText(/Dernière vérification en échec : Résolution DNS impossible/, undefined, { timeout: 5000 })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Revérifier" }));
+  expect(await screen.findByText("Vérification relancée")).toBeInTheDocument();
+  expect(requests[0]).toMatchObject({ method: "POST", path: "/api/settings/panel-domain/recheck", csrf: "csrf-1" });
+  await waitFor(() => expect(screen.queryByText(/Dernière vérification en échec/)).not.toBeInTheDocument());
+});
+
+it("domaine du panel : « Revérifier » refusé (DNS faux) affiche l'erreur de l'API", async () => {
+  panel = { domain: "panel.example.org", status: "error", error: "ancienne erreur" };
+  mount("/settings/panel-domain");
+  fireEvent.click(await screen.findByRole("button", { name: "Revérifier" }, { timeout: 5000 }));
+  expect(await screen.findByText(/pointe vers 198\.51\.100\.9/)).toBeInTheDocument();
 });
 
 it("notifications : la section SMTP est montée dans la page", async () => {

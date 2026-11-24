@@ -9,6 +9,8 @@
 //!   domaine par l'API GitHub, et l'URL de configuration (non modifiable par
 //!   l'API) doit avoir ete changee a la main (`github_setup_url_updated`) :
 //!   sans quoi les deploiements s'arreteraient avec l'acces 8443 ;
+//! - `POST /api/settings/panel-domain/recheck` : DNS reverifie, tache du
+//!   certificat replanifiee tout de suite (reprise apres une panne) ;
 //! - `DELETE /api/settings/panel-domain` : annulation ou retrait (route et
 //!   certificat retires, acces 8443 rouvert). Domaine confirme avec une
 //!   GitHub App : son webhook revient d'abord sur l'acces direct (8443).
@@ -48,6 +50,7 @@ pub fn routes() -> Router<AppState> {
             get(show).put(set).delete(remove),
         )
         .route("/api/settings/panel-domain/confirm", post(confirm))
+        .route("/api/settings/panel-domain/recheck", post(recheck))
         .layer(DefaultBodyLimit::max(MAX_BODY))
 }
 
@@ -97,6 +100,24 @@ async fn lock(conn: &mut PgConnection) -> Result<(), ApiError> {
         .await
         .map(|_| ())
         .map_err(db("verrou du domaine du panneau"))
+}
+
+/// Valide la transaction **et** l'etat en memoire sous le meme verrou
+/// d'ecriture : l'etat est pose avant le commit (le verrou consultatif ne
+/// tombe qu'au commit, donc aucune autre ecriture ne s'intercale), et remis
+/// tel qu'il etait si le commit echoue.
+async fn commit_with(
+    state: &AppState,
+    tx: sqlx::Transaction<'_, sqlx::Postgres>,
+    next: Option<panel::Panel>,
+) -> Result<(), ApiError> {
+    let previous = state.panel.current();
+    state.panel.set(next);
+    if let Err(e) = tx.commit().await {
+        state.panel.set(previous);
+        return Err(db("transaction")(e));
+    }
+    Ok(())
 }
 
 /// Requete arrivee par le proxy du noeud (pair en boucle locale, HTTPS)
@@ -242,12 +263,16 @@ async fn set(
     .await
     .map_err(db("audit du domaine du panneau"))?;
     let body = view(&mut tx).await?;
-    tx.commit().await.map_err(db("transaction"))?;
-    state.panel.set(Some(panel::Panel {
-        id,
-        host,
-        confirmed: false,
-    }));
+    commit_with(
+        &state,
+        tx,
+        Some(panel::Panel {
+            id,
+            host,
+            confirmed: false,
+        }),
+    )
+    .await?;
     domains::push_routes(&state).await;
     if let Some(old) = replaced {
         domains::remove_certificates(&state, &[old]);
@@ -344,12 +369,16 @@ async fn confirm(
     .await
     .map_err(db("audit du domaine du panneau"))?;
     let body = view(&mut tx).await?;
-    tx.commit().await.map_err(db("transaction"))?;
-    state.panel.set(Some(panel::Panel {
-        id,
-        host: host.clone(),
-        confirmed: true,
-    }));
+    commit_with(
+        &state,
+        tx,
+        Some(panel::Panel {
+            id,
+            host: host.clone(),
+            confirmed: true,
+        }),
+    )
+    .await?;
     tracing::info!(%host, "domaine du panneau confirme : acces direct ferme");
     Ok(Json(body).into_response())
 }
@@ -457,6 +486,81 @@ async fn move_github_app_back(state: &AppState) -> Result<(), ApiError> {
     }
 }
 
+/// `POST /api/settings/panel-domain/recheck` : DNS reverifie (hors
+/// transaction) ; correct, la verification et l'emission sont replanifiees
+/// tout de suite (compteur de verdicts negatifs remis a zero) ; faux, 422 et
+/// rien n'est modifie.
+async fn recheck(State(state): State<AppState>, auth: Owner) -> Result<Response, ApiError> {
+    let actor = owner_only(&auth)?;
+    let Some(panel) = state.panel.current() else {
+        return Err(not_found());
+    };
+    let (v4, v6) = state.cfg.node_ips();
+    if v4.is_none() && v6.is_none() {
+        return Err(ApiError::new(
+            422,
+            "node_ip_unknown",
+            "IP publique du nœud inconnue : définissez CIPHERA_PUBLIC_IP.",
+        ));
+    }
+    let host = panel.host;
+    let error = match state.dns.resolve(&host).await {
+        Ok(ips) => dns::verdict(&host, v4, v6, &ips),
+        Err(e) => {
+            tracing::warn!(%host, "resolution DNS impossible : {e}");
+            Some(format!(
+                "Résolution DNS de {host} impossible pour le moment : réessayez."
+            ))
+        }
+    };
+    if let Some(message) = error {
+        return Err(ApiError::new(422, "dns_error", message));
+    }
+    let mut tx = state.db.begin().await.map_err(db("transaction"))?;
+    lock(&mut tx).await?;
+    // Domaine retire ou remplace pendant la resolution : 404.
+    let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM domains WHERE panel AND host = $1")
+        .bind(&host)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db("domaine du panneau"))?;
+    let Some(id) = id else {
+        return Err(not_found());
+    };
+    domains::record_dns(&mut tx, id, None)
+        .await
+        .map_err(db("verification du domaine"))?;
+    // Une bascule non confirmee ouvre une nouvelle fenetre, comme
+    // l'enregistrement du domaine.
+    sqlx::query(
+        "UPDATE domains SET panel_expires_at = to_timestamp($2::float8)          WHERE id = $1 AND panel_confirmed_at IS NULL",
+    )
+    .bind(id)
+    .bind(state.clock.unix_secs() + panel::SWITCH_TTL_SECS)
+    .execute(&mut *tx)
+    .await
+    .map_err(db("echeance du domaine du panneau"))?;
+    acme::recheck(&mut tx, id, state.clock.unix_secs() as i64)
+        .await
+        .map_err(db("replanification du certificat"))?;
+    panel::audit(
+        &mut tx,
+        Some(actor),
+        "panel_domain.recheck",
+        json!({ "domain": &host }),
+    )
+    .await
+    .map_err(db("audit du domaine du panneau"))?;
+    let body = view(&mut tx).await?;
+    tx.commit().await.map_err(db("transaction"))?;
+    domains::push_routes(&state).await;
+    Ok((StatusCode::ACCEPTED, Json(body)).into_response())
+}
+
+fn not_found() -> ApiError {
+    ApiError::new(404, "not_found", "Aucun domaine du panneau.")
+}
+
 /// `DELETE /api/settings/panel-domain`
 async fn remove(State(state): State<AppState>, auth: Owner) -> Result<Response, ApiError> {
     let actor = owner_only(&auth)?;
@@ -483,8 +587,7 @@ async fn remove(State(state): State<AppState>, auth: Owner) -> Result<Response, 
         .await
         .map_err(db("audit du domaine du panneau"))?;
     }
-    tx.commit().await.map_err(db("transaction"))?;
-    state.panel.set(None);
+    commit_with(&state, tx, None).await?;
     if let Some(host) = removed {
         domains::push_routes(&state).await;
         domains::remove_certificates(&state, &[host]);

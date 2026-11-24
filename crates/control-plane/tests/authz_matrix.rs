@@ -196,6 +196,7 @@ const MATRIX: &[(&str, &str, Guard)] = &[
     ("GET", "/api/settings/panel-domain", Owner),
     ("PUT", "/api/settings/panel-domain", Owner),
     ("POST", "/api/settings/panel-domain/confirm", Owner),
+    ("POST", "/api/settings/panel-domain/recheck", Owner),
     ("DELETE", "/api/settings/panel-domain", Owner),
     ("POST", "/api/organization/export", Owner),
     ("DELETE", "/api/organization", Owner),

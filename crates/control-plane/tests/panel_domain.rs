@@ -34,11 +34,15 @@ const PATH: &str = "/api/settings/panel-domain";
 type Session = (String, String);
 
 #[derive(Default)]
-struct FakeDns(Mutex<Vec<(String, Vec<IpAddr>)>>);
+struct FakeDns {
+    answers: Mutex<Vec<(String, Vec<IpAddr>)>>,
+    /// Reponses ponctuelles, servies avant les reponses fixes.
+    once: Mutex<Vec<(String, Vec<IpAddr>)>>,
+}
 
 impl FakeDns {
     fn set(&self, host: &str, ips: &[&str]) {
-        let mut answers = self.0.lock().unwrap();
+        let mut answers = self.answers.lock().unwrap();
         answers.retain(|(h, _)| h != host);
         answers.push((
             host.into(),
@@ -52,14 +56,21 @@ impl DnsResolver for FakeDns {
         &'a self,
         host: &'a str,
     ) -> Pin<Box<dyn Future<Output = io::Result<Vec<IpAddr>>> + Send + 'a>> {
-        let found = self
-            .0
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(h, _)| h == host)
-            .map(|(_, ips)| ips.clone())
-            .unwrap_or_default();
+        let queued = {
+            let mut once = self.once.lock().unwrap();
+            once.iter()
+                .position(|(h, _)| h == host)
+                .map(|i| once.remove(i).1)
+        };
+        let found = queued.unwrap_or_else(|| {
+            self.answers
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(h, _)| h == host)
+                .map(|(_, ips)| ips.clone())
+                .unwrap_or_default()
+        });
         Box::pin(async move { Ok(found) })
     }
 }
@@ -461,6 +472,182 @@ async fn panel_domain_switch_keeps_8443_until_confirmed() {
     )
     .await;
     assert_eq!(r.status, 409, "{}", r.raw);
+}
+
+/// Domaine du panneau enregistre, certificat emis et confirme depuis le
+/// domaine.
+async fn confirmed_panel(env: &mut Env, owner: &Session) {
+    env.dns.set(HOST, &[NODE_IP]);
+    let r = send(
+        &env.state,
+        owner,
+        "PUT",
+        PATH,
+        Some(json!({ "domain": HOST })),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    issue(env).await;
+    let r = via_proxy(&env.state, owner, "POST", &format!("{PATH}/confirm"), HOST).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    while env.agent.try_recv().is_ok() {}
+}
+
+/// Passage de la tache du domaine a l'heure `at` ; `reply` repond au
+/// controle du certificat si le DNS est bon (`None` : verdict negatif, aucun
+/// ordre attendu).
+async fn run_check(env: &mut Env, at: SystemTime, reply: bool) {
+    let job = jobs::claim(&env.state.db, &Clock::from_fn(move || at), "test-worker")
+        .await
+        .unwrap()
+        .expect("tache acme_issue due");
+    assert_eq!(job.kind, JobKind::AcmeIssue);
+    let job_id = job.id;
+    let state = env.state.clone();
+    let handler = tokio::spawn(async move { domains::acme::issue(&state, job).await });
+    if reply {
+        let host = loop {
+            let msg = tokio::time::timeout(Duration::from_secs(10), env.agent.recv())
+                .await
+                .expect("ordre a l'agent")
+                .unwrap();
+            if let ControlToAgent::CheckCertificate { host } = msg {
+                break host;
+            }
+        };
+        env.state.agents.publish(
+            ServerId(env.server),
+            AgentToControl::Certificate {
+                host,
+                outcome: CertificateOutcome::Issued {
+                    not_after: unix(SystemTime::now()) + 90 * 86_400,
+                    issuer: "R11".into(),
+                },
+            },
+        );
+    }
+    handler.await.unwrap().expect("tache conclue");
+    assert!(
+        jobs::complete(&env.state.db, &Clock::system(), job_id, "test-worker")
+            .await
+            .unwrap()
+    );
+}
+
+/// Domaine du panneau confirme : un verdict negatif (ou une panne) ne le met
+/// jamais en erreur DNS ; l'erreur reste visible, la reprise est planifiee, et
+/// « Revérifier » l'efface une fois le DNS corrige.
+#[tokio::test]
+async fn panel_confirmed_never_dns_error() {
+    let mut env = Env::new().await;
+    let owner = login(&env.state, "owner").await;
+    confirmed_panel(&mut env, &owner).await;
+
+    env.dns.set(HOST, &["198.51.100.9"]);
+    let day = |n: u64| SystemTime::now() + Duration::from_secs(n * 86_400);
+    for n in 1..=4 {
+        run_check(&mut env, day(n * 2), false).await;
+        let dns_status: String = sqlx::query_scalar("SELECT dns_status FROM domains WHERE panel")
+            .fetch_one(&env.state.db)
+            .await
+            .unwrap();
+        assert_eq!(dns_status, "ok", "verdict {n}");
+        let r = send(&env.state, &owner, "GET", PATH, None).await;
+        assert_eq!(r.json()["status"], "active", "{}", r.raw);
+        assert!(
+            r.json()["error"].as_str().unwrap().contains("198.51.100.9"),
+            "{}",
+            r.raw
+        );
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM jobs WHERE kind = 'acme_issue' AND status = 'queued'",
+        )
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+        assert_eq!(queued, 1, "reprise planifiee");
+    }
+    assert!(!env.state.panel.listens_8443());
+    let routes = last_routes(&mut env);
+    assert!(routes.is_none_or(|r| r.iter().any(|x| x.host == HOST)));
+    // Le proprietaire est prevenu : une notification de certificat en file.
+    let notices: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'notify'")
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+    assert!(notices >= 1, "notification en file");
+
+    // DNS corrige + « Revérifier » : tache due tout de suite, erreur effacee.
+    env.dns.set(HOST, &[NODE_IP]);
+    let r = send(&env.state, &owner, "POST", &format!("{PATH}/recheck"), None).await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    run_check(&mut env, SystemTime::now(), true).await;
+    let r = send(&env.state, &owner, "GET", PATH, None).await;
+    assert_eq!(r.json()["status"], "active", "{}", r.raw);
+    assert!(r.json()["error"].is_null(), "{}", r.raw);
+}
+
+#[tokio::test]
+async fn recheck_owner_only() {
+    let mut env = Env::new().await;
+    let recheck = format!("{PATH}/recheck");
+    for role in ["admin", "ops", "developer", "viewer"] {
+        let s = login(&env.state, role).await;
+        let r = send(&env.state, &s, "POST", &recheck, None).await;
+        assert_eq!(r.status, 403, "{role} : {}", r.raw);
+    }
+    let owner = login(&env.state, "owner").await;
+    // Sans jeton CSRF : 403.
+    let r = call(
+        &env.state,
+        "POST",
+        &recheck,
+        Req {
+            cookie: Some(&owner.0),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    // Aucun domaine : 404.
+    let r = send(&env.state, &owner, "POST", &recheck, None).await;
+    assert_eq!(r.status, 404, "{}", r.raw);
+
+    env.dns.set(HOST, &[NODE_IP]);
+    let r = send(
+        &env.state,
+        &owner,
+        "PUT",
+        PATH,
+        Some(json!({ "domain": HOST })),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    // DNS faux : 422, rien n'est modifie.
+    env.dns.set(HOST, &["198.51.100.9"]);
+    let r = send(&env.state, &owner, "POST", &recheck, None).await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    assert_eq!(r.code(), "dns_error");
+    // DNS correct : replanifie, une seule tache due maintenant.
+    env.dns.set(HOST, &[NODE_IP]);
+    let r = send(&env.state, &owner, "POST", &recheck, None).await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    assert_eq!(r.json()["domain"], HOST);
+    let due: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind = 'acme_issue' AND status = 'queued' AND run_at <= now()",
+    )
+    .fetch_one(&env.state.db)
+    .await
+    .unwrap();
+    assert_eq!(due, 1);
+    let audit: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE action = 'panel_domain.recheck'",
+    )
+    .fetch_one(&env.state.db)
+    .await
+    .unwrap();
+    assert_eq!(audit, 1);
+    while env.agent.try_recv().is_ok() {}
 }
 
 #[tokio::test]

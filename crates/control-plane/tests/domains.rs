@@ -31,13 +31,27 @@ type Session = (String, String);
 
 /// Resolveur de test : reponses fixees par nom.
 #[derive(Default)]
-struct FakeDns(Mutex<Vec<(String, Vec<IpAddr>)>>);
+struct FakeDns {
+    answers: Mutex<Vec<(String, Vec<IpAddr>)>>,
+    /// Reponses ponctuelles, servies avant les reponses fixes.
+    once: Mutex<Vec<(String, Vec<IpAddr>)>>,
+}
 
 impl FakeDns {
     fn set(&self, host: &str, ips: &[&str]) {
-        let mut answers = self.0.lock().unwrap();
+        let mut answers = self.answers.lock().unwrap();
         answers.retain(|(h, _)| h != host);
         answers.push((
+            host.into(),
+            ips.iter().map(|i| i.parse().unwrap()).collect(),
+        ));
+    }
+}
+
+impl FakeDns {
+    /// Prochaine reponse pour `host` seulement (puis retour aux reponses fixes).
+    fn once(&self, host: &str, ips: &[&str]) {
+        self.once.lock().unwrap().push((
             host.into(),
             ips.iter().map(|i| i.parse().unwrap()).collect(),
         ));
@@ -49,14 +63,21 @@ impl DnsResolver for FakeDns {
         &'a self,
         host: &'a str,
     ) -> Pin<Box<dyn Future<Output = io::Result<Vec<IpAddr>>> + Send + 'a>> {
-        let found = self
-            .0
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(h, _)| h == host)
-            .map(|(_, ips)| ips.clone())
-            .unwrap_or_default();
+        let queued = {
+            let mut once = self.once.lock().unwrap();
+            once.iter()
+                .position(|(h, _)| h == host)
+                .map(|i| once.remove(i).1)
+        };
+        let found = queued.unwrap_or_else(|| {
+            self.answers
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(h, _)| h == host)
+                .map(|(_, ips)| ips.clone())
+                .unwrap_or_default()
+        });
         Box::pin(async move { Ok(found) })
     }
 }
@@ -963,39 +984,67 @@ async fn valid_certificate_is_not_reissued_and_one_job_per_domain() {
     );
 }
 
+/// Une execution de la tache `acme_issue` du domaine, a l'heure `at`, dont
+/// la verification DNS est negative (aucun ordre n'est attendu) ; la
+/// conclut comme le worker. Renvoie les ordres envoyes a l'agent.
+async fn negative_round(env: &mut Env, at: SystemTime) -> Vec<ControlToAgent> {
+    drain(env);
+    let job = claim_acme(&env.state, at).await;
+    let job_id = job.id;
+    domains::acme::issue(&env.state, job)
+        .await
+        .expect("tache conclue sans erreur");
+    assert!(
+        jobs::complete(&env.state.db, &Clock::system(), job_id, "test-worker")
+            .await
+            .unwrap()
+    );
+    let sent = drain(env);
+    assert!(
+        sent.iter()
+            .all(|m| !matches!(m, ControlToAgent::IssueCertificate { .. })),
+        "{sent:?}"
+    );
+    sent
+}
+
+fn in_a_day(days: u64) -> SystemTime {
+    SystemTime::now() + Duration::from_secs(days * 86_400)
+}
+
 #[tokio::test]
-async fn issuance_rechecks_dns_and_stops_when_it_no_longer_points_here() {
+async fn three_negative_verdicts_move_project_domain() {
     let mut env = Env::new().await;
     let dev = login(&env.state, "developer").await;
     let p = project(&env.state, &dev, "moved").await;
-    let id = add_ok(&env.state, &dev, p, "moved.example.com").await;
-    env.dns.set("moved.example.com", &[NODE_IP]);
+    let host = "moved.example.com";
+    let id = add_ok(&env.state, &dev, p, host).await;
+    env.dns.set(host, &[NODE_IP]);
     for _ in 0..2 {
         let r = verify(&env.state, &dev, &id).await;
         assert_eq!(r.json()["dns_status"], "ok", "{}", r.raw);
     }
     assert_eq!(acme_jobs(&env.state, &id).await, 1, "une seule demande");
 
-    // Le DNS change avant l'emission : rien n'est demande a ACME.
-    env.dns.set("moved.example.com", &["198.51.100.9"]);
-    drain(&mut env);
-    let job = claim_acme(&env.state, SystemTime::now()).await;
-    let job_id = job.id;
-    domains::acme::issue(&env.state, job)
-        .await
-        .expect("chaine arretee sans erreur");
-    assert!(
-        jobs::complete(&env.state.db, &Clock::system(), job_id, "test-worker")
-            .await
-            .unwrap()
-    );
-    let sent = drain(&mut env);
-    assert!(
-        sent.iter()
-            .all(|m| !matches!(m, ControlToAgent::IssueCertificate { .. })),
-        "{sent:?}"
-    );
-    // Route retiree, erreur visible, aucune reprise planifiee.
+    // Le DNS change avant l'emission : les deux premiers verdicts negatifs
+    // sont retentes (delai croissant), le domaine reste en ligne.
+    env.dns.set(host, &["198.51.100.9"]);
+    for (round, failures) in [(1u64, "1"), (2, "2")] {
+        let sent = negative_round(&mut env, in_a_day(round)).await;
+        assert!(
+            sent.iter()
+                .all(|m| !matches!(m, ControlToAgent::ApplyRoutes(_))),
+            "route gardee : {sent:?}"
+        );
+        let l = list(&env.state, &dev, p).await;
+        assert_eq!(domain(&l, host)["dns_status"], "ok", "verdict {round}");
+        let (_, queued, _) = queued_job(&env.state, &id).await;
+        assert_eq!(queued.as_deref(), Some(failures), "reprise planifiee");
+    }
+
+    // Troisieme verdict negatif d'affilee : erreur DNS, route retiree, aucune
+    // reprise planifiee.
+    let sent = negative_round(&mut env, in_a_day(3)).await;
     let last = sent
         .iter()
         .rev()
@@ -1004,13 +1053,75 @@ async fn issuance_rechecks_dns_and_stops_when_it_no_longer_points_here() {
             _ => None,
         })
         .expect("table repoussee");
-    assert!(last.iter().all(|r| r.host != "moved.example.com"));
+    assert!(last.iter().all(|r| r.host != host));
     let l = list(&env.state, &dev, p).await;
-    let d = domain(&l, "moved.example.com");
+    let d = domain(&l, host);
     assert_eq!(d["dns_status"], "error");
     assert!(d["dns_error"].as_str().unwrap().contains("198.51.100.9"));
     assert_eq!(d["cert_status"], "none");
     assert_eq!(acme_jobs(&env.state, &id).await, 0);
+}
+
+async fn dns_failures(state: &AppState, id: &str) -> i16 {
+    sqlx::query_scalar("SELECT dns_failures FROM domains WHERE id = $1::uuid")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+}
+
+/// Une mauvaise reponse passagere du DNS ne coupe pas le domaine : la tache
+/// est replanifiee, le verdict suivant (correct) remet le compteur a zero et
+/// le certificat est emis.
+#[tokio::test]
+async fn transient_dns_failure_is_retried() {
+    let mut env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let p = project(&env.state, &dev, "blip").await;
+    let host = "blip.example.com";
+    let id = add_ok(&env.state, &dev, p, host).await;
+    env.dns.set(host, &[NODE_IP]);
+    let r = verify(&env.state, &dev, &id).await;
+    assert_eq!(r.json()["dns_status"], "ok", "{}", r.raw);
+
+    // Premier verdict : mauvaise IP une seule fois.
+    env.dns.once(host, &["198.51.100.9"]);
+    negative_round(&mut env, in_a_day(1)).await;
+    assert_eq!(dns_failures(&env.state, &id).await, 1);
+    assert_eq!(acme_jobs(&env.state, &id).await, 1, "tache replanifiee");
+    let l = list(&env.state, &dev, p).await;
+    assert_eq!(domain(&l, host)["dns_status"], "ok");
+
+    // Second passage : la bonne IP, l'emission aboutit.
+    drain(&mut env);
+    let job = claim_acme(&env.state, in_a_day(2)).await;
+    let job_id = job.id;
+    let state = env.state.clone();
+    let handler = tokio::spawn(async move { domains::acme::issue(&state, job).await });
+    answer(
+        &mut env,
+        CertificateOutcome::Issued {
+            not_after: unix(SystemTime::now()) + 90 * 86_400,
+            issuer: "R11".into(),
+        },
+    )
+    .await;
+    handler.await.unwrap().expect("emission reussie");
+    assert!(
+        jobs::complete(&env.state.db, &Clock::system(), job_id, "test-worker")
+            .await
+            .unwrap()
+    );
+    assert_eq!(dns_failures(&env.state, &id).await, 0);
+    let l = list(&env.state, &dev, p).await;
+    let d = domain(&l, host);
+    assert_eq!(d["dns_status"], "ok");
+    assert_eq!(d["cert_status"], "active");
+    assert_eq!(
+        acme_jobs(&env.state, &id).await,
+        1,
+        "renouvellement planifie"
+    );
 }
 
 #[tokio::test]

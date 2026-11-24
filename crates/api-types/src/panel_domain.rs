@@ -100,6 +100,24 @@ pub fn put_panel_domain() {}
 #[allow(dead_code)]
 pub fn confirm_panel_domain() {}
 
+/// Revérifie le DNS du domaine du panneau et replanifie tout de suite son
+/// certificat (reprise après une panne passagère). DNS faux : 422, rien
+/// n'est modifié.
+#[utoipa::path(
+    post,
+    path = "/api/settings/panel-domain/recheck",
+    tag = "settings",
+    params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
+    responses(
+        (status = 202, description = "Vérification et certificat replanifiés", body = PanelDomain),
+        (status = 403, description = "Proprietaire seulement, ou jeton CSRF absent ou invalide"),
+        (status = 404, description = "Aucun domaine du panneau"),
+        (status = 422, description = "`dns_error`"),
+    )
+)]
+#[allow(dead_code)]
+pub fn recheck_panel_domain() {}
+
 /// Retire le domaine du panneau (annulation avant confirmation) : route et
 /// certificat retires ; l'acces 8443 se rouvre.
 #[utoipa::path(

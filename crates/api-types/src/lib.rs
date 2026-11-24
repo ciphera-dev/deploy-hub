@@ -125,6 +125,7 @@ use utoipa::OpenApi;
         panel_domain::get_panel_domain,
         panel_domain::put_panel_domain,
         panel_domain::confirm_panel_domain,
+        panel_domain::recheck_panel_domain,
         panel_domain::delete_panel_domain,
         settings::get_general_settings,
         settings::patch_general_settings,

@@ -1235,6 +1235,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/panel-domain/recheck": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revérifie le DNS du domaine du panneau et replanifie tout de suite son
+         *     certificat (reprise après une panne passagère). DNS faux : 422, rien
+         *     n'est modifié.
+         */
+        post: operations["recheck_panel_domain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/security": {
         parameters: {
             query?: never;
@@ -6649,6 +6670,50 @@ export interface operations {
             };
             /** @description `github_hook_not_updated` : webhook de la GitHub App non deplace, rien n'est confirme */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    recheck_panel_domain: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Jeton CSRF de la session (obligatoire) */
+                "X-CSRF-Token"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Vérification et certificat replanifiés */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PanelDomain"];
+                };
+            };
+            /** @description Proprietaire seulement, ou jeton CSRF absent ou invalide */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Aucun domaine du panneau */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `dns_error` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

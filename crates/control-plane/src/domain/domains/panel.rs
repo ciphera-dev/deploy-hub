@@ -173,7 +173,7 @@ pub async fn view(conn: &mut PgConnection) -> sqlx::Result<PanelDomain> {
     })
 }
 
-/// Etat affiche : confirme, sinon certificat actif (a confirmer), erreur
+/// Etat affiche : confirme (avec sa derniere erreur eventuelle), sinon certificat actif (a confirmer), erreur
 /// DNS ou certificat, sinon emission en cours.
 pub fn status_of(
     confirmed: bool,
@@ -183,7 +183,9 @@ pub fn status_of(
     cert_error: Option<String>,
 ) -> (PanelDomainStatus, Option<String>) {
     if confirmed {
-        return (PanelDomainStatus::Active, None);
+        // Confirme : toujours actif, mais la derniere erreur (verification
+        // ou renouvellement en echec) reste visible.
+        return (PanelDomainStatus::Active, cert_error.or(dns_error));
     }
     if dns == "error" {
         return (PanelDomainStatus::Error, dns_error);
@@ -297,7 +299,14 @@ mod tests {
     #[test]
     fn status_follows_confirmation_dns_and_certificate() {
         let s = |c, d, ce| status_of(c, d, Some("dns".into()), ce, Some("cert".into()));
-        assert_eq!(s(true, "error", "error").0, PanelDomainStatus::Active);
+        assert_eq!(
+            s(true, "error", "error"),
+            (PanelDomainStatus::Active, Some("cert".into()))
+        );
+        assert_eq!(
+            status_of(true, "ok", None, "active", None),
+            (PanelDomainStatus::Active, None)
+        );
         assert_eq!(
             s(false, "error", "active"),
             (PanelDomainStatus::Error, Some("dns".into()))

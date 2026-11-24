@@ -4,7 +4,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { Button, Icon, type IconName, Modal, Switch, useToast } from "@/design-system";
 import { FormError } from "@/features/auth/ui";
 
-import { confirmPanelDomain, fetchPanelDomain, PANEL_DOMAIN_QUERY_KEY, removePanelDomain, setPanelDomain, type PanelDomain } from "../api";
+import { confirmPanelDomain, fetchPanelDomain, PANEL_DOMAIN_QUERY_KEY, recheckPanelDomain, removePanelDomain, setPanelDomain, type PanelDomain } from "../api";
 import { Card, Input, Note, Pill, Row, SECTION_FORM_ID, SectionState, Soon } from "../ui";
 
 /** Cartes d'acces de SettingsV2 : domaine public (v0.1) ou acces prive Tailscale (v0.2). */
@@ -145,6 +145,7 @@ function PanelDomainForm({ current }: { current: PanelDomain }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [removing, setRemoving] = useState(false);
+  const [rechecking, setRechecking] = useState(false);
   const locked = current.status === "active";
   const update = (p: PanelDomain) => client.setQueryData(PANEL_DOMAIN_QUERY_KEY, p);
 
@@ -161,6 +162,20 @@ function PanelDomainForm({ current }: { current: PanelDomain }) {
     setErr("");
     update(r.data);
     flash("DNS vérifié : certificat demandé");
+  };
+
+  const recheck = async () => {
+    if (rechecking) return;
+    setRechecking(true);
+    const r = await recheckPanelDomain();
+    setRechecking(false);
+    if (!r.ok) {
+      setErr(r.message);
+      return;
+    }
+    setErr("");
+    update(r.data);
+    flash("Vérification relancée");
   };
 
   const dnsHint = current.status === "error" ? current.error ?? "Le domaine ne pointe pas vers ce serveur." : current.status === "none" ? "Pas encore vérifié." : "Le domaine pointe bien vers ce serveur.";
@@ -190,10 +205,18 @@ function PanelDomainForm({ current }: { current: PanelDomain }) {
           </Row>
           {current.status === "awaiting_confirmation" && current.domain && <ConfirmBlock domain={current.domain} onDone={(p) => { update(p); flash("Domaine confirmé : accès direct fermé"); }} />}
           {current.status === "active" && <Note icon="CircleCheck" color="var(--green-500)">Le panneau est servi en HTTPS sur {current.domain} ; l'accès direct (port 8443) est fermé.</Note>}
+          {current.status === "active" && current.error && (
+            <Note icon="CircleX" color="var(--red-500)">
+              <span role="alert">Dernière vérification en échec : {current.error} Une nouvelle tentative est planifiée automatiquement.</span>
+            </Note>
+          )}
         </Card>
         {err && <FormError>{err}</FormError>}
         {current.domain && (
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <Button icon={rechecking ? "Loader" : "RefreshCw"} disabled={rechecking} onClick={() => void recheck()}>
+              Revérifier
+            </Button>
             <Button icon="Trash" onClick={() => setRemoving(true)}>
               {locked ? "Retirer le domaine" : "Annuler la bascule"}
             </Button>

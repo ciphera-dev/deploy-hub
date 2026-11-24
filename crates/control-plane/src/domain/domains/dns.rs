@@ -33,14 +33,36 @@ impl DnsResolver for SystemResolver {
                 .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "delai depasse"))?;
             let mut ips: Vec<IpAddr> = match found {
                 Ok(addrs) => addrs.map(|a| a.ip()).collect(),
-                // Nom inconnu : aucune adresse (pas une panne du resolveur).
-                Err(_) => Vec::new(),
+                // Nom inconnu : aucune adresse (verdict negatif). Toute autre
+                // erreur est une panne du resolveur, jamais un verdict.
+                Err(e) if unknown_name(&e) => Vec::new(),
+                Err(e) => return Err(e),
             };
             ips.sort();
             ips.dedup();
             Ok(ips)
         })
     }
+}
+
+/// L'erreur de `getaddrinfo` dit-elle que le nom n'existe pas (ou n'a pas
+/// d'adresse), par opposition a une panne (serveur DNS injoignable, reponse
+/// temporaire) ?
+fn unknown_name(e: &io::Error) -> bool {
+    // WSAHOST_NOT_FOUND, WSANO_DATA (Windows).
+    if matches!(e.raw_os_error(), Some(11001 | 11004)) {
+        return true;
+    }
+    let text = e.to_string().to_ascii_lowercase();
+    [
+        "name or service not known",
+        "no address associated",
+        "name does not resolve",
+        "nodename nor servname",
+        "no data",
+    ]
+    .iter()
+    .any(|m| text.contains(m))
 }
 
 /// Verdict de la verification : `None` si le nom pointe vers le noeud,
@@ -99,6 +121,28 @@ mod tests {
 
     fn ips(list: &[&str]) -> Vec<IpAddr> {
         list.iter().map(|i| i.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn only_an_unknown_name_is_a_verdict_other_errors_are_outages() {
+        let other = |m: &str| io::Error::other(m.to_string());
+        for unknown in [
+            "failed to lookup address information: Name or service not known",
+            "failed to lookup address information: No address associated with hostname",
+            "failed to lookup address information: nodename nor servname provided, or not known",
+            "failed to lookup address information: Name does not resolve",
+        ] {
+            assert!(unknown_name(&other(unknown)), "{unknown}");
+        }
+        for outage in [
+            "failed to lookup address information: Temporary failure in name resolution",
+            "failed to lookup address information: Servname not supported",
+            "connection refused",
+        ] {
+            assert!(!unknown_name(&other(outage)), "{outage}");
+        }
+        assert!(unknown_name(&io::Error::from_raw_os_error(11001)));
+        assert!(!unknown_name(&io::Error::from(io::ErrorKind::TimedOut)));
     }
 
     #[test]
