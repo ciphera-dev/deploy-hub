@@ -305,3 +305,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 23:10 — Session v0.1-sdd — claude-code (orchestrateur) — Task R13 : Remédiation audit — limites du second facteur, de la ré-authentification et de la connexion
 - fait : Compteurs par compte et IP, plafond quotidien TOTP, un seul calcul Argon2 par compte sans blocage du titulaire, migration 0040
 - résultat : relecture : 3 Importants corrigés en 2 tours, approuvée
+
+## 2026-11-24 23:26 — Session v0.1-sdd — claude-code (orchestrateur) — Task R46 : Remédiation audit — utilisateur et racine en lecture seule des conteneurs
+- fait : run_as et read_only_rootfs par service, migration 0039, option sans root à la création, badge root rafraîchi après déploiement, capacités réduites
+- résultat : relecture : 3 Importants puis 1, corrigés en 2 tours, approuvée
