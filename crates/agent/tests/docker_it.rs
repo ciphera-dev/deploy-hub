@@ -19,11 +19,12 @@ use bollard::query_parameters::{
     CreateContainerOptions, CreateImageOptions, RemoveContainerOptions, RemoveVolumeOptions,
     TopOptions,
 };
+use ciphera_agent::buildkit::{BuildkitManager, DockerFs};
 use ciphera_agent::docker::{
     self, BUILD_NETWORK, BollardDocker, ContainerId, ContainerSpec, DockerError, DockerOps, Health,
     INFRA_NETWORK, MANAGED_LABEL,
 };
-use ciphera_agent::infra::{self, BuildkitAccount, InfraConfig, InfraError, SubIds};
+use ciphera_agent::infra::{self, BuildkitAccount, InfraConfig, SubIds};
 use futures_util::StreamExt;
 use proto::ImageRef;
 use shared::ids::{DeploymentId, ProjectId};
@@ -51,6 +52,14 @@ impl TempDir {
         let dir = std::env::temp_dir().join(format!("ciphera-docker-it-{}", DeploymentId::new()));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
+    }
+
+    /// Sous-dossier de mode `mode` (setgid compris).
+    fn subdir(&self, name: &str, mode: u32) -> PathBuf {
+        let p = self.0.join(name);
+        std::fs::create_dir(&p).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        p
     }
 
     /// Sous-dossier ouvert a tous : le compte du conteneur (uid arbitraire)
@@ -83,7 +92,7 @@ impl Cleanup {
         Self {
             containers: vec![
                 infra::POSTGRES_CONTAINER.into(),
-                infra::BUILDKIT_CONTAINER.into(),
+                infra::LEGACY_BUILDKIT_CONTAINER.into(),
             ],
             volumes: vec![infra::POSTGRES_VOLUME.into()],
             networks: vec![INFRA_NETWORK.into(), BUILD_NETWORK.into()],
@@ -215,14 +224,14 @@ async fn probe(api: &Docker, project: ProjectId, network: Option<&str>, cmd: &[&
 /// de l'image (dans le conteneur, utilisateur de l'image) : image de base
 /// tiree par `ciphera-build`, etape `RUN` executee. Renvoie le code de sortie
 /// et la sortie.
-async fn buildctl_build(api: &Docker) -> (i64, String) {
+async fn buildctl_build(api: &Docker, container: &str) -> (i64, String) {
     let script = "set -e; d=$(mktemp -d); \
         printf 'FROM docker.io/library/busybox:1.37\\nRUN echo ok > /ok\\n' > \"$d/Dockerfile\"; \
         buildctl --addr unix:///run/buildkit/buildkitd.sock build \
           --frontend dockerfile.v0 --local context=\"$d\" --local dockerfile=\"$d\"";
     let exec = api
         .create_exec(
-            infra::BUILDKIT_CONTAINER,
+            container,
             CreateExecOptions {
                 cmd: Some(vec!["sh", "-c", script]),
                 attach_stdout: Some(true),
@@ -253,9 +262,9 @@ async fn buildctl_build(api: &Docker) -> (i64, String) {
 /// `(uid reel de l'hote, nom)` de chaque processus du conteneur buildkitd :
 /// PID donnes par Docker (`top`), uid et nom lus dans `/proc/<pid>/status`
 /// de l'hote (independant de la variante de `ps`).
-async fn buildkitd_process_uids(api: &Docker) -> Vec<(u32, String)> {
+async fn buildkitd_process_uids(api: &Docker, container: &str) -> Vec<(u32, String)> {
     let top = api
-        .top_processes(infra::BUILDKIT_CONTAINER, None::<TopOptions>)
+        .top_processes(container, None::<TopOptions>)
         .await
         .unwrap();
     let titles = top.titles.unwrap_or_default();
@@ -313,7 +322,9 @@ async fn app_container_cannot_reach_infra_network() {
         postgres_secret_dir: secret_dir,
         postgres_socket_dir: tmp.open_subdir("pg"),
         postgres_user: (10001, 10001),
-        buildkit_socket_dir: tmp.open_subdir("buildkit"),
+        // Setgid (comme /run/ciphera-agent/buildkit) : le dossier d'un projet
+        // et son socket heritent du groupe du test.
+        buildkit_socket_dir: tmp.subdir("buildkit", 0o2777),
         buildkit_apparmor_profile: infra::buildkit_apparmor_profile(),
         buildkit_account: Some(BuildkitAccount {
             user: (BUILD_UID, BUILD_UID),
@@ -322,20 +333,22 @@ async fn app_container_cannot_reach_infra_network() {
         }),
         buildkit_state_dir: tmp.open_subdir("buildkit-state"),
         buildkit_identity_dir: tmp.0.join("buildkit-identity"),
+        buildkit_usage_dir: tmp.0.join("buildkit-usage"),
         buildkit_resources: infra::BuildkitResources::detect(&tmp.0),
     };
 
     // Un ciphera-buildkitd cree a la main (sans etiquette) n'est ni remplace
-    // ni arrete : refus explicite, conteneur intact.
-    let foreign = foreign_container(&api, infra::BUILDKIT_CONTAINER, None, &["sleep", "600"]).await;
-    match infra::ensure_infra(&docker, &cfg).await {
-        Err(InfraError::Docker(DockerError::NotManaged(name))) => {
-            assert_eq!(name, infra::BUILDKIT_CONTAINER)
-        }
-        other => panic!("NotManaged attendu : {other:?}"),
-    }
+    // ni arrete ni supprime : conteneur intact.
+    let foreign = foreign_container(
+        &api,
+        infra::LEGACY_BUILDKIT_CONTAINER,
+        None,
+        &["sleep", "600"],
+    )
+    .await;
+    infra::ensure_infra(&docker, &cfg).await.unwrap();
     let still = api
-        .inspect_container(infra::BUILDKIT_CONTAINER, None)
+        .inspect_container(infra::LEGACY_BUILDKIT_CONTAINER, None)
         .await
         .unwrap();
     assert_eq!(still.id.as_deref(), Some(foreign.as_str()));
@@ -366,14 +379,32 @@ async fn app_container_cannot_reach_infra_network() {
 
     // PostgreSQL initialise avec le fichier de mot de passe ; sockets Unix.
     wait_for_file(&cfg.postgres_socket_dir.join(".s.PGSQL.5432")).await;
-    wait_for_file(&cfg.buildkit_socket_dir.join("buildkitd.sock")).await;
+
+    // buildkitd du projet, demarre a la demande.
+    let docker_arc = std::sync::Arc::new(BollardDocker::connect().unwrap());
+    let fs = DockerFs::connect(
+        &cfg,
+        infra::pinned_image(infra::BUILDKIT_IMAGE_FILE, "buildkit").unwrap(),
+        (BUILD_UID, BUILD_UID),
+    )
+    .unwrap();
+    let manager = BuildkitManager::new(docker_arc, fs, cfg.clone());
+    let build_project = ProjectId::new();
+    let bk_name = infra::buildkit_container_name(build_project);
+    cleanup.containers.push(bk_name.clone());
+    let lease = manager.ensure(build_project).await.unwrap();
+    assert_eq!(
+        lease.socket(),
+        Some(cfg.buildkit_project_socket(build_project).as_path())
+    );
+    wait_for_file(&cfg.buildkit_project_socket(build_project)).await;
 
     // Le mot de passe n'apparait pas dans la configuration du conteneur.
     let config = again.config.clone().unwrap();
     let env = config.env.unwrap_or_default();
     assert!(!env.iter().any(|e| e.contains(&password)), "{env:?}");
     assert!(!format!("{again:?}").contains(&password));
-    for name in [infra::POSTGRES_CONTAINER, infra::BUILDKIT_CONTAINER] {
+    for name in [infra::POSTGRES_CONTAINER, bk_name.as_str()] {
         let info = api.inspect_container(name, None).await.unwrap();
         let ports = info
             .network_settings
@@ -393,10 +424,7 @@ async fn app_container_cannot_reach_infra_network() {
     let build_net = api.inspect_network(BUILD_NETWORK, None).await.unwrap();
     assert_eq!(build_net.internal, Some(false));
     // buildkitd seul sur ciphera-build, absent de ciphera-internal.
-    let bk = api
-        .inspect_container(infra::BUILDKIT_CONTAINER, None)
-        .await
-        .unwrap();
+    let bk = api.inspect_container(&bk_name, None).await.unwrap();
     let bk_nets: Vec<String> = bk
         .network_settings
         .and_then(|n| n.networks)
@@ -431,7 +459,7 @@ async fn app_container_cannot_reach_infra_network() {
         bk_hc.nano_cpus,
         Some(cfg.buildkit_resources.nano_cpus as i64)
     );
-    let uids = buildkitd_process_uids(&api).await;
+    let uids = buildkitd_process_uids(&api, &bk_name).await;
     assert!(
         uids.iter().any(|(_, comm)| comm == "buildkitd"),
         "buildkitd absent : {uids:?}"
@@ -441,7 +469,7 @@ async fn app_container_cannot_reach_infra_network() {
         "processus hors du compte de buildkitd : {uids:?}"
     );
     let pid = api
-        .inspect_container(infra::BUILDKIT_CONTAINER, None)
+        .inspect_container(&bk_name, None)
         .await
         .unwrap()
         .state
@@ -456,7 +484,7 @@ async fn app_container_cannot_reach_infra_network() {
 
     // BuildKit rootless repond sur son socket et construit (image de base
     // tiree par ciphera-build, etape RUN).
-    let (code, output) = buildctl_build(&api).await;
+    let (code, output) = buildctl_build(&api, &bk_name).await;
     assert_eq!(code, 0, "build par le socket de buildkitd :\n{output}");
 
     // Vraie ecoute TCP sur ciphera-internal (busybox httpd).

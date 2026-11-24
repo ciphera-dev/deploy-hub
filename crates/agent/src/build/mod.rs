@@ -33,11 +33,12 @@ use proto::{
     AgentToControl, BuildMethod, BuildSource, BuildSpec, GitToken, ImageRef, LogLine, LogStream,
     LogTarget, Stage, StageStatus,
 };
-use shared::ids::DeploymentId;
+use shared::ids::{DeploymentId, ProjectId};
 use tokio::sync::mpsc;
 
 use self::argv::{AllowedBin, InvalidArg, ValidatedArg};
 pub use self::compose_policy::PolicyViolation;
+pub use crate::buildkit::BuildkitLease;
 
 /// Dossier des builds (sous le StateDirectory 0700 de l'agent).
 pub const DEFAULT_BUILDS_DIR: &str = "/var/lib/ciphera-agent/builds";
@@ -285,8 +286,19 @@ impl ProgressSink {
 /// Execution des outils et acces a Docker pour le pipeline. `LocalBackend`
 /// (processus + API Docker) en production ; simule dans les tests.
 pub trait BuildBackend: Send + Sync {
-    /// Le socket de buildkitd existe (buildkitd lance par l'agent).
+    /// buildkitd est utilisable (buildkitd des projets : compte
+    /// `ciphera-build` present ; sinon le socket partage existe).
     fn buildkit_available(&self) -> bool;
+    /// buildkitd du projet en marche (demarre a la demande, celui d'un autre
+    /// projet arrete), pour la duree du build : le jeton rendu le garde
+    /// vivant. Par defaut (sans buildkitd par projet) : le socket de
+    /// `BuildConfig`.
+    fn buildkit_for(
+        &self,
+        _project: ProjectId,
+    ) -> impl Future<Output = Result<BuildkitLease, BuildError>> + Send {
+        async { Ok(BuildkitLease::shared()) }
+    }
     /// Lance `cmd` jusqu'au bout ; sorties en journal (`sink`), sauf la
     /// sortie standard si `capture` (alors renvoyee). Code non nul, delai
     /// depasse ou lancement impossible : `BuildError::Tool`.
@@ -433,6 +445,8 @@ pub(crate) struct Targets {
     deployment: ValidatedArg,
     project_id: Option<ValidatedArg>,
     environment_id: Option<ValidatedArg>,
+    /// Projet du build (buildkitd et etat propres a chaque projet).
+    project_uuid: Option<ProjectId>,
 }
 
 /// Cloisonnement des caches de BuildKit d'un build, par environnement :
@@ -460,6 +474,7 @@ impl Targets {
                 .environment_id
                 .map(|id| ValidatedArg::name(&id.to_string()))
                 .transpose()?,
+            project_uuid: spec.project_id,
         })
     }
 
@@ -977,7 +992,16 @@ async fn build_stages<B: BuildBackend>(
     let mut tagged = Vec::new();
     let mut bundle = None;
     let result = async {
-        let socket = ValidatedArg::path(&cfg.buildkit_socket)?;
+        // buildkitd du projet, tenu jusqu'a la fin du build.
+        let project = targets.project_uuid.ok_or(BuildError::Invalid(InvalidArg {
+            kind: "identifiant de projet",
+            reason: "absent de l'ordre de build (plan de controle a mettre a jour)",
+        }))?;
+        let lease = backend.buildkit_for(project).await?;
+        let socket = match lease.socket() {
+            Some(path) => ValidatedArg::path(&path.to_string_lossy())?,
+            None => ValidatedArg::path(&cfg.buildkit_socket)?,
+        };
         check_symlinks(&workdir.src())?;
         let src = build_root(workdir, root)?;
         match method {

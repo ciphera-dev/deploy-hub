@@ -80,13 +80,13 @@ main() {
 	# Profil de buildkitd : retire seulement une fois son conteneur disparu
 	# (sinon un conteneur restant ne pourrait plus redemarrer).
 	if [ -e "$APPARMOR_DEST" ]; then
-		if [ "$have_docker" = yes ] && ! docker inspect ciphera-buildkitd >/dev/null 2>&1; then
+		if [ "$have_docker" = yes ] && [ -z "$(docker ps -aq --filter name=ciphera-buildkitd 2>/dev/null)" ]; then
 			if command -v apparmor_parser >/dev/null 2>&1; then
 				apparmor_parser -R "$APPARMOR_DEST" >/dev/null 2>&1 || true
 			fi
 			rm -f "$APPARMOR_DEST"
 		else
-			say "profil AppArmor $APPARMOR_DEST conserve : Docker injoignable ou conteneur ciphera-buildkitd present (relancer uninstall.sh une fois Docker disponible)"
+			say "profil AppArmor $APPARMOR_DEST conserve : Docker injoignable ou conteneur ciphera-buildkitd-* present (relancer uninstall.sh une fois Docker disponible)"
 		fi
 	fi
 

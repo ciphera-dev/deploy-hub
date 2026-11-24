@@ -1,5 +1,6 @@
 # Agent local Ciphera : pilote Docker (PostgreSQL et BuildKit epingles par
-# digest, conteneurs des applications) et le proxy du noeud.
+# digest, un buildkitd par projet demarre a la demande, conteneurs des
+# applications) et le proxy du noeud.
 # Le groupe docker equivaut a root : voir le modele de menaces.
 # Sans Docker, l'unite n'est pas lancee (condition non remplie, sans erreur).
 # Dossiers des sockets (/run/ciphera/postgres, /run/ciphera-agent/buildkit) :

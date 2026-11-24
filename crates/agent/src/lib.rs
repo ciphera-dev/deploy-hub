@@ -3,6 +3,7 @@
 //! son API (bollard).
 
 pub mod build;
+pub mod buildkit;
 pub mod config;
 pub mod deploy;
 pub mod docker;

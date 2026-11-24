@@ -9,10 +9,13 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bollard::Docker;
-use bollard::query_parameters::{RemoveContainerOptions, RemoveImageOptions, RemoveVolumeOptions};
+use bollard::query_parameters::{
+    ListContainersOptions, RemoveContainerOptions, RemoveImageOptions, RemoveVolumeOptions,
+};
 use ciphera_agent::build::argv::AllowedBin;
 use ciphera_agent::build::local::LocalBackend;
 use ciphera_agent::build::railpack;
@@ -20,6 +23,7 @@ use ciphera_agent::build::sandbox::{PREPARE_NETWORK, PrepareConfig};
 use ciphera_agent::build::{
     self, BuildBackend, BuildConfig, BuildError, BuiltImages, ProgressSink, Workdir, clone,
 };
+use ciphera_agent::buildkit::{BuildkitManager, DockerFs, ProductionBuildkit};
 use ciphera_agent::deploy::compose::ComposePlan;
 use ciphera_agent::docker::{BUILD_NETWORK, BollardDocker, INFRA_NETWORK};
 use ciphera_agent::infra::{self, BuildkitAccount, InfraConfig, SubIds};
@@ -69,12 +73,25 @@ struct Cleanup {
 impl Cleanup {
     async fn run(&self) {
         let api = Docker::connect_with_socket_defaults().unwrap();
-        for name in [infra::POSTGRES_CONTAINER, infra::BUILDKIT_CONTAINER] {
+        // PostgreSQL, buildkitd partage d'avant et buildkitd de chaque projet.
+        let all = api
+            .list_containers(Some(ListContainersOptions {
+                all: true,
+                ..Default::default()
+            }))
+            .await
+            .unwrap_or_default();
+        let names = all
+            .iter()
+            .flat_map(|c| c.names.clone().unwrap_or_default())
+            .map(|n| n.trim_start_matches('/').to_string())
+            .filter(|n| n == infra::POSTGRES_CONTAINER || n.starts_with("ciphera-buildkitd"));
+        for name in names {
             let options = RemoveContainerOptions {
                 force: true,
                 ..Default::default()
             };
-            let _ = api.remove_container(name, Some(options)).await;
+            let _ = api.remove_container(&name, Some(options)).await;
         }
         let _ = api
             .remove_volume(
@@ -157,23 +174,22 @@ fn dockerfile_spec(project: &str, ids: (ProjectId, EnvironmentId)) -> BuildSpec 
     }
 }
 
-/// buildkitd de production (`infra::ensure_infra`) dans `tmp`, pret a
-/// construire : reglages du pipeline, backend et socket.
-async fn start_buildkit(tmp: &TempDir) -> (BuildConfig, LocalBackend, PathBuf) {
-    let docker = BollardDocker::connect().unwrap();
+/// Reglages d'infrastructure de production dans `tmp` (sockets en setgid,
+/// compte du test).
+fn infra_config(tmp: &TempDir) -> InfraConfig {
     let secret_dir = tmp.subdir("secret", 0o777);
     let password_file = secret_dir.join("db_password");
     std::fs::write(&password_file, format!("pw-{}", DeploymentId::new())).unwrap();
     std::fs::set_permissions(&password_file, std::fs::Permissions::from_mode(0o644)).unwrap();
     // Socket de buildkitd : dossier setgid au groupe du test (comme
     // /run/ciphera-agent/buildkit au groupe ciphera-agent) pour que le
-    // socket 0660 soit joignable par ce processus.
-    let socket_dir = tmp.subdir("buildkit", 0o2777);
-    let cfg = InfraConfig {
+    // dossier d'un projet et son socket 0660 soient joignables par ce
+    // processus.
+    InfraConfig {
         postgres_secret_dir: secret_dir,
         postgres_socket_dir: tmp.subdir("pg", 0o777),
         postgres_user: (10001, 10001),
-        buildkit_socket_dir: socket_dir.clone(),
+        buildkit_socket_dir: tmp.subdir("buildkit", 0o2777),
         buildkit_apparmor_profile: infra::buildkit_apparmor_profile(),
         buildkit_account: Some(BuildkitAccount {
             user: (BUILD_UID, BUILD_UID),
@@ -182,24 +198,59 @@ async fn start_buildkit(tmp: &TempDir) -> (BuildConfig, LocalBackend, PathBuf) {
         }),
         buildkit_state_dir: tmp.subdir("buildkit-state", 0o777),
         buildkit_identity_dir: tmp.0.join("buildkit-identity"),
+        buildkit_usage_dir: tmp.0.join("buildkit-usage"),
         buildkit_resources: infra::BuildkitResources::detect(&tmp.0),
-    };
-    infra::ensure_infra(&docker, &cfg).await.unwrap();
-    let socket = socket_dir.join("buildkitd.sock");
-    let start = Instant::now();
-    while !socket.exists() {
-        assert!(start.elapsed() < WAIT, "socket de buildkitd jamais cree");
-        tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+/// Gestionnaire de production (un buildkitd par projet) dans `cfg`.
+fn manager_for(cfg: &InfraConfig) -> Arc<ProductionBuildkit> {
+    let fs = DockerFs::connect(
+        cfg,
+        infra::pinned_image(infra::BUILDKIT_IMAGE_FILE, "buildkit").unwrap(),
+        (BUILD_UID, BUILD_UID),
+    )
+    .unwrap();
+    Arc::new(BuildkitManager::new(
+        Arc::new(BollardDocker::connect().unwrap()),
+        fs,
+        cfg.clone(),
+    ))
+}
+
+/// Infrastructure de production (`infra::ensure_infra`) dans `tmp` et
+/// gestionnaire de buildkitd par projet, prets a construire : reglages du
+/// pipeline, backend et gestionnaire.
+async fn start_buildkit(tmp: &TempDir) -> (BuildConfig, LocalBackend, Arc<ProductionBuildkit>) {
+    let (build_cfg, backend, manager, _cfg) = start_buildkit_with_config(tmp).await;
+    (build_cfg, backend, manager)
+}
+
+async fn start_buildkit_with_config(
+    tmp: &TempDir,
+) -> (
+    BuildConfig,
+    LocalBackend,
+    Arc<ProductionBuildkit>,
+    InfraConfig,
+) {
+    let docker = BollardDocker::connect().unwrap();
+    let cfg = infra_config(tmp);
+    infra::ensure_infra(&docker, &cfg).await.unwrap();
+    let manager = manager_for(&cfg);
     let builds = tmp.subdir("builds", 0o700);
+    // Le socket de `BuildConfig` n'est pas lu : chaque projet a le sien.
+    let unused = tmp.0.join("unused.sock");
     let build_cfg = BuildConfig {
         builds_dir: builds.to_str().unwrap().to_string(),
-        buildkit_socket: socket.to_str().unwrap().to_string(),
+        buildkit_socket: unused.to_str().unwrap().to_string(),
         askpass: std::env::current_exe().unwrap(),
         prepare: Some(prepare_config()),
     };
-    let backend = LocalBackend::connect(&socket).unwrap();
-    (build_cfg, backend, socket)
+    let backend = LocalBackend::connect(&unused)
+        .unwrap()
+        .with_buildkit(manager.clone());
+    (build_cfg, backend, manager, cfg)
 }
 
 /// Sortie standard de l'image `tag` lancee sans reseau.
@@ -284,7 +335,7 @@ async fn fixtures_build_with_buildkit_and_load_into_docker() {
     let tmp = TempDir::new();
     let mut cleanup = Cleanup { images: Vec::new() };
     cleanup.run().await;
-    let (build_cfg, backend, _socket) = start_buildkit(&tmp).await;
+    let (build_cfg, backend, _manager) = start_buildkit(&tmp).await;
     let builds = PathBuf::from(&build_cfg.builds_dir);
     let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
 
@@ -510,7 +561,7 @@ async fn assert_cache_isolation(prefix: &str) {
     let tmp = TempDir::new();
     let mut cleanup = Cleanup { images: Vec::new() };
     cleanup.run().await;
-    let (build_cfg, backend, _socket) = start_buildkit(&tmp).await;
+    let (build_cfg, backend, _manager) = start_buildkit(&tmp).await;
     let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
     let a = (ProjectId::new(), EnvironmentId::new());
     let b = (ProjectId::new(), EnvironmentId::new());
@@ -598,7 +649,7 @@ async fn foreign_frontend_refused() {
     let tmp = TempDir::new();
     let mut cleanup = Cleanup { images: Vec::new() };
     cleanup.run().await;
-    let (build_cfg, backend, socket) = start_buildkit(&tmp).await;
+    let (build_cfg, backend, manager) = start_buildkit(&tmp).await;
     let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
 
     let repo = tmp.subdir("foreign", 0o755);
@@ -624,6 +675,8 @@ async fn foreign_frontend_refused() {
 
     // buildkitd refuse de lui-meme une image existante qui n'est pas dans
     // sa liste (hors du pipeline, donc sans le controle de l'agent).
+    let lease = manager.ensure(ProjectId::new()).await.unwrap();
+    let socket = lease.socket().unwrap().to_path_buf();
     let home = tmp.subdir("raw-home", 0o700);
     let (ok, stderr) = raw_buildctl(
         &socket,
@@ -672,7 +725,7 @@ async fn docker_dockerfile_frontend_allowed() {
     let tmp = TempDir::new();
     let mut cleanup = Cleanup { images: Vec::new() };
     cleanup.run().await;
-    let (build_cfg, backend, _socket) = start_buildkit(&tmp).await;
+    let (build_cfg, backend, _manager) = start_buildkit(&tmp).await;
     let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
     let repo = tmp.subdir("syntax", 0o755);
     std::fs::write(
@@ -748,7 +801,7 @@ async fn builds_are_serialized() {
     let tmp = TempDir::new();
     let mut cleanup = Cleanup { images: Vec::new() };
     cleanup.run().await;
-    let (build_cfg, backend, _socket) = start_buildkit(&tmp).await;
+    let (build_cfg, backend, _manager) = start_buildkit(&tmp).await;
     let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
 
     let mut specs = Vec::new();
@@ -904,4 +957,260 @@ async fn clone_over_cap_fails() {
         .await
         .expect("clone sous le plafond");
     assert!(ok.join("gros.bin").is_file());
+}
+
+/// Le conteneur buildkitd du projet tourne (`Some(true)`), est arrete
+/// (`Some(false)`) ou n'existe pas (`None`).
+async fn buildkitd_running(api: &Docker, project: ProjectId) -> Option<bool> {
+    let name = infra::buildkit_container_name(project);
+    api.inspect_container(&name, None)
+        .await
+        .ok()
+        .map(|i| i.state.and_then(|s| s.running).unwrap_or(false))
+}
+
+/// Dossier d'etat du projet present ? Lu par un conteneur root jetable (le
+/// dossier est en 0700 au compte de buildkitd, illisible pour le test).
+fn state_exists(state_root: &Path, project: ProjectId) -> bool {
+    std::process::Command::new("docker")
+        .args(["run", "--rm", "--network", "none", "-v"])
+        .arg(format!("{}:/s:ro", state_root.display()))
+        .arg("docker.io/library/busybox:1.37")
+        .args(["test", "-d"])
+        .arg(format!("/s/p/{project}"))
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// Dockerfile avec un cache de montage (`id=x`) : `CACHE_WRITER` y pose un
+/// marqueur, `CACHE_READER` dit s'il le voit.
+const CACHE_WRITER: &str = "FROM docker.io/library/busybox:1.37\n\
+    RUN --mount=type=cache,id=x,target=/c echo marker > /c/marker\n";
+const CACHE_READER: &str = "FROM docker.io/library/busybox:1.37\n\
+    RUN --mount=type=cache,id=x,target=/c \
+    if [ -e /c/marker ]; then echo MARKER-SEEN; else echo MARKER-ABSENT; fi\n";
+
+/// `buildctl` direct sur `socket` avec le Dockerfile `dockerfile` et l'espace
+/// de noms de cache impose `namespace` (hors du pipeline, qui le derive des
+/// UUID : ici le meme pour deux projets).
+fn raw_dockerfile_build(
+    tmp: &TempDir,
+    socket: &Path,
+    dockerfile: &str,
+    namespace: &str,
+) -> (bool, String) {
+    let dir = tmp.0.join(format!("raw-{}", DeploymentId::new()));
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(dir.join("Dockerfile"), dockerfile).unwrap();
+    let home = tmp.subdir(&format!("home-{}", DeploymentId::new()), 0o700);
+    let d = dir.to_str().unwrap();
+    raw_buildctl(
+        socket,
+        &home,
+        &[
+            "--frontend",
+            "dockerfile.v0",
+            "--local",
+            &format!("context={d}"),
+            "--local",
+            &format!("dockerfile={d}"),
+            "--opt",
+            &format!("build-arg:BUILDKIT_CACHE_MOUNT_NS={namespace}"),
+        ],
+    )
+}
+
+/// Deux projets : deux conteneurs buildkitd, deux dossiers d'etat et deux
+/// sockets distincts ; le buildkitd du premier est arrete quand le second
+/// demarre (un seul a la fois sur le noeud).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn projects_use_distinct_buildkitd_and_state() {
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    let tmp = TempDir::new();
+    let cleanup = Cleanup { images: Vec::new() };
+    cleanup.run().await;
+    let (_build_cfg, _backend, manager, cfg) = start_buildkit_with_config(&tmp).await;
+    let (a, b) = (ProjectId::new(), ProjectId::new());
+
+    let lease_a = manager.ensure(a).await.unwrap();
+    let socket_a = lease_a.socket().unwrap().to_path_buf();
+    assert_eq!(socket_a, cfg.buildkit_project_socket(a));
+    assert_eq!(buildkitd_running(&api, a).await, Some(true));
+    assert!(state_exists(&cfg.buildkit_state_dir, a));
+    // Un build de A en cours : le buildkitd de B ne le remplace pas.
+    assert!(manager.ensure(b).await.is_err());
+    assert_eq!(buildkitd_running(&api, a).await, Some(true));
+    drop(lease_a);
+
+    let lease_b = manager.ensure(b).await.unwrap();
+    let socket_b = lease_b.socket().unwrap().to_path_buf();
+    assert_ne!(socket_a, socket_b);
+    assert_eq!(buildkitd_running(&api, b).await, Some(true));
+    assert_eq!(buildkitd_running(&api, a).await, Some(false));
+    assert_ne!(
+        infra::buildkit_container_name(a),
+        infra::buildkit_container_name(b)
+    );
+    assert!(state_exists(&cfg.buildkit_state_dir, a));
+    assert!(state_exists(&cfg.buildkit_state_dir, b));
+}
+
+/// Meme espace de noms de cache impose aux deux projets : le marqueur du
+/// premier reste invisible au second (etats separes, pas seulement des
+/// espaces de noms). Temoin : le premier projet retrouve son marqueur.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn cache_marker_invisible_even_with_same_namespace() {
+    let tmp = TempDir::new();
+    let cleanup = Cleanup { images: Vec::new() };
+    cleanup.run().await;
+    let (_build_cfg, _backend, manager) = start_buildkit(&tmp).await;
+    let (a, b) = (ProjectId::new(), ProjectId::new());
+    let namespace = format!("forced-{}", DeploymentId::new());
+
+    let lease = manager.ensure(a).await.unwrap();
+    let (ok, stderr) =
+        raw_dockerfile_build(&tmp, lease.socket().unwrap(), CACHE_WRITER, &namespace);
+    assert!(ok, "marqueur (A) : {stderr}");
+    drop(lease);
+
+    let lease = manager.ensure(b).await.unwrap();
+    let (ok, stderr) =
+        raw_dockerfile_build(&tmp, lease.socket().unwrap(), CACHE_READER, &namespace);
+    assert!(ok, "lecture (B) : {stderr}");
+    assert!(stderr.contains("MARKER-ABSENT"), "{stderr}");
+    assert!(
+        !stderr.contains("MARKER-SEEN"),
+        "B voit le cache de A : {stderr}"
+    );
+    drop(lease);
+
+    let lease = manager.ensure(a).await.unwrap();
+    let (ok, stderr) =
+        raw_dockerfile_build(&tmp, lease.socket().unwrap(), CACHE_READER, &namespace);
+    assert!(ok, "lecture (A) : {stderr}");
+    assert!(stderr.contains("MARKER-SEEN"), "temoin : {stderr}");
+}
+
+/// Un buildkitd sans build est arrete (son etat reste) ; un buildkitd qui
+/// sert un build ne l'est pas.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn idle_buildkitd_stopped() {
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    let tmp = TempDir::new();
+    let cleanup = Cleanup { images: Vec::new() };
+    cleanup.run().await;
+    let (_build_cfg, _backend, manager, cfg) = start_buildkit_with_config(&tmp).await;
+    let project = ProjectId::new();
+
+    let lease = manager.ensure(project).await.unwrap();
+    assert_eq!(manager.stop_idle(Duration::ZERO).await, 0);
+    assert_eq!(buildkitd_running(&api, project).await, Some(true));
+    drop(lease);
+    // Pas assez ancien : reste.
+    assert_eq!(manager.stop_idle(Duration::from_secs(3600)).await, 0);
+    assert_eq!(buildkitd_running(&api, project).await, Some(true));
+    assert_eq!(manager.stop_idle(Duration::ZERO).await, 1);
+    assert_eq!(buildkitd_running(&api, project).await, Some(false));
+    assert!(state_exists(&cfg.buildkit_state_dir, project));
+    // Redemarre a la demande.
+    let _lease = manager.ensure(project).await.unwrap();
+    assert_eq!(buildkitd_running(&api, project).await, Some(true));
+}
+
+/// `RemoveProject` : conteneur, etat, socket et date d'usage supprimes ;
+/// l'etat d'un autre projet reste. Etat perime (30 jours) : meme chose.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn project_state_removed_on_remove_project() {
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    let tmp = TempDir::new();
+    let cleanup = Cleanup { images: Vec::new() };
+    cleanup.run().await;
+    let (_build_cfg, _backend, manager, cfg) = start_buildkit_with_config(&tmp).await;
+    let (gone, kept, stale) = (ProjectId::new(), ProjectId::new(), ProjectId::new());
+    for p in [gone, kept, stale] {
+        drop(manager.ensure(p).await.unwrap());
+    }
+    for p in [gone, kept, stale] {
+        assert!(state_exists(&cfg.buildkit_state_dir, p));
+    }
+
+    manager.remove_project(gone).await.unwrap();
+    assert_eq!(buildkitd_running(&api, gone).await, None);
+    assert!(!state_exists(&cfg.buildkit_state_dir, gone));
+    assert!(!cfg.buildkit_project_socket_dir(gone).exists());
+    assert!(!cfg.buildkit_usage_dir.join(gone.to_string()).exists());
+    assert!(!cfg.buildkit_project_config(gone).exists());
+    assert!(state_exists(&cfg.buildkit_state_dir, kept));
+
+    // Perime : son fichier d'usage date de plus de 30 jours.
+    let marker = cfg.buildkit_usage_dir.join(stale.to_string());
+    let old = std::time::SystemTime::now() - Duration::from_secs(31 * 24 * 3600);
+    std::fs::File::options()
+        .append(true)
+        .open(&marker)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    assert_eq!(
+        manager
+            .sweep_stale(ciphera_agent::buildkit::STALE_AFTER)
+            .await,
+        1
+    );
+    assert!(!state_exists(&cfg.buildkit_state_dir, stale));
+    assert!(state_exists(&cfg.buildkit_state_dir, kept));
+}
+
+/// Le buildkitd partage d'avant (`ciphera-buildkitd`) est retire au
+/// demarrage, et son etat avec lui ; l'etat des projets (`p`) reste.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn legacy_shared_buildkitd_removed() {
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    let docker = BollardDocker::connect().unwrap();
+    let tmp = TempDir::new();
+    let cleanup = Cleanup { images: Vec::new() };
+    cleanup.run().await;
+    let cfg = infra_config(&tmp);
+    // Etat d'avant : fichiers directement dans le dossier d'etat.
+    let legacy_state = cfg.buildkit_state_dir.join(".local");
+    std::fs::create_dir(&legacy_state).unwrap();
+    std::fs::write(legacy_state.join("old"), "x").unwrap();
+    // Conteneur d'avant : gere par Ciphera, sous le nom partage.
+    let image = infra::pinned_image(infra::BUILDKIT_IMAGE_FILE, "buildkit").unwrap();
+    let body = bollard::models::ContainerCreateBody {
+        image: Some(image),
+        entrypoint: Some(vec!["sleep".into(), "600".into()]),
+        labels: Some(std::collections::HashMap::from([(
+            ciphera_agent::docker::MANAGED_LABEL.to_string(),
+            "true".to_string(),
+        )])),
+        ..Default::default()
+    };
+    let options = bollard::query_parameters::CreateContainerOptions {
+        name: Some(infra::LEGACY_BUILDKIT_CONTAINER.to_string()),
+        ..Default::default()
+    };
+    let created = api.create_container(Some(options), body).await.unwrap();
+    api.start_container(&created.id, None).await.unwrap();
+
+    infra::ensure_infra(&docker, &cfg).await.unwrap();
+    assert!(
+        api.inspect_container(infra::LEGACY_BUILDKIT_CONTAINER, None)
+            .await
+            .is_err(),
+        "buildkitd partage encore present"
+    );
+    // Premier usage : etat d'avant supprime, etat des projets garde.
+    let manager = manager_for(&cfg);
+    let project = ProjectId::new();
+    drop(manager.ensure(project).await.unwrap());
+    assert!(!legacy_state.exists());
+    assert!(state_exists(&cfg.buildkit_state_dir, project));
 }

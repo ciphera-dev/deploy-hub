@@ -20,9 +20,12 @@ use futures_util::stream::{self, Stream, StreamExt};
 use proto::{ImageRef, LogStream};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 
+use shared::ids::ProjectId;
+
 use super::argv::AllowedBin;
 use super::sandbox::{self, PrepareContainer};
 use super::{BuildBackend, BuildError, MAX_LOG_LINE, ProgressSink};
+use crate::buildkit::{BuildkitLease, ProductionBuildkit};
 use crate::docker::check_managed;
 
 /// Lignes de journal de `railpack prepare` transmises au plus (les
@@ -244,6 +247,8 @@ where
 pub struct LocalBackend {
     docker: Docker,
     buildkit_socket: PathBuf,
+    /// buildkitd par projet ; `None` : le socket partage `buildkit_socket`.
+    buildkit: Option<Arc<ProductionBuildkit>>,
 }
 
 impl std::fmt::Debug for LocalBackend {
@@ -260,7 +265,15 @@ impl LocalBackend {
         Ok(Self {
             docker: Docker::connect_with_socket_defaults().map_err(image_err)?,
             buildkit_socket: buildkit_socket.into(),
+            buildkit: None,
         })
+    }
+
+    /// Un buildkitd par projet, demarre a la demande.
+    #[must_use]
+    pub fn with_buildkit(mut self, buildkit: Arc<ProductionBuildkit>) -> Self {
+        self.buildkit = Some(buildkit);
+        self
     }
 
     /// Lance l'outil comme chef de son propre groupe de processus.
@@ -518,7 +531,20 @@ impl LocalBackend {
 
 impl BuildBackend for LocalBackend {
     fn buildkit_available(&self) -> bool {
-        self.buildkit_socket.exists()
+        match &self.buildkit {
+            Some(manager) => manager.available(),
+            None => self.buildkit_socket.exists(),
+        }
+    }
+
+    async fn buildkit_for(&self, project: ProjectId) -> Result<BuildkitLease, BuildError> {
+        let Some(manager) = &self.buildkit else {
+            return Ok(BuildkitLease::shared());
+        };
+        manager
+            .ensure(project)
+            .await
+            .map_err(|e| tool(AllowedBin::Buildctl, format!("buildkitd du projet : {e}")))
     }
 
     async fn exec(

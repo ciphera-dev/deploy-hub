@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Test de bout en bout de install/install.sh sur la machine elle-meme
 # (runner CI Linux avec systemd et Docker) : chemin de production, ou
-# l'agent lance PostgreSQL et buildkitd en conteneurs epingles par digest et
-# le plan de controle joint la base par son socket Unix.
+# l'agent lance PostgreSQL en conteneur epingle par digest, buildkitd (un par
+# projet, a la demande ; ici `ciphera-agent buildkitd-up <projet>` tient lieu
+# de premier build) et le plan de controle joint la base par son socket Unix.
 #
 #   sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 install/tests/run-docker-host.sh
 #
@@ -154,7 +155,7 @@ diagnose() {
 	journalctl -u ciphera-agent -u ciphera -u ciphera-proxy -u ciphera-proxy.socket --no-pager -n 80 || true
 	docker ps -a || true
 	docker logs --tail 40 ciphera-postgres 2>&1 || true
-	docker logs --tail 40 ciphera-buildkitd 2>&1 || true
+	docker logs --tail 40 $bk 2>&1 || true
 }
 
 # Avant l'installation : un compte (et son groupe) dont l'id tombe dans la
@@ -166,6 +167,14 @@ id_candidate=$({ cat /etc/subuid /etc/subgid 2>/dev/null || true; } | awk -F: 'N
 groupadd -g "$id_candidate" ciphera-idtest
 useradd -M -u "$id_candidate" -g ciphera-idtest -s /usr/sbin/nologin ciphera-idtest 2>/dev/null
 docker volume create ciphera-buildkit-cache >/dev/null
+
+# buildkitd d'un projet (demarre a la demande, un conteneur par projet) :
+# nom `ciphera-buildkitd-<12 hex de l'UUID>`, socket et etat propres.
+bk_project=$(python3 -c 'import uuid; print(uuid.uuid4())')
+bk=ciphera-buildkitd-$(printf '%s' "$bk_project" | tr -d - | cut -c1-12)
+bk_dir=/run/ciphera-agent/buildkit/$bk_project
+bk_state=/var/lib/ciphera-buildkit/p/$bk_project
+export bk bk_project bk_dir bk_state
 
 # --- (a) installation -----------------------------------------------------------
 printf '== (a) installation\n'
@@ -180,9 +189,14 @@ else
 fi
 check "(a) agent actif" sh -c 'test "$(systemctl is-active ciphera-agent)" = active'
 check "(a) ciphera-postgres en marche" wait_for 300 "test \"\$(docker inspect -f '{{.State.Running}}' ciphera-postgres 2>/dev/null)\" = true"
-check "(a) ciphera-buildkitd en marche" wait_for 300 "test \"\$(docker inspect -f '{{.State.Running}}' ciphera-buildkitd 2>/dev/null)\" = true"
+check "(a) aucun buildkitd partage (ciphera-buildkitd)" sh -c '! docker inspect ciphera-buildkitd >/dev/null 2>&1'
+# Premier usage du projet : l'agent (compte ciphera-agent) cree l'etat et le
+# socket sous le compte ciphera-build, puis demarre le conteneur.
+check "(a) buildkitd du projet demarre a la demande" \
+	wait_for 300 "runuser -u ciphera-agent -- /usr/local/bin/ciphera-agent buildkitd-up '$bk_project' >/dev/null"
+check "(a) $bk en marche" wait_for 300 "test \"\$(docker inspect -f '{{.State.Running}}' $bk 2>/dev/null)\" = true"
 check "(a) image epinglee de PostgreSQL" pinned_image ciphera-postgres postgres.digest
-check "(a) image epinglee de BuildKit" pinned_image ciphera-buildkitd buildkit.digest
+check "(a) image epinglee de BuildKit" pinned_image $bk buildkit.digest
 check "(a) outils de build installes (railpack, buildctl, mise)" \
 	sh -c '/usr/local/lib/ciphera/bin/railpack --version >/dev/null && /usr/local/lib/ciphera/bin/buildctl --version >/dev/null && /usr/local/lib/ciphera/bin/mise-2026.10.14 --version | grep -q 2026.10.14'
 check "(a) ciphera-internal est interne" \
@@ -190,20 +204,20 @@ check "(a) ciphera-internal est interne" \
 check "(a) ciphera-build n'est pas interne" \
 	sh -c 'test "$(docker network inspect -f "{{.Internal}}" ciphera-build)" = false'
 check "(a) buildkitd seul sur ciphera-build" \
-	sh -c 'test "$(docker inspect -f "{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}" ciphera-buildkitd)" = "ciphera-build "'
+	sh -c 'test "$(docker inspect -f "{{range \$k, \$v := .NetworkSettings.Networks}}{{\$k}} {{end}}" $bk)" = "ciphera-build "'
 check "(a) buildkitd non privilegie" \
-	sh -c 'test "$(docker inspect -f "{{.HostConfig.Privileged}}" ciphera-buildkitd)" = false'
+	sh -c 'test "$(docker inspect -f "{{.HostConfig.Privileged}}" $bk)" = false'
 if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && command -v apparmor_parser >/dev/null; then
 	check "(a) profil AppArmor de buildkitd" \
-		sh -c 'docker inspect -f "{{json .HostConfig.SecurityOpt}}" ciphera-buildkitd | grep -q "apparmor=ciphera-buildkitd"'
+		sh -c 'docker inspect -f "{{json .HostConfig.SecurityOpt}}" "$bk" | grep -q "apparmor=ciphera-buildkitd"'
 fi
 check "(a) PostgreSQL sans port publie" no_published_ports ciphera-postgres
-check "(a) buildkitd sans port publie" no_published_ports ciphera-buildkitd
+check "(a) buildkitd sans port publie" no_published_ports $bk
 check "(a) mot de passe absent de docker inspect" \
 	sh -c '! docker inspect ciphera-postgres | grep -qF "$(cat /etc/ciphera/db_password)"'
 check "(a) socket Unix de PostgreSQL" wait_for 120 'test -S /run/ciphera/postgres/.s.PGSQL.5432'
-check "(a) socket Unix de buildkitd" wait_for 120 'test -S /run/ciphera-agent/buildkit/buildkitd.sock'
-bk_sock=/run/ciphera-agent/buildkit/buildkitd.sock
+check "(a) socket Unix de buildkitd" wait_for 120 'test -S "$bk_dir/buildkitd.sock"'
+bk_sock=$bk_dir/buildkitd.sock
 # Connexion reelle au socket : curl sort en 7 seulement si connect() echoue
 # (droits refuses) ; toute autre sortie prouve que la connexion a ete etablie.
 bk_connect() { # <compte>
@@ -224,7 +238,7 @@ else
 	stat /run/ciphera-agent /run/ciphera-agent/buildkit "$bk_sock" || true
 	getfacl -p /run/ciphera-agent/buildkit "$bk_sock" 2>&1 || true
 	ls -lan /run/ciphera-agent/buildkit || true
-	docker inspect -f '{{json .Config.Cmd}} {{json .HostConfig.Binds}}' ciphera-buildkitd || true
+	docker inspect -f '{{json .Config.Cmd}} {{json .HostConfig.Binds}}' $bk || true
 	diagnose
 fi
 check "(a) socket de buildkitd ferme aux autres comptes" sh -c "! runuser -u nobody -- test -w $bk_sock"
@@ -245,7 +259,7 @@ subids_ok() { # <fichier>
 # « uid nom » (uid reel de l'hote) de chaque processus du conteneur buildkitd.
 bk_process_uids() {
 	local pid
-	for pid in $(docker top ciphera-buildkitd -eo pid | tail -n +2); do
+	for pid in $(docker top $bk -eo pid | tail -n +2); do
 		awk '/^Name:/ { n = $2 } /^Uid:/ { u = $2 } END { if (u != "") print u, n }' "/proc/$pid/status" 2>/dev/null || true
 	done
 }
@@ -277,21 +291,27 @@ check "(a) dossier du socket de buildkitd 2770 ciphera-build:ciphera-agent" \
 	sh -c 'test "$(stat -c "%a %U %G" /run/ciphera-agent/buildkit)" = "2770 ciphera-build ciphera-agent"'
 check "(a) etat de BuildKit 0700 ciphera-build" \
 	sh -c 'test "$(stat -c "%a %U %G" /var/lib/ciphera-buildkit)" = "700 ciphera-build ciphera-build"'
+check "(a) dossier du socket du projet 2770 ciphera-build:ciphera-agent (setgid herite)" \
+	sh -c 'test "$(stat -c "%a %U %G" "$bk_dir")" = "2770 ciphera-build ciphera-agent"'
+check "(a) etat du projet 0700 ciphera-build" \
+	sh -c 'test "$(stat -c "%a %U %G" "$bk_state")" = "700 ciphera-build ciphera-build"'
+check "(a) buildkitd monte l'etat et le socket de son projet seulement" \
+	sh -c 'b=$(docker inspect -f "{{json .HostConfig.Binds}}" "$bk"); echo "$b" | grep -q "$bk_state:/home/ciphera-build" && echo "$b" | grep -q "$bk_dir:/run/buildkit" && ! echo "$b" | grep -q "ciphera-buildkit:/"'
 check "(a) conteneur buildkitd lance en uid:gid de ciphera-build" \
-	sh -c 'test "$(docker inspect -f "{{.Config.User}}" ciphera-buildkitd)" = "$(id -u ciphera-build):$(id -g ciphera-build)"'
+	sh -c 'test "$(docker inspect -f "{{.Config.User}}" $bk)" = "$(id -u ciphera-build):$(id -g ciphera-build)"'
 if bk_runs_as_build_account; then
 	check "(a) processus de buildkitd sous l'uid de ciphera-build (ni 1000 ni root)" true
 else
 	check "(a) processus de buildkitd sous l'uid de ciphera-build (ni 1000 ni root)" false
 	printf -- '--- uid des processus de buildkitd (attendu : %s) ---\n' "$(id -u ciphera-build 2>/dev/null)"
 	bk_process_uids || true
-	docker top ciphera-buildkitd || true
+	docker top $bk || true
 fi
 check "(a) buildkitd : seules capacites SETUID et SETGID" \
-	sh -c 'test "$(awk "/^CapBnd:/ { print \$2 }" /proc/"$(docker inspect -f "{{.State.Pid}}" ciphera-buildkitd)"/status)" = 00000000000000c0'
+	sh -c 'test "$(awk "/^CapBnd:/ { print \$2 }" /proc/"$(docker inspect -f "{{.State.Pid}}" $bk)"/status)" = 00000000000000c0'
 # Build reel par le socket (buildctl de l'image, sous le compte du conteneur).
 bk_build() {
-	docker exec ciphera-buildkitd sh -c 'set -e; d=$(mktemp -d)
+	docker exec $bk sh -c 'set -e; d=$(mktemp -d)
 		printf "FROM docker.io/library/busybox:1.37\nRUN echo ok > /ok\n" >"$d/Dockerfile"
 		buildctl --addr unix:///run/buildkit/buildkitd.sock build --frontend dockerfile.v0 \
 			--local context="$d" --local dockerfile="$d"' >"$work/build.log" 2>&1
@@ -349,7 +369,7 @@ probe_ok() { # <journal> <cible> <reached|blocked>
 	grep -q "PROBE $2 $3" "$1"
 }
 egress_build() {
-	docker exec -i ciphera-buildkitd sh -c 'set -e; d=$(mktemp -d); cat >"$d/probe.sh"
+	docker exec -i $bk sh -c 'set -e; d=$(mktemp -d); cat >"$d/probe.sh"
 		printf "FROM docker.io/library/busybox:1.37\nCOPY probe.sh /probe.sh\nRUN echo %s && sh /probe.sh %s\n" \
 			"$(date +%s%N)" "$1" >"$d/Dockerfile"
 		buildctl --addr unix:///run/buildkit/buildkitd.sock build --progress plain \
@@ -459,7 +479,7 @@ proxy_checks a
 # --- (b) desinstallation sans --purge ----------------------------------------------
 printf '== (b) desinstallation\n'
 check "(b) uninstall.sh" sh -c "sh '$root/install/uninstall.sh' >/dev/null"
-check "(b) conteneurs retires" 	sh -c '! docker inspect ciphera-postgres >/dev/null 2>&1 && ! docker inspect ciphera-buildkitd >/dev/null 2>&1'
+check "(b) conteneurs retires" 	sh -c '! docker inspect ciphera-postgres >/dev/null 2>&1 && test -z "$(docker ps -aq --filter name=ciphera-buildkitd)"'
 check "(b) volume de la base conserve" docker volume inspect ciphera-postgres-data
 check "(b) secrets conserves" test -s /etc/ciphera/db_password
 check "(b) proxy arrete, socket de pilotage retire" \

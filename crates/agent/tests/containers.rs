@@ -27,9 +27,26 @@ fn cfg() -> InfraConfig {
         buildkit_account: Some(account()),
         buildkit_state_dir: PathBuf::from("/var/lib/ciphera-buildkit"),
         buildkit_identity_dir: PathBuf::from("/var/lib/ciphera-agent/buildkit-identity"),
+        buildkit_usage_dir: PathBuf::from("/var/lib/ciphera-agent/buildkit-usage"),
         buildkit_resources: infra::BuildkitResources::compute(16 << 30, 8, 200 << 30),
     }
 }
+
+/// Projet des specs buildkitd de ces tests.
+fn project() -> ProjectId {
+    "0a1b2c3d-0000-4000-8000-000000000001".parse().unwrap()
+}
+
+/// Spec de buildkitd du projet `project()`, pour un seul projet.
+fn bk_spec() -> ContainerSpec {
+    bk_spec_in(&cfg())
+}
+
+fn bk_spec_in(c: &InfraConfig) -> ContainerSpec {
+    infra::buildkit_spec(c, project(), 1).unwrap()
+}
+
+const BK_NAME: &str = "ciphera-buildkitd-0a1b2c3d0000";
 
 fn account() -> BuildkitAccount {
     BuildkitAccount {
@@ -110,6 +127,7 @@ fn binds(body: &ContainerCreateBody) -> Vec<String> {
     host(body).binds.clone().unwrap_or_default()
 }
 
+/// Spec de PostgreSQL (seul conteneur d'infrastructure permanent).
 fn spec_named(name: &str) -> ContainerSpec {
     infra::infra_specs(&cfg())
         .unwrap()
@@ -126,29 +144,33 @@ async fn ensure_infra_uses_pinned_digest() {
     c.buildkit_identity_dir = scratch.0.join("identity");
     infra::ensure_infra(&docker, &c).await.unwrap();
 
+    // Seul PostgreSQL tourne en permanence : buildkitd demarre par projet.
     let runs = docker.runs.lock().unwrap().clone();
     let names: Vec<&str> = runs.iter().map(|s| s.name()).collect();
-    assert_eq!(names, ["ciphera-postgres", "ciphera-buildkitd"]);
-    for (spec, file) in runs.iter().zip(["postgres.digest", "buildkit.digest"]) {
-        assert!(spec.image().contains("@sha256:"), "{}", spec.image());
-        assert_pinned(spec.image());
-        assert_eq!(spec.image(), digest_file(file));
+    assert_eq!(names, ["ciphera-postgres"]);
+    let postgres = &runs[0];
+    assert_pinned(postgres.image());
+    assert_eq!(postgres.image(), digest_file("postgres.digest"));
+    assert_eq!(postgres.network(), infra::INFRA_NETWORK);
+    // BuildKit rootless d'un projet : image `-rootless` de la meme version,
+    // epinglee, sur son reseau.
+    let bk = bk_spec_in(&c);
+    assert_pinned(bk.image());
+    assert_eq!(bk.image(), digest_file("buildkit.digest"));
+    assert_eq!(bk.network(), infra::BUILD_NETWORK);
+    assert!(
+        bk.image()
+            .starts_with("docker.io/moby/buildkit:v0.35.1-rootless@sha256:"),
+        "{}",
+        bk.image()
+    );
+    for spec in [postgres, &bk] {
         let body = docker::create_body(spec);
         assert_eq!(body.image.as_deref(), Some(spec.image()));
         assert_no_published_ports(&body);
         assert_ne!(host(&body).privileged, Some(true), "{}", spec.name());
         assert!(host(&body).restart_policy.is_some());
     }
-    assert_eq!(runs[0].network(), infra::INFRA_NETWORK);
-    assert_eq!(runs[1].network(), infra::BUILD_NETWORK);
-    // BuildKit rootless : image `-rootless` de la meme version.
-    assert!(
-        runs[1]
-            .image()
-            .starts_with("docker.io/moby/buildkit:v0.35.1-rootless@sha256:"),
-        "{}",
-        runs[1].image()
-    );
     // Les reseaux existent avant le premier conteneur.
     let calls = docker.calls.lock().unwrap().clone();
     assert_eq!(
@@ -157,7 +179,6 @@ async fn ensure_infra_uses_pinned_digest() {
             "network:ciphera-internal",
             "network:ciphera-build",
             "run:ciphera-postgres",
-            "run:ciphera-buildkitd"
         ]
     );
 }
@@ -261,7 +282,7 @@ fn agent_unit_loads_the_build_egress_filter_first() {
 
 #[test]
 fn buildkitd_listens_only_on_a_unix_socket() {
-    let body = docker::create_body(&spec_named("ciphera-buildkitd"));
+    let body = docker::create_body(&bk_spec());
     let args = body.cmd.clone().unwrap_or_default();
     let addr = args
         .iter()
@@ -271,9 +292,13 @@ fn buildkitd_listens_only_on_a_unix_socket() {
     assert_eq!(addr, "unix:///run/buildkit/buildkitd.sock");
     assert_eq!(args.iter().filter(|a| *a == "--addr").count(), 1);
     assert!(!args.iter().any(|a| a.contains("tcp://")), "{args:?}");
-    // Dossier monte pour l'agent, etiquete pour SELinux (`z`).
+    // Dossier du socket du projet monte pour l'agent, etiquete pour SELinux
+    // (`z`) ; jamais la racine des sockets (ceux des autres projets).
     assert!(
-        binds(&body).contains(&"/run/ciphera-agent/buildkit:/run/buildkit:rw,z".to_string()),
+        binds(&body).contains(&format!(
+            "{}:/run/buildkit:rw,z",
+            cfg().buildkit_project_socket_dir(project()).display()
+        )),
         "{:?}",
         binds(&body)
     );
@@ -294,7 +319,7 @@ fn buildkitd_listens_only_on_a_unix_socket() {
 
 #[test]
 fn buildkitd_is_rootless_unprivileged_and_on_its_own_network() {
-    let body = docker::create_body(&spec_named("ciphera-buildkitd"));
+    let body = docker::create_body(&bk_spec());
     let hc = host(&body);
     assert_ne!(hc.privileged, Some(true));
     assert!(hc.devices.as_ref().is_none_or(|d| d.is_empty()));
@@ -329,8 +354,7 @@ fn buildkitd_is_rootless_unprivileged_and_on_its_own_network() {
     // Profil AppArmor installe par install.sh (Ubuntu >= 23.10) : utilise.
     let mut with_profile = cfg();
     with_profile.buildkit_apparmor_profile = Some("ciphera-buildkitd".into());
-    let specs = infra::infra_specs(&with_profile).unwrap();
-    let opts = security_opt(&docker::create_body(&specs[1]));
+    let opts = security_opt(&docker::create_body(&bk_spec_in(&with_profile)));
     assert!(
         opts.contains(&"apparmor=ciphera-buildkitd".to_string()),
         "{opts:?}"
@@ -343,7 +367,7 @@ fn buildkitd_is_rootless_unprivileged_and_on_its_own_network() {
 
 #[test]
 fn buildkitd_runs_under_the_dedicated_build_account() {
-    let body = docker::create_body(&spec_named("ciphera-buildkitd"));
+    let body = docker::create_body(&bk_spec());
     let hc = host(&body);
     // uid:gid du compte systeme ciphera-build (jamais l'uid 1000 de l'image).
     assert_eq!(body.user.as_deref(), Some("995:994"));
@@ -356,9 +380,13 @@ fn buildkitd_runs_under_the_dedicated_build_account() {
         let bind = format!("{}:/etc/{file}:ro,z", id.join(file).to_string_lossy());
         assert!(binds.contains(&bind), "{bind} absent de {binds:?}");
     }
-    // Etat de BuildKit : dossier de l'hote propre au compte, HOME du compte.
+    // Etat de BuildKit : dossier de l'hote propre au compte et au projet,
+    // HOME du compte.
     assert!(
-        binds.contains(&"/var/lib/ciphera-buildkit:/home/ciphera-build:rw,z".to_string()),
+        binds.contains(&format!(
+            "{}:/home/ciphera-build:rw,z",
+            cfg().buildkit_project_state_dir(project()).display()
+        )),
         "{binds:?}"
     );
     assert_eq!(binds.len(), 7, "{binds:?}");
@@ -531,24 +559,44 @@ fn resolve_reads_the_build_account_and_its_subid_ranges() {
 }
 
 #[tokio::test]
-async fn without_build_account_only_postgres_runs_and_buildkitd_is_stopped() {
+async fn without_build_account_only_postgres_runs() {
     let docker = FakeDocker::default();
     let mut c = cfg();
     c.buildkit_account = None;
     infra::ensure_infra(&docker, &c).await.unwrap();
     let calls = docker.calls.lock().unwrap().clone();
-    // Un buildkitd d'une configuration precedente (uid 1000) est arrete.
-    assert_eq!(
-        calls,
-        [
-            "network:ciphera-internal",
-            "run:ciphera-postgres",
-            "stop:ciphera-buildkitd"
-        ]
-    );
+    assert_eq!(calls, ["network:ciphera-internal", "run:ciphera-postgres"]);
     let specs = infra::infra_specs(&c).unwrap();
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].name(), "ciphera-postgres");
+    // Aucun buildkitd de projet sans le compte.
+    assert!(matches!(
+        infra::buildkit_spec(&c, project(), 1),
+        Err(InfraError::MissingAccount("ciphera-build"))
+    ));
+}
+
+/// Le buildkitd partage d'avant est retire au demarrage, aussi sans compte
+/// de build ; un buildkitd de projet n'est pas touche.
+#[tokio::test]
+async fn legacy_shared_buildkitd_removed() {
+    let docker = FakeDocker::default();
+    docker.add_container("legacy", "ciphera-buildkitd", &[], None);
+    docker.add_container("per-project", BK_NAME, &[], None);
+    for account in [true, false] {
+        let mut c = cfg();
+        if !account {
+            c.buildkit_account = None;
+        }
+        infra::ensure_infra(&docker, &c).await.unwrap();
+        assert!(docker.container("legacy").is_none(), "compte : {account}");
+        docker.add_container("legacy", "ciphera-buildkitd", &[], None);
+    }
+    assert!(docker.container("per-project").is_some());
+    // Rien a retirer : aucun appel.
+    let fresh = FakeDocker::default();
+    assert!(!infra::remove_legacy_buildkitd(&fresh).await.unwrap());
+    assert!(fresh.calls.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -581,7 +629,7 @@ async fn ensure_infra_writes_the_identity_files_readable_by_the_container() {
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(names.len(), 5, "{names:?}");
+    assert_eq!(names.len(), 4, "{names:?}");
 }
 
 #[test]
@@ -783,19 +831,13 @@ fn fingerprint_is_a_stable_sha256_that_ignores_app_env_values() {
         infra::infra_specs(&other_cfg).unwrap()[0].fingerprint()
     );
     // Compte ou plage de sous-uids de buildkitd changes : conteneur recree.
-    let buildkit = spec_named("ciphera-buildkitd").fingerprint();
+    let buildkit = bk_spec().fingerprint();
     let mut other_cfg = cfg();
     other_cfg.buildkit_account.as_mut().unwrap().user = (996, 994);
-    assert_ne!(
-        buildkit,
-        infra::infra_specs(&other_cfg).unwrap()[1].fingerprint()
-    );
+    assert_ne!(buildkit, bk_spec_in(&other_cfg).fingerprint());
     let mut other_cfg = cfg();
     other_cfg.buildkit_account.as_mut().unwrap().subgids.start = 300000;
-    assert_ne!(
-        buildkit,
-        infra::infra_specs(&other_cfg).unwrap()[1].fingerprint()
-    );
+    assert_ne!(buildkit, bk_spec_in(&other_cfg).fingerprint());
     // Etiquettes posees a la creation.
     let labels = docker::create_body(&a).labels.unwrap_or_default();
     assert_eq!(labels.get(docker::SPEC_LABEL), Some(&fp));
@@ -892,9 +934,8 @@ fn app_alias_is_service_internal_on_the_project_network_only_for_a_dns_safe_name
 #[test]
 fn every_container_gets_rotated_logs() {
     let mut bodies = vec![docker::create_body(&app_spec(ProjectId::new()))];
-    for name in ["ciphera-postgres", "ciphera-buildkitd"] {
-        bodies.push(docker::create_body(&spec_named(name)));
-    }
+    bodies.push(docker::create_body(&spec_named("ciphera-postgres")));
+    bodies.push(docker::create_body(&bk_spec()));
     for body in bodies {
         let log = host(&body).log_config.clone().expect("log_config");
         assert_eq!(log.typ.as_deref(), Some(docker::LOG_DRIVER));
@@ -916,7 +957,7 @@ fn every_container_gets_rotated_logs() {
 /// Son empreinte est une etiquette : la modifier recree le conteneur.
 #[test]
 fn buildkitd_reads_its_frontend_allowlist_read_only() {
-    let body = docker::create_body(&spec_named("ciphera-buildkitd"));
+    let body = docker::create_body(&bk_spec());
     let args = body.cmd.clone().unwrap_or_default();
     let config = args
         .iter()
@@ -924,10 +965,16 @@ fn buildkitd_reads_its_frontend_allowlist_read_only() {
         .map(|i| args[i + 1].clone())
         .expect("--config");
     assert_eq!(config, "/etc/buildkit/buildkitd.toml");
-    let id = PathBuf::from("/var/lib/ciphera-agent/buildkit-identity");
+    // Configuration propre au projet.
     let bind = format!(
         "{}:/etc/buildkit/buildkitd.toml:ro,z",
-        id.join("buildkitd.toml").to_string_lossy()
+        cfg().buildkit_project_config(project()).to_string_lossy()
+    );
+    assert!(
+        cfg()
+            .buildkit_project_config(project())
+            .to_string_lossy()
+            .ends_with(&format!("buildkitd-{}.toml", project()))
     );
     assert!(binds(&body).contains(&bind), "{:?}", binds(&body));
 
@@ -957,14 +1004,13 @@ fn buildkitd_reads_its_frontend_allowlist_read_only() {
     assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()), "{digest}");
 }
 
-#[tokio::test]
-async fn ensure_infra_writes_the_buildkitd_config() {
+#[test]
+fn project_config_is_written_atomically_and_restored() {
     let scratch = Scratch::new("bkconfig");
     let mut c = cfg();
     c.buildkit_identity_dir = scratch.0.join("identity");
-    let docker = FakeDocker::default();
-    infra::ensure_infra(&docker, &c).await.unwrap();
-    let path = c.buildkit_identity_dir.join("buildkitd.toml");
+    infra::write_project_config(&c, project(), 1).unwrap();
+    let path = c.buildkit_project_config(project());
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         infra::buildkitd_config(&cfg().buildkit_resources)
@@ -975,11 +1021,24 @@ async fn ensure_infra_writes_the_buildkitd_config() {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o644);
     }
-    // Fichier modifie a la main : reecrit au prochain demarrage.
+    // Fichier modifie a la main : reecrit a la prochaine demande.
     std::fs::write(&path, "[frontend.\"gateway.v0\"]\n").unwrap();
-    infra::ensure_infra(&docker, &c).await.unwrap();
+    infra::write_project_config(&c, project(), 1).unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         infra::buildkitd_config(&cfg().buildkit_resources)
     );
+    // Plus de projets : part du ramasse-miettes reduite (20 Gio / 4).
+    infra::write_project_config(&c, project(), 4).unwrap();
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("reservedSpace = \"5GB\"")
+    );
+    // Aucun fichier temporaire laisse.
+    let names: Vec<String> = std::fs::read_dir(&c.buildkit_identity_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 1, "{names:?}");
 }

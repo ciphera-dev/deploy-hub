@@ -534,7 +534,7 @@ install_apparmor_profile() {
 		if [ "$(cat "$USERNS_RESTRICT" 2>/dev/null)" = 1 ]; then
 			warn "ATTENTION : le noyau restreint les espaces de noms utilisateur ($USERNS_RESTRICT = 1)"
 			warn "mais apparmor_parser est absent : le profil $APPARMOR_PROFILE n'est pas installe."
-			warn "BuildKit (conteneur ciphera-buildkitd) NE DEMARRERA PAS : installer le paquet apparmor puis relancer install.sh."
+			warn "BuildKit (conteneurs ciphera-buildkitd-<projet>) NE DEMARRERONT PAS : installer le paquet apparmor puis relancer install.sh."
 		fi
 		return 0
 	fi

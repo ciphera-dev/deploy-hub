@@ -1,5 +1,6 @@
 //! Conteneurs d'infrastructure : `ciphera-postgres` (base du plan de
-//! controle) et `ciphera-buildkitd` (builds), images epinglees par digest
+//! controle) et `ciphera-buildkitd-<12 hex>` (builds, un par projet : voir
+//! le module `buildkit`), images epinglees par digest
 //! (`deploy/containers/*.digest`, compilees dans le binaire), sans aucun
 //! port publie. L'agent les demarre au lancement, independamment du lien
 //! avec le plan de controle (qui a besoin de la base pour demarrer).
@@ -38,8 +39,9 @@
 //!   `subuid` et `subgid` minimaux generes par l'agent
 //!   (`DEFAULT_BUILDKIT_IDENTITY_DIR`, 0644) et montes en lecture seule sur
 //!   ceux de l'image (aucune image derivee : le digest reste epingle) ;
-//! - etat (cache, couches) dans `/var/lib/ciphera-buildkit`, dossier de
-//!   l'hote 0700 au compte `ciphera-build` (systemd-tmpfiles), monte comme
+//! - etat (cache, couches) dans `/var/lib/ciphera-buildkit/p/<uuid du
+//!   projet>`, dossier de l'hote 0700 au compte `ciphera-build` (cree par un
+//!   conteneur jetable sous ce compte, `buildkit::DockerFs`), monte comme
 //!   HOME du compte ; un volume nomme appartiendrait a l'uid 1000 de l'image ;
 //! - toutes les capacites retirees sauf `SETUID` et `SETGID`, dont
 //!   newuidmap/newgidmap ont besoin pour ecrire la correspondance des uids
@@ -61,7 +63,7 @@
 //!   newuidmap/newgidmap (setuid) pour creer son espace de noms ; avec
 //!   `no-new-privileges` ils echouent et buildkitd ne demarre pas ;
 //! - n'ecoute que sur un socket Unix (`--addr unix://…`), jamais en TCP,
-//!   dans `/run/ciphera-agent/buildkit` (dossier de l'hote au compte
+//!   dans `/run/ciphera-agent/buildkit/<uuid du projet>` (dossier de l'hote au compte
 //!   `ciphera-build`, setgid au groupe `ciphera-agent` : le socket 0660
 //!   herite de ce groupe, et `--group=-1` empeche buildkitd de le changer ;
 //!   aucune ACL ; parent 0750 ferme aux autres comptes, voir
@@ -80,9 +82,12 @@
 //!   Dockerfile ne peut donc pas charger un frontend arbitraire, qui
 //!   choisirait ses identifiants de cache hors de l'espace de noms du
 //!   projet (`build::dockerfile`). Son empreinte est une etiquette du
-//!   conteneur : la changer recree buildkitd. Les caches restent dans un
-//!   seul etat BuildKit pour tous les projets, cloisonnes par espace de noms
-//!   (UUID du projet et de l'environnement), pas par des etats separes.
+//!   conteneur : la changer recree buildkitd. Chaque projet a son propre
+//!   buildkitd et son propre etat (conteneur, dossier d'etat, socket) ; les
+//!   caches restent en plus cloisonnes par espace de noms (UUID du projet et
+//!   de l'environnement), en defense en profondeur. Le ramasse-miettes garde
+//!   `gc_keep_gib` divise par le nombre de projets (1 Gio au moins) ;
+//!   le conteneur partage `ciphera-buildkitd` d'avant est retire au demarrage.
 //!
 //! - ressources bornees (`BuildkitResources`) : au plus 4096 processus,
 //!   50 % de la memoire du noeud (1 Gio au moins) et tous les CPU sauf un
@@ -99,10 +104,21 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use crate::docker::{BUILD_NETWORK, INFRA_NETWORK};
-use crate::docker::{ContainerId, ContainerSpec, DockerError, DockerOps, MountSpec};
+use crate::docker::{ContainerSpec, DockerError, DockerOps, MANAGED_LABEL, MountSpec, ROLE_LABEL};
+use shared::ids::ProjectId;
 
 pub const POSTGRES_CONTAINER: &str = "ciphera-postgres";
-pub const BUILDKIT_CONTAINER: &str = "ciphera-buildkitd";
+/// Conteneur buildkitd partage d'avant les etats par projet : retire au
+/// demarrage de l'agent.
+pub const LEGACY_BUILDKIT_CONTAINER: &str = "ciphera-buildkitd";
+/// Prefixe des conteneurs buildkitd par projet (`<prefixe><12 hex>`).
+pub const BUILDKIT_CONTAINER_PREFIX: &str = "ciphera-buildkitd-";
+/// Role (`ROLE_LABEL`) d'un buildkitd de projet.
+pub const BUILDKITD_ROLE: &str = "buildkitd";
+/// Projet (UUID complet) servi par un buildkitd.
+pub const BUILDKIT_PROJECT_LABEL: &str = "dev.ciphera.buildkit.project";
+/// Sous-dossier de l'etat de buildkitd qui contient un dossier par projet.
+pub const BUILDKIT_STATE_SUBDIR: &str = "p";
 pub const POSTGRES_VOLUME: &str = "ciphera-postgres-data";
 /// Plages de sous-uids/sous-gids de buildkitd (comprises dans l'empreinte).
 pub const SUBIDS_LABEL: &str = "dev.ciphera.buildkit.subids";
@@ -126,6 +142,10 @@ pub const DEFAULT_BUILDKIT_SOCKET_DIR: &str = "/run/ciphera-agent/buildkit";
 pub const DEFAULT_BUILDKIT_STATE_DIR: &str = "/var/lib/ciphera-buildkit";
 /// Fichiers d'identite de buildkitd, ecrits par l'agent (son StateDirectory).
 pub const DEFAULT_BUILDKIT_IDENTITY_DIR: &str = "/var/lib/ciphera-agent/buildkit-identity";
+/// Dernier usage de l'etat de chaque projet : un fichier `<uuid>` dont la
+/// date de modification est celle du dernier build (l'etat lui-meme est
+/// illisible pour l'agent, 0700 au compte `ciphera-build`).
+pub const DEFAULT_BUILDKIT_USAGE_DIR: &str = "/var/lib/ciphera-agent/buildkit-usage";
 /// Compte systeme du conteneur PostgreSQL, cree par `install.sh`.
 pub const POSTGRES_ACCOUNT: &str = "ciphera-postgres";
 /// Compte systeme de buildkitd, cree par `install.sh` avec sa plage de
@@ -184,8 +204,46 @@ pub struct InfraConfig {
     pub buildkit_state_dir: PathBuf,
     /// Dossier ou l'agent ecrit les fichiers d'identite de buildkitd.
     pub buildkit_identity_dir: PathBuf,
+    /// Dossier des dates de dernier usage de l'etat de chaque projet.
+    pub buildkit_usage_dir: PathBuf,
     /// Plafonds de ressources de buildkitd.
     pub buildkit_resources: BuildkitResources,
+}
+
+/// Les 12 premiers caracteres hexadecimaux de l'UUID du projet.
+fn short_id(project: ProjectId) -> String {
+    project.to_string().replace('-', "")[..12].to_string()
+}
+
+/// `ciphera-buildkitd-<12 hex de l'UUID du projet>`.
+pub fn buildkit_container_name(project: ProjectId) -> String {
+    format!("{BUILDKIT_CONTAINER_PREFIX}{}", short_id(project))
+}
+
+impl InfraConfig {
+    /// Etat de buildkitd du projet : `<buildkit_state_dir>/p/<uuid>`.
+    pub fn buildkit_project_state_dir(&self, project: ProjectId) -> PathBuf {
+        self.buildkit_state_dir
+            .join(BUILDKIT_STATE_SUBDIR)
+            .join(project.to_string())
+    }
+
+    /// Dossier du socket de buildkitd du projet : `<buildkit_socket_dir>/<uuid>`.
+    pub fn buildkit_project_socket_dir(&self, project: ProjectId) -> PathBuf {
+        self.buildkit_socket_dir.join(project.to_string())
+    }
+
+    /// Socket de buildkitd du projet.
+    pub fn buildkit_project_socket(&self, project: ProjectId) -> PathBuf {
+        self.buildkit_project_socket_dir(project)
+            .join("buildkitd.sock")
+    }
+
+    /// Configuration de buildkitd du projet (dossier d'identite).
+    pub fn buildkit_project_config(&self, project: ProjectId) -> PathBuf {
+        self.buildkit_identity_dir
+            .join(format!("buildkitd-{project}.toml"))
+    }
 }
 
 /// Plafonds de ressources de buildkitd, calcules sur le noeud.
@@ -209,6 +267,17 @@ impl BuildkitResources {
             memory: (total_memory / 2).max(BUILDKIT_MIN_MEMORY),
             nano_cpus: cpus.saturating_mul(1_000_000_000),
             gc_keep_gib: ((disk_bytes / 10) >> 30).clamp(GC_KEEP_MIN_GIB, GC_KEEP_MAX_GIB),
+        }
+    }
+
+    /// Plafonds de l'etat d'un des `projects` projets qui ont un etat : le
+    /// stockage garde par le ramasse-miettes est partage entre eux (1 Gio au
+    /// moins chacun) ; memoire et CPU sont ceux du seul buildkitd en marche.
+    pub fn for_projects(self, projects: usize) -> Self {
+        let n = u64::try_from(projects.max(1)).unwrap_or(u64::MAX);
+        Self {
+            gc_keep_gib: (self.gc_keep_gib / n).max(1),
+            ..self
         }
     }
 
@@ -385,6 +454,7 @@ impl InfraConfig {
             buildkit_account,
             buildkit_state_dir: PathBuf::from(DEFAULT_BUILDKIT_STATE_DIR),
             buildkit_identity_dir: PathBuf::from(DEFAULT_BUILDKIT_IDENTITY_DIR),
+            buildkit_usage_dir: PathBuf::from(DEFAULT_BUILDKIT_USAGE_DIR),
             buildkit_resources: BuildkitResources::detect(Path::new(DEFAULT_BUILDKIT_STATE_DIR)),
         })
     }
@@ -444,33 +514,51 @@ fn sha256_hex(text: &str) -> String {
         .collect()
 }
 
-/// Ecrit les fichiers d'identite et la configuration de buildkitd (0644 :
-/// lus par `ciphera-build` dans le conteneur) s'ils manquent ou different ;
-/// remplacement atomique (un conteneur en marche garde l'ancien fichier
-/// monte ; l'empreinte de la configuration le fait recreer).
-pub fn write_buildkit_identity(
-    dir: &Path,
-    account: &BuildkitAccount,
-    resources: &BuildkitResources,
-) -> Result<(), InfraError> {
+/// Ecrit `name` dans `dir` (0644 : lu par `ciphera-build` dans le
+/// conteneur) s'il manque ou differe ; remplacement atomique (un conteneur en
+/// marche garde l'ancien fichier monte).
+fn write_if_changed(dir: &Path, name: &str, content: &str) -> Result<(), InfraError> {
+    let path = dir.join(name);
+    if std::fs::read_to_string(&path).is_ok_and(|c| c == content) {
+        return Ok(());
+    }
+    let tmp = dir.join(format!(".{name}.tmp"));
+    std::fs::write(&tmp, content).map_err(InfraError::Identity)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644))
+            .map_err(InfraError::Identity)?;
+    }
+    std::fs::rename(&tmp, &path).map_err(InfraError::Identity)
+}
+
+/// Ecrit les fichiers d'identite de buildkitd (communs a tous les projets)
+/// s'ils manquent ou different.
+pub fn write_buildkit_identity(dir: &Path, account: &BuildkitAccount) -> Result<(), InfraError> {
     std::fs::create_dir_all(dir).map_err(InfraError::Identity)?;
-    let config = (BUILDKIT_CONFIG_FILE, buildkitd_config(resources));
-    for (name, content) in buildkit_identity(account).into_iter().chain([config]) {
-        let path = dir.join(name);
-        if std::fs::read_to_string(&path).is_ok_and(|c| c == content) {
-            continue;
-        }
-        let tmp = dir.join(format!(".{name}.tmp"));
-        std::fs::write(&tmp, &content).map_err(InfraError::Identity)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644))
-                .map_err(InfraError::Identity)?;
-        }
-        std::fs::rename(&tmp, &path).map_err(InfraError::Identity)?;
+    for (name, content) in buildkit_identity(account) {
+        write_if_changed(dir, name, &content)?;
     }
     Ok(())
+}
+
+/// Ecrit la configuration de buildkitd du projet (`buildkitd-<uuid>.toml`
+/// du dossier d'identite) pour `projects` projets ayant un etat ; l'empreinte
+/// de la configuration (etiquette du conteneur) recree buildkitd si elle
+/// change.
+pub fn write_project_config(
+    cfg: &InfraConfig,
+    project: ProjectId,
+    projects: usize,
+) -> Result<(), InfraError> {
+    std::fs::create_dir_all(&cfg.buildkit_identity_dir).map_err(InfraError::Identity)?;
+    let content = buildkitd_config(&cfg.buildkit_resources.for_projects(projects));
+    write_if_changed(
+        &cfg.buildkit_identity_dir,
+        &format!("buildkitd-{project}.toml"),
+        &content,
+    )
 }
 
 /// Reference epinglee lue dans un fichier de digest.
@@ -542,9 +630,23 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
         labels: Vec::new(),
         aliases: Vec::new(),
     };
-    let Some(account) = cfg.buildkit_account else {
-        return Ok(vec![postgres]);
-    };
+    Ok(vec![postgres])
+}
+
+/// Spec de `ciphera-buildkitd-<12 hex>`, buildkitd du projet : son etat,
+/// son socket et sa configuration (`projects` projets ont un etat : le
+/// ramasse-miettes en garde la part de celui-ci). Meme identite, memes
+/// limites et meme liste de frontends pour tous les projets. Sans compte
+/// `ciphera-build` : `MissingAccount`.
+pub fn buildkit_spec(
+    cfg: &InfraConfig,
+    project: ProjectId,
+    projects: usize,
+) -> Result<ContainerSpec, InfraError> {
+    let account = cfg
+        .buildkit_account
+        .ok_or(InfraError::MissingAccount(BUILD_ACCOUNT))?;
+    let resources = cfg.buildkit_resources;
     let apparmor = cfg
         .buildkit_apparmor_profile
         .as_deref()
@@ -552,12 +654,12 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
     let (bk_uid, bk_gid) = account.user;
     let mut mounts = vec![
         MountSpec::Bind {
-            source: cfg.buildkit_state_dir.clone(),
+            source: cfg.buildkit_project_state_dir(project),
             target: BUILDKIT_HOME.to_string(),
             read_only: false,
         },
         MountSpec::Bind {
-            source: cfg.buildkit_socket_dir.clone(),
+            source: cfg.buildkit_project_socket_dir(project),
             target: BUILDKIT_SOCKET_DIR.to_string(),
             read_only: false,
         },
@@ -568,12 +670,12 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
         read_only: true,
     }));
     mounts.push(MountSpec::Bind {
-        source: cfg.buildkit_identity_dir.join(BUILDKIT_CONFIG_FILE),
+        source: cfg.buildkit_project_config(project),
         target: BUILDKIT_CONFIG.to_string(),
         read_only: true,
     });
-    let buildkit = ContainerSpec {
-        name: BUILDKIT_CONTAINER.to_string(),
+    Ok(ContainerSpec {
+        name: buildkit_container_name(project),
         image: pinned_image(BUILDKIT_IMAGE_FILE, "buildkit")?,
         network: BUILD_NETWORK.to_string(),
         // Point d'entree de l'image : `rootlesskit buildkitd`.
@@ -612,9 +714,11 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
         ],
         unmask_system_paths: true,
         pids_limit: Some(BUILDKIT_PIDS_LIMIT),
-        memory: i64::try_from(cfg.buildkit_resources.memory).ok(),
-        nano_cpus: i64::try_from(cfg.buildkit_resources.nano_cpus).ok(),
+        memory: i64::try_from(resources.memory).ok(),
+        nano_cpus: i64::try_from(resources.nano_cpus).ok(),
         labels: vec![
+            (ROLE_LABEL.to_string(), BUILDKITD_ROLE.to_string()),
+            (BUILDKIT_PROJECT_LABEL.to_string(), project.to_string()),
             (
                 SUBIDS_LABEL.to_string(),
                 format!(
@@ -627,22 +731,49 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
             ),
             (
                 CONFIG_LABEL.to_string(),
-                sha256_hex(&buildkitd_config(&cfg.buildkit_resources)),
+                sha256_hex(&buildkitd_config(&resources.for_projects(projects))),
             ),
         ],
         aliases: Vec::new(),
+    })
+}
+
+/// Retire le buildkitd partage d'avant les etats par projet (arrete et
+/// supprime) ; `true` s'il existait. Un conteneur du meme nom qui n'est pas
+/// a Ciphera est laisse tel quel (avertissement).
+pub async fn remove_legacy_buildkitd<D: DockerOps>(docker: &D) -> Result<bool, InfraError> {
+    let Some(legacy) = docker
+        .list_managed(&[(MANAGED_LABEL, "true")])
+        .await?
+        .into_iter()
+        .find(|c| c.name == LEGACY_BUILDKIT_CONTAINER)
+    else {
+        return Ok(false);
     };
-    Ok(vec![postgres, buildkit])
+    match docker.remove(&legacy.id).await {
+        Ok(()) => {
+            tracing::info!(
+                "{LEGACY_BUILDKIT_CONTAINER} (partage) retire : un buildkitd par projet"
+            );
+            Ok(true)
+        }
+        Err(DockerError::NotManaged(name)) => {
+            tracing::warn!("conteneur {name} non gere par Ciphera : laisse tel quel");
+            Ok(false)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Cree `ciphera-internal` et `ciphera-build`, ecrit les fichiers d'identite
-/// de buildkitd, puis fait tourner PostgreSQL et buildkitd. Sans compte
-/// `ciphera-build` : PostgreSQL seul, buildkitd arrete s'il existe, erreur
-/// journalisee (builds indisponibles).
+/// de buildkitd, retire le buildkitd partage d'avant, puis fait tourner
+/// PostgreSQL. Les buildkitd des projets demarrent a la demande
+/// (`buildkit::BuildkitManager`). Sans compte `ciphera-build` : PostgreSQL
+/// seul, erreur journalisee (builds indisponibles).
 pub async fn ensure_infra<D: DockerOps>(docker: &D, cfg: &InfraConfig) -> Result<(), InfraError> {
     let specs = infra_specs(cfg)?;
     if let Some(account) = &cfg.buildkit_account {
-        write_buildkit_identity(&cfg.buildkit_identity_dir, account, &cfg.buildkit_resources)?;
+        write_buildkit_identity(&cfg.buildkit_identity_dir, account)?;
     }
     docker.ensure_network(INFRA_NETWORK).await?;
     if cfg.builds_available() {
@@ -652,12 +783,10 @@ pub async fn ensure_infra<D: DockerOps>(docker: &D, cfg: &InfraConfig) -> Result
         docker.run(spec).await?;
         tracing::info!("{} en marche ({})", spec.name(), spec.image());
     }
+    // Un buildkitd d'une configuration precedente (partage, ou sous l'uid
+    // 1000 de l'image) ne doit pas continuer a tourner.
+    remove_legacy_buildkitd(docker).await?;
     if !cfg.builds_available() {
-        // Un buildkitd d'une configuration precedente (par exemple sous
-        // l'uid 1000 de l'image) ne doit pas continuer a tourner.
-        docker
-            .stop(&ContainerId(BUILDKIT_CONTAINER.to_string()))
-            .await?;
         tracing::error!(
             "builds indisponibles : compte {BUILD_ACCOUNT} ou ses plages absents (relancer install.sh)"
         );
@@ -722,8 +851,15 @@ mod tests {
             }),
             buildkit_state_dir: PathBuf::from("/var/lib/ciphera-buildkit"),
             buildkit_identity_dir: PathBuf::from("/var/lib/ciphera-agent/buildkit-identity"),
+            buildkit_usage_dir: PathBuf::from("/var/lib/ciphera-agent/buildkit-usage"),
             buildkit_resources: resources,
         }
+    }
+
+    fn project(hex: &str) -> ProjectId {
+        format!("{hex}-0000-4000-8000-000000000001")
+            .parse()
+            .unwrap()
     }
 
     #[test]
@@ -750,24 +886,98 @@ mod tests {
     #[test]
     fn buildkit_spec_has_limits() {
         let r = BuildkitResources::compute(16 * GIB, 8, 200 * GIB);
-        let specs = infra_specs(&cfg(r)).unwrap();
-        let bk = specs
-            .iter()
-            .find(|s| s.name() == BUILDKIT_CONTAINER)
-            .unwrap();
+        let p = project("0a1b2c3d");
+        let bk = buildkit_spec(&cfg(r), p, 1).unwrap();
         assert_eq!(bk.pids_limit, Some(4096));
         assert_eq!(bk.memory, Some((8 * GIB) as i64));
         assert_eq!(bk.nano_cpus, Some(7_000_000_000));
         // PostgreSQL : aucun plafond ajoute.
-        let pg = specs
-            .iter()
-            .find(|s| s.name() == POSTGRES_CONTAINER)
-            .unwrap();
+        let specs = infra_specs(&cfg(r)).unwrap();
+        assert_eq!(specs.len(), 1);
+        let pg = &specs[0];
+        assert_eq!(pg.name(), POSTGRES_CONTAINER);
         assert_eq!((pg.memory, pg.nano_cpus), (None, None));
         // Un autre plafond recree le conteneur (empreinte differente).
         let other = BuildkitResources::compute(32 * GIB, 8, 200 * GIB);
-        let bk2 = &infra_specs(&cfg(other)).unwrap()[1];
+        let bk2 = buildkit_spec(&cfg(other), p, 1).unwrap();
         assert_ne!(bk.fingerprint(), bk2.fingerprint());
+    }
+
+    #[test]
+    fn container_name_and_paths_follow_the_project() {
+        let r = BuildkitResources::compute(16 * GIB, 8, 200 * GIB);
+        let c = cfg(r);
+        let p = project("0a1b2c3d");
+        assert_eq!(buildkit_container_name(p), "ciphera-buildkitd-0a1b2c3d0000");
+        assert_eq!(
+            c.buildkit_project_state_dir(p),
+            PathBuf::from(format!("/var/lib/ciphera-buildkit/p/{p}"))
+        );
+        assert_eq!(
+            c.buildkit_project_socket(p),
+            PathBuf::from(format!("/run/ciphera-agent/buildkit/{p}/buildkitd.sock"))
+        );
+        // Deux projets : ni conteneur, ni etat, ni socket en commun.
+        let q = project("ffeeddcc");
+        assert_ne!(buildkit_container_name(p), buildkit_container_name(q));
+        assert_ne!(
+            c.buildkit_project_state_dir(p),
+            c.buildkit_project_state_dir(q)
+        );
+        assert_ne!(
+            c.buildkit_project_socket_dir(p),
+            c.buildkit_project_socket_dir(q)
+        );
+    }
+
+    #[test]
+    fn buildkit_spec_mounts_only_its_project() {
+        let r = BuildkitResources::compute(16 * GIB, 8, 200 * GIB);
+        let c = cfg(r);
+        let (p, q) = (project("0a1b2c3d"), project("ffeeddcc"));
+        let spec = buildkit_spec(&c, p, 2).unwrap();
+        assert_eq!(spec.name(), buildkit_container_name(p));
+        let body = crate::docker::create_body(&spec);
+        let binds = body.host_config.unwrap().binds.unwrap();
+        // (separateur de chemin de la plateforme : `/` sous Linux)
+        let state = c.buildkit_project_state_dir(p);
+        let sock = c.buildkit_project_socket_dir(p);
+        assert!(binds.contains(&format!("{}:{BUILDKIT_HOME}:rw,z", state.display())));
+        assert!(binds.contains(&format!("{}:{BUILDKIT_SOCKET_DIR}:rw,z", sock.display())));
+        for bind in &binds {
+            assert!(!bind.contains(&q.to_string()), "{bind}");
+        }
+        // Ni la racine de l'etat ni celle des sockets.
+        assert!(
+            !binds
+                .iter()
+                .any(|b| b.starts_with("/var/lib/ciphera-buildkit:"))
+        );
+        assert!(
+            !binds
+                .iter()
+                .any(|b| b.starts_with("/run/ciphera-agent/buildkit:"))
+        );
+        let labels = spec.labels();
+        assert!(labels.contains(&(ROLE_LABEL.to_string(), BUILDKITD_ROLE.to_string())));
+        assert!(labels.contains(&(BUILDKIT_PROJECT_LABEL.to_string(), p.to_string())));
+    }
+
+    #[test]
+    fn gc_budget_is_shared_between_projects() {
+        let r = BuildkitResources::compute(16 * GIB, 8, 200 * GIB);
+        assert_eq!(r.gc_keep_gib, 20);
+        assert_eq!(r.for_projects(0).gc_keep_gib, 20);
+        assert_eq!(r.for_projects(4).gc_keep_gib, 5);
+        // 1 Gio au moins, memoire et CPU inchanges.
+        assert_eq!(r.for_projects(100).gc_keep_gib, 1);
+        assert_eq!(r.for_projects(4).memory, r.memory);
+        // Le partage change l'empreinte (config differente) : recree.
+        let p = project("0a1b2c3d");
+        assert_ne!(
+            buildkit_spec(&cfg(r), p, 1).unwrap().fingerprint(),
+            buildkit_spec(&cfg(r), p, 4).unwrap().fingerprint()
+        );
     }
 
     #[test]
