@@ -74,7 +74,7 @@ pub struct Me {
         (status = 200, description = "Connecte ; nouveau cookie de session pose", body = LoginResponse),
         (status = 401, description = "Identifiants refuses (message identique pour un e-mail inconnu)"),
         (status = 422, description = "Requete invalide"),
-        (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),
+        (status = 429, description = "Trop de tentatives, ou connexion deja en cours sur ce compte (code `busy`) ; en-tete Retry-After"),
     )
 )]
 #[allow(dead_code)]

@@ -416,6 +416,35 @@ mod tests {
         assert!(flights.try_begin(&a).is_some());
     }
 
+    /// La place du compte reste prise tant que le calcul tourne, meme si la
+    /// requete qui l'a lance est abandonnee.
+    #[tokio::test]
+    async fn flight_outlives_a_cancelled_request() {
+        let flights = LoginFlights::default();
+        let key = email_key("flight-cancel@example.com");
+        let flight = flights.try_begin(&key).expect("place");
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let task = tokio::spawn(crate::auth::password::offload(move || {
+            let _flight = flight;
+            wait.recv().ok();
+        }));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        task.abort();
+        let _ = task.await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(flights.try_begin(&key).is_none(), "calcul encore en cours");
+        release.send(()).unwrap();
+        let mut freed = false;
+        for _ in 0..40 {
+            if flights.try_begin(&key).is_some() {
+                freed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(freed, "place rendue a la fin du calcul");
+    }
+
     #[test]
     fn login_delay_grows_from_one_to_thirty_seconds() {
         let secs = |n| login_delay(n).as_secs();

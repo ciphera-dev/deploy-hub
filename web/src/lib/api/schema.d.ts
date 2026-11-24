@@ -3073,7 +3073,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Trop de tentatives ; en-tete Retry-After */
+            /** @description Trop de tentatives, ou connexion deja en cours sur ce compte (code `busy`) ; en-tete Retry-After */
             429: {
                 headers: {
                     [name: string]: unknown;

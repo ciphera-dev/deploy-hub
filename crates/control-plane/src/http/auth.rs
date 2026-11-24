@@ -82,12 +82,17 @@ fn busy() -> Response {
 async fn verify(
     password: Zeroizing<String>,
     phc: Option<String>,
+    in_flight: rate_limit::LoginFlight,
 ) -> Result<bool, password::OffloadError> {
-    password::offload(move || match phc {
-        Some(phc) => password::verify(&password, &phc),
-        None => {
-            password::verify(&password, &DUMMY_HASH);
-            false
+    password::offload(move || {
+        // Place rendue a la fin du calcul, meme si la requete est abandonnee.
+        let _in_flight = in_flight;
+        match phc {
+            Some(phc) => password::verify(&password, &phc),
+            None => {
+                password::verify(&password, &DUMMY_HASH);
+                false
+            }
         }
     })
     .await
@@ -153,15 +158,26 @@ async fn login(
     let ip_key = rate_limit::IpKey::login(ip);
     let ip = ip.to_string();
     let email_key = rate_limit::email_key(&email);
-    // Un seul calcul Argon2 de connexion en vol par compte : les requetes
-    // simultanees sur le meme e-mail ne multiplient pas le cout du serveur.
-    let Some(_in_flight) = state.login_flights.try_begin(&email_key) else {
-        return Ok(busy());
-    };
-
     if let Err(e) = rate_limit::purge(&state.db).await {
         tracing::warn!(error = %e, "purge des tentatives de connexion");
     }
+    // Au-dela de 10 echecs de mot de passe recents sur ce compte (toutes IP),
+    // chaque tentative est ralentie, sans jamais bloquer le titulaire (qui
+    // garde la passkey). Le delai ne depend pas de l'existence du compte et
+    // s'applique AVANT la place de calcul : une requete qui dort ne la tient pas.
+    let failures = rate_limit::recent_login_failures(&state.db, &email_key)
+        .await
+        .map_err(|e| internal("limitation de debit", e))?;
+    let delay = rate_limit::login_delay(failures + 1);
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
+    // Un seul calcul Argon2 de connexion en vol par compte : les requetes
+    // simultanees sur le meme e-mail ne multiplient pas le cout du serveur.
+    // La place passe dans le calcul (`verify`) et n'est rendue qu'a sa fin.
+    let Some(in_flight) = state.login_flights.try_begin(&email_key) else {
+        return Ok(busy());
+    };
     let attempt = match rate_limit::admit(&state.db, &ip_key, &email_key)
         .await
         .map_err(|e| internal("limitation de debit", e))?
@@ -172,18 +188,6 @@ async fn login(
             return Ok(rate_limited(retry_after));
         }
     };
-
-    // Au-dela de 10 echecs de mot de passe recents sur ce compte (toutes IP),
-    // chaque tentative est ralentie, sans jamais bloquer le titulaire (qui
-    // garde la passkey). Le delai ne depend pas de l'existence du compte.
-    let delay = rate_limit::login_delay(
-        rate_limit::recent_login_failures(&state.db, &email_key)
-            .await
-            .map_err(|e| internal("limitation de debit", e))?,
-    );
-    if !delay.is_zero() {
-        tokio::time::sleep(delay).await;
-    }
 
     // lower() de PostgreSQL : la meme fonction que l'index unique des e-mails.
     let user: Option<(Uuid, String)> =
@@ -196,7 +200,7 @@ async fn login(
         Some((id, phc)) => (Some(id), Some(phc)),
         None => (None, None),
     };
-    let ok = match verify(input.password, phc).await {
+    let ok = match verify(input.password, phc, in_flight).await {
         Ok(ok) => ok,
         Err(e) => {
             return Err(rate_limit::offload_error(

@@ -1296,15 +1296,27 @@ async fn daily_totp_cap_survives_login() {
     away_from_step_boundary().await;
     let r = verify(&env.state, &pending, &code(&e.totp, 0)).await;
     assert_eq!(r.status, 200, "{}", r.raw);
-    // 5 echecs de plus : 20 dans la journee, la TOTP est bloquee.
+    // 5 echecs de plus : 20 dans la journee, la TOTP est bloquee. Ils sortent
+    // de la fenetre de 15 minutes : seul le plafond journalier peut bloquer.
     let (pending, _, _) = login(&env.state).await;
     for _ in 0..5 {
         assert_eq!(verify(&env.state, &pending, "000000").await.status, 401);
     }
+    sqlx::query("UPDATE mfa_attempts SET at = at - interval '16 minutes'")
+        .execute(&env.state.db)
+        .await
+        .unwrap();
     away_from_step_boundary().await;
     forget_last_step(&env.state).await;
     let r = verify(&env.state, &pending, &code(&e.totp, 0)).await;
     assert_eq!(r.status, 429, "{}", r.raw);
+    let secs: u64 = r
+        .retry_after
+        .as_deref()
+        .expect("Retry-After")
+        .parse()
+        .unwrap();
+    assert!(secs > 900, "bloque par le plafond de 24 h : {secs}");
 }
 
 /// Une session en attente du second facteur expire apres 10 minutes
