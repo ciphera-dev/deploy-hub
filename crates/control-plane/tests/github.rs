@@ -329,6 +329,55 @@ async fn webhook_replayed_delivery_ignored() {
 }
 
 #[tokio::test]
+async fn same_body_other_delivery_id_is_duplicate() {
+    let (state, _pg) = common::state().await;
+    install_app(&state).await;
+    project(&state, "web", "ciphera/web", "main").await;
+    let body = push_body("ciphera/web", "main");
+    let sig = sign(WEBHOOK_SECRET, &body);
+
+    let first = webhook(&state, body.clone(), Some(sig.clone()), "d-first").await;
+    assert_eq!(first.status, 202, "{}", first.raw);
+    sqlx::query("UPDATE jobs SET status = 'done', finished_at = now()")
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    let replay = webhook(&state, body, Some(sig), "d-other").await;
+    assert_eq!(replay.status, 200, "{}", replay.raw);
+    assert_eq!(replay.json()["status"], "duplicate");
+    assert_eq!(job_count(&state).await, 1);
+    let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM github_deliveries")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(seen, 1);
+}
+
+#[tokio::test]
+async fn uppercase_sha_normalized() {
+    let (state, _pg) = common::state().await;
+    install_app(&state).await;
+    let (project_id, env_id) = project(&state, "web", "ciphera/web", "main").await;
+    let mut value = push_value("ciphera/web", "main", json!(unix_now()));
+    value["after"] = json!(COMMIT.to_uppercase());
+    let r = dated_push(&state, value, "d-upper").await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    let payload: Value = sqlx::query_scalar("SELECT payload FROM jobs")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        payload,
+        json!({
+            "project_id": project_id,
+            "environment_id": env_id,
+            "commit_sha": COMMIT,
+        })
+    );
+}
+
+#[tokio::test]
 async fn webhook_replay_window_is_pruned_after_24h() {
     let (mut state, _pg) = common::state().await;
     install_app(&state).await;

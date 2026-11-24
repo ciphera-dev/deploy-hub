@@ -9,10 +9,12 @@
 //! 3. fraicheur : la date du push, signee avec le corps (`repository.pushed_at`,
 //!    sinon `head_commit.timestamp`), doit dater de moins de 24 h et d'au plus
 //!    5 min dans le futur ; sinon (ou sans date) 200 ignore, rien en file. La
-//!    fenetre egale la retention de la table anti-rejeu : une livraison
-//!    capturee ne peut pas etre rejouee apres l'oubli de son identifiant ;
-//! 4. anti-rejeu par `X-GitHub-Delivery` (table, entrees de plus de 24 h
-//!    purgees) : une livraison deja vue repond 200 sans rien mettre en file ;
+//!    fenetre (plus l'avance d'horloge toleree) egale la retention de la table
+//!    anti-rejeu : une livraison capturee ne peut pas etre rejouee apres
+//!    l'oubli de son identifiant ni de l'empreinte de son corps ;
+//! 4. anti-rejeu par `X-GitHub-Delivery` OU par empreinte SHA-256 du corps
+//!    (table, entrees de plus de 24 h 5 min purgees) : une livraison deja vue,
+//!    meme sous un autre identifiant, repond 200 sans rien mettre en file ;
 //! 5. depot inconnu : 404 ; autre branche (ou projet sans environnement
 //!    `production`, journalise) : 200 ignore ; puis les reglages Git de
 //!    chaque projet (`domain::projects::git::skip_reason`) : deploiement
@@ -34,7 +36,7 @@ use axum::{Json, Router};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use serde_json::json;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use shared::error::ApiError;
 use uuid::Uuid;
 
@@ -54,6 +56,9 @@ pub const MAX_BODY: usize = 5 * 1024 * 1024;
 pub const REPLAY_WINDOW_SECS: f64 = 24.0 * 3600.0;
 /// Avance d'horloge toleree pour la date d'un push (5 min).
 pub const MAX_CLOCK_SKEW_SECS: f64 = 300.0;
+/// Conservation des identifiants et empreintes : la fenetre de fraicheur plus
+/// l'avance d'horloge, pour qu'un push encore accepte soit toujours connu.
+const RETENTION_SECS: f64 = REPLAY_WINDOW_SECS + MAX_CLOCK_SKEW_SECS;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -271,16 +276,17 @@ async fn receive(
         .await
         .map_err(|e| internal("transaction du webhook GitHub", e))?;
     sqlx::query("DELETE FROM github_deliveries WHERE received_at < to_timestamp($1::float8)")
-        .bind(now - REPLAY_WINDOW_SECS)
+        .bind(now - RETENTION_SECS)
         .execute(&mut *tx)
         .await
         .map_err(|e| internal("purge des livraisons GitHub", e))?;
     let fresh = sqlx::query(
-        "INSERT INTO github_deliveries (delivery_id, received_at) \
-         VALUES ($1, to_timestamp($2::float8)) ON CONFLICT (delivery_id) DO NOTHING",
+        "INSERT INTO github_deliveries (delivery_id, received_at, body_sha256) \
+         VALUES ($1, to_timestamp($2::float8), $3) ON CONFLICT DO NOTHING",
     )
     .bind(&delivery)
     .bind(now)
+    .bind(Sha256::digest(&body).as_slice())
     .execute(&mut *tx)
     .await
     .map_err(|e| internal("enregistrement de la livraison GitHub", e))?
@@ -355,7 +361,8 @@ async fn receive(
             .map_err(|e| internal("transaction du webhook GitHub", e))?;
         return Ok(ignored(reason));
     }
-    if !commit_ok(&event.after) {
+    let commit = event.after.to_ascii_lowercase();
+    if !commit_ok(&commit) {
         return Err(bad_request("Commit invalide."));
     }
     for (project, environment) in &targets {
@@ -365,7 +372,7 @@ async fn receive(
             json!({
                 "project_id": project,
                 "environment_id": environment,
-                "commit_sha": event.after,
+                "commit_sha": commit,
             }),
             Some(format!("{delivery}:{project}")),
         )
