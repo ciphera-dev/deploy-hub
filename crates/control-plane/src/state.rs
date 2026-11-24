@@ -52,6 +52,8 @@ pub struct AppState {
     pub update_request_dir: std::path::PathBuf,
     /// Limitation de debit en memoire des routes publiques (hooks, webhook).
     pub public_limits: crate::http::public_limit::PublicLimits,
+    /// Connexions en vol par compte (un seul calcul Argon2 par compte).
+    pub login_flights: crate::auth::rate_limit::LoginFlights,
 }
 
 impl AppState {

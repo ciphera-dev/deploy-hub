@@ -240,7 +240,8 @@ async fn disable(
         &state.db,
         user.id,
         user.session.id,
-        rate_limit::MfaFactor::Other,
+        rate_limit::MfaFactor::Reauth,
+        None,
     )
     .await
     .map_err(|e| internal("limitation de debit", e))?
@@ -377,7 +378,7 @@ impl Factor {
     fn rate_limit(self) -> rate_limit::MfaFactor {
         match self {
             Factor::Totp => rate_limit::MfaFactor::Totp,
-            Factor::Recovery => rate_limit::MfaFactor::Other,
+            Factor::Recovery => rate_limit::MfaFactor::Recovery,
         }
     }
 
@@ -464,26 +465,33 @@ async fn recovery_candidate(
 /// recoit 409 `mfa_not_pending` sans rien consommer.
 async fn second_factor(
     state: AppState,
-    ip: String,
+    ip: std::net::IpAddr,
     headers: HeaderMap,
     code: Zeroizing<String>,
     factor: Factor,
 ) -> Result<Response, ApiError> {
+    let ip_key = rate_limit::IpKey::login(ip);
+    let ip = ip.to_string();
     let session = pending_session(&state, &headers).await?;
     if let Err(e) = rate_limit::purge_mfa(&state.db).await {
         tracing::warn!(error = %e, "purge des tentatives de second facteur");
     }
-    let attempt =
-        match rate_limit::admit_mfa(&state.db, session.user_id, session.id, factor.rate_limit())
-            .await
-            .map_err(|e| internal("limitation de debit", e))?
-        {
-            rate_limit::Admission::Allowed(id) => id,
-            rate_limit::Admission::Limited(retry_after) => {
-                tracing::warn!(%ip, "second facteur refuse : trop de tentatives");
-                return Ok(rate_limited(retry_after));
-            }
-        };
+    let attempt = match rate_limit::admit_mfa(
+        &state.db,
+        session.user_id,
+        session.id,
+        factor.rate_limit(),
+        Some(&ip_key),
+    )
+    .await
+    .map_err(|e| internal("limitation de debit", e))?
+    {
+        rate_limit::Admission::Allowed(id) => id,
+        rate_limit::Admission::Limited(retry_after) => {
+            tracing::warn!(%ip, "second facteur refuse : trop de tentatives");
+            return Ok(rate_limited(retry_after));
+        }
+    };
     // Verification couteuse (Argon2 pour un code de secours) hors transaction.
     let candidate = match factor {
         Factor::Totp => totp_candidate(&state, session.user_id, &code).await?,
@@ -562,7 +570,7 @@ async fn verify(
     body: Result<Json<MfaCode>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let code = code_from(body)?;
-    second_factor(state, ip.to_string(), headers, code, Factor::Totp).await
+    second_factor(state, ip, headers, code, Factor::Totp).await
 }
 
 /// `GET /api/auth/mfa/methods`
@@ -599,5 +607,5 @@ async fn recovery_code(
     body: Result<Json<MfaCode>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let code = code_from(body)?;
-    second_factor(state, ip.to_string(), headers, code, Factor::Recovery).await
+    second_factor(state, ip, headers, code, Factor::Recovery).await
 }

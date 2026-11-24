@@ -173,7 +173,8 @@ pub(crate) async fn reauthenticate(
         &state.db,
         user.id,
         user.session.id,
-        rate_limit::MfaFactor::Other,
+        rate_limit::MfaFactor::Reauth,
+        None,
     )
     .await
     .map_err(|e| internal("limitation de debit", e))?
@@ -705,6 +706,10 @@ async fn change_password(
     rate_limit::mark_mfa_success(&mut tx, attempt)
         .await
         .map_err(|e| internal("enregistrement de la tentative", e))?;
+    // Nouveau mot de passe : les echecs de second facteur de l'ancien sont oublies.
+    rate_limit::clear_mfa(&mut tx, user.id)
+        .await
+        .map_err(|e| internal("remise a zero des echecs de second facteur", e))?;
     audit(
         &mut tx,
         Some(user.id),

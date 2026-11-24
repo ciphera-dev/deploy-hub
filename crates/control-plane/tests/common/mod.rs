@@ -210,6 +210,7 @@ pub async fn state() -> (AppState, TestDb) {
             releases: Default::default(),
             update_request_dir: shared::update::REQUEST_DIR.into(),
             public_limits: Default::default(),
+            login_flights: Default::default(),
         },
         container,
     )

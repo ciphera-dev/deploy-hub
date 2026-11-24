@@ -169,19 +169,87 @@ pub async fn purge(db: &PgPool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+// --- Calcul Argon2 de connexion : un seul par compte, delai croissant ----
+
+/// Echecs de mot de passe d'un compte (toutes IP) tolores dans la fenetre
+/// avant que chaque tentative soit ralentie.
+pub const SLOWDOWN_AFTER: i64 = 10;
+/// Delai maximal ajoute a une tentative, en secondes.
+pub const SLOWDOWN_MAX_SECS: u64 = 30;
+
+/// Comptes ayant une connexion en vol (cles `email_key`).
+#[derive(Clone, Default)]
+pub struct LoginFlights(std::sync::Arc<std::sync::Mutex<std::collections::HashSet<Vec<u8>>>>);
+
+/// Place de l'unique connexion en vol pour un compte ; rendue a la chute.
+pub struct LoginFlight {
+    flights: LoginFlights,
+    key: Vec<u8>,
+}
+
+impl LoginFlights {
+    /// `None` si une connexion sur ce compte (cle `email_key`) est deja en cours.
+    pub fn try_begin(&self, email_hash: &[u8]) -> Option<LoginFlight> {
+        self.set().insert(email_hash.to_vec()).then(|| LoginFlight {
+            flights: self.clone(),
+            key: email_hash.to_vec(),
+        })
+    }
+
+    fn set(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<Vec<u8>>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl Drop for LoginFlight {
+    fn drop(&mut self) {
+        self.flights.set().remove(&self.key);
+    }
+}
+
+/// Delai impose a une tentative quand le compte a deja `failures` echecs de
+/// mot de passe dans la fenetre (celui de la tentative en cours compris) :
+/// 1 s au 11e, puis une seconde de plus par echec, jusqu'a 30 s. Jamais de blocage.
+pub fn login_delay(failures: i64) -> std::time::Duration {
+    let over = (failures - SLOWDOWN_AFTER).clamp(0, SLOWDOWN_MAX_SECS as i64);
+    std::time::Duration::from_secs(over as u64)
+}
+
+/// Echecs de mot de passe recents du compte (toutes IP), depuis son dernier
+/// succes. Les demandes « mot de passe oublie » et les deploy hooks ont leur
+/// propre espace d'IP et ne comptent pas.
+pub async fn recent_login_failures(db: &PgPool, email_hash: &[u8]) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM login_attempts          WHERE email_hash = $1 AND NOT succeeded            AND ip NOT LIKE 'forgot:%' AND ip NOT LIKE 'hook:%'            AND at > clock_timestamp() - make_interval(secs => $2)            AND at > coalesce((SELECT max(at) FROM login_attempts                               WHERE email_hash = $1 AND succeeded), '-infinity')",
+    )
+    .bind(email_hash)
+    .bind(WINDOW_SECS as f64)
+    .fetch_one(db)
+    .await
+}
+
 // --- Second facteur et re-authentification ------------------------------
 //
-// Table `mfa_attempts` : 5 echecs par compte ET par session dans la fenetre
-// de 15 minutes (verification TOTP, code de secours, mot de passe redemande
-// pour desactiver la TOTP). Meme schema que la connexion : la tentative est
+// Table `mfa_attempts`. Meme schema que la connexion : la tentative est
 // enregistree comme un echec avant la verification (verrou consultatif par
-// compte), puis marquee reussie ; un succes remet les compteurs a zero.
-// Plafond journalier par compte en plus (`MAX_MFA_FAILURES_PER_DAY`), pour
-// les seuls codes TOTP : codes de secours et passkeys ne se devinent pas et
-// restent au titulaire. Une reinitialisation du mot de passe efface tout.
+// compte), puis marquee reussie. Les limites dependent du facteur :
+// - code TOTP (10^6 valeurs) : 5 echecs TOTP par compte dans la fenetre de
+//   15 minutes (remis a zero par une verification TOTP reussie) et
+//   `MAX_MFA_FAILURES_PER_DAY` echecs TOTP par compte sur 24 heures, sans
+//   remise a zero par un succes : seule une reinitialisation du mot de passe
+//   (`clear_mfa`) les efface. Seules les tentatives TOTP sont bloquees ;
+// - code de secours et passkey (ne se devinent pas) : 5 echecs par session et
+//   `MAX_MFA_FAILURES_PER_IP` par IP (regroupee) dans la fenetre ; les echecs
+//   TOTP du compte ne les bloquent pas, le titulaire garde ces recours ;
+// - mot de passe redemande (re-authentification d'une session complete) :
+//   5 echecs par session dans la fenetre, sans lien avec les autres sessions.
 
-/// Echecs tolores par compte, et par session, dans la fenetre.
+/// Echecs tolores par compte (TOTP) ou par session (autres), dans la fenetre.
 pub const MAX_MFA_FAILURES: i64 = 5;
+/// Echecs tolores par IP pour les codes de secours et les passkeys, dans la fenetre.
+pub const MAX_MFA_FAILURES_PER_IP: i64 = 20;
 /// Fenetre du plafond journalier, en secondes (24 heures, comme la purge).
 pub const MFA_DAY_SECS: i64 = 24 * 3600;
 /// Echecs TOTP tolores par compte sur `MFA_DAY_SECS` (verrouillage progressif,
@@ -190,54 +258,44 @@ pub const MFA_DAY_SECS: i64 = 24 * 3600;
 /// sur le bon ; avec, moins de 0,2 % par mois.
 pub const MAX_MFA_FAILURES_PER_DAY: i64 = 20;
 
-/// Second facteur tente.
+/// Second facteur ou verification tentee.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MfaFactor {
-    /// Code TOTP (10^6 valeurs) : seul soumis au plafond journalier.
+    /// Code TOTP : limite par compte, plafond journalier.
     Totp,
-    /// Code de secours, passkey, mot de passe redemande.
-    Other,
+    /// Code de secours : limite par session et par IP.
+    Recovery,
+    /// Passkey : limite par session et par IP.
+    Passkey,
+    /// Mot de passe redemande dans une session complete : limite par session.
+    Reauth,
 }
 
-/// Verifie les limites du compte et de la session, puis enregistre la tentative.
+/// Verifie les limites du facteur, puis enregistre la tentative. `ip` n'est
+/// utilise que pour les codes de secours et les passkeys.
 pub async fn admit_mfa(
     db: &PgPool,
     user_id: uuid::Uuid,
     session_id: uuid::Uuid,
     factor: MfaFactor,
+    ip: Option<&IpKey>,
 ) -> Result<Admission, sqlx::Error> {
+    let totp = factor == MfaFactor::Totp;
+    let ip = match factor {
+        MfaFactor::Recovery | MfaFactor::Passkey => ip.map(|k| k.as_str().to_string()),
+        MfaFactor::Totp | MfaFactor::Reauth => None,
+    };
     let mut tx = db.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('ciphera-mfa:' || $1::text, 0))")
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    // Pour chaque cle (compte, session) : le N-ieme echec le plus recent
-    // posterieur au dernier succes du compte ; pour une tentative TOTP, aussi
-    // le N-ieme echec TOTP du compte sur la journee (plafond journalier).
+    // TOTP : le N-ieme echec TOTP le plus recent du compte (depuis la derniere
+    // verification TOTP reussie), et le N-ieme sur la journee (sans remise a
+    // zero). Autres : le N-ieme echec de la session depuis son dernier succes,
+    // et le N-ieme echec de l'IP.
     let retry_after: Option<i64> = sqlx::query_scalar(
-        "WITH failures AS ( \
-             SELECT at, session_id, totp FROM mfa_attempts \
-             WHERE user_id = $1 AND NOT succeeded \
-               AND at > clock_timestamp() - make_interval(secs => $5) \
-               AND at > coalesce((SELECT max(at) FROM mfa_attempts \
-                                  WHERE user_id = $1 AND succeeded), '-infinity') \
-         ), recent AS ( \
-             SELECT at, session_id FROM failures \
-             WHERE at > clock_timestamp() - make_interval(secs => $3) \
-         ), per_user AS ( \
-             SELECT at FROM recent ORDER BY at DESC OFFSET $4 LIMIT 1 \
-         ), per_session AS ( \
-             SELECT at FROM recent WHERE session_id = $2 ORDER BY at DESC OFFSET $4 LIMIT 1 \
-         ), per_day AS ( \
-             SELECT at FROM failures WHERE $7 AND totp ORDER BY at DESC OFFSET $6 LIMIT 1 \
-         ) \
-         SELECT max(secs)::bigint FROM ( \
-             SELECT ceil(extract(epoch FROM at + make_interval(secs => $3) - clock_timestamp())) AS secs \
-             FROM (SELECT at FROM per_user UNION ALL SELECT at FROM per_session) hit \
-             UNION ALL \
-             SELECT ceil(extract(epoch FROM at + make_interval(secs => $5) - clock_timestamp())) \
-             FROM per_day \
-         ) waits",
+        "WITH day_failures AS (              SELECT at FROM mfa_attempts              WHERE $7 AND user_id = $1 AND totp AND NOT succeeded                AND at > clock_timestamp() - make_interval(secs => $5)          ), per_user AS (              SELECT at FROM day_failures              WHERE at > clock_timestamp() - make_interval(secs => $3)                AND at > coalesce((SELECT max(at) FROM mfa_attempts                                   WHERE user_id = $1 AND totp AND succeeded), '-infinity')              ORDER BY at DESC OFFSET $4 LIMIT 1          ), per_day AS (              SELECT at FROM day_failures ORDER BY at DESC OFFSET $6 LIMIT 1          ), per_session AS (              SELECT at FROM mfa_attempts              WHERE NOT $7 AND session_id = $2 AND NOT totp AND NOT succeeded                AND at > clock_timestamp() - make_interval(secs => $3)                AND at > coalesce((SELECT max(at) FROM mfa_attempts                                   WHERE session_id = $2 AND NOT totp AND succeeded), '-infinity')              ORDER BY at DESC OFFSET $4 LIMIT 1          ), per_ip AS (              SELECT at FROM mfa_attempts              WHERE $8::text IS NOT NULL AND ip = $8 AND NOT totp AND NOT succeeded                AND at > clock_timestamp() - make_interval(secs => $3)              ORDER BY at DESC OFFSET $9 LIMIT 1          )          SELECT max(secs)::bigint FROM (              SELECT ceil(extract(epoch FROM at + make_interval(secs => $3) - clock_timestamp())) AS secs              FROM (SELECT at FROM per_user UNION ALL SELECT at FROM per_session                    UNION ALL SELECT at FROM per_ip) hit              UNION ALL              SELECT ceil(extract(epoch FROM at + make_interval(secs => $5) - clock_timestamp()))              FROM per_day          ) waits",
     )
     .bind(user_id)
     .bind(session_id)
@@ -245,7 +303,9 @@ pub async fn admit_mfa(
     .bind(MAX_MFA_FAILURES - 1)
     .bind(MFA_DAY_SECS as f64)
     .bind(MAX_MFA_FAILURES_PER_DAY - 1)
-    .bind(factor == MfaFactor::Totp)
+    .bind(totp)
+    .bind(ip.as_deref())
+    .bind(MAX_MFA_FAILURES_PER_IP - 1)
     .fetch_one(&mut *tx)
     .await?;
     if let Some(secs) = retry_after {
@@ -253,12 +313,12 @@ pub async fn admit_mfa(
         return Ok(Admission::Limited(secs.clamp(1, MFA_DAY_SECS) as u64));
     }
     let id = sqlx::query_scalar(
-        "INSERT INTO mfa_attempts (at, user_id, session_id, succeeded, totp) \
-         VALUES (clock_timestamp(), $1, $2, false, $3) RETURNING id",
+        "INSERT INTO mfa_attempts (at, user_id, session_id, succeeded, totp, ip)          VALUES (clock_timestamp(), $1, $2, false, $3, $4) RETURNING id",
     )
     .bind(user_id)
     .bind(session_id)
-    .bind(factor == MfaFactor::Totp)
+    .bind(totp)
+    .bind(ip.as_deref())
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -304,7 +364,8 @@ pub async fn clear_mfa(conn: &mut PgConnection, user_id: uuid::Uuid) -> Result<(
     Ok(())
 }
 
-/// Marque la tentative reussie : remet les compteurs du compte a zero.
+/// Marque la tentative reussie : remet a zero le compteur court du facteur
+/// (compte pour la TOTP, session pour les autres) ; jamais le plafond journalier.
 pub async fn mark_mfa_success(conn: &mut PgConnection, attempt_id: i64) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE mfa_attempts SET succeeded = true WHERE id = $1")
         .bind(attempt_id)
@@ -341,6 +402,29 @@ mod tests {
         assert_eq!(key("2001:db8:1:2:ffff:ffff:ffff:ffff"), "2001:db8:1:2::/64");
         assert_ne!(key("2001:db8:1:3::1"), key("2001:db8:1:2::1"));
         assert_eq!(key("::1"), "::/64");
+    }
+
+    #[test]
+    fn one_login_in_flight_per_account() {
+        let flights = LoginFlights::default();
+        let a = email_key("flight-a@example.com");
+        let b = email_key("flight-b@example.com");
+        let first = flights.try_begin(&a).expect("premiere connexion");
+        assert!(flights.try_begin(&a).is_none());
+        assert!(flights.try_begin(&b).is_some());
+        drop(first);
+        assert!(flights.try_begin(&a).is_some());
+    }
+
+    #[test]
+    fn login_delay_grows_from_one_to_thirty_seconds() {
+        let secs = |n| login_delay(n).as_secs();
+        assert_eq!(secs(0), 0);
+        assert_eq!(secs(10), 0);
+        assert_eq!(secs(11), 1);
+        assert_eq!(secs(20), 10);
+        assert_eq!(secs(40), 30);
+        assert_eq!(secs(10_000), 30);
     }
 
     #[test]

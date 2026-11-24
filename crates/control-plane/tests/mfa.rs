@@ -565,12 +565,7 @@ async fn mfa_verify_rate_limited() {
         .parse()
         .unwrap();
     assert!((1..=900).contains(&secs), "{secs}");
-    assert_eq!(
-        recovery(&env.state, &pending, &e.recovery_codes[0])
-            .await
-            .status,
-        429
-    );
+    // Les echecs TOTP ne bloquent pas les codes de secours (limites a part).
     // Une autre session du meme compte ne remet pas le compteur a zero.
     let (other, _, _) = login(&env.state).await;
     assert_eq!(
@@ -791,9 +786,10 @@ async fn busy_hashing_does_not_count_as_a_failure() {
     assert_eq!(count("login_attempts").await, 1);
 
     let session = Uuid::new_v4();
-    let Admission::Allowed(id) = rate_limit::admit_mfa(db, env.user_id, session, MfaFactor::Other)
-        .await
-        .unwrap()
+    let Admission::Allowed(id) =
+        rate_limit::admit_mfa(db, env.user_id, session, MfaFactor::Reauth, None)
+            .await
+            .unwrap()
     else {
         panic!("admis")
     };
@@ -1195,4 +1191,161 @@ async fn totp_start_is_rate_limited_after_five_wrong_passwords() {
     )
     .await;
     assert_eq!(r.status, 429, "{}", r.raw);
+}
+
+/// Cinq echecs TOTP depuis une session en attente bloquent la TOTP du compte,
+/// mais pas la re-authentification d'une autre session, complete.
+#[tokio::test]
+async fn pending_session_failures_do_not_block_full_session_reauth() {
+    let (env, e) = enrolled_env().await;
+    let (pending, _, _) = login(&env.state).await;
+    for _ in 0..5 {
+        let r = verify(&env.state, &pending, "000000").await;
+        assert_eq!(r.status, 401, "{}", r.raw);
+    }
+    away_from_step_boundary().await;
+    assert_eq!(
+        verify(&env.state, &pending, &code(&e.totp, 0)).await.status,
+        429
+    );
+    let r = post(
+        &env.state,
+        "/api/me/password",
+        &e.token,
+        Some(&e.csrf),
+        json!({ "current_password": PASSWORD, "new_password": "un tout autre mot de passe" }),
+    )
+    .await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+}
+
+/// Un code de secours n'est bloque ni par les echecs TOTP du compte, ni par
+/// ceux d'une autre session : seuls comptent les siens (session et IP).
+#[tokio::test]
+async fn recovery_codes_are_limited_per_session_and_ip_not_by_totp_failures() {
+    use control_plane::auth::rate_limit::{self, Admission, IpKey, MfaFactor};
+    let (env, e) = enrolled_env().await;
+    let (pending, _, _) = login(&env.state).await;
+    for _ in 0..5 {
+        assert_eq!(verify(&env.state, &pending, "000000").await.status, 401);
+    }
+    let (other, _, _) = login(&env.state).await;
+    let r = recovery(&env.state, &other, &e.recovery_codes[0]).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+
+    // Par session : 5 echecs, puis refus ; une autre session repart a zero.
+    let db = &env.state.db;
+    let ip = IpKey::login("203.0.113.50".parse().unwrap());
+    let admit = |session: Uuid, factor: MfaFactor| {
+        let ip = ip.clone();
+        async move {
+            rate_limit::admit_mfa(db, env.user_id, session, factor, Some(&ip))
+                .await
+                .unwrap()
+        }
+    };
+    let s1 = Uuid::new_v4();
+    for _ in 0..5 {
+        assert!(matches!(
+            admit(s1, MfaFactor::Recovery).await,
+            Admission::Allowed(_)
+        ));
+    }
+    assert!(matches!(
+        admit(s1, MfaFactor::Recovery).await,
+        Admission::Limited(_)
+    ));
+    assert!(matches!(
+        admit(s1, MfaFactor::Passkey).await,
+        Admission::Limited(_)
+    ));
+    // Par IP : 20 echecs au total (5 de s1 compris), puis refus meme pour une
+    // session neuve.
+    for _ in 0..3 {
+        let s = Uuid::new_v4();
+        for _ in 0..5 {
+            assert!(matches!(
+                admit(s, MfaFactor::Passkey).await,
+                Admission::Allowed(_)
+            ));
+        }
+    }
+    assert!(matches!(
+        admit(Uuid::new_v4(), MfaFactor::Recovery).await,
+        Admission::Limited(_)
+    ));
+}
+
+/// Le plafond journalier TOTP n'est pas remis a zero par une verification
+/// reussie : seule une reinitialisation du mot de passe l'efface.
+#[tokio::test]
+async fn daily_totp_cap_survives_login() {
+    let (env, e) = enrolled_env().await;
+    let (pending, _, _) = login(&env.state).await;
+    // 15 echecs dans la journee, chaque lot hors de la fenetre de 15 minutes.
+    for _ in 0..3 {
+        for _ in 0..5 {
+            assert_eq!(verify(&env.state, &pending, "000000").await.status, 401);
+        }
+        sqlx::query("UPDATE mfa_attempts SET at = at - interval '16 minutes'")
+            .execute(&env.state.db)
+            .await
+            .unwrap();
+    }
+    // Le titulaire se connecte (mot de passe puis TOTP).
+    away_from_step_boundary().await;
+    let r = verify(&env.state, &pending, &code(&e.totp, 0)).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    // 5 echecs de plus : 20 dans la journee, la TOTP est bloquee.
+    let (pending, _, _) = login(&env.state).await;
+    for _ in 0..5 {
+        assert_eq!(verify(&env.state, &pending, "000000").await.status, 401);
+    }
+    away_from_step_boundary().await;
+    forget_last_step(&env.state).await;
+    let r = verify(&env.state, &pending, &code(&e.totp, 0)).await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+}
+
+/// Une session en attente du second facteur expire apres 10 minutes
+/// (l'horloge est celle de la base : l'age de la session est avance en SQL).
+#[tokio::test]
+async fn mfa_pending_expires_after_10_min() {
+    let (env, e) = enrolled_env().await;
+    let (pending, _, _) = login(&env.state).await;
+    let ttl: i64 = sqlx::query_scalar(
+        "SELECT extract(epoch FROM expires_at - created_at)::bigint FROM sessions WHERE mfa_pending",
+    )
+    .fetch_one(&env.state.db)
+    .await
+    .unwrap();
+    assert_eq!(ttl, 600);
+    let methods = |token: String| {
+        let state = env.state.clone();
+        async move {
+            call(
+                &state,
+                "GET",
+                "/api/auth/mfa/methods",
+                Req {
+                    cookie: Some(&token),
+                    ..Req::default()
+                },
+            )
+            .await
+        }
+    };
+    sqlx::query("UPDATE sessions SET created_at = now() - interval '9 minutes' WHERE mfa_pending")
+        .execute(&env.state.db)
+        .await
+        .unwrap();
+    assert_eq!(methods(pending.clone()).await.status, 200);
+    sqlx::query("UPDATE sessions SET created_at = now() - interval '11 minutes' WHERE mfa_pending")
+        .execute(&env.state.db)
+        .await
+        .unwrap();
+    assert_eq!(methods(pending.clone()).await.status, 401);
+    away_from_step_boundary().await;
+    let r = verify(&env.state, &pending, &code(&e.totp, 0)).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
 }

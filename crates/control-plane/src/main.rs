@@ -392,6 +392,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         releases: Default::default(),
         update_request_dir: shared::update::REQUEST_DIR.into(),
         public_limits: Default::default(),
+        login_flights: Default::default(),
     };
     let direct_open = state.panel.subscribe();
     let panel = state.panel.clone();

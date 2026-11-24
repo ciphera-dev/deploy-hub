@@ -315,7 +315,8 @@ async fn login_rate_limited_after_5_failures_per_15min_per_ip_and_email() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_burst_cannot_exceed_the_limit() {
     let env = env().await;
-    // 10 mauvais mots de passe en parallele pour le meme couple (IP, e-mail).
+    // 10 mauvais mots de passe en parallele pour le meme couple (IP, e-mail) :
+    // une seule connexion par compte est en vol, les autres sont refusees.
     let tasks: Vec<_> = (0..10)
         .map(|_| {
             let state = env.state.clone();
@@ -328,12 +329,86 @@ async fn concurrent_burst_cannot_exceed_the_limit() {
     }
     let reached = statuses.iter().filter(|s| **s == 401).count();
     let limited = statuses.iter().filter(|s| **s == 429).count();
-    assert_eq!((reached, limited), (5, 5), "{statuses:?}");
+    assert!((1..=5).contains(&reached), "{statuses:?}");
+    assert_eq!(reached + limited, 10, "{statuses:?}");
     let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM login_attempts")
         .fetch_one(&env.state.db)
         .await
         .unwrap();
-    assert_eq!(recorded, 5);
+    assert_eq!(recorded, reached as i64);
+}
+
+/// Par compte, un seul calcul Argon2 de connexion en vol : les connexions
+/// simultanees sur le meme e-mail recoivent 429 `busy` sans etre comptees
+/// comme des echecs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn per_account_argon2_single_flight() {
+    let env = env().await;
+    let tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let state = env.state.clone();
+            tokio::spawn(async move {
+                let r = fail(&state, EMAIL, Req::default()).await;
+                (r.status, r.json()["error"]["code"].clone())
+            })
+        })
+        .collect();
+    let mut replies = Vec::new();
+    for t in tasks {
+        replies.push(t.await.unwrap());
+    }
+    let passed = replies.iter().filter(|(s, _)| *s == 401).count();
+    let busy = replies
+        .iter()
+        .filter(|(s, code)| *s == 429 && code == "busy")
+        .count();
+    assert!(passed >= 1, "{replies:?}");
+    assert!(busy >= 1, "{replies:?}");
+    assert_eq!(passed + busy, 8, "{replies:?}");
+    let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM login_attempts")
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+    assert_eq!(recorded, passed as i64);
+
+    // Un autre compte n'est pas concerne : sa connexion passe pendant ce temps.
+    assert_eq!(
+        fail(&env.state, "bob@example.com", Req::default())
+            .await
+            .status,
+        401
+    );
+}
+
+/// Au-dela de 10 echecs de mot de passe en 15 minutes sur le compte (toutes
+/// IP), chaque tentative est ralentie d'une seconde de plus, sans blocage :
+/// le bon mot de passe passe encore.
+#[tokio::test]
+async fn login_slows_down_after_ten_failures_without_blocking() {
+    let env = env().await;
+    sqlx::query(
+        "INSERT INTO login_attempts (ip, email_hash, succeeded)          SELECT '198.51.100.' || g, $1, false FROM generate_series(1, 10) g",
+    )
+    .bind(control_plane::auth::rate_limit::email_key("alice@example.com"))
+    .execute(&env.state.db)
+    .await
+    .unwrap();
+    let started = std::time::Instant::now();
+    let r = login(&env.state).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    // Le succes du titulaire remet le compteur du compte a zero.
+    let failures = control_plane::auth::rate_limit::recent_login_failures(
+        &env.state.db,
+        &control_plane::auth::rate_limit::email_key("alice@example.com"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(failures, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

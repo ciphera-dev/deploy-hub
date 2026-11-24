@@ -9,6 +9,12 @@ Intentions : dashboard, backend. Source : `references/stacks.md` + écrans du de
 - [ ] MFA TOTP (obligatoire pour les admins) — ASVS V2.8
 - [ ] Rôles admin/utilisateur vérifiés côté serveur sur chaque route et chaque requête (contrôle d'accès objet par objet) — ASVS V4.1.1, V4.2.1
 - [ ] Rate limiting (tower-governor) + verrouillage progressif du compte — ASVS V2.2.1
+- [ ] Limites du second facteur, de la ré-authentification et de la connexion — ASVS V2.2.1, V2.8 :
+  - TOTP : 5 échecs par compte en 15 min et 20 en 24 h, comptés pour les seules tentatives TOTP ; le plafond de 24 h n'est remis à zéro que par une réinitialisation (ou un changement) du mot de passe, jamais par une connexion réussie ;
+  - passkey et code de secours : 5 échecs par session et 20 par IP en 15 min, sans lien avec les échecs TOTP du compte ;
+  - ré-authentification d'une session complète : 5 échecs par session en 15 min, sans lien avec les autres sessions ;
+  - connexion : un seul calcul Argon2 en vol par compte (les autres reçoivent 429 `busy`), et au-delà de 10 échecs de mot de passe en 15 min sur le compte, un délai de 1 à 30 s par tentative, sans blocage (le titulaire garde la passkey) ;
+  - session en attente du second facteur : expire après 10 min.
 - [ ] Jeton CSRF sur toute requête d'écriture — ASVS V4.2.2
 - [ ] En-têtes de sécurité (CSP, HSTS, X-Content-Type-Options, Referrer-Policy) — ASVS V14.4
 - [ ] Journal d'audit : connexions, échecs, actions admin (sans mot de passe ni donnée personnelle) — ASVS V7.1.1, V7.2.1

@@ -24,6 +24,10 @@ pub const SHORT_TTL_SECS: i64 = 12 * 3600;
 /// Duree d'une session « rester connecte », en secondes (30 jours).
 pub const LONG_TTL_SECS: i64 = 30 * 24 * 3600;
 
+/// Duree d'une session en attente du second facteur, en secondes (10 minutes) :
+/// le mot de passe seul n'ouvre pas de session de 12 heures.
+pub const PENDING_TTL_SECS: i64 = 10 * 60;
+
 /// Duree de vie cote serveur.
 pub fn ttl_secs(persistent: bool) -> i64 {
     if persistent {
@@ -131,7 +135,11 @@ pub async fn create(
     .bind(id)
     .bind(user_id)
     .bind(token.hash())
-    .bind(ttl_secs(new.persistent) as f64)
+    .bind(if new.mfa_pending {
+        PENDING_TTL_SECS
+    } else {
+        ttl_secs(new.persistent)
+    } as f64)
     .bind(new.mfa_pending)
     .bind(new.enrollment_required)
     .bind(new.persistent)
@@ -150,6 +158,7 @@ pub async fn lookup(db: &PgPool, token: &str) -> Result<Option<Session>, sqlx::E
                     extract(epoch FROM expires_at)::bigint AS expires_at \
              FROM sessions \
              WHERE token_hash = $1 AND expires_at > now() AND user_id IS NOT NULL \
+               AND (NOT mfa_pending OR created_at > now() - make_interval(secs => $2)) \
          ), touched AS ( \
              UPDATE sessions SET last_seen_at = now() FROM s \
              WHERE sessions.id = s.id AND sessions.last_seen_at < now() - interval '1 minute' \
@@ -157,6 +166,7 @@ pub async fn lookup(db: &PgPool, token: &str) -> Result<Option<Session>, sqlx::E
          SELECT id, user_id, mfa_pending, enrollment_required, persistent, expires_at FROM s",
     )
     .bind(hash_token(token))
+    .bind(PENDING_TTL_SECS as f64)
     .fetch_optional(db)
     .await?;
     Ok(row.map(
@@ -202,7 +212,7 @@ pub async fn rotate(
         "WITH old AS (DELETE FROM sessions WHERE id = $1 RETURNING user_id, persistent, ip, user_agent) \
          INSERT INTO sessions (id, user_id, token_hash, expires_at, mfa_pending, persistent, ip, user_agent) \
          SELECT $2, user_id, $3, \
-                now() + make_interval(secs => CASE WHEN persistent THEN $4 ELSE $5 END), \
+                now() + make_interval(secs => CASE WHEN $6 THEN $7 WHEN persistent THEN $4 ELSE $5 END), \
                 $6, persistent, ip, user_agent \
          FROM old",
     )
@@ -212,6 +222,7 @@ pub async fn rotate(
     .bind(LONG_TTL_SECS as f64)
     .bind(SHORT_TTL_SECS as f64)
     .bind(mfa_pending)
+    .bind(PENDING_TTL_SECS as f64)
     .execute(conn)
     .await?
     .rows_affected();

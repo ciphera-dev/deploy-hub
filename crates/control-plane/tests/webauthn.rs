@@ -1218,6 +1218,31 @@ async fn daily_totp_cap_does_not_block_passkeys() {
     assert_eq!(r.status, 200, "{}", r.raw);
 }
 
+/// 5 echecs TOTP du compte (fenetre de 15 minutes) ne bloquent pas la passkey.
+#[tokio::test]
+async fn passkey_not_limited_by_totp_failures() {
+    let (env, mut auth, _reg) = registered_env().await;
+    let s = &env.state;
+    let (pending, _, _) = login(s).await;
+    sqlx::query(
+        "INSERT INTO mfa_attempts (at, user_id, session_id, succeeded, totp)          SELECT now(), $1, $2, false, true FROM generate_series(1, 5)",
+    )
+    .bind(env.user_id)
+    .bind(Uuid::new_v4())
+    .execute(&s.db)
+    .await
+    .unwrap();
+    let (ceremony, options) = assert_options(s, Some(&pending), "second_factor").await;
+    let cred = sign(&mut auth, options, ORIGIN);
+    let r = assert_verify(
+        s,
+        Some(&pending),
+        json!({ "ceremony_id": ceremony, "credential": cred }),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
 #[tokio::test]
 async fn passwordless_is_rate_limited_per_ip() {
     let (env, mut auth, reg) = registered_env().await;

@@ -312,7 +312,8 @@ async fn remove(
         &state.db,
         user.id,
         user.session.id,
-        rate_limit::MfaFactor::Other,
+        rate_limit::MfaFactor::Reauth,
+        None,
     )
     .await
     .map_err(|e| internal("limitation de debit", e))?
@@ -567,7 +568,8 @@ impl Assertion {
             &db,
             session.user_id,
             session.id,
-            rate_limit::MfaFactor::Other,
+            rate_limit::MfaFactor::Passkey,
+            Some(&self.ip_key),
         )
         .await
         .map_err(|e| internal("limitation de debit", e))?

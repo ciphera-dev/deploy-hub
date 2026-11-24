@@ -66,6 +66,18 @@ fn rate_limited(retry_after: u64) -> Response {
     res
 }
 
+/// Une connexion sur ce compte est deja en cours.
+fn busy() -> Response {
+    let mut res = ApiError::new(
+        429,
+        "busy",
+        "Une connexion est déjà en cours sur ce compte : réessayez dans un instant.",
+    )
+    .into_response();
+    res.headers_mut().insert(header::RETRY_AFTER, 1.into());
+    res
+}
+
 /// Mot de passe a verifier : celui du compte, ou le hachage factice.
 async fn verify(
     password: Zeroizing<String>,
@@ -141,6 +153,11 @@ async fn login(
     let ip_key = rate_limit::IpKey::login(ip);
     let ip = ip.to_string();
     let email_key = rate_limit::email_key(&email);
+    // Un seul calcul Argon2 de connexion en vol par compte : les requetes
+    // simultanees sur le meme e-mail ne multiplient pas le cout du serveur.
+    let Some(_in_flight) = state.login_flights.try_begin(&email_key) else {
+        return Ok(busy());
+    };
 
     if let Err(e) = rate_limit::purge(&state.db).await {
         tracing::warn!(error = %e, "purge des tentatives de connexion");
@@ -155,6 +172,18 @@ async fn login(
             return Ok(rate_limited(retry_after));
         }
     };
+
+    // Au-dela de 10 echecs de mot de passe recents sur ce compte (toutes IP),
+    // chaque tentative est ralentie, sans jamais bloquer le titulaire (qui
+    // garde la passkey). Le delai ne depend pas de l'existence du compte.
+    let delay = rate_limit::login_delay(
+        rate_limit::recent_login_failures(&state.db, &email_key)
+            .await
+            .map_err(|e| internal("limitation de debit", e))?,
+    );
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
 
     // lower() de PostgreSQL : la meme fonction que l'index unique des e-mails.
     let user: Option<(Uuid, String)> =
