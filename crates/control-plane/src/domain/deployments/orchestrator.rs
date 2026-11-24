@@ -1288,6 +1288,9 @@ async fn on_progress(
     }
     let terminal = status.is_terminal(stage);
     let at = now(state);
+    // Deploiement reussi : l'etat complet de l'agent (dont l'utilisateur
+    // effectif des conteneurs, `runs_as_root`) est redemande apres le commit.
+    let mut refresh_state = false;
     match info.status.as_str() {
         "running" => {
             let (step, message) = match status {
@@ -1345,6 +1348,7 @@ async fn on_progress(
                     }
                     (_, StageStatus::Succeeded) => {
                         finish(&mut tx, state, id, info.environment_id, Finish::Success).await?;
+                        refresh_state = true;
                     }
                     (_, StageStatus::Failed { message }) => {
                         finish(
@@ -1370,7 +1374,11 @@ async fn on_progress(
         }
         _ => {}
     }
-    tx.commit().await
+    tx.commit().await?;
+    if refresh_state {
+        send_logged(state, server, ControlToAgent::RequestState);
+    }
+    Ok(())
 }
 
 /// Statut terminal recu pour un deploiement deja `failed`. Le premier

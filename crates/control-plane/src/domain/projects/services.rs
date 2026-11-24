@@ -103,7 +103,8 @@ pub async fn list(
     }
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT s.id, s.name, e.name AS environment, s.internal_port, s.stopped_deployment, \
-                cur.id AS serving, cur.server_id, cur.number, cur.image, cur.container_running, \n                s.run_as, s.read_only_rootfs, cur.runs_as_root, \
+                cur.id AS serving, cur.server_id, cur.number, cur.image, cur.container_running, \
+                s.run_as, s.read_only_rootfs, cur.runs_as_root, \
                 EXISTS (SELECT 1 FROM deployments a WHERE a.environment_id = e.id \
                         AND a.status IN ('queued', 'running')) AS active, \
                 COALESCE((SELECT l.status = 'failed' FROM deployments l WHERE l.environment_id = e.id \

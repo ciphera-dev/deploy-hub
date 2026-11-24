@@ -1015,7 +1015,8 @@ export interface paths {
         options?: never;
         head?: never;
         /**
-         * Reglages de securite du service (developer et plus) : utilisateur du
+         * Reglages de securite du service (developer, admin, owner : `Projects`
+         *     en ecriture) : utilisateur du
          *     conteneur et racine en lecture seule. Ils valent pour les prochains
          *     deploiements ; les deux champs sont remplaces ensemble.
          */

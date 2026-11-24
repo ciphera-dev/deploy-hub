@@ -153,7 +153,8 @@ pub fn get_project_overview() {}
 #[allow(dead_code)]
 pub fn list_project_services() {}
 
-/// Reglages de securite du service (developer et plus) : utilisateur du
+/// Reglages de securite du service (developer, admin, owner : `Projects`
+/// en ecriture) : utilisateur du
 /// conteneur et racine en lecture seule. Ils valent pour les prochains
 /// deploiements ; les deux champs sont remplaces ensemble.
 #[utoipa::path(

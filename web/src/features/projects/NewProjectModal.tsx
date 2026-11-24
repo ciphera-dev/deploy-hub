@@ -2,11 +2,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useState, type CSSProperties } from "react";
 
 import { fetchGithubRepos, GITHUB_REPOS_QUERY_KEY, type GithubRepo } from "@/features/connectors/api";
-import { Badge, Button, Icon, Modal, RadioCard, Select, StatusDot, TextField, type IconName } from "@/design-system";
+import { Badge, Button, Icon, Modal, RadioCard, Select, StatusDot, Switch, TextField, type IconName } from "@/design-system";
 
 import { createDeployment, DEPLOYMENTS_QUERY_KEY, deploymentQueryKey, fetchDeployment, isActive, POLL_MS, type Deployment } from "@/features/deployments/api";
 
 import { createProject, type Build, type NewProject, type Project } from "./api";
+import { updateServiceSecurity } from "./overview/api";
 import { DeployProgress } from "./DeployProgress";
 import { timeAgo } from "./format";
 
@@ -22,6 +23,8 @@ import { timeAgo } from "./format";
 // v0.2 (GitLab, Gitea, Bitbucket, URL Git + cle de deploiement, decision du
 // 2026-11-23).
 
+/** Utilisateur proposé par « Exécuter sans root ». */
+const NON_ROOT = "1000:1000";
 const lbl: CSSProperties = { font: "400 12px/1 var(--font-sans)", color: "var(--text-subtle)" };
 const hair = "1px solid var(--border-default)";
 
@@ -84,6 +87,8 @@ export function NewProjectModal({ onClose, onOpen, onCreated }: NewProjectModalP
   const [composePath, setComposePath] = useState("compose.yaml");
   const [composeService, setComposeService] = useState("");
   const [pending, setPending] = useState(false);
+  // Source image : exécuter sans root (uid 1000:1000). L'USER de l'image n'est pas lisible à la création : décoché par défaut.
+  const [nonRoot, setNonRoot] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<Project | null>(null);
   const [first, setFirst] = useState<Deployment | null>(null);
@@ -127,6 +132,12 @@ export function NewProjectModal({ onClose, onOpen, onCreated }: NewProjectModalP
     setCreated(result.project);
     onCreated?.(result.project);
     setStep(2);
+    // Sans root : réglé avant le premier déploiement ; un refus laisse le projet créé, sans le lancer en root.
+    const serviceId = result.project.services[0]?.id;
+    if (isImage && nonRoot && serviceId) {
+      const security = await updateServiceSecurity(result.project.id, serviceId, { run_as: NON_ROOT, read_only_rootfs: false });
+      if (!security.ok) return setLaunchError(`Le réglage « sans root » n'a pas été enregistré : ${security.message} Le projet est créé, aucun déploiement n'a démarré.`);
+    }
     // Le premier deploiement part des la creation ; un refus laisse le projet cree.
     const launched = await createDeployment(result.project.id);
     if (launched.ok) {
@@ -236,6 +247,7 @@ export function NewProjectModal({ onClose, onOpen, onCreated }: NewProjectModalP
               {!isImage && <TextField label="Branche" mono value={branch} onChange={setBranch} style={{ width: 200 }} />}
             </div>
             <TextField label="Nom du projet" value={name} onChange={setName} hint="Minuscules, chiffres et tirets." />
+            {isImage && <Switch label="Exécuter sans root (recommandé)" description="Le conteneur tourne sous l'utilisateur 1000:1000 au lieu de celui de l'image. Si l'image déclare déjà un USER non root, laissez décoché. Modifiable ensuite dans Sécurité." checked={nonRoot} onChange={setNonRoot} />}
             {!isImage && (
               <>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

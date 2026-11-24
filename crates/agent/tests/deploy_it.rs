@@ -538,16 +538,16 @@ async fn container_runs_as_requested_uid() {
             "{cap} : {dropped:?}"
         );
     }
-    // Le processus tourne bien sous l'uid demande.
-    let top = api.top_processes(&name, None).await.unwrap();
-    let user_column = top
-        .titles
-        .unwrap()
-        .iter()
-        .position(|t| t == "UID" || t == "USER")
-        .expect("colonne utilisateur");
-    for process in top.processes.unwrap() {
-        assert_eq!(process[user_column], "1000", "{process:?}");
+    // Le processus tourne bien sous l'uid demande : colonne `uid` numerique
+    // (jamais un nom resolu dans les comptes de l'hote).
+    let options = bollard::query_parameters::TopOptionsBuilder::default()
+        .ps_args("-o uid=")
+        .build();
+    let top = api.top_processes(&name, Some(options)).await.unwrap();
+    let processes = top.processes.unwrap();
+    assert!(!processes.is_empty());
+    for process in processes {
+        assert_eq!(process[0].trim(), "1000", "{process:?}");
     }
 }
 

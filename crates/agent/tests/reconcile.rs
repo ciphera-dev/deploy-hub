@@ -100,3 +100,31 @@ async fn unresponsive_docker_falls_back_to_the_local_state() {
     assert_eq!(state.deployments, vec![web]);
     assert!(started.elapsed() <= reconcile::DOCKER_TIMEOUT + Duration::from_secs(1));
 }
+
+#[tokio::test]
+async fn runs_as_root_is_kept_when_inspect_fails() {
+    let path = TempPath::new("ciphera-agent-reconcile-root");
+    let db = StateDb::open(&path.0).unwrap();
+    let docker = Arc::new(FakeDocker::default());
+    let d = deployment("a/web:1", true);
+    db.put_deployment(&d, &ContainerId("c1".into())).unwrap();
+    docker.set_health("c1", Health::Healthy);
+    db.set_runs_as_root(d.deployment_id, true).unwrap();
+
+    // `inspect` en echec : la derniere valeur connue reste.
+    docker.fail_inspect.store(true, Ordering::SeqCst);
+    let state = reconcile::snapshot(docker.as_ref(), &db).await;
+    assert!(state[0].runs_as_root);
+
+    // Lu a nouveau : le faux ne connait pas le conteneur, donc pas root.
+    docker.fail_inspect.store(false, Ordering::SeqCst);
+    let state = reconcile::snapshot(docker.as_ref(), &db).await;
+    assert!(!state[0].runs_as_root);
+    assert!(
+        !db.record(d.deployment_id)
+            .unwrap()
+            .unwrap()
+            .deployment
+            .runs_as_root
+    );
+}

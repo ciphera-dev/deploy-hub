@@ -41,6 +41,8 @@ struct Env {
     server: Uuid,
     agent: mpsc::Receiver<ControlToAgent>,
     offset: Arc<AtomicU64>,
+    /// `RequestState` recus (retires de `orders`).
+    state_requests: usize,
 }
 
 impl Env {
@@ -66,6 +68,7 @@ impl Env {
             server,
             agent,
             offset,
+            state_requests: 0,
         }
     }
 
@@ -77,9 +80,20 @@ impl Env {
     fn orders(&mut self) -> Vec<ControlToAgent> {
         let mut out = Vec::new();
         while let Ok(m) = self.agent.try_recv() {
-            out.push(m);
+            // Demande d'etat apres un deploiement reussi : comptee a part.
+            if matches!(m, ControlToAgent::RequestState) {
+                self.state_requests += 1;
+            } else {
+                out.push(m);
+            }
         }
         out
+    }
+
+    /// `RequestState` recus depuis le dernier appel.
+    fn take_state_requests(&mut self) -> usize {
+        self.orders();
+        std::mem::take(&mut self.state_requests)
     }
 
     /// Execute toutes les taches en file (deploy et cleanup), comme le
@@ -1530,11 +1544,7 @@ async fn lagged_agent_events_request_a_full_state() {
     let run = tokio::spawn(orchestrator::run(env.state.clone(), events, logs, stop_rx));
     let mut asked = false;
     for _ in 0..100 {
-        if env
-            .orders()
-            .iter()
-            .any(|o| matches!(o, ControlToAgent::RequestState))
-        {
+        if env.take_state_requests() > 0 {
             asked = true;
             break;
         }
@@ -1567,12 +1577,7 @@ async fn repeated_lag_requests_state_at_most_once_per_interval() {
     flood(&env);
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let run = tokio::spawn(orchestrator::run(env.state.clone(), events, logs, stop_rx));
-    let asked = |env: &mut Env| {
-        env.orders()
-            .iter()
-            .filter(|o| matches!(o, ControlToAgent::RequestState))
-            .count()
-    };
+    let asked = |env: &mut Env| env.take_state_requests();
     let mut first = 0;
     for _ in 0..100 {
         first += asked(&mut env);
@@ -1711,4 +1716,38 @@ async fn terminal_outcomes_queue_their_notification_when_smtp_is_on() {
             ("deploy_succeeded".to_string(), late),
         ]
     );
+}
+
+/// Apres un deploiement reussi, l'etat complet de l'agent est redemande
+/// (utilisateur effectif des conteneurs, `runs_as_root`) sans attendre une
+/// reconnexion.
+#[tokio::test]
+async fn state_is_requested_after_a_successful_deploy() {
+    let mut env = Env::new().await;
+    let (project, _) = image_project(&env.state, "web").await;
+    assert_eq!(env.take_state_requests(), 0);
+    let ok = successful_deploy(&mut env, project).await;
+    assert_eq!(env.status(ok).await, "success");
+    assert_eq!(env.take_state_requests(), 1, "une demande apres le succes");
+
+    // Le `State` qui suit renseigne le badge.
+    env.agent_says(AgentToControl::State(AgentState {
+        deployments: vec![RunningDeployment {
+            deployment_id: DeploymentId(ok),
+            service_id: shared::ids::ServiceId::new(),
+            image: proto::ImageRef("x:1".into()),
+            healthy: true,
+            serving: true,
+            runs_as_root: true,
+        }],
+        in_progress: Vec::new(),
+        outcomes: Vec::new(),
+    }))
+    .await;
+    let root: bool = sqlx::query_scalar("SELECT runs_as_root FROM deployments WHERE id = $1")
+        .bind(ok)
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+    assert!(root);
 }

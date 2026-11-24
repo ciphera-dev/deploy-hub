@@ -39,6 +39,8 @@ pub struct FakeDocker {
     pub hang: AtomicBool,
     /// `stop` echoue (erreur d'API) tant que vrai.
     pub fail_stop: AtomicBool,
+    /// `runs_as_root` echoue (erreur d'API) tant que vrai.
+    pub fail_inspect: AtomicBool,
     /// `run` echoue avec cette erreur d'API (refus au demarrage).
     pub fail_run: Mutex<Option<String>>,
     /// Conteneurs existants par identifiant.
@@ -181,6 +183,9 @@ impl DockerOps for FakeDocker {
 
     async fn runs_as_root(&self, id: &ContainerId) -> Result<bool, DockerError> {
         // Utilisateur demande a la creation ; absent : celui de l'image (root).
+        if self.fail_inspect.load(Ordering::SeqCst) {
+            return Err(DockerError::Api("inspect refuse".into()));
+        }
         // Conteneur inconnu du faux : non.
         let runs = self.runs.lock().unwrap();
         Ok(runs

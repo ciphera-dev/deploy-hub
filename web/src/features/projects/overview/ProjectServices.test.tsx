@@ -166,3 +166,14 @@ it("lecteur : réglages de sécurité inactifs", async () => {
   expect(await screen.findByRole("menuitem", { name: "Sécurité" })).toHaveAttribute("data-disabled");
   expect(patches).toHaveLength(0);
 });
+
+it("ops : peut redémarrer mais la sécurité et le badge root restent en lecture seule", async () => {
+  role = "ops";
+  mount();
+  await screen.findByRole("article", { name: "web" }, { timeout: 5000 });
+  await waitFor(() => expect(within(card("web")).getByRole("button", { name: "Redémarrer" })).toBeEnabled());
+  expect(within(card("web")).getByRole("button", { name: /S'exécute en root/ })).toBeDisabled();
+  fireEvent.keyDown(within(card("web")).getByRole("button", { name: "Actions" }), { key: "Enter" });
+  expect(await screen.findByRole("menuitem", { name: "Sécurité" })).toHaveAttribute("data-disabled");
+  expect(patches).toHaveLength(0);
+});

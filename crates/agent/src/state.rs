@@ -17,7 +17,7 @@ use shared::ids::{DeploymentId, ProjectId, ServiceId};
 
 use crate::docker::ContainerId;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Tables de la version 1 (Task 19).
 const SCHEMA_V1: &str = "
@@ -65,6 +65,12 @@ CREATE INDEX IF NOT EXISTS outcomes_recent ON outcomes (recorded_at);
 /// s'etendent qu'a ce projet). Vide pour un deploiement plus ancien.
 const MIGRATE_V4: &str = "
 ALTER TABLE deployments ADD COLUMN project_id TEXT;
+";
+
+/// Version 5 : derniere valeur lue de l'utilisateur effectif (`runs_as_root`),
+/// gardee quand `inspect` echoue.
+const MIGRATE_V5: &str = "
+ALTER TABLE deployments ADD COLUMN runs_as_root INTEGER NOT NULL DEFAULT 0 CHECK (runs_as_root IN (0, 1));
 ";
 
 #[derive(Debug)]
@@ -158,6 +164,9 @@ impl StateDb {
         if version < 4 {
             tx.execute_batch(MIGRATE_V4)?;
         }
+        if version < 5 {
+            tx.execute_batch(MIGRATE_V5)?;
+        }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
         Ok(Self {
@@ -193,13 +202,14 @@ impl StateDb {
         self.conn().execute(
             "INSERT INTO deployments
                (deployment_id, service_id, image, container_id, healthy, port, serving, updated_at,
-                project_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                project_id, runs_as_root)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT (deployment_id) DO UPDATE SET
                service_id = excluded.service_id, image = excluded.image,
                container_id = excluded.container_id, healthy = excluded.healthy,
                port = excluded.port, serving = excluded.serving,
-               updated_at = excluded.updated_at, project_id = excluded.project_id",
+               updated_at = excluded.updated_at, project_id = excluded.project_id,
+               runs_as_root = excluded.runs_as_root",
             params![
                 d.deployment_id.to_string(),
                 d.service_id.to_string(),
@@ -209,7 +219,8 @@ impl StateDb {
                 r.port,
                 d.serving,
                 now_secs(),
-                r.project.map(|p| p.to_string())
+                r.project.map(|p| p.to_string()),
+                d.runs_as_root
             ],
         )?;
         Ok(())
@@ -219,6 +230,14 @@ impl StateDb {
         self.conn().execute(
             "UPDATE deployments SET healthy = ?2, updated_at = ?3 WHERE deployment_id = ?1",
             params![id.to_string(), healthy, now_secs()],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_runs_as_root(&self, id: DeploymentId, root: bool) -> Result<(), StateError> {
+        self.conn().execute(
+            "UPDATE deployments SET runs_as_root = ?2 WHERE deployment_id = ?1",
+            params![id.to_string(), root],
         )?;
         Ok(())
     }
@@ -256,7 +275,7 @@ impl StateDb {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT deployment_id, service_id, image, container_id, healthy, port, serving,
-                    project_id
+                    project_id, runs_as_root
              FROM deployments {filter} ORDER BY deployment_id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -269,12 +288,22 @@ impl StateDb {
                 r.get::<_, Option<u16>>(5)?,
                 r.get::<_, bool>(6)?,
                 r.get::<_, Option<String>>(7)?,
+                r.get::<_, bool>(8)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (deployment_id, service_id, image, container, healthy, port, serving, project) =
-                row?;
+            let (
+                deployment_id,
+                service_id,
+                image,
+                container,
+                healthy,
+                port,
+                serving,
+                project,
+                runs_as_root,
+            ) = row?;
             out.push(DeploymentRecord {
                 deployment: RunningDeployment {
                     deployment_id: deployment_id
@@ -286,7 +315,7 @@ impl StateDb {
                     image: ImageRef(image),
                     healthy,
                     serving,
-                    runs_as_root: false,
+                    runs_as_root,
                 },
                 container: ContainerId(container),
                 port,

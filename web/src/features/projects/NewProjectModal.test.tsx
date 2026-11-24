@@ -18,6 +18,8 @@ let reposReply: () => Response;
 let deployReply: () => Response;
 let polled: () => Response;
 let deployPosts: { path: string; csrf: string | null; body: unknown }[];
+let securityPatches: { path: string; csrf: string | null; body: unknown }[];
+let securityReply: () => Response;
 
 const NOT_CONNECTED = () => HttpResponse.json({ error: { code: "github_not_connected", message: "GitHub n'est pas connecté." } }, { status: 404 });
 
@@ -31,6 +33,10 @@ const server = setupServer(
     deployPosts.push({ path: new URL(request.url).pathname, csrf: request.headers.get("x-csrf-token"), body: (await request.text()) || null });
     return deployReply();
   }),
+  http.patch("*/api/projects/:id/services/:sid", async ({ request }) => {
+    securityPatches.push({ path: new URL(request.url).pathname, csrf: request.headers.get("x-csrf-token"), body: await request.json() });
+    return securityReply();
+  }),
   http.get("*/api/deployments/:id", () => polled()),
 );
 
@@ -41,6 +47,8 @@ beforeEach(() => {
   reply = () => HttpResponse.json(projectDetail(PROJECT_SUMMARIES[0]), { status: 201 });
   reposReply = NOT_CONNECTED;
   deployPosts = [];
+  securityPatches = [];
+  securityReply = () => HttpResponse.json({});
   deployReply = () => HttpResponse.json(queuedDeployment(PROJECT_SUMMARIES[0].id), { status: 201 });
   polled = () => HttpResponse.json(queuedDeployment(PROJECT_SUMMARIES[0].id));
   setCsrfToken("csrf-1");
@@ -212,4 +220,46 @@ it("déploiement refusé : le projet reste créé, le message s'affiche", async 
   expect(screen.getByText(/Le premier déploiement n'a pas pu être lancé/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Ouvrir le projet" }));
   expect(onOpen).toHaveBeenCalledWith(PROJECT_SUMMARIES[0].id);
+});
+
+function pickImage() {
+  fireEvent.click(screen.getByRole("button", { name: /Image Docker/ }));
+  fireEvent.change(screen.getByLabelText("Image"), { target: { value: "ghcr.io/org/app:1.2" } });
+  fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+}
+
+it("Image Docker : « Exécuter sans root » décoché par défaut, absent pour une source Git", async () => {
+  renderModal();
+  pickImage();
+  expect(screen.getByRole("switch", { name: "Exécuter sans root (recommandé)" })).not.toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: "Créer le projet" }));
+  await waitFor(() => expect(deployPosts).toHaveLength(1));
+  expect(securityPatches).toHaveLength(0);
+});
+
+it("Image Docker : sans root coché, 1000:1000 est enregistré avant le premier déploiement", async () => {
+  renderModal();
+  pickImage();
+  fireEvent.click(screen.getByRole("switch", { name: "Exécuter sans root (recommandé)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Créer le projet" }));
+  await waitFor(() => expect(deployPosts).toHaveLength(1));
+  expect(securityPatches).toHaveLength(1);
+  expect(securityPatches[0]!.csrf).toBe("csrf-1");
+  expect(securityPatches[0]!.body).toEqual({ run_as: "1000:1000", read_only_rootfs: false });
+});
+
+it("Image Docker : réglage refusé, le projet est créé mais aucun déploiement ne part en root", async () => {
+  securityReply = () => HttpResponse.json({ error: { code: "validation_failed", message: "Utilisateur invalide." } }, { status: 422 });
+  renderModal();
+  pickImage();
+  fireEvent.click(screen.getByRole("switch", { name: "Exécuter sans root (recommandé)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Créer le projet" }));
+  expect(await screen.findByText(/n'a pas été enregistré/)).toBeInTheDocument();
+  expect(deployPosts).toHaveLength(0);
+});
+
+it("source Git : pas d'option sans root", () => {
+  renderModal();
+  pickRepository();
+  expect(screen.queryByRole("switch", { name: /sans root/ })).not.toBeInTheDocument();
 });

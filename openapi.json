@@ -3006,7 +3006,7 @@
         "tags": [
           "projects"
         ],
-        "summary": "Reglages de securite du service (developer et plus) : utilisateur du\nconteneur et racine en lecture seule. Ils valent pour les prochains\ndeploiements ; les deux champs sont remplaces ensemble.",
+        "summary": "Reglages de securite du service (developer, admin, owner : `Projects`\nen ecriture) : utilisateur du\nconteneur et racine en lecture seule. Ils valent pour les prochains\ndeploiements ; les deux champs sont remplaces ensemble.",
         "operationId": "update_service",
         "parameters": [
           {

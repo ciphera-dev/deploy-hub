@@ -1,7 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState, type CSSProperties } from "react";
 
 import { Badge, Button, Icon, IconButton, Menu, Modal, StatusDot, Switch, TextField, useToast } from "@/design-system";
+import { fetchMe, ME_QUERY_KEY, MFA_PENDING } from "@/features/auth/api";
 import { useCanDeploy } from "@/features/deployments/useDeploymentActions";
 
 import type { Project } from "../api";
@@ -75,11 +77,18 @@ function SecurityModal({ project, s, onClose, onDone }: { project: Project; s: P
   );
 }
 
+/** `Projects:Write` : développeur, admin, owner (ops lit seulement). */
+function useCanWriteProjects(): boolean {
+  const me = useQuery({ queryKey: ME_QUERY_KEY, queryFn: fetchMe, retryOnMount: false, refetchOnMount: false });
+  return !!me.data && me.data !== MFA_PENDING && ["developer", "admin", "owner"].includes(me.data.role);
+}
+
 function ServiceCard({ project, s, canDeploy, onLogs, onDone }: { project: Project; s: ProjectService; canDeploy: boolean; onLogs: () => void; onDone: () => void }) {
   const { flash } = useToast();
   const [busy, setBusy] = useState<ServiceAction | null>(null);
   const inFlight = useRef(false);
   const [security, setSecurity] = useState(false);
+  const canWrite = useCanWriteProjects();
   const view = SERVICE_STATE_VIEW[s.state];
   const serving = !!s.deployment_id;
   const run = async (action: ServiceAction) => {
@@ -109,7 +118,7 @@ function ServiceCard({ project, s, canDeploy, onLogs, onDone }: { project: Proje
             <span style={{ font: "500 15px/1 var(--font-sans)", color: "var(--text-strong)" }}>{s.name}</span>
             <Badge>Application</Badge>
             {s.runs_as_root && (
-              <button type="button" aria-label="S'exécute en root : ouvrir les réglages de sécurité" title="S'exécute en root. Réglages de sécurité" onClick={() => setSecurity(true)} style={{ border: 0, padding: 0, background: "transparent", cursor: canDeploy ? "pointer" : "default" }} disabled={!canDeploy}>
+              <button type="button" aria-label="S'exécute en root : ouvrir les réglages de sécurité" title="S'exécute en root. Réglages de sécurité" onClick={() => setSecurity(true)} style={{ border: 0, padding: 0, background: "transparent", cursor: canWrite ? "pointer" : "default" }} disabled={!canWrite}>
                 <Badge style={{ background: "var(--surface-selected)", color: "var(--amber-500)" }}>root</Badge>
               </button>
             )}
@@ -124,7 +133,7 @@ function ServiceCard({ project, s, canDeploy, onLogs, onDone }: { project: Proje
           items={[
             { icon: "Terminal", label: "Ouvrir un terminal", onSelect: () => {}, disabled: true, tag: "v0.2" },
             { icon: "SlidersHorizontal", label: "Ressources & limites", onSelect: () => {}, disabled: true, tag: "v0.2" },
-            { icon: "Shield", label: "Sécurité", onSelect: () => setSecurity(true), disabled: !canDeploy },
+            { icon: "Shield", label: "Sécurité", onSelect: () => setSecurity(true), disabled: !canWrite },
             { icon: "Square", label: "Arrêter", onSelect: () => void run("stop"), disabled: !canDeploy || !serving || s.state === "stopped" || busy !== null },
           ]}
         />

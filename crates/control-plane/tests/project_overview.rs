@@ -595,7 +595,7 @@ async fn service_security_is_validated_stored_audited_and_sent_to_the_agent() {
     let srv = server(&state).await;
     let mut agent = state.agents.attach_channel(ServerId(srv));
     let d = deployment(&state, project, env, srv, "running", 10).await;
-    sqlx::query("UPDATE deployments SET image_built_at = now() WHERE id = $1")
+    sqlx::query("UPDATE deployments SET image_from = id, image_built_at = now() WHERE id = $1")
         .bind(d)
         .execute(&state.db)
         .await
