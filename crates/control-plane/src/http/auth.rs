@@ -172,12 +172,6 @@ async fn login(
     if !delay.is_zero() {
         tokio::time::sleep(delay).await;
     }
-    // Un seul calcul Argon2 de connexion en vol par compte : les requetes
-    // simultanees sur le meme e-mail ne multiplient pas le cout du serveur.
-    // La place passe dans le calcul (`verify`) et n'est rendue qu'a sa fin.
-    let Some(in_flight) = state.login_flights.try_begin(&email_key) else {
-        return Ok(busy());
-    };
     let attempt = match rate_limit::admit(&state.db, &ip_key, &email_key)
         .await
         .map_err(|e| internal("limitation de debit", e))?
@@ -187,6 +181,21 @@ async fn login(
             tracing::warn!(%ip, "connexion refusee : trop de tentatives");
             return Ok(rate_limited(retry_after));
         }
+    };
+    // Un seul calcul Argon2 de connexion en vol par compte : les requetes
+    // simultanees sur le meme e-mail ne multiplient pas le cout du serveur.
+    // La place est prise apres le controle de debit (une requete refusee ne la
+    // tient jamais) et passe dans le calcul (`verify`), rendue a sa fin.
+    let Some(in_flight) = state.login_flights.try_begin(&email_key) else {
+        // Refus « occupe » : la tentative n'est pas un echec du client.
+        if let Err(e) = sqlx::query("DELETE FROM login_attempts WHERE id = $1")
+            .bind(attempt)
+            .execute(&state.db)
+            .await
+        {
+            tracing::warn!(error = %e, "tentative non retiree apres un refus « occupe »");
+        }
+        return Ok(busy());
     };
 
     // lower() de PostgreSQL : la meme fonction que l'index unique des e-mails.

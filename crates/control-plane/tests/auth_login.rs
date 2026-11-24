@@ -367,13 +367,13 @@ async fn admit_is_atomic_per_ip_and_email_pair() {
 async fn failure_delay_does_not_lock_the_owner_out() {
     let env = env().await;
     sqlx::query(
-        "INSERT INTO login_attempts (ip, email_hash, succeeded)          SELECT '198.51.100.' || g, $1, false FROM generate_series(1, 11) g",
+        "INSERT INTO login_attempts (ip, email_hash, succeeded)          SELECT '198.51.100.' || g, $1, false FROM generate_series(1, 15) g",
     )
     .bind(control_plane::auth::rate_limit::email_key("alice@example.com"))
     .execute(&env.state.db)
     .await
     .unwrap();
-    // 11 echecs recents : delai de 2 s pour chaque tentative.
+    // 15 echecs recents : delai de 6 s pour chaque tentative.
     let state = env.state.clone();
     let attacker = tokio::spawn(async move {
         let other = Req {
@@ -383,9 +383,18 @@ async fn failure_delay_does_not_lock_the_owner_out() {
         fail(&state, EMAIL, other).await.status
     });
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    // La requete fautive dort depuis 1 s : sous l'ancien schema, elle tenait la
-    // place et le titulaire recevait 429 `busy` tout de suite.
-    let r = login(&env.state).await;
+    // La requete fautive dort : sous l'ancien schema elle tenait la place et le
+    // titulaire recevait 429 `busy` pendant tout ce temps (plus de 4 s ici,
+    // bien au-dela des reessais). Une collision brève avec le calcul Argon2 de
+    // l'autre requete reste admise : on reessaie sur `busy`.
+    let mut r = login(&env.state).await;
+    for _ in 0..15 {
+        if r.status != 429 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        r = login(&env.state).await;
+    }
     assert_eq!(r.status, 200, "{}", r.raw);
     assert_eq!(attacker.await.unwrap(), 401);
 }
