@@ -257,3 +257,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 17:13 — Session v0.1-sdd — claude-code (orchestrateur) — Task R10 : Remédiation audit — limites des services Compose
 - fait : rebasé sur 289aeca, intégré (cf7675a, b604c6b)
 - résultat : relecture : 1 Important corrigé (tmpfs de taille nulle), relecture ciblée approuvée
+
+## 2026-11-24 17:22 — Session v0.1-sdd — claude-code (orchestrateur) — Task R5 : Remédiation audit — gestion de l'équipe (API)
+- fait : rebasé sur bc6d067, intégré (c0bc89e, f3c6219)
+- résultat : relecture : 1 Important corrigé (invitations du membre retiré), lien de réinitialisation borné par can_manage ; relecture ciblée approuvée
