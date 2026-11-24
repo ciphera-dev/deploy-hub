@@ -277,3 +277,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 20:17 — Session v0.1-sdd — claude-code (orchestrateur) — Task R7 : Remédiation audit — ré-authentification avant un second facteur
 - fait : rebasé sur 97c89dc, intégré (bace1a6, 8812dc0)
 - résultat : relecture : 1 Important corrigé (session d'enrôlement périmée), relecture ciblée approuvée
+
+## 2026-11-24 20:48 — Session v0.1-sdd — claude-code (orchestrateur) — Task R3b : Profil AppArmor appliqué au buildkitd
+- fait : intégré (fc3f797, ffb435e, 68293ee)
+- résultat : relectures : 1 Important corrigé (variante AppArmor 3), rebase vérifié ; preuve d'exécution en CI

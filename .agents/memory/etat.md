@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-24 20:17
+# État courant — mis à jour le 2026-11-24 20:48
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R7 : Remédiation audit — ré-authentification avant un second facteur — statut : TERMINÉ (relecture : 1 Important corrigé (session d'enrôlement périmée), relecture ciblée approuvée)
+Task R3b : Profil AppArmor appliqué au buildkitd — statut : TERMINÉ (relectures : 1 Important corrigé (variante AppArmor 3), rebase vérifié ; preuve d'exécution en CI)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R3b : Profil AppArmor appliqué au buildkitd
 - Task R7 : Remédiation audit — ré-authentification avant un second facteur
 - Task fixci : CI rouge après R45 et R6
 - Task R45 : Remédiation audit — un état BuildKit par projet
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R5 : Remédiation audit — gestion de l'équipe (API)
 - Task R10 : Remédiation audit — limites des services Compose
 - Task R8 : Remédiation audit — proxy : échéance d'en-têtes par requête, plafonds de connexions, unité bornée
-- Task R9 : Remédiation audit — Compose : redémarrage et étiquettes réservées
 
 ## Prochaine étape exacte
-Intégrer R3b et R4 ; relire R11, R16, R18, R20 ; puis R12, R13, R14
+Intégrer R16, R4 ; relire R20 ; R11, R12, R18 en cours
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,8 +32,9 @@ Intégrer R3b et R4 ; relire R11, R16, R18, R20 ; puis R12, R13, R14
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/control-plane`
-- `web/src/features/profile`
+- `crates/agent`
+- `deploy/apparmor`
+- `install`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
