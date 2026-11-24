@@ -1153,7 +1153,7 @@ fn rebound_value(
     if secrets.open_bound(label, sealed).is_ok() {
         return Ok(None);
     }
-    let Ok(clear) = secrets.open_unbound(sealed) else {
+    let Ok(clear) = secrets.open_unbound_for_rebind(sealed) else {
         tracing::warn!(
             what,
             "secret illisible ou deja lie a une autre ligne : laisse tel quel"

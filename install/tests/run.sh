@@ -384,6 +384,8 @@ run_distro() {
 	check "(a) Docker absent signale" grep -q 'Docker' "$out"
 	check "(a) db_password en 0600 pour ciphera" \
 		in_ctr 'test "$(stat -c %a:%U /etc/ciphera/db_password)" = 600:ciphera'
+	check "(a) age.key en 0600 pour ciphera" \
+		in_ctr 'test "$(stat -c %a:%U /etc/ciphera/age.key)" = 600:ciphera'
 	check "(a) unite de l'agent installee" in_ctr 'test -f /etc/systemd/system/ciphera-agent.service'
 	check "(a) cle de l'agent en 0600 pour ciphera-agent" \
 		in_ctr 'test "$(stat -c %a:%U /etc/ciphera-agent/agent.key)" = 600:ciphera-agent'

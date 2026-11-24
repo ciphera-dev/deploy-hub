@@ -30,8 +30,32 @@ impl fmt::Debug for SecretBox {
     }
 }
 
+/// Proprietaire acceptable pour `age.key` : root (updater, commandes
+/// d'administration lancees avec sudo) lit la cle quel que soit son
+/// proprietaire (`ciphera`) ; sinon le proprietaire est l'utilisateur courant.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn owner_ok(owner_uid: u32, euid: u32) -> bool {
+    euid == 0 || owner_uid == euid
+}
+
+/// Ouvre sans suivre de lien symbolique ni bloquer sur un tube nomme.
+#[cfg(unix)]
+fn open_identity(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits() as i32)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_identity(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
 /// `age.key` doit etre prive : aucun droit pour le groupe ni les autres, et
-/// propriete de l'utilisateur courant ou de root (Unix seulement).
+/// proprietaire accepte par [`owner_ok`] (Unix seulement).
 #[cfg(unix)]
 fn check_private(file: &std::fs::File) -> Result<(), SecretError> {
     use std::os::unix::fs::MetadataExt;
@@ -46,8 +70,7 @@ fn check_private(file: &std::fs::File) -> Result<(), SecretError> {
             "fichier d'identite : droits trop larges (0600 attendu)",
         ));
     }
-    let me = rustix::process::geteuid().as_raw();
-    if meta.uid() != me && meta.uid() != 0 {
+    if !owner_ok(meta.uid(), rustix::process::geteuid().as_raw()) {
         return Err(SecretError("fichier d'identite : proprietaire inattendu"));
     }
     Ok(())
@@ -62,7 +85,7 @@ impl SecretBox {
     /// vides et les commentaires (`#`) sont ignores.
     pub fn load(identity_path: &Path) -> Result<SecretBox, SecretError> {
         use std::io::Read;
-        let mut file = std::fs::File::open(identity_path)
+        let mut file = open_identity(identity_path)
             .map_err(|_| SecretError("fichier d'identite illisible"))?;
         check_private(&file)?;
         let mut raw = Zeroizing::new(String::new());
@@ -145,11 +168,17 @@ impl SecretBox {
         self.seal(&framed)
     }
 
+    /// Reserve au rechiffrement au demarrage (`rebind_all`, a retirer en
+    /// v0.2) : un clair non lie n'est jamais une valeur de confiance. Public
+    /// seulement parce que `rebind_all` est dans une autre crate.
     /// Dechiffre un chiffre d'avant la liaison (age seul), pour le
     /// rechiffrer lie a sa ligne. Refuse un clair qui commence par
     /// `BOUND_MAGIC` : c'est un chiffre lie a une autre ligne, pas une
     /// ancienne valeur.
-    pub fn open_unbound(&self, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretError> {
+    pub fn open_unbound_for_rebind(
+        &self,
+        sealed: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, SecretError> {
         let clear = self.open(sealed)?;
         if clear.starts_with(BOUND_MAGIC) {
             return Err(SecretError("chiffre deja lie : rechiffrement refuse"));
@@ -226,11 +255,23 @@ mod tests {
     }
 
     #[test]
-    fn open_unbound_refuses_bound_clear() {
+    fn owner_rule() {
+        // root lit une cle de `ciphera` ; `ciphera` lit la sienne ; un autre non.
+        assert!(owner_ok(990, 0));
+        assert!(owner_ok(990, 990));
+        assert!(!owner_ok(990, 1000));
+        assert!(!owner_ok(0, 1000));
+    }
+
+    #[test]
+    fn open_unbound_for_rebind_refuses_bound_clear() {
         let (sb, _) = SecretBox::generate();
         let bound = sb.seal_bound(b"a|b|c", b"v").unwrap();
-        assert!(sb.open_unbound(&bound).is_err());
+        assert!(sb.open_unbound_for_rebind(&bound).is_err());
         let legacy = sb.seal(b"v").unwrap();
-        assert_eq!(sb.open_unbound(&legacy).unwrap().as_slice(), b"v");
+        assert_eq!(
+            sb.open_unbound_for_rebind(&legacy).unwrap().as_slice(),
+            b"v"
+        );
     }
 }
