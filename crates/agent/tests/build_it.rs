@@ -987,11 +987,16 @@ fn state_exists(state_root: &Path, project: ProjectId) -> bool {
 
 /// Dockerfile avec un cache de montage (`id=x`) : `CACHE_WRITER` y pose un
 /// marqueur, `CACHE_READER` dit s'il le voit.
+///
+/// Les jetons sont coupes par `""` dans le Dockerfile : BuildKit recopie la
+/// ligne de commande du `RUN` dans sa sortie, et un jeton ecrit en clair y
+/// serait trouve quel que soit l'etat du cache. Le shell recolle `MARKER-...`
+/// a l'affichage, seul le vrai resultat contient donc le jeton complet.
 const CACHE_WRITER: &str = "FROM docker.io/library/busybox:1.37\n\
     RUN --mount=type=cache,id=x,target=/c echo marker > /c/marker\n";
 const CACHE_READER: &str = "FROM docker.io/library/busybox:1.37\n\
     RUN --mount=type=cache,id=x,target=/c \
-    if [ -e /c/marker ]; then echo MARKER-SEEN; else echo MARKER-ABSENT; fi\n";
+    if [ -e /c/marker ]; then echo MARK\"\"ER-SEEN; else echo MARK\"\"ER-ABSENT; fi\n";
 
 /// `buildctl` direct sur `socket` avec le Dockerfile `dockerfile` et l'espace
 /// de noms de cache impose `namespace` (hors du pipeline, qui le derive des
