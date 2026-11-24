@@ -69,13 +69,24 @@ pub struct OrgSecurity {
     pub ip_allowlist: Vec<String>,
     /// Adresse de la requete, telle que le serveur la voit.
     pub current_ip: String,
+    /// La session qui fait la requete doit d'abord enrôler un second facteur
+    /// (2FA imposee alors que le compte n'en a aucun) : l'interface redirige
+    /// vers l'enrolement.
+    pub self_enrollment_required: bool,
 }
 
 /// Corps de `PATCH /api/settings/security`.
-#[derive(Debug, Default, Deserialize, ToSchema)]
+#[derive(Default, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateOrgSecurity {
+    /// Imposer la 2FA : les sessions ouvertes des comptes sans second facteur
+    /// passent en enrolement obligatoire (administrateur ou proprietaire). La
+    /// desactiver est reserve au proprietaire, avec `current_password`.
     pub mfa_required: Option<bool>,
+    /// Mot de passe du proprietaire (re-authentification), exige pour
+    /// desactiver la 2FA imposee ou modifier la liste d'IP.
+    #[schema(value_type = Option<String>, format = Password, max_length = 1024)]
+    pub current_password: Option<Zeroizing<String>>,
     /// 100 entrees au plus (`203.0.113.7`, `198.51.100.0/24`, `2001:db8::/32`).
     /// Une liste qui exclut l'adresse de la requete est refusee (422
     /// `ip_allowlist_lockout`).
@@ -219,7 +230,9 @@ pub fn get_org_security() {}
     params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
     responses(
         (status = 200, description = "Parametres enregistres", body = OrgSecurity),
-        (status = 403, description = "Administrateur requis, ou jeton CSRF absent ou invalide"),
+        (status = 401, description = "`invalid_credentials` : mot de passe absent ou incorrect (modification reservee au proprietaire)"),
+        (status = 403, description = "Administrateur requis (proprietaire pour desactiver la 2FA imposee ou modifier la liste d'IP), ou jeton CSRF absent ou invalide"),
+        (status = 429, description = "Trop de tentatives de mot de passe"),
         (status = 422, description = "`validation_failed` ou `ip_allowlist_lockout` (la liste exclut l'adresse de la requete)"),
     )
 )]

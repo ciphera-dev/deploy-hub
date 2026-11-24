@@ -269,9 +269,24 @@ async fn set_allowlist(state: &AppState, s: &Session, list: Value) -> Reply {
         s,
         "PATCH",
         "/api/settings/security",
-        Some(json!({ "ip_allowlist": list })),
+        Some(json!({ "ip_allowlist": list, "current_password": PASSWORD })),
     )
     .await
+}
+
+/// TOTP confirmee pour le compte (suffit a le dispenser de l'enrolement).
+async fn give_totp(state: &AppState, user_id: Uuid) {
+    sqlx::query(
+        "INSERT INTO user_totp (user_id, secret_sealed, confirmed_at) VALUES ($1, '\\x00', now())",
+    )
+    .bind(user_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+}
+
+async fn patch_security(state: &AppState, s: &Session, body: Value) -> Reply {
+    send(state, s, "PATCH", "/api/settings/security", Some(body)).await
 }
 
 #[tokio::test]
@@ -465,29 +480,35 @@ async fn clear_ip_allowlist_cli_reopens_access() {
 }
 
 #[tokio::test]
-async fn mfa_required_enforced_at_next_login() {
+async fn enabling_mfa_required_forces_open_sessions() {
     let (state, _pg) = common::state().await;
     instance(&state).await;
-    let (_, owner) = login(&state, "owner").await;
+    let (owner_id, owner) = login(&state, "owner").await;
+    give_totp(&state, owner_id).await;
     let (_, email) = user(&state, "developer").await;
     let before = login_as(&state, &email).await;
     let before: Session = (before.token(), before.csrf());
+    let (with_factor_id, with_factor_email) = user(&state, "developer").await;
+    give_totp(&state, with_factor_id).await;
+    let kept = login_as(&state, &with_factor_email).await;
+    // Un compte avec TOTP connecte avant : session intacte (apres l'etape 2FA).
+    assert_eq!(kept.status, 200, "{}", kept.raw);
 
-    let r = send(
-        &state,
-        &owner,
-        "PATCH",
-        "/api/settings/security",
-        Some(json!({ "mfa_required": true })),
-    )
-    .await;
+    let r = patch_security(&state, &owner, json!({ "mfa_required": true })).await;
     assert_eq!(r.status, 200, "{}", r.raw);
     assert_eq!(r.json()["mfa_required"], true);
+    assert_eq!(r.json()["self_enrollment_required"], false);
     let r = send(&state, &owner, "GET", "/api/settings/general", None).await;
     assert_eq!(r.json()["mfa_required"], true);
 
-    // Session ouverte avant : intacte.
+    // Session ouverte avant, compte sans facteur : enrolement obligatoire.
     let r = send(&state, &before, "GET", "/api/projects", None).await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(r.code(), "mfa_enrollment_required");
+    let r = send(&state, &before, "GET", "/api/me", None).await;
+    assert_eq!(r.json()["mfa_enrollment_required"], true, "{}", r.raw);
+    // Le proprietaire (avec TOTP) n'est pas touche.
+    let r = send(&state, &owner, "GET", "/api/projects", None).await;
     assert_eq!(r.status, 200, "{}", r.raw);
     // Connexion suivante sans 2FA : enrolement obligatoire avant tout acces.
     let r = login_as(&state, &email).await;
@@ -498,6 +519,101 @@ async fn mfa_required_enforced_at_next_login() {
     let r = send(&state, &after, "GET", "/api/projects", None).await;
     assert_eq!(r.status, 403, "{}", r.raw);
     assert_eq!(r.code(), "mfa_enrollment_required");
+}
+
+#[tokio::test]
+async fn author_without_factor_gets_enrollment() {
+    let (state, _pg) = common::state().await;
+    instance(&state).await;
+    let (_, owner) = login(&state, "owner").await;
+    let r = patch_security(&state, &owner, json!({ "mfa_required": true })).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["self_enrollment_required"], true, "{}", r.raw);
+    let r = send(&state, &owner, "GET", "/api/projects", None).await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(r.code(), "mfa_enrollment_required");
+    // La page d'enrolement reste ouverte.
+    let r = send(&state, &owner, "GET", "/api/me", None).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["mfa_enrollment_required"], true);
+}
+
+#[tokio::test]
+async fn admin_cannot_disable_mfa_required() {
+    let (state, _pg) = common::state().await;
+    instance(&state).await;
+    let (owner_id, owner) = login(&state, "owner").await;
+    give_totp(&state, owner_id).await;
+    let (admin_id, admin) = login(&state, "admin").await;
+    give_totp(&state, admin_id).await;
+    // L'administrateur peut imposer la 2FA (sans mot de passe)...
+    let r = patch_security(&state, &admin, json!({ "mfa_required": true })).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    // ... pas la desactiver, mot de passe fourni ou non.
+    for body in [
+        json!({ "mfa_required": false }),
+        json!({ "mfa_required": false, "current_password": PASSWORD }),
+    ] {
+        let r = patch_security(&state, &admin, body).await;
+        assert_eq!(r.status, 403, "{}", r.raw);
+    }
+    let on: bool = sqlx::query_scalar("SELECT mfa_required FROM instance")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert!(on);
+    // Le proprietaire : mot de passe obligatoire.
+    for body in [
+        json!({ "mfa_required": false }),
+        json!({ "mfa_required": false, "current_password": "mauvais mot de passe" }),
+    ] {
+        let r = patch_security(&state, &owner, body).await;
+        assert_eq!(r.status, 401, "{}", r.raw);
+        assert_eq!(r.code(), "invalid_credentials");
+    }
+    let r = patch_security(
+        &state,
+        &owner,
+        json!({ "mfa_required": false, "current_password": PASSWORD }),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["mfa_required"], false);
+}
+
+#[tokio::test]
+async fn ip_allowlist_owner_only_with_password() {
+    let (state, _pg) = common::state().await;
+    instance(&state).await;
+    let (_, owner) = login(&state, "owner").await;
+    let (_, admin) = login(&state, "admin").await;
+    let list = json!([MY_IP]);
+    let r = set_allowlist(&state, &admin, list.clone()).await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    for body in [
+        json!({ "ip_allowlist": list }),
+        json!({ "ip_allowlist": list, "current_password": "mauvais mot de passe" }),
+    ] {
+        let r = patch_security(&state, &owner, body).await;
+        assert_eq!(r.status, 401, "{}", r.raw);
+        assert_eq!(r.code(), "invalid_credentials");
+    }
+    let n: i64 = sqlx::query_scalar("SELECT cardinality(ip_allowlist)::bigint FROM instance")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+    let r = set_allowlist(&state, &owner, list.clone()).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["ip_allowlist"], list);
+    // Liste inchangee : l'administrateur peut enregistrer d'autres reglages.
+    let r = patch_security(
+        &state,
+        &admin,
+        json!({ "mfa_required": false, "ip_allowlist": list }),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
 }
 
 /// Projet Git cree par l'API ; renvoie (id, id de l'environnement de production).

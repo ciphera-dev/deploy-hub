@@ -1369,7 +1369,7 @@ async fn revoked_session_and_allowlist_close_open_streams() {
         Req {
             cookie: Some(&owner),
             csrf: Some(&csrf),
-            body: Some(json!({ "ip_allowlist": ["203.0.113.0/24"] })),
+            body: Some(json!({ "ip_allowlist": ["203.0.113.0/24"], "current_password": PASSWORD })),
             ..Req::default()
         },
     )

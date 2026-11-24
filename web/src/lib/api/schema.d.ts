@@ -2256,6 +2256,12 @@ export interface components {
             ip_allowlist: string[];
             /** @description 2FA obligatoire : appliquee a la prochaine connexion de chaque compte. */
             mfa_required: boolean;
+            /**
+             * @description La session qui fait la requete doit d'abord enrôler un second facteur
+             *     (2FA imposee alors que le compte n'en a aucun) : l'interface redirige
+             *     vers l'enrolement.
+             */
+            self_enrollment_required: boolean;
         };
         /** @description Reponse de `DELETE /api/organization`. */
         OrganizationDeleted: {
@@ -2869,11 +2875,22 @@ export interface components {
         /** @description Corps de `PATCH /api/settings/security`. */
         UpdateOrgSecurity: {
             /**
+             * Format: password
+             * @description Mot de passe du proprietaire (re-authentification), exige pour
+             *     desactiver la 2FA imposee ou modifier la liste d'IP.
+             */
+            current_password?: string | null;
+            /**
              * @description 100 entrees au plus (`203.0.113.7`, `198.51.100.0/24`, `2001:db8::/32`).
              *     Une liste qui exclut l'adresse de la requete est refusee (422
              *     `ip_allowlist_lockout`).
              */
             ip_allowlist?: string[] | null;
+            /**
+             * @description Imposer la 2FA : les sessions ouvertes des comptes sans second facteur
+             *     passent en enrolement obligatoire (administrateur ou proprietaire). La
+             *     desactiver est reserve au proprietaire, avec `current_password`.
+             */
             mfa_required?: boolean | null;
         };
         /** @description Corps de `PATCH /api/projects/{id}` : seuls les champs presents changent. */
@@ -6869,7 +6886,14 @@ export interface operations {
                     "application/json": components["schemas"]["OrgSecurity"];
                 };
             };
-            /** @description Administrateur requis, ou jeton CSRF absent ou invalide */
+            /** @description `invalid_credentials` : mot de passe absent ou incorrect (modification reservee au proprietaire) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Administrateur requis (proprietaire pour desactiver la 2FA imposee ou modifier la liste d'IP), ou jeton CSRF absent ou invalide */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6878,6 +6902,13 @@ export interface operations {
             };
             /** @description `validation_failed` ou `ip_allowlist_lockout` (la liste exclut l'adresse de la requete) */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives de mot de passe */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

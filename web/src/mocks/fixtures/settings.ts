@@ -9,7 +9,7 @@ export const GENERAL: S["GeneralSettings"] = { id: "7f2a4c10-1b2c-4d5e-8f90-a1b2
 
 export const DEPLOY: S["DeploySettings"] = { auto: true, retention: 5 };
 
-export const SECURITY: S["OrgSecurity"] = { mfa_required: true, ip_allowlist: [], current_ip: "203.0.113.7" };
+export const SECURITY: S["OrgSecurity"] = { mfa_required: true, ip_allowlist: [], current_ip: "203.0.113.7", self_enrollment_required: false };
 
 export const DANGER: S["DangerZone"] = { name: "Ciphera", projects: 4, members: 6, github_app: null };
 

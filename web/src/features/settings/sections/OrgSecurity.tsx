@@ -1,11 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 
 import { Button, Switch, useToast } from "@/design-system";
+import { fetchMe, ME_QUERY_KEY, MFA_PENDING } from "@/features/auth/api";
 import { FormError } from "@/features/auth/ui";
 
-import { fetchSecurity, GENERAL_QUERY_KEY, saveSecurity, SECURITY_QUERY_KEY, type OrgSecurity } from "../api";
-import { Card, lbl, Note, Row, SECTION_FORM_ID, SectionState, Soon } from "../ui";
+import { fetchSecurity, GENERAL_QUERY_KEY, saveSecurity, SECURITY_QUERY_KEY, type OrgSecurity, type OrgSecurityUpdate } from "../api";
+import { Card, Input, lbl, Note, Row, SECTION_FORM_ID, SectionState, Soon } from "../ui";
 
 const lines = (text: string) =>
   text
@@ -13,16 +15,30 @@ const lines = (text: string) =>
     .map((l) => l.trim())
     .filter(Boolean);
 
+/** Role du compte charge par le shell, sans nouvelle requete. */
+function useIsOwner(): boolean {
+  const me = useQuery({ queryKey: ME_QUERY_KEY, queryFn: fetchMe, retryOnMount: false, refetchOnMount: false });
+  return !!me.data && me.data !== MFA_PENDING && me.data.role === "owner";
+}
+
 function SecurityForm({ initial }: { initial: OrgSecurity }) {
   const client = useQueryClient();
+  const navigate = useNavigate();
+  const owner = useIsOwner();
   const { flash } = useToast();
   const [mfa, setMfa] = useState(initial.mfa_required);
   const [ipAllow, setIpAllow] = useState(initial.ip_allowlist.length > 0);
   const [list, setList] = useState(initial.ip_allowlist.join("\n"));
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const entries = lines(list);
   const here = initial.current_ip;
+  const nextList = ipAllow ? entries : [];
+  const mfaChanged = mfa !== initial.mfa_required;
+  const listChanged = JSON.stringify(nextList) !== JSON.stringify(initial.ip_allowlist);
+  // Desactiver la 2FA imposee et modifier la liste d'IP : proprietaire, mot de passe a l'appui.
+  const needsPassword = (mfaChanged && !mfa) || listChanged;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -31,32 +47,47 @@ function SecurityForm({ initial }: { initial: OrgSecurity }) {
       setErr("Ajoutez au moins une adresse, ou désactivez la restriction.");
       return;
     }
+    if (needsPassword && !password) {
+      setErr("Saisissez votre mot de passe actuel pour confirmer.");
+      return;
+    }
+    const body: OrgSecurityUpdate = {
+      ...(mfaChanged ? { mfa_required: mfa } : {}),
+      ...(listChanged ? { ip_allowlist: nextList } : {}),
+      ...(needsPassword ? { current_password: password } : {}),
+    };
     setBusy(true);
-    const result = await saveSecurity({ mfa_required: mfa, ip_allowlist: ipAllow ? entries : [] });
+    const result = await saveSecurity(body);
     setBusy(false);
     if (!result.ok) {
       setErr(result.message);
       return;
     }
+    setPassword("");
     client.setQueryData(SECURITY_QUERY_KEY, result.data);
     void client.invalidateQueries({ queryKey: GENERAL_QUERY_KEY });
     setList(result.data.ip_allowlist.join("\n"));
     setIpAllow(result.data.ip_allowlist.length > 0);
     flash("Paramètres enregistrés");
+    if (result.data.self_enrollment_required) {
+      // 2FA imposee et ce compte n'a aucun facteur : enrolement avant toute autre page.
+      void client.invalidateQueries({ queryKey: ME_QUERY_KEY });
+      void navigate({ to: "/2fa-setup", replace: true });
+    }
   };
 
   return (
     <form id={SECTION_FORM_ID} onSubmit={(e) => void submit(e)} noValidate style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Card title="Sécurité de l'organisation" desc="S'applique à tous les membres.">
-        <Row t="Double authentification obligatoire" d="Appliquée à la prochaine connexion : un membre sans 2FA devra l'activer avant d'accéder au panneau." first>
-          <Switch ariaLabel="Double authentification obligatoire" checked={mfa} onChange={(v) => { setMfa(v); setErr(""); }} />
+        <Row t="Double authentification obligatoire" d="Appliquée aussi aux sessions ouvertes : un membre sans 2FA devra l'activer avant d'accéder au panneau. Seul le propriétaire peut la désactiver." first>
+          <Switch ariaLabel="Double authentification obligatoire" checked={mfa} disabled={!owner && initial.mfa_required} onChange={(v) => { setMfa(v); setErr(""); }} />
         </Row>
         <Row t="Authentification unique (SSO)" d="SAML ou OIDC.">
           <Soon />
           <Switch ariaLabel="Authentification unique (SSO)" checked={false} disabled />
         </Row>
         <Row t="Restreindre l'accès par IP" d="Seules les IP autorisées accèdent au tableau de bord.">
-          <Switch ariaLabel="Restreindre l'accès par IP" checked={ipAllow} onChange={(v) => { setIpAllow(v); setErr(""); }} />
+          <Switch ariaLabel="Restreindre l'accès par IP" checked={ipAllow} disabled={!owner} onChange={(v) => { setIpAllow(v); setErr(""); }} />
         </Row>
         {ipAllow && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "0 20px 18px" }}>
@@ -66,6 +97,7 @@ function SecurityForm({ initial }: { initial: OrgSecurity }) {
               <textarea
                 aria-label="Adresses autorisées"
                 value={list}
+                readOnly={!owner}
                 rows={Math.min(8, Math.max(3, entries.length + 1))}
                 spellCheck={false}
                 onChange={(e) => { setList(e.target.value); setErr(""); }}
@@ -75,12 +107,18 @@ function SecurityForm({ initial }: { initial: OrgSecurity }) {
             <span style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", ...lbl }}>
               Votre adresse : <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-strong)" }}>{here}</span>
               {!entries.includes(here) && (
-                <Button size="sm" icon="Plus" onClick={() => setList((l) => (l.trim() ? l.trimEnd() + "\n" : "") + here)}>
+                <Button size="sm" icon="Plus" disabled={!owner} onClick={() => setList((l) => (l.trim() ? l.trimEnd() + "\n" : "") + here)}>
                   Ajouter mon adresse
                 </Button>
               )}
             </span>
           </div>
+        )}
+        {!owner && <Note>La liste d'IP et la désactivation de la 2FA sont réservées au propriétaire.</Note>}
+        {owner && needsPassword && (
+          <Row t="Mot de passe actuel" d="Requis pour désactiver la 2FA obligatoire ou modifier la liste d'IP.">
+            <Input label="Mot de passe actuel" type="password" value={password} onChange={(v) => { setPassword(v); setErr(""); }} autoComplete="current-password" />
+          </Row>
         )}
         {ipAllow && (
           <Note>

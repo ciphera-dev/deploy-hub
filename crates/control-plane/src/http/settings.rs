@@ -3,10 +3,12 @@
 //! - `GET|PATCH /api/settings/general` : nom, identifiant, fuseau, langue ;
 //! - `GET|PATCH /api/settings/deployments` : deploiement automatique des
 //!   nouveaux projets, retention (fixe : 5) ;
-//! - `GET|PATCH /api/settings/security` : 2FA obligatoire (appliquee a la
-//!   prochaine connexion, sessions ouvertes intactes) et liste d'IP
-//!   autorisees (voir [`super::ip_allowlist`]). Une liste qui exclut
-//!   l'adresse de la requete est refusee ;
+//! - `GET|PATCH /api/settings/security` : 2FA obligatoire (appliquee aussi
+//!   aux sessions deja ouvertes : celles des comptes sans second facteur
+//!   passent en enrolement obligatoire) et liste d'IP autorisees (voir
+//!   [`super::ip_allowlist`]). Une liste qui exclut l'adresse de la requete
+//!   est refusee. Desactiver la 2FA imposee et modifier la liste d'IP sont
+//!   reserves au proprietaire, avec son mot de passe ;
 //! - `GET /api/settings/danger` : ce que la suppression effacerait.
 //!
 //! Notifications : [`super::notifications`] ; domaine du panneau :
@@ -27,10 +29,11 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::auth::internal;
+use crate::auth::rate_limit;
 use crate::authz::{Require, Role, forbidden, lvl, res};
 use crate::http::client_ip::ClientIp;
 use crate::http::ip_allowlist::{self, IpNet};
-use crate::http::me::valid_timezone;
+use crate::http::me::{Reauth, reauthenticate, valid_timezone};
 use crate::http::setup::validate_slug;
 use crate::state::AppState;
 
@@ -261,24 +264,36 @@ async fn update_deployments(
     Ok(Json(body).into_response())
 }
 
-async fn load_security(conn: &mut PgConnection, ip: &str) -> Result<OrgSecurity, ApiError> {
+async fn load_security(
+    conn: &mut PgConnection,
+    ip: &str,
+    session: Uuid,
+) -> Result<OrgSecurity, ApiError> {
     let row: Option<(bool, Vec<String>)> =
         sqlx::query_as("SELECT mfa_required, ip_allowlist FROM instance LIMIT 1")
-            .fetch_optional(conn)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(db("lecture des parametres"))?;
     let (mfa_required, ip_allowlist) = row.ok_or_else(not_configured)?;
+    let self_enrollment_required: bool =
+        sqlx::query_scalar("SELECT enrollment_required FROM sessions WHERE id = $1")
+            .bind(session)
+            .fetch_optional(conn)
+            .await
+            .map_err(db("lecture de la session"))?
+            .unwrap_or(false);
     Ok(OrgSecurity {
         mfa_required,
         ip_allowlist,
         current_ip: ip.to_string(),
+        self_enrollment_required,
     })
 }
 
 /// `GET /api/settings/security`
 async fn security(
     State(state): State<AppState>,
-    _auth: Admin,
+    auth: Admin,
     ClientIp(ip): ClientIp,
 ) -> Result<Response, ApiError> {
     let mut conn = state
@@ -286,7 +301,10 @@ async fn security(
         .acquire()
         .await
         .map_err(db("connexion a la base"))?;
-    Ok(Json(load_security(&mut conn, &ip.to_string()).await?).into_response())
+    Ok(
+        Json(load_security(&mut conn, &ip.to_string(), auth.user.session.id).await?)
+            .into_response(),
+    )
 }
 
 /// Entrees validees, canoniques et sans doublon.
@@ -341,8 +359,59 @@ async fn update_security(
     let stored: Option<Vec<String>> = allowlist
         .as_ref()
         .map(|l| l.iter().map(ToString::to_string).collect());
+
+    // Desactiver la 2FA imposee ou modifier la liste d'IP : proprietaire,
+    // mot de passe a l'appui. Imposer la 2FA reste ouvert a l'administrateur.
+    let (was_required, current_list) = read_security(&state.db).await?;
+    let needs_owner = |was: bool, list: &[String]| {
+        (input.mfa_required == Some(false) && was) || stored.as_ref().is_some_and(|l| l != list)
+    };
+    let mut attempt = None;
+    if needs_owner(was_required, &current_list) {
+        owner_only(&auth)?;
+        let Some(password) = input.current_password.filter(|p| !p.is_empty()) else {
+            return Err(ApiError::new(
+                401,
+                "invalid_credentials",
+                "Saisissez votre mot de passe actuel pour modifier ce réglage.",
+            ));
+        };
+        match reauthenticate(
+            &state,
+            &auth.user,
+            &ip.to_string(),
+            password,
+            "settings.security.update.failure",
+        )
+        .await?
+        {
+            Reauth::Verified(id, _) => attempt = Some(id),
+            Reauth::Limited(response) => return Ok(response),
+        }
+    }
+
     let mut tx = state.db.begin().await.map_err(db("transaction"))?;
-    let updated = sqlx::query(
+    // Etat relu sous verrou : une modification concurrente ne contourne pas
+    // la reserve au proprietaire.
+    let (was_required, current_list): (bool, Vec<String>) =
+        sqlx::query_as("SELECT mfa_required, ip_allowlist FROM instance LIMIT 1 FOR UPDATE")
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db("lecture des parametres"))?
+            .ok_or_else(not_configured)?;
+    if attempt.is_none() && needs_owner(was_required, &current_list) {
+        return Err(ApiError::new(
+            409,
+            "conflict",
+            "Les paramètres ont changé entre-temps : réessayez.",
+        ));
+    }
+    if let Some(id) = attempt {
+        rate_limit::mark_mfa_success(&mut tx, id)
+            .await
+            .map_err(db("enregistrement de la tentative"))?;
+    }
+    sqlx::query(
         "UPDATE instance SET mfa_required = coalesce($1, mfa_required), \
          ip_allowlist = coalesce($2, ip_allowlist)",
     )
@@ -350,25 +419,54 @@ async fn update_security(
     .bind(&stored)
     .execute(&mut *tx)
     .await
-    .map_err(db("modification des parametres"))?
-    .rows_affected();
-    if updated == 0 {
-        return Err(not_configured());
-    }
+    .map_err(db("modification des parametres"))?;
+    // 2FA imposee : les sessions ouvertes des comptes sans TOTP confirmee ni
+    // passkey (meme definition que `factors::read`) passent en enrolement.
+    let forced = if input.mfa_required == Some(true) && !was_required {
+        sqlx::query(
+            "UPDATE sessions SET enrollment_required = true \
+             WHERE NOT mfa_pending AND NOT enrollment_required AND user_id IN ( \
+               SELECT u.id FROM users u \
+               WHERE NOT EXISTS (SELECT 1 FROM user_totp t \
+                                 WHERE t.user_id = u.id AND t.confirmed_at IS NOT NULL) \
+                 AND NOT EXISTS (SELECT 1 FROM webauthn_credentials w WHERE w.user_id = u.id))",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(db("sessions a enroler"))?
+        .rows_affected()
+    } else {
+        0
+    };
     audit(
         &mut tx,
         Some(auth.user.id),
         "settings.security.update",
-        json!({ "ip": ip.to_string(), "mfa_required": input.mfa_required, "ip_allowlist": &stored }),
+        json!({
+            "ip": ip.to_string(),
+            "mfa_required": input.mfa_required,
+            "ip_allowlist": &stored,
+            "sessions_to_enroll": forced,
+        }),
     )
     .await?;
-    let body = load_security(&mut tx, &ip.to_string()).await?;
+    let body = load_security(&mut tx, &ip.to_string(), auth.user.session.id).await?;
     tx.commit().await.map_err(db("transaction"))?;
     if let Some(list) = allowlist {
         state.ip_allowlist.set(state.clock.unix_secs(), list);
+    }
+    if stored.is_some() || forced > 0 {
         state.access.notify();
     }
     Ok(Json(body).into_response())
+}
+
+async fn read_security(db: &sqlx::PgPool) -> Result<(bool, Vec<String>), ApiError> {
+    sqlx::query_as("SELECT mfa_required, ip_allowlist FROM instance LIMIT 1")
+        .fetch_optional(db)
+        .await
+        .map_err(self::db("lecture des parametres"))?
+        .ok_or_else(not_configured)
 }
 
 /// `GET /api/settings/danger`

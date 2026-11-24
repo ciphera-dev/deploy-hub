@@ -12,7 +12,8 @@ const OWNER = { id: "u1", name: "Alice Martin", email: "alice@example.com", role
 const GENERAL = { id: "7f2a4c10-0000-4000-8000-000000000000", name: "Acme", slug: "acme", timezone: "Europe/Zurich", language: "fr", members: 6, mfa_required: false };
 
 let me: Record<string, unknown>;
-let security: { mfa_required: boolean; ip_allowlist: string[]; current_ip: string };
+let security: { mfa_required: boolean; ip_allowlist: string[]; current_ip: string; self_enrollment_required: boolean };
+let selfEnrollment: boolean;
 let panel: { domain: string | null; status: string; error: string | null };
 let requests: { method: string; path: string; body: unknown; csrf: string | null }[];
 
@@ -37,12 +38,12 @@ const server = setupServer(
   http.get("*/api/settings/security", () => HttpResponse.json(security)),
   http.patch("*/api/settings/security", async ({ request }) => {
     await record(request);
-    const body = requests.at(-1)!.body as { mfa_required: boolean; ip_allowlist: string[] };
-    if (body.ip_allowlist.length && !body.ip_allowlist.includes(security.current_ip)) {
+    const { current_password: _password, ...body } = requests.at(-1)!.body as { mfa_required?: boolean; ip_allowlist?: string[]; current_password?: string };
+    if (body.ip_allowlist?.length && !body.ip_allowlist.includes(security.current_ip)) {
       return HttpResponse.json({ error: { code: "ip_allowlist_lockout", message: `Cette liste exclut votre adresse actuelle (${security.current_ip}) : ajoutez-la pour ne pas perdre l'accès.` } }, { status: 422 });
     }
     security = { ...security, ...body };
-    return HttpResponse.json(security);
+    return HttpResponse.json({ ...security, self_enrollment_required: selfEnrollment });
   }),
   http.get("*/api/settings/danger", () => HttpResponse.json({ name: "Acme", projects: 3, members: 6, github_app: "Ciphera X" })),
   http.get("*/api/settings/panel-domain", () => HttpResponse.json(panel)),
@@ -80,7 +81,8 @@ afterAll(() => server.close());
 beforeEach(() => {
   setCsrfToken("csrf-1");
   me = { ...OWNER };
-  security = { mfa_required: false, ip_allowlist: [], current_ip: "203.0.113.7" };
+  security = { mfa_required: false, ip_allowlist: [], current_ip: "203.0.113.7", self_enrollment_required: false };
+  selfEnrollment = false;
   panel = { domain: null, status: "none", error: null };
   requests = [];
 });
@@ -130,7 +132,7 @@ function cleanupAndMount(next: Record<string, unknown>) {
   mount("/settings/general");
 }
 
-it("sécurité : 2FA obligatoire, SSO « SAML ou OIDC » désactivé, liste d'IP avec garde-fou", async () => {
+it("sécurité : 2FA obligatoire, SSO « SAML ou OIDC » désactivé, liste d'IP avec garde-fou et mot de passe", async () => {
   mount("/settings/security");
   const mfa = await screen.findByRole("switch", { name: "Double authentification obligatoire" }, { timeout: 5000 });
   expect(screen.getByText("SAML ou OIDC.")).toBeInTheDocument();
@@ -141,22 +143,50 @@ it("sécurité : 2FA obligatoire, SSO « SAML ou OIDC » désactivé, liste d'IP
   fireEvent.click(screen.getByRole("switch", { name: "Restreindre l'accès par IP" }));
   fireEvent.change(screen.getByLabelText("Adresses autorisées"), { target: { value: "198.51.100.0/24" } });
   const save = screen.getAllByRole("button", { name: "Enregistrer" }).at(-1)!;
+  // Modifier la liste exige le mot de passe : rien n'est envoyé sans lui.
+  fireEvent.click(save);
+  expect(await screen.findByText("Saisissez votre mot de passe actuel pour confirmer.")).toBeInTheDocument();
+  expect(requests).toHaveLength(0);
+  fireEvent.change(screen.getByLabelText("Mot de passe actuel"), { target: { value: "bon mot de passe" } });
   fireEvent.click(save);
   expect(await screen.findByText(/exclut votre adresse actuelle \(203\.0\.113\.7\)/)).toBeInTheDocument();
-  expect(requests[0]!.body).toEqual({ mfa_required: true, ip_allowlist: ["198.51.100.0/24"] });
+  expect(requests[0]!.body).toEqual({ mfa_required: true, ip_allowlist: ["198.51.100.0/24"], current_password: "bon mot de passe" });
 
   fireEvent.click(screen.getByRole("button", { name: "Ajouter mon adresse" }));
   expect(screen.getByLabelText("Adresses autorisées")).toHaveValue("198.51.100.0/24\n203.0.113.7");
   fireEvent.click(save);
   expect(await screen.findByText("Paramètres enregistrés")).toBeInTheDocument();
-  expect(requests[1]!.body).toEqual({ mfa_required: true, ip_allowlist: ["198.51.100.0/24", "203.0.113.7"] });
+  expect(requests[1]!.body).toEqual({ mfa_required: true, ip_allowlist: ["198.51.100.0/24", "203.0.113.7"], current_password: "bon mot de passe" });
   expect(screen.getByText(/^sudo ciphera admin clear-ip-allowlist$/)).toBeInTheDocument();
 
-  // Restriction désactivée : liste vide envoyée.
+  // Restriction désactivée : liste vide envoyée, mot de passe redemandé.
   fireEvent.click(screen.getByRole("switch", { name: "Restreindre l'accès par IP" }));
+  fireEvent.change(await screen.findByLabelText("Mot de passe actuel"), { target: { value: "bon mot de passe" } });
   fireEvent.click(save);
   await waitFor(() => expect(requests).toHaveLength(3));
-  expect(requests[2]!.body).toEqual({ mfa_required: true, ip_allowlist: [] });
+  expect(requests[2]!.body).toEqual({ ip_allowlist: [], current_password: "bon mot de passe" });
+});
+
+it("sécurité : un administrateur ne peut ni désactiver la 2FA ni modifier la liste d'IP", async () => {
+  me = { ...OWNER, role: "admin" };
+  security = { ...security, mfa_required: true };
+  mount("/settings/security");
+  expect(await screen.findByRole("switch", { name: "Double authentification obligatoire" }, { timeout: 5000 })).toBeDisabled();
+  expect(screen.getByRole("switch", { name: "Restreindre l'accès par IP" })).toBeDisabled();
+  expect(screen.getByText("La liste d'IP et la désactivation de la 2FA sont réservées au propriétaire.")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Mot de passe actuel")).toBeNull();
+});
+
+it("sécurité : imposer la 2FA sans second facteur redirige vers l'enrôlement", async () => {
+  selfEnrollment = true;
+  const router = mount("/settings/security");
+  const paths: string[] = [];
+  router.subscribe("onBeforeNavigate", (e) => paths.push(e.toLocation.pathname));
+  fireEvent.click(await screen.findByRole("switch", { name: "Double authentification obligatoire" }, { timeout: 5000 }));
+  fireEvent.click(screen.getAllByRole("button", { name: "Enregistrer" }).at(-1)!);
+  await waitFor(() => expect(paths).toContain("/2fa-setup"));
+  // Imposer la 2FA ne demande pas de mot de passe.
+  expect(requests[0]!.body).toEqual({ mfa_required: true });
 });
 
 it("déploiements : rétention de 5, previews en v0.2, secret ajouté par la modale (variable globale secrète)", async () => {
