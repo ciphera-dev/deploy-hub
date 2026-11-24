@@ -234,3 +234,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 14:48 — Session v0.1-sdd — claude-code (orchestrateur) — Task R1 : Remédiation audit — protocole v6
 - fait : PROTO_VERSION 6 ; variantes et champs de fin pour les tâches suivantes ; charges tronquées refusées
 - résultat : relecture propre après 1 tour ; CI à confirmer
+
+## 2026-11-24 15:21 — Session v0.1-sdd — claude-code (orchestrateur) — Task R2 : Remédiation audit — cloisonnement des caches de build
+- fait : espace de cache par environnement, frontends limités, configuration buildkitd
+- résultat : relecture propre après 1 tour ; job agent-docker à confirmer
