@@ -289,3 +289,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 21:06 — Session v0.1-sdd — claude-code (orchestrateur) — Task R20 : Remédiation audit — anti-rejeu des webhooks sur l'empreinte du corps
 - fait : Empreinte du corps des push GitHub stockée 24 h 5 min, doublon refusé ; tests à corps unique ; correctif actionlint du job AppArmor
 - résultat : relecture : 1 Important corrigé, relecture ciblée approuvée
+
+## 2026-11-24 21:23 — Session v0.1-sdd — claude-code (orchestrateur) — Task R11 : Remédiation audit — domaine du panneau, DNS et bascule sûre
+- fait : Verdicts DNS négatifs comptés en transaction, bascule du panneau résistante à l'annulation, recheck limité, cert_error effacé au recheck
+- résultat : relecture : 1 Important corrigé, relecture ciblée approuvée, tests DB panel_domain 12/12 et domains 23/23

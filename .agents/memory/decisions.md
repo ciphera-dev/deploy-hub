@@ -1012,3 +1012,9 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Les tests qui envoient plusieurs push distincts ajoutent un champ `nonce` au corps (ignoré par le serveur) ; seuls les tests de rejeu renvoient un corps identique.
 - Relecture : 1 Important (test qui renvoyait le même corps) corrigé ; 3 mineurs laissés (littéral SQL, limite exacte non testable, mémoire).
 - CI : actionlint signalait `APPARMOR_PROFILE` inutilisée dans le job apparmor-syntax (lue par la fonction chargée par eval) ; directive shellcheck ajoutée.
+
+## 2026-11-24 — Task R11 : domaine du panneau, vérification DNS et bascule sûre
+- Décision R11 : le domaine du panneau n'est jamais mis en erreur DNS une fois confirmé ; les verdicts négatifs sont comptés (migration 0029) et le compteur et la suite (`failed_in` ou `dns_moved`) s'écrivent dans une seule transaction.
+- La bascule du domaine du panneau (`PanelSwitch::commit_with`) tourne dans une tâche détachée attendue par le handler : une déconnexion du client en plein commit ne laisse jamais un état faux ; l'état précédent est restauré si le commit échoue.
+- `recheck` est limité à 5 par quart d'heure et par propriétaire (clé `panel-recheck:<utilisateur>`), au-delà 429 avec `Retry-After`. Il efface le `cert_error` d'un certificat actif ; la tâche due tout de suite le remet si l'échec persiste.
+- Relecture : 1 Important (bascule non sûre en cas d'annulation) corrigé ; mineurs laissés : restauration non conditionnelle (fenêtre de quelques microsecondes, propriétaire seul), `push_routes` sur la requête (préexistant), test d'abandon faible côté succès, refus DNS 422 compté dans la limite.
