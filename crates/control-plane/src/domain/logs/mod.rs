@@ -21,8 +21,9 @@ use serde::Serialize;
 pub const BUILD_CONTAINER: &str = "build";
 /// Conteneur affiche pour les messages du plan de controle (lignes perdues).
 pub const SYSTEM_CONTAINER: &str = "ciphera";
-/// Longueur maximale d'une ligne (octets), au-dela : tronquee.
-pub const MAX_LINE_BYTES: usize = 4096;
+/// Longueur maximale d'une ligne (octets), au-dela : tronquee. La coupe se
+/// fait toujours apres le masquage de la ligne entiere.
+pub const MAX_LINE_BYTES: usize = 16 * 1024;
 
 /// Ligne envoyee au panneau : `{ ts, level, container, message }`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -84,9 +85,55 @@ impl LogEvent {
         };
         format!(
             "{} [{tag}] {} | {}\n",
-            self.ts, self.container, self.message
+            self.ts,
+            neutralize(&self.container),
+            neutralize(&self.message)
         )
     }
+}
+
+/// Neutralise pour un fichier texte : les sequences ANSI (CSI, OSC et
+/// echappements a deux octets) sont retirees, les autres caracteres de
+/// controle C0/C1 (dont retour a la ligne) deviennent une espace, sauf `\t`.
+pub fn neutralize(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.peek().copied() {
+                // CSI : parametres et intermediaires, puis un octet final.
+                Some('[') => {
+                    chars.next();
+                    for n in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&n) {
+                            break;
+                        }
+                    }
+                }
+                // OSC : jusqu'a BEL ou ST (ESC \).
+                Some(']') => {
+                    chars.next();
+                    while let Some(n) = chars.next() {
+                        if n == '\x07' {
+                            break;
+                        }
+                        if n == '\x1b' {
+                            chars.next_if_eq(&'\\');
+                            break;
+                        }
+                    }
+                }
+                Some(n) if ('\x20'..='\x7e').contains(&n) => {
+                    chars.next();
+                }
+                _ => {}
+            },
+            '\t' => out.push(c),
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 pub fn level(stream: LogStream) -> &'static str {
@@ -132,6 +179,20 @@ mod tests {
             serde_json::json!({"ts": "1970-01-01T00:00:00.005Z", "level": "error", "container": "web", "message": "boom"})
         );
         assert_eq!(LogEvent::lost(3).message, "3 lignes perdues");
+    }
+
+    #[test]
+    fn logs_txt_strips_ansi() {
+        let e = LogEvent::line(
+            5,
+            LogStream::Stdout,
+            "web",
+            "\x1b[31mrouge\x1b[0m\ta\x1b]0;titre\x07b\nFAUX\r\x01\u{85}fin\x1b[".into(),
+        );
+        assert_eq!(
+            e.text_line(),
+            "1970-01-01T00:00:00.005Z [INFO] web | rouge\ta".to_string() + "b FAUX   fin\n"
+        );
     }
 
     #[test]

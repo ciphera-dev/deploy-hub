@@ -318,6 +318,56 @@ async fn successful_deploy(env: &mut Env, project: Uuid) -> Uuid {
     id
 }
 
+/// Secret fixe pour tous les projets (test du message d'erreur).
+struct FixedSecret(&'static str);
+
+impl control_plane::domain::logs::redact::SecretValues for FixedSecret {
+    fn values(
+        &self,
+        _project: Uuid,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = control_plane::domain::logs::redact::SecretsResult>
+                + Send
+                + '_,
+        >,
+    > {
+        let v = zeroize::Zeroizing::new(self.0.to_string());
+        Box::pin(async move { Ok(vec![v]) })
+    }
+}
+
+#[tokio::test]
+async fn deployment_error_message_redacted() {
+    const SECRET: &str = "sk-live-0123456789abcdef";
+    let mut env = Env::new().await;
+    env.state.logs = control_plane::domain::logs::hub::LogHub::new(
+        env.state.agents.clone(),
+        Arc::new(FixedSecret(SECRET)),
+    );
+    let (p, _) = image_project(&env.state, "web").await;
+    let id = deploy(&env.state, p).await;
+    env.run_jobs().await;
+    env.orders();
+    env.progress(id, Stage::Image, StageStatus::Started).await;
+    env.progress(
+        id,
+        Stage::Image,
+        StageStatus::Failed {
+            message: format!("connexion refusee : token={SECRET}"),
+        },
+    )
+    .await;
+    let d = env.get(id).await;
+    assert_eq!(d["status"], "failed");
+    let error = d["error"].as_str().unwrap();
+    assert!(!error.contains(SECRET), "{error}");
+    assert!(error.contains("••••"), "{error}");
+    let steps = d["steps"].as_array().unwrap();
+    let step = steps.iter().find(|s| s["stage"] == "image").unwrap();
+    assert!(!step.to_string().contains(SECRET), "{step}");
+}
+
 #[tokio::test]
 async fn failed_healthcheck_keeps_old_serving_and_marks_failed() {
     let mut env = Env::new().await;

@@ -90,9 +90,15 @@ impl Redactor {
         Self { values }
     }
 
-    /// Ligne masquee.
+    /// Ligne masquee. Les octets nuls sont retires d'abord, au meme endroit
+    /// pour le direct, l'enregistrement et le telechargement : un octet nul
+    /// glisse dans une valeur ne la soustrait pas au masquage. La coupe a la
+    /// longueur maximale vient toujours apres.
     pub fn redact(&self, line: String) -> String {
         let mut line = line;
+        if line.contains('\0') {
+            line.retain(|c| c != '\0');
+        }
         for value in &self.values {
             if line.contains(value.as_str()) {
                 line = line.replace(value.as_str(), MASK);
@@ -146,6 +152,50 @@ mod tests {
         assert_eq!(r.redact("-----END KEY-----".into()), "••••");
         // Morceau de moins de 4 caracteres : garde.
         assert_eq!(r.redact("xy".into()), "xy");
+    }
+
+    #[test]
+    fn nul_inside_secret_redacted_live_and_stored() {
+        let r = redactor(&["s3cr3t-value"]);
+        let line = "x s3cr\u{0}3t-va\u{0}lue y".to_string();
+        // Direct : masquage puis coupe, comme le hub.
+        let live = crate::domain::logs::LogEvent::line(
+            0,
+            proto::LogStream::Stdout,
+            "web",
+            r.redact(line.clone()),
+        );
+        assert_eq!(live.message, "x •••• y");
+        // Enregistre : meme resultat, aucun octet nul.
+        let stored = r.redact(line);
+        assert_eq!(stored, "x •••• y");
+        assert!(!stored.contains('\0'));
+    }
+
+    #[test]
+    fn secret_across_16k_boundary_not_leaked() {
+        let secret = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+        assert_eq!(secret.len(), 40);
+        let r = redactor(&[secret]);
+        // Valeur a cheval sur l'octet 16 384, a plusieurs decalages.
+        for shift in 0..40 {
+            let head = "a".repeat(crate::domain::logs::MAX_LINE_BYTES - shift);
+            let line = format!("{head}{secret}{}", "b".repeat(100));
+            let event = crate::domain::logs::LogEvent::line(
+                0,
+                proto::LogStream::Stdout,
+                "web",
+                r.redact(line),
+            );
+            assert!(event.message.len() <= crate::domain::logs::MAX_LINE_BYTES);
+            for i in 0..=secret.len() - 4 {
+                assert!(
+                    !event.message.contains(&secret[i..i + 4]),
+                    "fragment {i} (decalage {shift})"
+                );
+            }
+        }
+        assert_eq!(crate::domain::logs::MAX_LINE_BYTES, 16 * 1024);
     }
 
     #[test]

@@ -1134,11 +1134,13 @@ impl DockerOps for BollardDocker {
             tail: tail.to_string(),
             ..Default::default()
         };
+        let assembler = Arc::new(Mutex::new(LogAssembler::default()));
+        let tail = assembler.clone();
         self.docker
             .logs(&id.0, Some(options))
             .take_while(|r| std::future::ready(r.is_ok()))
             .filter_map(|r| std::future::ready(r.ok()))
-            .flat_map(|out| {
+            .flat_map(move |out| {
                 use bollard::container::LogOutput;
                 let (stream, bytes) = match out {
                     LogOutput::StdErr { message } => (LogStream::Stderr, message),
@@ -1147,8 +1149,18 @@ impl DockerOps for BollardDocker {
                     }
                     LogOutput::StdIn { .. } => return stream::iter(Vec::new()),
                 };
-                stream::iter(split_log_chunk(stream, &bytes))
+                let mut guard = assembler
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                stream::iter(guard.push(stream, &bytes))
             })
+            .chain(
+                stream::once(async move {
+                    let mut guard = tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    stream::iter(guard.finish())
+                })
+                .flatten(),
+            )
             .boxed()
     }
 
@@ -1405,8 +1417,68 @@ fn labels_match(labels: &HashMap<String, String>, wanted: &[(&str, &str)]) -> bo
         .all(|(k, v)| labels.get(*k).is_some_and(|x| x == v))
 }
 
+/// Une ligne de journal rassemblee depasse rarement `MAX_LOG_LINE` ; au-dela
+/// de cette taille (horodatage non compte), la suite est ecartee. Le plan de
+/// controle masque la ligne entiere puis la coupe a une taille bien plus
+/// courte : aucun secret ne peut etre coupe en deux dans la partie visible.
+pub const MAX_ASSEMBLED_LINE: usize = 64 * 1024;
+
+/// Rassemble les morceaux d'une meme ligne : Docker coupe les longues lignes
+/// en plusieurs trames (seule la premiere porte l'horodatage, aucune sauf la
+/// derniere ne finit par `\n`). Un etat par flux (sortie standard et erreur).
+#[derive(Default)]
+pub struct LogAssembler {
+    pending: [Vec<u8>; 2],
+    /// Plafond atteint : la fin de la ligne en cours est ecartee.
+    over: [bool; 2],
+}
+
+impl LogAssembler {
+    fn slot(stream: LogStream) -> usize {
+        match stream {
+            LogStream::Stdout => 0,
+            LogStream::Stderr => 1,
+        }
+    }
+
+    /// Ajoute une trame ; renvoie les lignes terminees.
+    pub fn push(&mut self, stream: LogStream, bytes: &[u8]) -> Vec<ContainerLog> {
+        let i = Self::slot(stream);
+        let mut out = Vec::new();
+        for piece in bytes.split_inclusive(|b| *b == b'\n') {
+            if !self.over[i] {
+                // Marge pour l'horodatage place devant la ligne.
+                let room = (MAX_ASSEMBLED_LINE + 64).saturating_sub(self.pending[i].len());
+                let take = piece.len().min(room);
+                self.pending[i].extend_from_slice(&piece[..take]);
+                self.over[i] = take < piece.len();
+            }
+            if piece.ends_with(b"\n") {
+                let line = std::mem::take(&mut self.pending[i]);
+                self.over[i] = false;
+                out.extend(split_log_chunk(stream, &line));
+            }
+        }
+        out
+    }
+
+    /// Fin du flux : lignes sans retour a la ligne final.
+    pub fn finish(&mut self) -> Vec<ContainerLog> {
+        let mut out = Vec::new();
+        for (i, stream) in [LogStream::Stdout, LogStream::Stderr]
+            .into_iter()
+            .enumerate()
+        {
+            let line = std::mem::take(&mut self.pending[i]);
+            self.over[i] = false;
+            out.extend(split_log_chunk(stream, &line));
+        }
+        out
+    }
+}
+
 /// Decoupe un bloc de journal Docker (`<horodatage RFC 3339> <texte>` par
-/// ligne) ; les lignes trop longues sont coupees a `MAX_LOG_LINE` octets.
+/// ligne) ; les lignes trop longues sont coupees a `MAX_ASSEMBLED_LINE` octets.
 pub fn split_log_chunk(stream: LogStream, bytes: &[u8]) -> Vec<ContainerLog> {
     String::from_utf8_lossy(bytes)
         .split('\n')
@@ -1426,7 +1498,7 @@ pub fn split_log_chunk(stream: LogStream, bytes: &[u8]) -> Vec<ContainerLog> {
             ContainerLog {
                 stream,
                 timestamp_ms,
-                line: truncate(text, MAX_LOG_LINE).to_string(),
+                line: truncate(text, MAX_ASSEMBLED_LINE).to_string(),
             }
         })
         .collect()
@@ -1551,7 +1623,7 @@ mod tests {
 
     #[test]
     fn log_chunks_are_split_timestamped_and_bounded() {
-        let long = "x".repeat(MAX_LOG_LINE + 10);
+        let long = "x".repeat(MAX_ASSEMBLED_LINE + 10);
         let chunk =
             format!("2026-11-21T10:20:30.000000001Z bonjour\r\n2026-11-21T10:20:31Z {long}\n");
         let lines = split_log_chunk(LogStream::Stderr, chunk.as_bytes());
@@ -1559,7 +1631,45 @@ mod tests {
         assert_eq!(lines[0].line, "bonjour");
         assert_eq!(lines[0].timestamp_ms, 1_795_256_430_000);
         assert_eq!(lines[0].stream, LogStream::Stderr);
-        assert_eq!(lines[1].line.len(), MAX_LOG_LINE);
+        assert_eq!(lines[1].line.len(), MAX_ASSEMBLED_LINE);
+    }
+
+    #[test]
+    fn partial_docker_frames_are_assembled_before_sending() {
+        let mut a = LogAssembler::default();
+        // Premiere trame : horodatage et debut, sans `\n` ; une lettre
+        // multi-octets est coupee entre deux trames.
+        let e = "é".as_bytes();
+        let mut first = b"2026-11-21T10:20:30Z debut-".to_vec();
+        first.push(e[0]);
+        assert!(a.push(LogStream::Stdout, &first).is_empty());
+        // Une ligne de l'autre flux ne se melange pas.
+        let other = a.push(LogStream::Stderr, b"2026-11-21T10:20:31Z err\n");
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].line, "err");
+        assert!(a.push(LogStream::Stdout, &[e[1], b'-']).is_empty());
+        let done = a.push(LogStream::Stdout, b"fin\nsuite\n");
+        assert_eq!(done.len(), 2);
+        assert_eq!(done[0].line, "debut-é-fin");
+        assert_eq!(done[0].timestamp_ms, 1_795_256_430_000);
+        assert_eq!(done[1].line, "suite");
+        // Fin du flux : la ligne sans `\n` final part quand meme.
+        assert!(a.push(LogStream::Stdout, b"reste").is_empty());
+        let rest = a.finish();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].line, "reste");
+    }
+
+    #[test]
+    fn assembled_line_is_bounded_and_the_tail_dropped() {
+        let mut a = LogAssembler::default();
+        let chunk = "y".repeat(40_000);
+        assert!(a.push(LogStream::Stdout, chunk.as_bytes()).is_empty());
+        assert!(a.push(LogStream::Stdout, chunk.as_bytes()).is_empty());
+        let lines = a.push(LogStream::Stdout, b"fin\nsuivante\n");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].line.len(), MAX_ASSEMBLED_LINE);
+        assert_eq!(lines[1].line, "suivante");
     }
 
     #[test]

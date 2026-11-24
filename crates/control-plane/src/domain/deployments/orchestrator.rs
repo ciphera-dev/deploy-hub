@@ -524,6 +524,16 @@ fn send_logged(state: &AppState, server: Uuid, msg: ControlToAgent) -> bool {
     }
 }
 
+/// Message d'erreur enregistre : masque (secrets du projet) avant d'etre
+/// nettoye et coupe. Masquage indisponible : message generique, jamais le
+/// texte brut.
+async fn masked_message(state: &AppState, project: Uuid, message: &str) -> String {
+    match state.logs.project_redactor(project).await {
+        Ok(redactor) => clean_message(&redactor.redact(message.to_string())),
+        Err(_) => "erreur masquée (masquage indisponible)".to_string(),
+    }
+}
+
 /// Issue d'un deploiement.
 #[derive(Clone, Debug)]
 enum Finish {
@@ -544,7 +554,18 @@ async fn finish(
     let at = now(state);
     let (status, error, presumed) = match &how {
         Finish::Success => ("success", None, false),
-        Finish::Failed { message, presumed } => ("failed", Some(clean_message(message)), *presumed),
+        Finish::Failed { message, presumed } => {
+            let project: Uuid =
+                sqlx::query_scalar("SELECT project_id FROM deployments WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            (
+                "failed",
+                Some(masked_message(state, project, message).await),
+                *presumed,
+            )
+        }
         Finish::Cancelled => ("cancelled", None, false),
     };
     sqlx::query(
@@ -1270,7 +1291,10 @@ async fn on_progress(
             let (step, message) = match status {
                 StageStatus::Started => ("running", None),
                 StageStatus::Succeeded => ("succeeded", None),
-                StageStatus::Failed { message } => ("failed", Some(clean_message(message))),
+                StageStatus::Failed { message } => (
+                    "failed",
+                    Some(masked_message(state, info.project_id, message).await),
+                ),
                 StageStatus::Cancelled => ("cancelled", None),
             };
             sqlx::query(
@@ -1371,9 +1395,10 @@ async fn override_failure(
     // effacee, `Some(Some(_))` = remplacee.
     let change: Option<(&str, Option<Option<String>>)> = match (presumed, stage, status) {
         (true, Stage::Switch, StageStatus::Succeeded) => Some(("success", Some(None))),
-        (true, _, StageStatus::Failed { message }) => {
-            Some(("failed", Some(Some(clean_message(message)))))
-        }
+        (true, _, StageStatus::Failed { message }) => Some((
+            "failed",
+            Some(Some(masked_message(state, info.project_id, message).await)),
+        )),
         (true, _, StageStatus::Cancelled) if info.cancel_requested => {
             Some(("cancelled", Some(None)))
         }
