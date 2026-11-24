@@ -15,6 +15,8 @@ export interface LoginFlowProps {
   expired?: boolean;
   /** Arrivee apres la creation du compte (`/login?created=1`, invitation acceptee) : bandeau « compte créé ». */
   created?: boolean;
+  /** Arrivee apres une inscription ouverte (`/login?verify=1`) : un lien de confirmation a ete envoye par e-mail. */
+  verifyEmail?: boolean;
   /** Arrivee apres une reinitialisation (`/login?reset=1`) : bandeau « mot de passe modifié ». */
   passwordReset?: boolean;
   /** `2fa` : session deja ouverte par le mot de passe, en attente du second facteur (route /2fa). */
@@ -51,12 +53,13 @@ function passkeyMessage(result: Extract<SecondFactorResult, { ok: false }>): str
 
 function failureMessage(result: Extract<LoginResult, { ok: false }>): string {
   if (result.reason === "invalid") return "E-mail ou mot de passe incorrect.";
+  if (result.reason === "unverified") return "Confirmez votre adresse e-mail avec le lien reçu avant de vous connecter.";
   if (result.reason === "rate_limited") return tooManyAttempts(result.retryAfter);
   return "Connexion impossible pour le moment. Réessayez.";
 }
 
 /** Connexion, inscription et double authentification : un seul ecran a etapes, porte de login.html, register.html et 2fa.html. */
-export function LoginFlow({ expired = false, created = false, passwordReset = false, initialStep = "login", onSignedIn }: LoginFlowProps) {
+export function LoginFlow({ expired = false, created = false, verifyEmail = false, passwordReset = false, initialStep = "login", onSignedIn }: LoginFlowProps) {
   const queryClient = useQueryClient();
   const [step, setStep] = useState<LoginStep>(initialStep);
   const [email, setEmail] = useState("");
@@ -180,6 +183,16 @@ export function LoginFlow({ expired = false, created = false, passwordReset = fa
           <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <h2 style={{ margin: 0, font: "600 13px/1.3 var(--font-sans)", color: "var(--text-strong)" }}>Mot de passe modifié</h2>
             Vos sessions ont été fermées. Connectez-vous avec le nouveau mot de passe.
+          </span>
+        </div>
+      )}
+
+      {verifyEmail && !expired && step === "login" && (
+        <div role="status" style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 14px", borderRadius: 12, border: "1px solid var(--border-default)", background: "var(--surface-raised)", font: "400 13px/1.45 var(--font-sans)", color: "var(--text-body)" }}>
+          <Icon name="Mail" size={15} color="var(--green-500)" style={{ marginTop: 2 }} />
+          <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <h2 style={{ margin: 0, font: "600 13px/1.3 var(--font-sans)", color: "var(--text-strong)" }}>Vérifiez votre boîte mail</h2>
+            Si cette adresse peut s'inscrire, un lien de confirmation vient de lui être envoyé. Ouvrez-le (24 h), puis connectez-vous.
           </span>
         </div>
       )}

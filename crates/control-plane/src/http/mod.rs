@@ -3,6 +3,7 @@ pub mod client_ip;
 pub mod deploy_hooks;
 pub mod deployments;
 pub mod domains;
+pub mod email_verification;
 pub mod health;
 pub mod invitations;
 pub mod ip_allowlist;

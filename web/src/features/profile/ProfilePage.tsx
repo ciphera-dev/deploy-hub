@@ -114,7 +114,7 @@ function Row({ label, value, onSave, type = "text", list, render, last }: RowPro
 }
 
 /** Mot de passe actuel redemande pour changer d'adresse e-mail (ecran absent des maquettes). */
-function ConfirmEmail({ email, onClose, onDone }: { email: string; onClose: () => void; onDone: () => void }) {
+function ConfirmEmail({ email, onClose, onDone }: { email: string; onClose: () => void; onDone: (email: string) => void }) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -125,13 +125,13 @@ function ConfirmEmail({ email, onClose, onDone }: { email: string; onClose: () =
     const result = await updateProfile({ email, current_password: password });
     setBusy(false);
     setPassword("");
-    if (result.ok) onDone();
+    if (result.ok) onDone(email);
     else setError(result.message);
   };
   return (
     <Modal
       title="Changer d'adresse e-mail"
-      description={`Confirmez avec votre mot de passe. Un avis sera envoyé à votre adresse actuelle ; vous vous connecterez ensuite avec ${email}.`}
+      description={`Confirmez avec votre mot de passe. Un lien de confirmation (24 h) sera envoyé à ${email} : l'adresse ne change qu'à son ouverture, et vos autres sessions seront alors fermées. Un avis sera envoyé à votre adresse actuelle.`}
       onClose={onClose}
       footer={
         <>
@@ -242,10 +242,10 @@ function Info({ me }: { me: Me }) {
         <ConfirmEmail
           email={pendingEmail}
           onClose={() => setPendingEmail(null)}
-          onDone={() => {
+          onDone={(email) => {
             setPendingEmail(null);
             refresh();
-            flash("Adresse e-mail modifiée");
+            flash(`Lien de confirmation envoyé à ${email}`);
           }}
         />
       )}

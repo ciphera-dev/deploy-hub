@@ -22,6 +22,7 @@ export const ROLE_NAMES: Record<string, string> = {
 export function signupMessage(result: Extract<SignupResult, { ok: false }>): string {
   if (result.reason === "invalid") return "Lien d'invitation invalide ou déjà utilisé.";
   if (result.reason === "expired") return "Ce lien d'invitation a expiré. Demandez-en un nouveau à un administrateur.";
+  if (result.reason === "smtp_required") return "L'inscription demande un serveur SMTP configuré : contactez un administrateur.";
   if (result.reason === "taken") return "Un compte existe déjà pour cet e-mail. Connectez-vous.";
   if (result.reason === "disabled") return "Les comptes de cette instance sont créés sur invitation.";
   if (result.reason === "rejected") return result.message ?? "Vérifiez les champs du formulaire.";

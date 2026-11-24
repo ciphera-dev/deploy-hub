@@ -387,6 +387,34 @@ pub fn factor_added_mail(to: &str, factor: Factor) -> OutgoingMail {
     }
 }
 
+/// E-mail du lien de verification d'adresse (24 heures), envoye a l'adresse a
+/// confirmer : `signup` (inscription ouverte) ou changement d'adresse.
+pub fn email_verification_mail(to: &str, link: &str, signup: bool) -> OutgoingMail {
+    let (subject, intro) = if signup {
+        (
+            "Confirmez votre adresse e-mail Ciphera",
+            "Une inscription à une instance Ciphera a été faite avec cette adresse.",
+        )
+    } else {
+        (
+            "Confirmez votre nouvelle adresse e-mail Ciphera",
+            "Cette adresse a été indiquée comme nouvelle adresse d'un compte Ciphera.",
+        )
+    };
+    OutgoingMail {
+        to: to.to_string(),
+        subject: subject.to_string(),
+        text: format!(
+            "Bonjour,\n\n\
+             {intro}\n\
+             Ouvrez ce lien dans les 24 heures pour la confirmer :\n\n\
+             {link}\n\n\
+             Le lien ne sert qu'une fois. Si vous n'êtes pas à l'origine de cette demande, \
+             ignorez ce message : rien ne sera modifié.\n"
+        ),
+    }
+}
+
 /// E-mail d'invitation (72 heures).
 pub fn invitation_mail(to: &str, link: &str) -> OutgoingMail {
     OutgoingMail {

@@ -5,7 +5,9 @@
 //!   d'acceptation ; le compte est cree avec le role invite, sans session (la
 //!   connexion suit et applique la double authentification) ;
 //! - `GET|POST /api/auth/register` : inscription publique (role Lecteur),
-//!   fermee tant que `instance.public_signup` est faux (defaut).
+//!   fermee tant que `instance.public_signup` est faux (defaut). Le compte reste
+//!   en attente jusqu'a la confirmation du lien envoye a l'adresse
+//!   (`email_verification`) ; reponse 202 identique que l'adresse soit connue ou non.
 //!
 //! Le jeton (32 octets aleatoires) n'est jamais stocke, journalise ni ecrit
 //! dans l'audit : la base n'en garde que le SHA-256. Il est consomme par un
@@ -37,6 +39,7 @@ use crate::auth::session::{self, SessionToken};
 use crate::auth::{internal, password, rate_limit};
 use crate::authz::{Require, Role, forbidden, lvl, res};
 use crate::http::client_ip::ClientIp;
+use crate::http::email_verification;
 use crate::http::setup::validate_email;
 use crate::mail;
 use crate::state::AppState;
@@ -432,6 +435,19 @@ async fn register(
     }
     password::check_policy(&input.password).map_err(invalid)?;
 
+    // Sans envoi d'e-mails, l'adresse ne pourrait jamais etre verifiee. Reglage
+    // de l'instance : la reponse ne depend pas du compte.
+    let mailer = mail::ready(&state)
+        .await
+        .map_err(|e| internal("lecture des reglages SMTP", e))?
+        .ok_or_else(|| {
+            ApiError::new(
+                409,
+                "smtp_required",
+                "L'inscription demande un serveur SMTP configuré : contactez un administrateur.",
+            )
+        })?;
+
     // Chaque inscription compte (jamais marquee reussie) : 5 par IP et par
     // fenetre de 15 minutes.
     let attempt = match rate_limit::admit(
@@ -447,38 +463,93 @@ async fn register(
     };
     let password_hash = hash_password(&state, attempt, input.password).await?;
 
-    let user_id = Uuid::new_v4();
     let mut tx = state
         .db
         .begin()
         .await
         .map_err(|e| internal("transaction d'inscription", e))?;
-    let inserted = sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, $4, $5)",
+    // Serialise les inscriptions d'une meme adresse.
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('ciphera-signup:' || lower($1), 0))",
     )
-    .bind(user_id)
     .bind(&email)
-    .bind(&password_hash)
-    .bind(Role::Viewer.as_str())
-    .bind(&name)
     .execute(&mut *tx)
-    .await;
-    match inserted {
-        Ok(_) => {}
-        Err(e) if unique_violation(&e) => return Err(email_taken()),
-        Err(e) => return Err(internal("creation du compte", e)),
-    }
-    audit(
-        &mut tx,
-        user_id,
-        "auth.register",
-        "user",
-        json!({ "role": Role::Viewer.as_str(), "ip": ip }),
-    )
     .await
-    .map_err(|e| internal("audit d'inscription", e))?;
+    .map_err(|e| internal("verrou d'inscription", e))?;
+    let existing: Option<(Uuid, bool)> = sqlx::query_as(
+        "SELECT id, email_verified_at IS NULL FROM users WHERE lower(email) = lower($1) FOR UPDATE",
+    )
+    .bind(&email)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| internal("lecture des comptes", e))?;
+    // Adresse libre : compte en attente. Compte encore en attente a cette
+    // adresse : il est repris (nom, mot de passe) et un nouveau lien part, pour
+    // qu'une inscription non confirmee ne bloque pas le vrai titulaire. Compte
+    // deja verifie : rien ne change, rien n'est envoye. Dans tous les cas, la
+    // reponse est la meme.
+    let user_id = match existing {
+        None => {
+            let user_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) \
+                 VALUES ($1, $2, $3, $4, $5, NULL)",
+            )
+            .bind(user_id)
+            .bind(&email)
+            .bind(&password_hash)
+            .bind(Role::Viewer.as_str())
+            .bind(&name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| internal("creation du compte", e))?;
+            audit(
+                &mut tx,
+                user_id,
+                "auth.register",
+                "user",
+                json!({ "role": Role::Viewer.as_str(), "ip": ip }),
+            )
+            .await
+            .map_err(|e| internal("audit d'inscription", e))?;
+            Some(user_id)
+        }
+        Some((user_id, true)) => {
+            sqlx::query("UPDATE users SET name = $2, password_hash = $3 WHERE id = $1")
+                .bind(user_id)
+                .bind(&name)
+                .bind(&password_hash)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| internal("mise a jour du compte en attente", e))?;
+            Some(user_id)
+        }
+        Some((_, false)) => None,
+    };
+    let verification = match user_id {
+        Some(user_id) => Some(
+            email_verification::issue(
+                &mut tx,
+                user_id,
+                &email,
+                email_verification::PURPOSE_SIGNUP,
+                state.clock.unix_secs(),
+            )
+            .await
+            .map_err(|e| internal("creation du lien de verification", e))?,
+        ),
+        None => None,
+    };
     tx.commit()
         .await
         .map_err(|e| internal("transaction d'inscription", e))?;
-    Ok(no_store(StatusCode::NO_CONTENT))
+    if let Some(token) = verification {
+        let link = email_verification::link(&state, token.expose());
+        state.mail.spawn(
+            mailer,
+            mail::email_verification_mail(&email, &link, true),
+            "signup_verification",
+        );
+    }
+    Ok(no_store(StatusCode::ACCEPTED))
 }

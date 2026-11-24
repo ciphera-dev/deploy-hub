@@ -33,7 +33,7 @@ Chaque écran existant est **porté et branché, jamais redessiné**.
 | Écran | Source | Route / vue cible | Statut | Données | Endpoint(s) | Rôle | Action prod |
 |---|---|---|---|---|---|---|---|
 | Connexion (+ mot de passe oublié) | `login.html` | `features/auth/LoginFlow.tsx (routes/_auth/login.tsx)` | branché (Task 12 ; mot de passe oublié Task 16, réinitialisation sur routes/_auth/reset.$token.tsx) | e-mail, mot de passe, se souvenir | `POST /api/auth/login`, `POST /api/auth/password/forgot` | public | porter (login, register et 2fa sont **un seul composant** : à fusionner) |
-| Inscription | `register.html` | `routes/_auth/register.tsx` | branché (Task 15 ; fermée par défaut, acceptation d'invitation sur routes/_auth/invite.$token.tsx) | nom, e-mail, mot de passe | `POST /api/auth/register` | public si activée | porter ; ⚠️ politique d'inscription à décider (ouverte ou invitation seule) |
+| Inscription | `register.html` | `routes/_auth/register.tsx` | branché (Task 15 ; fermée par défaut, adresse à confirmer par lien avant la première connexion, voir verify-email.$token.tsx ; acceptation d'invitation sur routes/_auth/invite.$token.tsx) | nom, e-mail, mot de passe | `POST /api/auth/register` | public si activée | porter ; ⚠️ politique d'inscription à décider (ouverte ou invitation seule) |
 | Vérification 2FA | `2fa.html` | `routes/_auth/2fa.tsx` | branché | TOTP, passkey, code de secours, appareil de confiance 30 j | `POST /api/auth/mfa/verify`, `POST /api/auth/webauthn/assert/{options,verify}`, `POST /api/auth/recovery-code` | mfa_pending | porter ; remplacer « Simuler la validation » par webauthn-rs |
 | Assistant d'installation | `install.html` | `routes/_setup/setup.tsx` | branché (Task 11) | prérequis, admin, organisation, domaine/Tailscale | `GET /api/setup/status`, `POST /api/setup/checks`, `POST /api/setup/complete` | jeton de setup à usage unique | porter ; route verrouillée dès qu'un admin existe |
 
@@ -100,7 +100,7 @@ Chaque écran existant est **porté et branché, jamais redessiné**.
 1. Nouveau mot de passe : cible du lien de réinitialisation, avec les cas jeton expiré ou invalide (`POST /api/auth/password/reset`).
 2. Acceptation d'invitation, et première connexion avec mot de passe temporaire (changement forcé).
 3. Enrôlement 2FA : QR TOTP, vérification et codes de secours, plus l'enregistrement d'une passkey.
-4. Vérification d'e-mail, si l'inscription est ouverte.
+4. ~~Vérification d'e-mail, si l'inscription est ouverte.~~ Fait : `features/auth/VerifyEmail.tsx` (`routes/_auth/verify-email.$token.tsx`), pour l'inscription ouverte et le changement d'adresse (`GET` puis `POST /api/auth/email-verification/{token}[/confirm]`).
 5. Onboarding après installation : connecter GitHub, ajouter un premier serveur, créer un premier projet.
 6. Erreurs 500, API injoignable et session expirée.
 7. Accès refusé (403) et états en lecture seule selon le rôle.

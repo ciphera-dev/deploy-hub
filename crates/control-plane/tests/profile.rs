@@ -575,10 +575,8 @@ async fn wait_for_mail(outbox: &Outbox, n: usize) -> Vec<OutgoingMail> {
     outbox.lock().unwrap().clone()
 }
 
-#[tokio::test]
-async fn email_change_requires_password_and_notifies_old_address() {
-    let (mut state, _pg) = common::state().await;
-    let outbox = capture(&mut state);
+/// Instance qui peut envoyer des e-mails (origine publique + SMTP actif).
+async fn with_smtp(state: &mut AppState) {
     state.cfg = Arc::new(
         Config::from_lookup(|name| match name {
             "CIPHERA_DATABASE_URL" => Some("postgres://u:p@127.0.0.1/c".to_string()),
@@ -594,6 +592,44 @@ async fn email_change_requires_password_and_notifies_old_address() {
     .execute(&state.db)
     .await
     .unwrap();
+}
+
+/// Jeton du lien `/verify-email/<jeton>` d'un e-mail.
+fn verification_token(mail: &OutgoingMail) -> String {
+    let (_, rest) = mail
+        .text
+        .split_once("https://panel.example.com/verify-email/")
+        .expect("lien de verification");
+    let token: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    assert_eq!(token.len(), 43, "32 octets en base64url");
+    token
+}
+
+async fn confirm_email(state: &AppState, token: &str, cookie: Option<&str>) -> Reply {
+    call(
+        state,
+        "POST",
+        &format!("/api/auth/email-verification/{token}/confirm"),
+        Req {
+            cookie,
+            ..Req::default()
+        },
+    )
+    .await
+}
+
+fn change_email(email: &str) -> Option<Value> {
+    Some(json!({ "email": email, "current_password": PASSWORD }))
+}
+
+#[tokio::test]
+async fn email_change_requires_confirmation() {
+    let (mut state, _pg) = common::state().await;
+    let outbox = capture(&mut state);
+    with_smtp(&mut state).await;
     let user_id = add_user(&state, EMAIL).await;
     add_user(&state, "bob@example.com").await;
     let who = session(&state, EMAIL).await;
@@ -607,7 +643,7 @@ async fn email_change_requires_password_and_notifies_old_address() {
     .await
     .unwrap();
 
-    // Sans mot de passe, ou mot de passe faux.
+    // Sans mot de passe, ou mot de passe faux, ou adresse invalide.
     let r = send(
         &state,
         &who,
@@ -628,7 +664,6 @@ async fn email_change_requires_password_and_notifies_old_address() {
     )
     .await;
     assert_eq!(r.status, 401, "{}", r.raw);
-    // Adresse invalide.
     let r = send(
         &state,
         &who,
@@ -638,37 +673,101 @@ async fn email_change_requires_password_and_notifies_old_address() {
     )
     .await;
     assert_eq!(r.status, 422, "{}", r.raw);
-    // Adresse d'un autre compte (casse differente) : 409.
+    // Adresse d'un autre compte (casse differente) : meme reponse qu'une
+    // adresse libre, mais aucun lien ni e-mail.
     let r = send(
         &state,
         &who,
         "PATCH",
         "/api/me",
-        Some(json!({ "email": "Bob@Example.com", "current_password": PASSWORD })),
+        change_email("Bob@Example.com"),
     )
     .await;
-    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.status, 202, "{}", r.raw);
+    assert_eq!(
+        count(&state, "SELECT count(*) FROM email_verifications").await,
+        0
+    );
     assert!(outbox.lock().unwrap().is_empty());
-    assert_eq!(me(&state, &who).await.json()["email"], json!(EMAIL));
 
+    // Meme adresse que l'actuelle : rien a changer.
     let r = send(
         &state,
         &who,
         "PATCH",
         "/api/me",
-        Some(json!({ "email": "Alice@New.example.com", "current_password": PASSWORD })),
+        change_email("ALICE@example.com"),
     )
     .await;
     assert_eq!(r.status, 200, "{}", r.raw);
-    assert_eq!(
-        me(&state, &who).await.json()["email"],
-        json!("alice@new.example.com")
-    );
+
+    // Adresse libre : demande enregistree, l'adresse ne change pas encore.
+    let r = send(
+        &state,
+        &who,
+        "PATCH",
+        "/api/me",
+        Some(json!({
+            "name": "Alice Durand",
+            "email": "Alice@New.example.com",
+            "current_password": PASSWORD
+        })),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    assert_eq!(r.json()["email"], json!(EMAIL), "pas encore remplacee");
+    assert_eq!(r.json()["name"], json!("Alice Durand"));
+    assert_eq!(me(&state, &who).await.json()["email"], json!(EMAIL));
     let mails = wait_for_mail(&outbox, 1).await;
-    assert_eq!(mails.len(), 1);
-    assert_eq!(mails[0].to, EMAIL, "avis envoye a l'ancienne adresse");
-    assert!(!mails[0].text.contains("alice@new.example.com"));
-    // Les liens de reinitialisation en cours sont annules.
+    assert_eq!(
+        mails.len(),
+        1,
+        "lien envoye a la nouvelle adresse seulement"
+    );
+    assert_eq!(mails[0].to, "alice@new.example.com");
+    assert!(!mails[0].text.contains(EMAIL));
+    let token = verification_token(&mails[0]);
+    // Seule l'empreinte est stockee ; liens de reinitialisation intacts.
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT token_hash FROM email_verifications")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(stored.len(), 32);
+    assert_ne!(stored, token.as_bytes());
+    assert_eq!(
+        count(&state, "SELECT count(*) FROM password_resets").await,
+        1
+    );
+
+    // Ouvrir le lien (GET) ne change rien.
+    let r = call(
+        &state,
+        "GET",
+        &format!("/api/auth/email-verification/{token}"),
+        Req::default(),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["purpose"], json!("change"));
+    assert_eq!(r.json()["email"], json!("alice@new.example.com"));
+    assert_eq!(me(&state, &who).await.json()["email"], json!(EMAIL));
+
+    // Confirmation, sans session : l'adresse est remplacee.
+    let r = confirm_email(&state, &token, None).await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    assert_eq!(login_with(&state, EMAIL, PASSWORD).await.status, 401);
+    assert_eq!(
+        login_with(&state, "alice@new.example.com", PASSWORD)
+            .await
+            .status,
+        200
+    );
+    // Avis a l'ancienne adresse (sans la nouvelle).
+    let mails = wait_for_mail(&outbox, 2).await;
+    assert_eq!(mails.len(), 2);
+    assert_eq!(mails[1].to, EMAIL);
+    assert!(!mails[1].text.contains("alice@new.example.com"));
+    // Liens de reinitialisation en cours annules.
     assert_eq!(
         count(&state, "SELECT count(*) FROM password_resets").await,
         0
@@ -683,15 +782,108 @@ async fn email_change_requires_password_and_notifies_old_address() {
         !detail.contains("example.com"),
         "aucune adresse dans l'audit : {detail}"
     );
-    // Connexion avec la nouvelle adresse.
-    assert_eq!(
-        login_with(&state, "alice@new.example.com", PASSWORD)
-            .await
-            .status,
-        200
-    );
+    // Usage unique.
+    let r = confirm_email(&state, &token, None).await;
+    assert_eq!(r.status, 404, "{}", r.raw);
+    assert_eq!(r.code(), "email_verification_invalid");
 }
 
+#[tokio::test]
+async fn email_change_revokes_other_sessions() {
+    let (mut state, _pg) = common::state().await;
+    let outbox = capture(&mut state);
+    with_smtp(&mut state).await;
+    add_user(&state, EMAIL).await;
+    let who = session(&state, EMAIL).await;
+    let other = session(&state, EMAIL).await;
+    let third = session(&state, EMAIL).await;
+    let r = send(
+        &state,
+        &who,
+        "PATCH",
+        "/api/me",
+        change_email("alice@new.example.com"),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    let token = verification_token(&wait_for_mail(&outbox, 1).await[0]);
+    // Les sessions ne tombent qu'a la confirmation.
+    assert_eq!(me(&state, &other).await.status, 200);
+
+    // Confirmation depuis le navigateur de `who` : sa session reste ouverte.
+    let r = confirm_email(&state, &token, Some(&who.0)).await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    assert_eq!(me(&state, &who).await.status, 200);
+    assert_eq!(me(&state, &other).await.status, 401);
+    assert_eq!(me(&state, &third).await.status, 401);
+    assert_eq!(
+        me(&state, &who).await.json()["email"],
+        json!("alice@new.example.com")
+    );
+
+    // Confirmation sans session : toutes les sessions tombent.
+    let r = send(
+        &state,
+        &who,
+        "PATCH",
+        "/api/me",
+        change_email("a2@new.example.com"),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    let mails = wait_for_mail(&outbox, 3).await;
+    let mail = mails
+        .iter()
+        .find(|m| m.to == "a2@new.example.com")
+        .expect("lien envoye a la nouvelle adresse");
+    let token = verification_token(mail);
+    let r = confirm_email(&state, &token, None).await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    assert_eq!(me(&state, &who).await.status, 401);
+}
+
+#[tokio::test]
+async fn email_change_needs_smtp_and_link_expires() {
+    let (mut state, _pg) = common::state().await;
+    let outbox = capture(&mut state);
+    add_user(&state, EMAIL).await;
+    let who = session(&state, EMAIL).await;
+    let r = send(
+        &state,
+        &who,
+        "PATCH",
+        "/api/me",
+        change_email("alice@new.example.com"),
+    )
+    .await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "smtp_required");
+    assert_eq!(
+        count(&state, "SELECT count(*) FROM email_verifications").await,
+        0
+    );
+    assert_eq!(me(&state, &who).await.json()["email"], json!(EMAIL));
+
+    with_smtp(&mut state).await;
+    let r = send(
+        &state,
+        &who,
+        "PATCH",
+        "/api/me",
+        change_email("alice@new.example.com"),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    let token = verification_token(&wait_for_mail(&outbox, 1).await[0]);
+    sqlx::query("UPDATE email_verifications SET expires_at = now() - interval '1 minute'")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let r = confirm_email(&state, &token, None).await;
+    assert_eq!(r.status, 410, "{}", r.raw);
+    assert_eq!(r.code(), "email_verification_expired");
+    assert_eq!(me(&state, &who).await.json()["email"], json!(EMAIL));
+}
 #[tokio::test]
 async fn notification_prefs_email_only() {
     let (state, _pg) = common::state().await;

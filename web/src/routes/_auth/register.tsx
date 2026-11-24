@@ -10,7 +10,7 @@ function RegisterPage() {
   const navigate = useNavigate();
   return (
     <RegisterScreen
-      onCreated={() => void navigate({ to: "/login", search: { created: 1 }, replace: true })}
+      onCreated={() => void navigate({ to: "/login", search: { verify: 1 }, replace: true })}
       onSignIn={() => void navigate({ to: "/login" })}
       onSignedIn={() => void navigate({ to: "/", replace: true })}
     />

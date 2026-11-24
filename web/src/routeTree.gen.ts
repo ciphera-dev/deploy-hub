@@ -31,6 +31,7 @@ import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings/ind
 import { Route as AppSettingsSectionRouteImport } from './routes/_app/settings/$section'
 import { Route as AuthInviteTokenRouteImport } from './routes/_auth/invite.$token'
 import { Route as AuthResetTokenRouteImport } from './routes/_auth/reset.$token'
+import { Route as AuthVerifyEmailTokenRouteImport } from './routes/_auth/verify-email.$token'
 import { Route as AppProjectsProjectIdIndexRouteImport } from './routes/_app/projects/$projectId/index'
 import { Route as AppProjectsProjectIdDeploymentsRouteImport } from './routes/_app/projects/$projectId/deployments'
 import { Route as AppProjectsProjectIdDomainsRouteImport } from './routes/_app/projects/$projectId/domains'
@@ -147,6 +148,11 @@ const AuthResetTokenRoute = AuthResetTokenRouteImport.update({
   path: '/reset/$token',
   getParentRoute: () => AuthRoute,
 } as any)
+const AuthVerifyEmailTokenRoute = AuthVerifyEmailTokenRouteImport.update({
+  id: '/verify-email/$token',
+  path: '/verify-email/$token',
+  getParentRoute: () => AuthRoute,
+} as any)
 const AppProjectsProjectIdIndexRoute =
   AppProjectsProjectIdIndexRouteImport.update({
     id: '/',
@@ -206,6 +212,7 @@ export interface FileRoutesByFullPath {
   '/settings/$section': typeof AppSettingsSectionRoute
   '/invite/$token': typeof AuthInviteTokenRoute
   '/reset/$token': typeof AuthResetTokenRoute
+  '/verify-email/$token': typeof AuthVerifyEmailTokenRoute
   '/deployments/': typeof AppDeploymentsIndexRoute
   '/projects/': typeof AppProjectsIndexRoute
   '/settings/': typeof AppSettingsIndexRoute
@@ -232,6 +239,7 @@ export interface FileRoutesByTo {
   '/settings/$section': typeof AppSettingsSectionRoute
   '/invite/$token': typeof AuthInviteTokenRoute
   '/reset/$token': typeof AuthResetTokenRoute
+  '/verify-email/$token': typeof AuthVerifyEmailTokenRoute
   '/deployments': typeof AppDeploymentsIndexRoute
   '/projects': typeof AppProjectsIndexRoute
   '/settings': typeof AppSettingsIndexRoute
@@ -264,6 +272,7 @@ export interface FileRoutesById {
   '/_app/settings/$section': typeof AppSettingsSectionRoute
   '/_auth/invite/$token': typeof AuthInviteTokenRoute
   '/_auth/reset/$token': typeof AuthResetTokenRoute
+  '/_auth/verify-email/$token': typeof AuthVerifyEmailTokenRoute
   '/_app/deployments/': typeof AppDeploymentsIndexRoute
   '/_app/projects/': typeof AppProjectsIndexRoute
   '/_app/settings/': typeof AppSettingsIndexRoute
@@ -294,6 +303,7 @@ export interface FileRouteTypes {
     | '/settings/$section'
     | '/invite/$token'
     | '/reset/$token'
+    | '/verify-email/$token'
     | '/deployments/'
     | '/projects/'
     | '/settings/'
@@ -320,6 +330,7 @@ export interface FileRouteTypes {
     | '/settings/$section'
     | '/invite/$token'
     | '/reset/$token'
+    | '/verify-email/$token'
     | '/deployments'
     | '/projects'
     | '/settings'
@@ -351,6 +362,7 @@ export interface FileRouteTypes {
     | '/_app/settings/$section'
     | '/_auth/invite/$token'
     | '/_auth/reset/$token'
+    | '/_auth/verify-email/$token'
     | '/_app/deployments/'
     | '/_app/projects/'
     | '/_app/settings/'
@@ -525,6 +537,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthResetTokenRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_auth/verify-email/$token': {
+      id: '/_auth/verify-email/$token'
+      path: '/verify-email/$token'
+      fullPath: '/verify-email/$token'
+      preLoaderRoute: typeof AuthVerifyEmailTokenRouteImport
+      parentRoute: typeof AuthRoute
+    }
     '/_app/projects/$projectId/': {
       id: '/_app/projects/$projectId/'
       path: '/'
@@ -649,6 +668,7 @@ interface AuthRouteChildren {
   AuthRegisterRoute: typeof AuthRegisterRoute
   AuthInviteTokenRoute: typeof AuthInviteTokenRoute
   AuthResetTokenRoute: typeof AuthResetTokenRoute
+  AuthVerifyEmailTokenRoute: typeof AuthVerifyEmailTokenRoute
 }
 
 const AuthRouteChildren: AuthRouteChildren = {
@@ -658,6 +678,7 @@ const AuthRouteChildren: AuthRouteChildren = {
   AuthRegisterRoute: AuthRegisterRoute,
   AuthInviteTokenRoute: AuthInviteTokenRoute,
   AuthResetTokenRoute: AuthResetTokenRoute,
+  AuthVerifyEmailTokenRoute: AuthVerifyEmailTokenRoute,
 }
 
 const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)

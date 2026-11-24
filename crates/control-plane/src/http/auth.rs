@@ -199,15 +199,16 @@ async fn login(
     };
 
     // lower() de PostgreSQL : la meme fonction que l'index unique des e-mails.
-    let user: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT id, password_hash FROM users WHERE lower(email) = lower($1)")
+    let user: Option<(Uuid, String, bool)> = sqlx::query_as(
+        "SELECT id, password_hash, email_verified_at IS NOT NULL FROM users WHERE lower(email) = lower($1)",
+    )
             .bind(&email)
             .fetch_optional(&state.db)
             .await
             .map_err(|e| internal("lecture du compte", e))?;
-    let (user_id, phc) = match user {
-        Some((id, phc)) => (Some(id), Some(phc)),
-        None => (None, None),
+    let (user_id, phc, verified) = match user {
+        Some((id, phc, verified)) => (Some(id), Some(phc), verified),
+        None => (None, None, true),
     };
     let ok = match verify(input.password, phc, in_flight).await {
         Ok(ok) => ok,
@@ -246,6 +247,26 @@ async fn login(
         return Err(invalid_credentials());
     };
 
+    // Inscription ouverte dont l'adresse n'est pas confirmee : mot de passe
+    // juste (le titulaire de l'inscription le sait), mais pas de session.
+    if !verified {
+        audit(
+            &mut tx,
+            Some(user_id),
+            "auth.login.failure",
+            json!({ "ip": ip, "reason": "email_not_verified" }),
+        )
+        .await
+        .map_err(|e| internal("audit de connexion", e))?;
+        tx.commit()
+            .await
+            .map_err(|e| internal("transaction de connexion", e))?;
+        return Err(ApiError::new(
+            403,
+            "email_not_verified",
+            "Confirmez votre adresse e-mail avec le lien reçu avant de vous connecter.",
+        ));
+    }
     // Nouvelle session a chaque connexion : celle que presente le navigateur
     // (eventuellement fixee par un tiers) est supprimee.
     if let Some(previous) = session::token_from_headers(&headers) {

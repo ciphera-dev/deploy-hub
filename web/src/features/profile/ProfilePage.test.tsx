@@ -24,7 +24,7 @@ const server = setupServer(
     const body = (await request.json()) as Record<string, unknown>;
     patches.push({ csrf: request.headers.get("x-csrf-token"), body });
     const reply = patchReply();
-    if (reply.ok) me = { ...me, ...(body as Partial<typeof ME>) };
+    if (reply.status === 200) me = { ...me, ...(body as Partial<typeof ME>) };
     return reply;
   }),
   http.get("*/api/me/notification-prefs", () => HttpResponse.json(prefs)),
@@ -91,7 +91,8 @@ it("nom, langue et fuseau : enregistres par PATCH /api/me", async () => {
   expect(screen.getByRole("combobox", { name: "Fuseau horaire" })).toBeInTheDocument();
 });
 
-it("e-mail : le mot de passe actuel est redemande", async () => {
+it("e-mail : le mot de passe actuel est redemande, l'adresse ne change qu'a la confirmation du lien", async () => {
+  patchReply = () => HttpResponse.json(me, { status: 202 });
   renderPage();
   fireEvent.click(await screen.findByRole("button", { name: "Modifier adresse e-mail" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Adresse e-mail" }), { target: { value: "alice@new.example.com" } });
@@ -102,6 +103,9 @@ it("e-mail : le mot de passe actuel est redemande", async () => {
   fireEvent.click(within(dialog).getByRole("button", { name: "Confirmer" }));
   await waitFor(() => expect(patches).toEqual([{ csrf: "csrf-1", body: { email: "alice@new.example.com", current_password: "mon mot de passe" } }]));
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(await screen.findByText("Lien de confirmation envoyé à alice@new.example.com")).toBeInTheDocument();
+  expect(screen.getAllByText("alice@example.com").length).toBeGreaterThan(0);
+  expect(screen.queryByText("alice@new.example.com")).not.toBeInTheDocument();
 });
 
 it("notifications : canal e-mail seulement, chaque case enregistree", async () => {

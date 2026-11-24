@@ -6,6 +6,8 @@
 //! - `GET /api/me/sessions`, `DELETE /api/me/sessions/{id}` ;
 //! - `GET|PUT /api/me/notification-prefs` (canal e-mail seulement en v0.1).
 //!
+//! Une nouvelle adresse e-mail n'est appliquee qu'a la confirmation du lien
+//! envoye a cette adresse (`email_verification`, 202 ici).
 //! Les ecritures passent par la couche CSRF. Le changement d'e-mail et de mot
 //! de passe redemandent le mot de passe actuel (limite de 5 echecs, comme la
 //! desactivation de la TOTP). Ni mot de passe, ni adresse e-mail, ni jeton ne
@@ -35,6 +37,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::auth::audit;
+use super::email_verification;
 use super::mfa::{invalid_request, rate_limited};
 use super::setup::validate_email;
 use crate::auth::{CurrentUser, internal, password, rate_limit, totp, webauthn};
@@ -308,12 +311,6 @@ fn password_changed() -> ApiError {
     )
 }
 
-fn is_unique_violation(e: &sqlx::Error) -> bool {
-    e.as_database_error()
-        .and_then(|d| d.code())
-        .is_some_and(|code| code == "23505")
-}
-
 /// `PATCH /api/me`
 async fn update(
     State(state): State<AppState>,
@@ -345,6 +342,16 @@ async fn update(
         }
         None => None,
     };
+    // Sans envoi d'e-mails, l'adresse ne pourrait jamais etre confirmee.
+    let mailer = match &new_email {
+        Some(_) => Some(
+            mail::ready(&state)
+                .await
+                .map_err(|e| internal("lecture des reglages SMTP", e))?
+                .ok_or_else(smtp_required)?,
+        ),
+        None => None,
+    };
     let attempt = match &new_email {
         Some(_) => {
             let Some(current) = input.current_password else {
@@ -363,8 +370,8 @@ async fn update(
     };
 
     let mut tx = begin(&state).await?;
-    let (old_email, current_hash): (String, String) =
-        sqlx::query_as("SELECT email, password_hash FROM users WHERE id = $1 FOR UPDATE")
+    let current_hash: String =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR UPDATE")
             .bind(user.id)
             .fetch_one(&mut *tx)
             .await
@@ -375,41 +382,18 @@ async fn update(
     {
         return Err(password_changed());
     }
-    let updated = sqlx::query(
-        "UPDATE users SET name = coalesce($2, name), email = coalesce($3, email), \
-                language = coalesce($4, language), timezone = coalesce($5, timezone) \
+    sqlx::query(
+        "UPDATE users SET name = coalesce($2, name), language = coalesce($3, language), \
+                timezone = coalesce($4, timezone) \
          WHERE id = $1",
     )
     .bind(user.id)
     .bind(&name)
-    .bind(&new_email)
     .bind(&input.language)
     .bind(&input.timezone)
     .execute(&mut *tx)
-    .await;
-    match updated {
-        Ok(_) => {}
-        Err(e) if is_unique_violation(&e) => {
-            // Mot de passe juste : la tentative ne compte pas comme un echec.
-            drop(tx);
-            if let Some((attempt, _)) = attempt {
-                let mut conn = state
-                    .db
-                    .acquire()
-                    .await
-                    .map_err(|e| internal("connexion a la base", e))?;
-                rate_limit::mark_mfa_success(&mut conn, attempt)
-                    .await
-                    .map_err(|e| internal("enregistrement de la tentative", e))?;
-            }
-            return Err(ApiError::new(
-                409,
-                "email_taken",
-                "Cette adresse e-mail est déjà utilisée par un autre compte.",
-            ));
-        }
-        Err(e) => return Err(internal("modification du profil", e)),
-    }
+    .await
+    .map_err(|e| internal("modification du profil", e))?;
     let fields: Vec<&str> = [
         ("name", name.is_some()),
         ("language", input.language.is_some()),
@@ -428,17 +412,35 @@ async fn update(
         .await
         .map_err(|e| internal("audit du profil", e))?;
     }
-    if new_email.is_some() {
-        // Les liens de reinitialisation envoyes a l'ancienne adresse tombent.
-        sqlx::query("DELETE FROM password_resets WHERE user_id = $1 AND used_at IS NULL")
-            .bind(user.id)
-            .execute(&mut *tx)
+    // L'adresse ne change qu'a la confirmation du lien envoye a la nouvelle.
+    // Meme reponse qu'elle soit libre ou deja prise : rien n'est envoye si
+    // elle l'est, sans le dire.
+    let mut verification = None;
+    if let Some(email) = &new_email {
+        let taken: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower($1) AND id <> $2)",
+        )
+        .bind(email)
+        .bind(user.id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| internal("lecture des comptes", e))?;
+        if !taken {
+            let token = email_verification::issue(
+                &mut tx,
+                user.id,
+                email,
+                email_verification::PURPOSE_CHANGE,
+                state.clock.unix_secs(),
+            )
             .await
-            .map_err(|e| internal("suppression des liens de reinitialisation", e))?;
+            .map_err(|e| internal("creation du lien de verification", e))?;
+            verification = Some((email.clone(), token));
+        }
         audit(
             &mut tx,
             Some(user.id),
-            "profile.email.changed",
+            "profile.email.change.requested",
             json!({ "ip": ip }),
         )
         .await
@@ -453,15 +455,34 @@ async fn update(
         .await
         .map_err(|e| internal("transaction du profil", e))?;
 
-    if new_email.is_some() {
-        notify_old_address(&state, &old_email).await;
+    if let (Some(mailer), Some((email, token))) = (mailer, verification) {
+        let link = email_verification::link(&state, token.expose());
+        state.mail.spawn(
+            mailer,
+            mail::email_verification_mail(&email, &link, false),
+            "email_verification",
+        );
     }
-    Ok(no_store(Json(load_me(&state, &user).await?)))
+    let body = no_store(Json(load_me(&state, &user).await?));
+    if new_email.is_some() {
+        // 202 : l'adresse affichee est encore l'ancienne.
+        let (mut parts, body) = body.into_parts();
+        parts.status = StatusCode::ACCEPTED;
+        return Ok(Response::from_parts(parts, body));
+    }
+    Ok(body)
 }
 
+fn smtp_required() -> ApiError {
+    ApiError::new(
+        409,
+        "smtp_required",
+        "Le changement d'adresse e-mail demande un serveur SMTP configuré : contactez un administrateur.",
+    )
+}
 /// Avis a l'ancienne adresse, hors du chemin de la requete, si l'instance
 /// peut envoyer des e-mails. Aucun echec ne remonte (ni adresse au journal).
-async fn notify_old_address(state: &AppState, old_email: &str) {
+pub(crate) async fn notify_old_address(state: &AppState, old_email: &str) {
     match mail::ready(state).await {
         Ok(Some(mailer)) => {
             state

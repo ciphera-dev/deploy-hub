@@ -25,15 +25,18 @@ function serverMessage(error: unknown): string | undefined {
 const UNREACHABLE: Outcome = { ok: false, message: "Serveur injoignable. Réessayez." };
 const RATE_LIMITED = "Trop de tentatives. Réessayez dans quelques minutes.";
 
-/** PATCH /api/me : nom, e-mail (mot de passe actuel exige), langue, fuseau horaire. */
-export async function updateProfile(body: ProfileUpdate): Promise<Outcome> {
+/** Resultat de PATCH /api/me ; `emailPending` : un lien de confirmation part vers la nouvelle adresse, l'ancienne reste en vigueur. */
+export type ProfileOutcome = { ok: true; emailPending: boolean } | { ok: false; message: string };
+
+/** PATCH /api/me : nom, e-mail (mot de passe actuel exige, confirmation par lien), langue, fuseau horaire. */
+export async function updateProfile(body: ProfileUpdate): Promise<ProfileOutcome> {
   let result;
   try {
     result = await api.PATCH("/api/me", { body });
   } catch {
-    return UNREACHABLE;
+    return { ok: false, message: "Serveur injoignable. Réessayez." };
   }
-  if (result.data) return { ok: true };
+  if (result.data) return { ok: true, emailPending: result.response.status === 202 };
   const { status } = result.response;
   if (status === 401) return { ok: false, message: "Mot de passe actuel incorrect." };
   if (status === 429) return { ok: false, message: RATE_LIMITED };

@@ -25,7 +25,7 @@ const server = setupServer(
   http.get("*/api/auth/register", () => HttpResponse.json({ public_signup: signupOpen })),
   http.post("*/api/auth/register", async ({ request }) => {
     registerCalls.push(await request.json());
-    return new HttpResponse(null, { status: 204 });
+    return new HttpResponse(null, { status: 202 });
   }),
   http.get("*/api/auth/webauthn/status", () => HttpResponse.json({ available: false })),
 );
@@ -119,7 +119,7 @@ it("inscription publique fermee (defaut) : « Inscription sur invitation »", as
   expect(screen.queryByLabelText("Mot de passe")).not.toBeInTheDocument();
 });
 
-it("inscription publique ouverte : formulaire de register.html, puis connexion", async () => {
+it("inscription publique ouverte : formulaire de register.html, puis connexion avec le bandeau « vérifiez votre boîte mail »", async () => {
   signupOpen = true;
   const { router } = mount("/register");
   expect(await screen.findByRole("heading", { name: "Créer un compte" })).toBeInTheDocument();
@@ -130,4 +130,6 @@ it("inscription publique ouverte : formulaire de register.html, puis connexion",
   fireEvent.click(createButton());
   await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
   expect(registerCalls).toEqual([{ name: "Eve", email: "eve@example.com", password: PASSWORD }]);
+  expect(router.state.location.search).toEqual({ verify: 1 });
+  expect(await screen.findByRole("heading", { name: "Vérifiez votre boîte mail" })).toBeInTheDocument();
 });

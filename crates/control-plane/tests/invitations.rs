@@ -1,13 +1,15 @@
 mod common;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use common::api::{Reply, Req, call};
 use control_plane::auth::password;
+use control_plane::mail::{Delivery, OutgoingMail};
 use control_plane::state::{AppState, Clock};
 use serde_json::{Value, json};
+use shared::config::Config;
 use uuid::Uuid;
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -393,48 +395,225 @@ async fn register_disabled_by_default_403() {
     assert_eq!(users, 0);
 }
 
+type Outbox = Arc<Mutex<Vec<OutgoingMail>>>;
+
+/// Inscription ouverte, SMTP actif et origine publique definie : les e-mails
+/// de verification sont captes.
+async fn signup_env() -> (AppState, common::TestDb, Outbox) {
+    let (mut state, pg) = common::state().await;
+    let outbox: Outbox = Arc::default();
+    let sink = outbox.clone();
+    state.mail = Delivery::from_fn(move |_mailer, mail| {
+        sink.lock().unwrap().push(mail);
+        Box::pin(async { Ok(()) })
+    });
+    state.cfg = Arc::new(
+        Config::from_lookup(|name| match name {
+            "CIPHERA_DATABASE_URL" => Some("postgres://u:p@127.0.0.1/c".to_string()),
+            "CIPHERA_PUBLIC_URL" => Some("https://panel.example.com".to_string()),
+            _ => None,
+        })
+        .unwrap(),
+    );
+    sqlx::query(
+        "INSERT INTO smtp_settings (enabled, host, port, tls, from_address, from_name) \
+         VALUES (true, 'smtp.example.com', 587, 'starttls', 'ciphera@example.com', 'Ciphera')",
+    )
+    .execute(&state.db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO instance (id, name, public_signup) VALUES ($1, 'Org', true)")
+        .bind(Uuid::new_v4())
+        .execute(&state.db)
+        .await
+        .unwrap();
+    (state, pg, outbox)
+}
+
+async fn register(state: &AppState, name: &str, email: &str, peer: &str) -> Reply {
+    call(
+        state,
+        "POST",
+        "/api/auth/register",
+        Req {
+            peer: Some(peer),
+            body: Some(json!({ "name": name, "email": email, "password": NEW_PASSWORD })),
+            ..Req::default()
+        },
+    )
+    .await
+}
+
+async fn mails_to(outbox: &Outbox, to: &str, n: usize) -> Vec<OutgoingMail> {
+    for _ in 0..100 {
+        if outbox.lock().unwrap().iter().filter(|m| m.to == to).count() >= n {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    outbox
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| m.to == to)
+        .cloned()
+        .collect()
+}
+
+fn verification_token(mail: &OutgoingMail) -> String {
+    let (_, rest) = mail
+        .text
+        .split_once("https://panel.example.com/verify-email/")
+        .expect("lien de verification");
+    let token: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    assert_eq!(token.len(), 43, "32 octets en base64url");
+    token
+}
+
+async fn confirm_email(state: &AppState, token: &str) -> Reply {
+    call(
+        state,
+        "POST",
+        &format!("/api/auth/email-verification/{token}/confirm"),
+        Req::default(),
+    )
+    .await
+}
+
 #[tokio::test]
-async fn register_when_enabled_creates_viewer() {
+async fn register_when_enabled_creates_pending_viewer() {
+    let (state, _pg, outbox) = signup_env().await;
+    let status = call(&state, "GET", "/api/auth/register", Req::default()).await;
+    assert_eq!(status.json()["public_signup"], true);
+
+    let r = register(&state, "Eve", "eve@example.com", "198.51.100.1:1000").await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    assert!(r.set_cookie.is_none());
+    let (role, verified): (String, bool) = sqlx::query_as(
+        "SELECT role, email_verified_at IS NOT NULL FROM users WHERE email = 'eve@example.com'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(role, "viewer");
+    assert!(!verified, "compte en attente de verification");
+    let mails = mails_to(&outbox, "eve@example.com", 1).await;
+    assert_eq!(mails.len(), 1);
+    let token = verification_token(&mails[0]);
+    let info = call(
+        &state,
+        "GET",
+        &format!("/api/auth/email-verification/{token}"),
+        Req::default(),
+    )
+    .await;
+    assert_eq!(info.status, 200, "{}", info.raw);
+    assert_eq!(info.json()["purpose"], "signup");
+    assert_eq!(confirm_email(&state, &token).await.status, 204);
+    let verified: bool = sqlx::query_scalar(
+        "SELECT email_verified_at IS NOT NULL FROM users WHERE email = 'eve@example.com'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert!(verified);
+    assert_eq!(
+        confirm_email(&state, &token).await.status,
+        404,
+        "usage unique"
+    );
+}
+
+#[tokio::test]
+async fn register_same_response_existing_email() {
+    let (state, _pg, outbox) = signup_env().await;
+    user(&state, "nora@example.com", "developer").await;
+
+    let fresh = register(&state, "Eve", "eve@example.com", "198.51.100.1:1000").await;
+    let known = register(&state, "Intruse", "Nora@Example.com", "198.51.100.1:1000").await;
+    assert_eq!(fresh.status, 202, "{}", fresh.raw);
+    assert_eq!(known.status, fresh.status, "{}", known.raw);
+    assert_eq!(known.raw, fresh.raw);
+    assert_eq!(known.set_cookie, fresh.set_cookie);
+
+    // Le compte existant est intact et ne recoit rien.
+    let (name, role): (String, String) =
+        sqlx::query_as("SELECT name, role FROM users WHERE email = 'nora@example.com'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!((name.as_str(), role.as_str()), ("Test", "developer"));
+    assert_eq!(
+        login_as(&state, "nora@example.com", PASSWORD).await.status,
+        200
+    );
+    assert_eq!(mails_to(&outbox, "eve@example.com", 1).await.len(), 1);
+    assert!(mails_to(&outbox, "Nora@Example.com", 0).await.is_empty());
+    assert!(mails_to(&outbox, "nora@example.com", 0).await.is_empty());
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(users, 2);
+
+    // Inscription non confirmee refaite : un seul compte, nouveau lien, l'ancien tombe.
+    let first = verification_token(&mails_to(&outbox, "eve@example.com", 1).await[0]);
+    let again = register(&state, "Eve B", "eve@example.com", "198.51.100.1:1000").await;
+    assert_eq!(again.status, 202, "{}", again.raw);
+    assert_eq!(again.raw, fresh.raw);
+    let mails = mails_to(&outbox, "eve@example.com", 2).await;
+    assert_eq!(mails.len(), 2);
+    let second = verification_token(&mails[1]);
+    assert_ne!(first, second);
+    assert_eq!(confirm_email(&state, &first).await.status, 404);
+    assert_eq!(confirm_email(&state, &second).await.status, 204);
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(users, 2);
+}
+
+#[tokio::test]
+async fn unverified_signup_cannot_login() {
+    let (state, _pg, outbox) = signup_env().await;
+    let r = register(&state, "Eve", "eve@example.com", "198.51.100.1:1000").await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+
+    let r = login_as(&state, "eve@example.com", NEW_PASSWORD).await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(r.code(), "email_not_verified");
+    assert!(r.set_cookie.is_none());
+    // Mot de passe faux : refus ordinaire, sans reveler l'etat du compte.
+    let r = login_as(&state, "eve@example.com", "mauvais mot de passe").await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+
+    let token = verification_token(&mails_to(&outbox, "eve@example.com", 1).await[0]);
+    assert_eq!(confirm_email(&state, &token).await.status, 204);
+    let r = login_as(&state, "eve@example.com", NEW_PASSWORD).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn register_requires_smtp() {
     let (state, _pg) = common::state().await;
     sqlx::query("INSERT INTO instance (id, name, public_signup) VALUES ($1, 'Org', true)")
         .bind(Uuid::new_v4())
         .execute(&state.db)
         .await
         .unwrap();
-    let status = call(&state, "GET", "/api/auth/register", Req::default()).await;
-    assert_eq!(status.json()["public_signup"], true);
-
-    let body = json!({ "name": "Eve", "email": "eve@example.com", "password": NEW_PASSWORD });
-    let r = call(
-        &state,
-        "POST",
-        "/api/auth/register",
-        Req {
-            body: Some(body.clone()),
-            ..Req::default()
-        },
-    )
-    .await;
-    assert_eq!(r.status, 204, "{}", r.raw);
-    assert!(r.set_cookie.is_none());
-    let role: String = sqlx::query_scalar("SELECT role FROM users WHERE email = 'eve@example.com'")
+    let r = register(&state, "Eve", "eve@example.com", "198.51.100.1:1000").await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "smtp_required");
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
         .fetch_one(&state.db)
         .await
         .unwrap();
-    assert_eq!(role, "viewer");
-    let again = call(
-        &state,
-        "POST",
-        "/api/auth/register",
-        Req {
-            body: Some(body),
-            ..Req::default()
-        },
-    )
-    .await;
-    assert_eq!(again.status, 409, "{}", again.raw);
+    assert_eq!(users, 0);
 }
-
 #[tokio::test]
 async fn concurrent_accepts_create_one_account() {
     let (state, _pg, owner) = owner_env().await;

@@ -9,6 +9,81 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/auth/email-verification/{token}": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Lien de verification en attente, pour l'ecran de confirmation.",
+        "operationId": "email_verification_info",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Jeton du lien de verification",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lien valable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailVerificationInfo"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`email_verification_invalid` : inconnu ou deja utilise"
+          },
+          "410": {
+            "description": "`email_verification_expired`"
+          }
+        }
+      }
+    },
+    "/api/auth/email-verification/{token}/confirm": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Confirme l'adresse : remplace l'adresse du compte (changement) ou active\nle compte (inscription). Un changement ferme les autres sessions du compte.",
+        "operationId": "confirm_email_verification",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Jeton du lien de verification",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Adresse confirmee ; le lien est consomme"
+          },
+          "404": {
+            "description": "`email_verification_invalid` : inconnu ou deja utilise"
+          },
+          "409": {
+            "description": "`email_taken` : adresse prise entre-temps"
+          },
+          "410": {
+            "description": "`email_verification_expired`"
+          },
+          "429": {
+            "description": "Trop de tentatives ; en-tete Retry-After"
+          }
+        }
+      }
+    },
     "/api/auth/invitations/{token}": {
       "get": {
         "tags": [
@@ -127,6 +202,9 @@
           },
           "401": {
             "description": "Identifiants refuses (message identique pour un e-mail inconnu)"
+          },
+          "403": {
+            "description": "`email_not_verified` : mot de passe juste, mais adresse de l'inscription pas encore confirmee"
           },
           "422": {
             "description": "Requete invalide"
@@ -422,7 +500,7 @@
         "tags": [
           "auth"
         ],
-        "summary": "Inscription publique (role Lecteur), si l'instance l'autorise.",
+        "summary": "Inscription publique (role Lecteur), si l'instance l'autorise. Le compte\nreste en attente jusqu'a la confirmation du lien envoye a l'adresse ;\nmeme reponse que l'adresse soit deja connue ou non.",
         "operationId": "register",
         "requestBody": {
           "content": {
@@ -435,14 +513,14 @@
           "required": true
         },
         "responses": {
-          "204": {
-            "description": "Compte cree (role viewer), sans session"
+          "202": {
+            "description": "Demande enregistree ; un e-mail de verification part si l'adresse est libre"
           },
           "403": {
             "description": "`signup_disabled` : inscription sur invitation seulement"
           },
           "409": {
-            "description": "`email_taken`"
+            "description": "`smtp_required` : inscription impossible sans envoi d'e-mails"
           },
           "422": {
             "description": "Nom, e-mail ou mot de passe invalide"
@@ -1440,6 +1518,16 @@
               }
             }
           },
+          "202": {
+            "description": "Changement d'e-mail demande : l'adresse ne change qu'a la confirmation du lien envoye a la nouvelle ; les autres champs sont deja enregistres",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
           "401": {
             "description": "`invalid_credentials` (mot de passe actuel) ou pas de session"
           },
@@ -1447,7 +1535,7 @@
             "description": "Jeton CSRF absent ou invalide"
           },
           "409": {
-            "description": "`email_taken` : adresse deja utilisee"
+            "description": "`smtp_required` : changement d'e-mail impossible sans envoi d'e-mails"
           },
           "422": {
             "description": "Champ invalide (langue, fuseau, nom, e-mail, mot de passe manquant)"
@@ -5623,6 +5711,30 @@
         },
         "additionalProperties": false
       },
+      "EmailVerificationInfo": {
+        "type": "object",
+        "description": "Reponse de `GET /api/auth/email-verification/{token}`.",
+        "required": [
+          "purpose",
+          "email",
+          "expires_at"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "Adresse a confirmer."
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Expiration du lien, en secondes depuis l'epoque Unix."
+          },
+          "purpose": {
+            "type": "string",
+            "description": "`change` (nouvelle adresse d'un compte existant) ou `signup`\n(inscription ouverte)."
+          }
+        }
+      },
       "Environment": {
         "type": "object",
         "required": [
@@ -8091,7 +8203,7 @@
               "string",
               "null"
             ],
-            "description": "Nouvelle adresse e-mail : exige `current_password`."
+            "description": "Nouvelle adresse e-mail : exige `current_password` ; remplacee a la confirmation du lien envoye a cette adresse."
           },
           "language": {
             "type": [

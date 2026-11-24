@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod deployments;
 pub mod domains;
+pub mod email_verification;
 pub mod github;
 pub mod health;
 pub mod invitations;
@@ -64,6 +65,8 @@ use utoipa::OpenApi;
         password::reset_token_info,
         password::reset_password,
         password::member_reset_link,
+        email_verification::email_verification_info,
+        email_verification::confirm_email_verification,
         notifications::get_notifications,
         notifications::put_notifications,
         me::update_me,
@@ -185,6 +188,7 @@ use utoipa::OpenApi;
         password::ResetTokenInfo,
         password::ResetPassword,
         password::ResetLink,
+        email_verification::EmailVerificationInfo,
         notifications::NotificationSettings,
         notifications::UpdateNotificationSettings,
         me::UpdateMe,

@@ -8,10 +8,10 @@ use shared::error::ApiError;
 use crate::auth::csrf;
 use crate::connectors::github;
 use crate::http::{
-    auth, deploy_hooks, deployments, domains, health, invitations, ip_allowlist, me, mfa,
-    notifications, organization, overview, panel_domain, password_reset, project_git,
-    project_overview, projects, security_headers, settings, setup, team, update, variables,
-    webauthn, ws_logs,
+    auth, deploy_hooks, deployments, domains, email_verification, health, invitations,
+    ip_allowlist, me, mfa, notifications, organization, overview, panel_domain, password_reset,
+    project_git, project_overview, projects, security_headers, settings, setup, team, update,
+    variables, webauthn, ws_logs,
 };
 use crate::{embed, state::AppState};
 
@@ -27,6 +27,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(invitations::routes())
         .merge(team::routes())
         .merge(password_reset::routes())
+        .merge(email_verification::routes())
         .merge(notifications::routes())
         .merge(projects::routes())
         .merge(deployments::routes())

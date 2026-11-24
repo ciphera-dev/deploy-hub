@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 pub struct UpdateMe {
     /// 1 a 200 caracteres, sans caractere de controle.
     pub name: Option<String>,
-    /// Nouvelle adresse e-mail : exige `current_password`.
+    /// Nouvelle adresse e-mail : exige `current_password` ; remplacee a la confirmation du lien envoye a cette adresse.
     pub email: Option<String>,
     /// Mot de passe actuel (changement d'e-mail). Jamais renvoye ni journalise.
     #[schema(value_type = Option<String>, format = Password, max_length = 1024)]
@@ -127,9 +127,10 @@ pub struct NotificationPrefsView {
     params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
     responses(
         (status = 200, description = "Profil modifie", body = super::auth::Me),
+        (status = 202, description = "Changement d'e-mail demande : l'adresse ne change qu'a la confirmation du lien envoye a la nouvelle ; les autres champs sont deja enregistres", body = super::auth::Me),
         (status = 401, description = "`invalid_credentials` (mot de passe actuel) ou pas de session"),
         (status = 403, description = "Jeton CSRF absent ou invalide"),
-        (status = 409, description = "`email_taken` : adresse deja utilisee"),
+        (status = 409, description = "`smtp_required` : changement d'e-mail impossible sans envoi d'e-mails"),
         (status = 422, description = "Champ invalide (langue, fuseau, nom, e-mail, mot de passe manquant)"),
         (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),
     )

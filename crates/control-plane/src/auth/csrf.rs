@@ -40,7 +40,8 @@ enum Rule {
 /// l'existence d'une session complete ou portent leur propre preuve :
 /// - `/api/setup/*` : en-tete `X-Setup-Token` ;
 /// - connexion, inscription, acceptation d'une invitation, mot de passe
-///   oublie et sa reinitialisation : aucune session encore ;
+///   oublie et sa reinitialisation, confirmation d'une adresse e-mail (le lien
+///   porte sa preuve) : aucune session encore ;
 /// - verification de la double authentification (TOTP, code de secours,
 ///   assertion WebAuthn) : session en attente de MFA. L'enrolement MFA d'un
 ///   compte connecte, lui, reste protege ;
@@ -52,6 +53,7 @@ const EXEMPT: &[Rule] = &[
     Rule::Exact("/api/auth/login"),
     Rule::Exact("/api/auth/register"),
     Rule::Segment("/api/auth/invitations/", "/accept"),
+    Rule::Segment("/api/auth/email-verification/", "/confirm"),
     Rule::Exact("/api/auth/password/forgot"),
     Rule::Exact("/api/auth/password/reset"),
     Rule::Exact("/api/auth/mfa/verify"),
@@ -144,6 +146,8 @@ mod tests {
             "/api/auth/invitations//accept",
             "/api/auth/invitations/a/b/accept",
             "/api/auth/invitations/accept",
+            "/api/auth/email-verification/confirm",
+            "/api/auth/email-verification/a/b/confirm",
         ] {
             assert!(is_protected(&Method::POST, path), "{path}");
         }
@@ -152,6 +156,7 @@ mod tests {
             "/api/auth/login",
             "/api/auth/register",
             "/api/auth/invitations/abc/accept",
+            "/api/auth/email-verification/abc/confirm",
             "/api/auth/password/forgot",
             "/api/auth/password/reset",
             "/api/auth/mfa/verify",

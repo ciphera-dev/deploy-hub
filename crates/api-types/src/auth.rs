@@ -73,6 +73,7 @@ pub struct Me {
     responses(
         (status = 200, description = "Connecte ; nouveau cookie de session pose", body = LoginResponse),
         (status = 401, description = "Identifiants refuses (message identique pour un e-mail inconnu)"),
+        (status = 403, description = "`email_not_verified` : mot de passe juste, mais adresse de l'inscription pas encore confirmee"),
         (status = 422, description = "Requete invalide"),
         (status = 429, description = "Trop de tentatives, ou connexion deja en cours sur ce compte (code `busy`) ; en-tete Retry-After"),
     )

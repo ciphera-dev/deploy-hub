@@ -16,7 +16,7 @@ export const MFA_PENDING = "mfa_pending" as const;
 /** Resultat d'une connexion : session ouverte, ou refus a afficher par l'ecran. */
 export type LoginResult =
   | { ok: true; mfaRequired: boolean }
-  | { ok: false; reason: "invalid" | "rate_limited" | "unavailable"; retryAfter?: number };
+  | { ok: false; reason: "invalid" | "unverified" | "rate_limited" | "unavailable"; retryAfter?: number };
 
 /** Connexion : les refus sont rendus par l'ecran, pas par la politique d'erreur globale. */
 export async function login(body: LoginPayload): Promise<LoginResult> {
@@ -32,6 +32,7 @@ export async function login(body: LoginPayload): Promise<LoginResult> {
     return { ok: true, mfaRequired: result.data.mfa_required };
   }
   if (status === 401 || status === 422) return { ok: false, reason: "invalid" };
+  if (status === 403 && errorCode(result.error) === "email_not_verified") return { ok: false, reason: "unverified" };
   if (status === 429) {
     const retryAfter = Number(result.response.headers.get("Retry-After"));
     return { ok: false, reason: "rate_limited", retryAfter: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined };
@@ -191,7 +192,7 @@ export async function fetchInvitation(token: string): Promise<InvitationLookup> 
 /** Creation d'un compte (invitation acceptee ou inscription) : refus a afficher par l'ecran. */
 export type SignupResult =
   | { ok: true }
-  | { ok: false; reason: "invalid" | "expired" | "taken" | "rejected" | "disabled" | "rate_limited" | "unavailable"; message?: string; retryAfter?: number };
+  | { ok: false; reason: "invalid" | "expired" | "taken" | "smtp_required" | "rejected" | "disabled" | "rate_limited" | "unavailable"; message?: string; retryAfter?: number };
 
 /** Message FR du serveur (validation), s'il y en a un. */
 function errorMessage(error: unknown): string | undefined {
@@ -203,7 +204,7 @@ function signupFailure(response: Response, error: unknown): SignupResult {
   const { status } = response;
   if (status === 404) return { ok: false, reason: "invalid" };
   if (status === 410) return { ok: false, reason: "expired" };
-  if (status === 409) return { ok: false, reason: "taken" };
+  if (status === 409) return { ok: false, reason: errorCode(error) === "smtp_required" ? "smtp_required" : "taken" };
   if (status === 403) return { ok: false, reason: "disabled" };
   if (status === 422) return { ok: false, reason: "rejected", message: errorMessage(error) };
   if (status === 429) return { ok: false, reason: "rate_limited", retryAfter: retryAfterOf(response) };
@@ -239,6 +240,43 @@ export async function register(body: components["schemas"]["RegisterRequest"]): 
     return { ok: false, reason: "unavailable" };
   }
   return result.response.ok ? { ok: true } : signupFailure(result.response, result.error);
+}
+
+/** Lien de verification d'adresse lu par l'ecran, ou la raison de son refus. */
+export type EmailVerificationLookup =
+  | { ok: true; purpose: "signup" | "change"; email: string }
+  | { ok: false; reason: "invalid" | "expired" | "unavailable" };
+
+export async function fetchEmailVerification(token: string): Promise<EmailVerificationLookup> {
+  let result;
+  try {
+    result = await api.GET("/api/auth/email-verification/{token}", { params: { path: { token } } });
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+  if (result.data) return { ok: true, purpose: result.data.purpose === "change" ? "change" : "signup", email: result.data.email };
+  const { status } = result.response;
+  if (status === 404) return { ok: false, reason: "invalid" };
+  if (status === 410) return { ok: false, reason: "expired" };
+  return { ok: false, reason: "unavailable" };
+}
+
+export type EmailConfirmResult = { ok: true } | { ok: false; reason: "invalid" | "expired" | "taken" | "unavailable" };
+
+/** Confirme l'adresse : active le compte (inscription) ou remplace l'adresse et ferme les autres sessions (changement). */
+export async function confirmEmailVerification(token: string): Promise<EmailConfirmResult> {
+  let result;
+  try {
+    result = await api.POST("/api/auth/email-verification/{token}/confirm", { params: { path: { token } } });
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+  const { status } = result.response;
+  if (result.response.ok) return { ok: true };
+  if (status === 404) return { ok: false, reason: "invalid" };
+  if (status === 410) return { ok: false, reason: "expired" };
+  if (status === 409) return { ok: false, reason: "taken" };
+  return { ok: false, reason: "unavailable" };
 }
 
 /** Envoi d'un lien par e-mail possible (SMTP et origine publique configures) ? Faux en cas de doute. */

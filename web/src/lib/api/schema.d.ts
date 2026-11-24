@@ -4,6 +4,43 @@
  */
 
 export interface paths {
+    "/api/auth/email-verification/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Lien de verification en attente, pour l'ecran de confirmation. */
+        get: operations["email_verification_info"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/email-verification/{token}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirme l'adresse : remplace l'adresse du compte (changement) ou active
+         *     le compte (inscription). Un changement ferme les autres sessions du compte.
+         */
+        post: operations["confirm_email_verification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/invitations/{token}": {
         parameters: {
             query?: never;
@@ -196,7 +233,11 @@ export interface paths {
         /** Inscription publique ouverte ou non. */
         get: operations["signup_status"];
         put?: never;
-        /** Inscription publique (role Lecteur), si l'instance l'autorise. */
+        /**
+         * Inscription publique (role Lecteur), si l'instance l'autorise. Le compte
+         *     reste en attente jusqu'a la confirmation du lien envoye a l'adresse ;
+         *     meme reponse que l'adresse soit deja connue ou non.
+         */
         post: operations["register"];
         delete?: never;
         options?: never;
@@ -1876,6 +1917,21 @@ export interface components {
              */
             enabled: boolean;
         };
+        /** @description Reponse de `GET /api/auth/email-verification/{token}`. */
+        EmailVerificationInfo: {
+            /** @description Adresse a confirmer. */
+            email: string;
+            /**
+             * Format: int64
+             * @description Expiration du lien, en secondes depuis l'epoque Unix.
+             */
+            expires_at: number;
+            /**
+             * @description `change` (nouvelle adresse d'un compte existant) ou `signup`
+             *     (inscription ouverte).
+             */
+            purpose: string;
+        };
         Environment: {
             id: string;
             name: string;
@@ -2844,7 +2900,7 @@ export interface components {
              * @description Mot de passe actuel (changement d'e-mail). Jamais renvoye ni journalise.
              */
             current_password?: string | null;
-            /** @description Nouvelle adresse e-mail : exige `current_password`. */
+            /** @description Nouvelle adresse e-mail : exige `current_password` ; remplacee a la confirmation du lien envoye a cette adresse. */
             email?: string | null;
             /** @description `fr` ou `en`. */
             language?: string | null;
@@ -3003,6 +3059,92 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    email_verification_info: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Jeton du lien de verification */
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Lien valable */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmailVerificationInfo"];
+                };
+            };
+            /** @description `email_verification_invalid` : inconnu ou deja utilise */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `email_verification_expired` */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    confirm_email_verification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Jeton du lien de verification */
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Adresse confirmee ; le lien est consomme */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `email_verification_invalid` : inconnu ou deja utilise */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `email_taken` : adresse prise entre-temps */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `email_verification_expired` */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives ; en-tete Retry-After */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     invitation_info: {
         parameters: {
             query?: never;
@@ -3124,6 +3266,13 @@ export interface operations {
             };
             /** @description Identifiants refuses (message identique pour un e-mail inconnu) */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `email_not_verified` : mot de passe juste, mais adresse de l'inscription pas encore confirmee */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3473,8 +3622,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Compte cree (role viewer), sans session */
-            204: {
+            /** @description Demande enregistree ; un e-mail de verification part si l'adresse est libre */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3487,7 +3636,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `email_taken` */
+            /** @description `smtp_required` : inscription impossible sans envoi d'e-mails */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4494,6 +4643,15 @@ export interface operations {
                     "application/json": components["schemas"]["Me"];
                 };
             };
+            /** @description Changement d'e-mail demande : l'adresse ne change qu'a la confirmation du lien envoye a la nouvelle ; les autres champs sont deja enregistres */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
             /** @description `invalid_credentials` (mot de passe actuel) ou pas de session */
             401: {
                 headers: {
@@ -4508,7 +4666,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `email_taken` : adresse deja utilisee */
+            /** @description `smtp_required` : changement d'e-mail impossible sans envoi d'e-mails */
             409: {
                 headers: {
                     [name: string]: unknown;

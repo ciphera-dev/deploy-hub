@@ -80,6 +80,8 @@ const MATRIX: &[(&str, &str, Guard)] = &[
     ("POST", "/api/auth/password/forgot", AUTH),
     ("GET", "/api/auth/password/reset/{token}", AUTH),
     ("POST", "/api/auth/password/reset", AUTH),
+    ("GET", "/api/auth/email-verification/{token}", AUTH),
+    ("POST", "/api/auth/email-verification/{token}/confirm", AUTH),
     (
         "POST",
         "/v1/hooks/deploy/{hookId}",

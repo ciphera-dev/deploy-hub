@@ -155,16 +155,18 @@ pub fn accept_invitation() {}
 #[allow(dead_code)]
 pub fn signup_status() {}
 
-/// Inscription publique (role Lecteur), si l'instance l'autorise.
+/// Inscription publique (role Lecteur), si l'instance l'autorise. Le compte
+/// reste en attente jusqu'a la confirmation du lien envoye a l'adresse ;
+/// meme reponse que l'adresse soit deja connue ou non.
 #[utoipa::path(
     post,
     path = "/api/auth/register",
     tag = "auth",
     request_body = RegisterRequest,
     responses(
-        (status = 204, description = "Compte cree (role viewer), sans session"),
+        (status = 202, description = "Demande enregistree ; un e-mail de verification part si l'adresse est libre"),
         (status = 403, description = "`signup_disabled` : inscription sur invitation seulement"),
-        (status = 409, description = "`email_taken`"),
+        (status = 409, description = "`smtp_required` : inscription impossible sans envoi d'e-mails"),
         (status = 422, description = "Nom, e-mail ou mot de passe invalide"),
         (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),
     )
