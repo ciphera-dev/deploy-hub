@@ -506,7 +506,7 @@ mod tests {
             }
         }
         let app: Router = Router::new()
-            .route("/", axum::routing::put(handler))
+            .fallback(handler)
             .layer(DefaultBodyLimit::max(MAX_BODY));
         let req = Request::put("/")
             .header("content-type", "application/json")
