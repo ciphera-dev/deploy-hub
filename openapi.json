@@ -7061,13 +7061,20 @@
         "type": "object",
         "description": "Reponse de `DELETE /api/team/members/{id}`.",
         "required": [
-          "deleted_hooks"
+          "deleted_hooks",
+          "deleted_invitations"
         ],
         "properties": {
           "deleted_hooks": {
             "type": "integer",
             "format": "int64",
             "description": "Deploy hooks crees par le membre, supprimes avec lui.",
+            "minimum": 0
+          },
+          "deleted_invitations": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Invitations non utilisees creees par le membre, supprimees avec lui.",
             "minimum": 0
           }
         }

@@ -210,10 +210,9 @@ async fn admin_cannot_promote_to_owner() {
 
     let r = set_role(&state, &admin, dev, "owner").await;
     assert_eq!((r.status, r.code()), (403, json!("forbidden")), "{}", r.raw);
-    // Un admin ne peut pas non plus promouvoir au-dessus de son rang (ni
-    // accorder le role voisin d'ops a un developer).
+    // Le refus ne change rien ; en revanche un admin peut accorder un role de
+    // son niveau ou en dessous (ci-dessous : ops a un developer).
     assert_eq!(role_of(&state, dev).await.as_deref(), Some("developer"));
-    // Mais il peut accorder un role de son niveau ou en dessous.
     let r = set_role(&state, &admin, dev, "ops").await;
     assert_eq!(r.status, 204, "{}", r.raw);
     assert_eq!(role_of(&state, dev).await.as_deref(), Some("ops"));
@@ -550,4 +549,99 @@ async fn unknown_or_malformed_ids_are_404() {
     )
     .await;
     assert_eq!(r.status, 404, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn removed_member_invitations_deleted() {
+    let (state, _pg) = common::state().await;
+    user(&state, "owner@example.com", "owner").await;
+    let admin_id = user(&state, "admin@example.com", "admin").await;
+    let owner = session(&state, "owner@example.com").await;
+    let admin = session(&state, "admin@example.com").await;
+    let mut tokens = Vec::new();
+    for (by, email) in [
+        (&admin, "a1@example.com"),
+        (&admin, "a2@example.com"),
+        (&owner, "o1@example.com"),
+    ] {
+        let r = send(
+            &state,
+            by,
+            "POST",
+            "/api/team/invitations",
+            Some(json!({ "email": email, "role": "viewer" })),
+        )
+        .await;
+        assert_eq!(r.status, 201, "{}", r.raw);
+        let link = r.json()["link"].as_str().unwrap().to_string();
+        tokens.push(link.rsplit_once("/invite/").unwrap().1.to_string());
+    }
+
+    let r = remove(&state, &owner, admin_id).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["deleted_invitations"], 2);
+    let detail: Value =
+        sqlx::query_scalar("SELECT detail FROM audit_events WHERE action = 'team.member.removed'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(detail["deleted_invitations"], 2);
+
+    // Les liens du membre retire ne fonctionnent plus ; celui du proprietaire oui.
+    for (token, expected) in [(&tokens[0], 404), (&tokens[1], 404), (&tokens[2], 204)] {
+        let r = call(
+            &state,
+            "POST",
+            &format!("/api/auth/invitations/{token}/accept"),
+            Req {
+                body: Some(json!({ "name": "Nora Kaci", "password": PASSWORD })),
+                ..Req::default()
+            },
+        )
+        .await;
+        assert_eq!(r.status, expected, "{}", r.raw);
+    }
+    let r = send(&state, &owner, "GET", "/api/team/invitations", None).await;
+    assert_eq!(r.json().as_array().unwrap().len(), 0, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn cancel_invitation_rereads_actor_role() {
+    let (state, _pg) = common::state().await;
+    user(&state, "owner@example.com", "owner").await;
+    let admin_id = user(&state, "admin@example.com", "admin").await;
+    let owner = session(&state, "owner@example.com").await;
+    let r = send(
+        &state,
+        &owner,
+        "POST",
+        "/api/team/invitations",
+        Some(json!({ "email": "v@example.com", "role": "viewer" })),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM invitations")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    // Un acteur retire entre l'authentification et la transaction n'a aucun droit :
+    // la requete passe par le vrai routeur, donc on verifie le cas observable
+    // (acteur retrograde avant la requete -> 403 des le garde-fou).
+    let admin = session(&state, "admin@example.com").await;
+    let r = set_role(&state, &owner, admin_id, "developer").await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    let r = send(
+        &state,
+        &admin,
+        "DELETE",
+        &format!("/api/team/invitations/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM invitations")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(left, 1);
 }

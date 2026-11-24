@@ -35,6 +35,8 @@ pub struct UpdateMemberRole {
 pub struct RemovedMember {
     /// Deploy hooks crees par le membre, supprimes avec lui.
     pub deleted_hooks: u64,
+    /// Invitations non utilisees creees par le membre, supprimees avec lui.
+    pub deleted_invitations: u64,
 }
 
 /// Invitation en attente (non utilisee, non expiree). Le lien n'est jamais

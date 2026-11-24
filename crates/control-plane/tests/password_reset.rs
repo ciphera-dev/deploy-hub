@@ -527,6 +527,14 @@ async fn admin_reset_link_respects_roles() {
     let r = as_user(&state, &admin, "POST", &path(dev_id), None).await;
     assert_eq!(r.status, 201, "{}", r.raw);
     let r = as_user(&state, &admin, "POST", &path(admin_id), None).await;
+    assert_eq!(r.status, 403, "jamais pour son propre compte : {}", r.raw);
+    let other_admin = user(&state, "admin2@example.com", "admin").await;
+    let r = as_user(&state, &admin, "POST", &path(other_admin), None).await;
+    assert_eq!(r.status, 403, "un admin ne gere pas un autre admin");
+    let owner = session(&state, "owner@example.com").await;
+    let r = as_user(&state, &owner, "POST", &path(owner_id), None).await;
+    assert_eq!(r.status, 403, "jamais pour son propre compte");
+    let r = as_user(&state, &owner, "POST", &path(other_admin), None).await;
     assert_eq!(r.status, 201, "{}", r.raw);
     let r = call(
         &state,

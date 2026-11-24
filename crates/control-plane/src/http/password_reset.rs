@@ -425,6 +425,10 @@ async fn member_link(
     id: Result<Path<Uuid>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let Path(id) = id.map_err(|_| member_not_found())?;
+    // Jamais pour son propre compte (le flux « mot de passe oublie » existe).
+    if id == auth.user.id {
+        return Err(forbidden());
+    }
     let mut tx = state
         .db
         .begin()
@@ -437,9 +441,10 @@ async fn member_link(
             .await
             .map_err(|e| internal("lecture du membre", e))?;
     let (email, role) = target.ok_or_else(member_not_found)?;
-    // Jamais pour un role au-dessus du sien (un admin ne reinitialise pas le
-    // proprietaire) ; un role inconnu en base n'est accorde a personne.
-    if !Role::parse(&role).is_some_and(|role| auth.role.can_grant(role)) {
+    // Memes regles de rang que la gestion des membres : un admin ne
+    // reinitialise ni le proprietaire ni un autre admin ; un role inconnu en
+    // base n'est gere par personne.
+    if !Role::parse(&role).is_some_and(|role| auth.role.can_manage(role)) {
         return Err(forbidden());
     }
     let issued = issue(&mut tx, &email, state.clock.unix_secs(), 0.0)

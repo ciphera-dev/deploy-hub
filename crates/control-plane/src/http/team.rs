@@ -181,6 +181,9 @@ async fn update_member(
     if !locked.actor.can_grant(new_role) {
         return Err(forbidden());
     }
+    // Filet de securite : `can_manage(Owner)` exige un proprietaire different de
+    // la cible, donc il en reste deja un autre ; cette garde ne se declenche pas
+    // aujourd'hui et n'est pas couverte par un test.
     if locked.target == Role::Owner && new_role != Role::Owner && locked.owners < 2 {
         return Err(last_owner());
     }
@@ -229,9 +232,18 @@ async fn remove_member(
         .await
         .map_err(|e| internal("transaction de retrait", e))?;
     let locked = lock_and_check(&mut tx, auth.user.id, id).await?;
+    // Filet de securite (voir `update_member`) : inatteignable aujourd'hui.
     if locked.target == Role::Owner && locked.owners < 2 {
         return Err(last_owner());
     }
+    // Les invitations encore utilisables du membre ne lui survivent pas.
+    let invitations =
+        sqlx::query("DELETE FROM invitations WHERE invited_by = $1 AND used_at IS NULL")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| internal("suppression des invitations", e))?
+            .rows_affected();
     let hooks = sqlx::query("DELETE FROM deploy_hooks WHERE created_by = $1")
         .bind(id)
         .execute(&mut *tx)
@@ -252,6 +264,7 @@ async fn remove_member(
             "user_id": id,
             "role": locked.target.as_str(),
             "deleted_hooks": hooks,
+            "deleted_invitations": invitations,
             "ip": ip.to_string(),
         }),
     )
@@ -264,6 +277,7 @@ async fn remove_member(
     state.access.notify();
     Ok(Json(RemovedMember {
         deleted_hooks: hooks,
+        deleted_invitations: invitations,
     })
     .into_response())
 }
@@ -326,7 +340,14 @@ async fn cancel_invitation(
     .await
     .map_err(|e| internal("lecture de l'invitation", e))?;
     let role = role.ok_or_else(invitation_not_found)?;
-    if !Role::parse(&role).is_some_and(|r| auth.role.can_grant(r)) {
+    // Role de l'acteur relu dans la transaction (comme les routes membres).
+    let actor: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
+        .bind(auth.user.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| internal("lecture de l'acteur", e))?;
+    let actor = actor.and_then(|r| Role::parse(&r)).ok_or_else(forbidden)?;
+    if !Role::parse(&role).is_some_and(|r| actor.can_grant(r)) {
         return Err(forbidden());
     }
     sqlx::query("DELETE FROM invitations WHERE id = $1")

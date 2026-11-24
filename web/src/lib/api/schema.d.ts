@@ -2468,6 +2468,11 @@ export interface components {
              * @description Deploy hooks crees par le membre, supprimes avec lui.
              */
             deleted_hooks: number;
+            /**
+             * Format: int64
+             * @description Invitations non utilisees creees par le membre, supprimees avec lui.
+             */
+            deleted_invitations: number;
         };
         /** @description Replicas en marche et voulus (un seul en v0.1 ; mise a l'echelle en v0.2). */
         Replicas: {
