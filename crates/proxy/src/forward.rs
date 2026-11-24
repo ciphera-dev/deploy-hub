@@ -69,8 +69,10 @@ pub const UPSTREAM_IO_TIMEOUT: Duration = Duration::from_secs(60);
 pub const UPSTREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Delai maximal entre deux lectures du corps de la requete du client.
 /// Pose dans `early_request_filter`, qui s'execute une fois les en-tetes
-/// lus : la lecture des en-tetes est bornee par `conn_limit` (premier octet,
-/// delai total `HEADER_TIMEOUT`).
+/// lus. La lecture des en-tetes de chaque requete est bornee par
+/// `conn_limit` (premier octet, puis delai total `HEADER_TIMEOUT`, efface
+/// dans `early_request_filter` et repose dans `logging` a la fin de chaque
+/// requete d'une connexion persistante).
 pub const DOWNSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Requetes servies par une connexion client avant sa fermeture.
 pub const KEEPALIVE_REQUEST_LIMIT: u32 = 1000;
@@ -130,7 +132,7 @@ pub struct Forwarder {
     tls: TlsAssets,
     /// Service HTTPS (sinon HTTP clair).
     secure: bool,
-    /// Echeances de lecture des en-tetes (desarmees ici).
+    /// Echeances de lecture des en-tetes (effacees et reposees ici).
     limiter: Option<Arc<ConnLimiter>>,
 }
 
@@ -302,7 +304,7 @@ impl ProxyHttp for Forwarder {
         _ctx: &mut Self::CTX,
     ) -> Result<()> {
         // HTTP/1 : flux de la connexion. HTTP/2 n'en a pas, mais `Capped`
-        // ne lui pose pas d'echeance d'en-tetes.
+        // ne lui pose pas d'echeance d'en-tetes. Reposee dans `logging`.
         if let (Some(limiter), Some(stream)) = (&self.limiter, session.stream()) {
             limiter.headers_read(stream.id());
         }
@@ -474,6 +476,12 @@ impl ProxyHttp for Forwarder {
     }
 
     async fn logging(&self, session: &mut Session, _e: Option<&Error>, ctx: &mut Self::CTX) {
+        // Appele une fois par requete (reponse envoyee, erreur comprise),
+        // avant que Pingora ne reutilise la connexion : les en-tetes de la
+        // requete suivante ont de nouveau `HEADER_TIMEOUT` pour arriver.
+        if let (Some(limiter), Some(stream)) = (&self.limiter, session.stream()) {
+            limiter.request_done(stream.id());
+        }
         let req = session.req_header();
         let status = session.response_written().map_or(0, |r| r.status.as_u16());
         tracing::info!(

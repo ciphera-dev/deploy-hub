@@ -73,8 +73,8 @@ GitHub ──webhook signé / API──> [plan de contrôle]
 ### 3.4 Proxy ↔ Internet
 
 - Seul composant exposé sur 80/443. Compte dédié, `CAP_NET_BIND_SERVICE` seule, filtre d'appels système `@system-service` sans `@privileged`, `MemoryDenyWriteExecute`.
-- Plafonds de connexions avant TLS (16 384 au total, 256 par IP ou /64), premier octet sous 10 s, en-têtes plafonnés à 32 Kio / 100 (`proxy/src/conn_limit.rs`, `forward.rs`).
-- Délais (Task 34c-1) : en-têtes complets sous 20 s (attente entre deux requêtes comprise), poignée de main TLS sous 10 s, au plus 32 poignées en cours par IP (1 024 au total ; plafond plein, la plus ancienne est coupée au profit du nouveau venu). Sur 443, l'hôte de la requête doit égaler le SNI de la poignée de main, sinon 421.
+- Plafonds de connexions avant TLS (16 384 au total, 64 par IP ou /64, 256 par /56 IPv6), premier octet sous 10 s, en-têtes plafonnés à 32 Kio / 100 (`proxy/src/conn_limit.rs`, `forward.rs`).
+- Délais (Task 34c-1) : en-têtes complets sous 20 s pour chaque requête d'une connexion persistante (attente entre deux requêtes comprise), poignée de main TLS sous 10 s, au plus 32 poignées en cours par IP (1 024 au total ; plafond plein, la plus ancienne est coupée au profit du nouveau venu). Sur 443, l'hôte de la requête doit égaler le SNI de la poignée de main, sinon 421.
 - ACME HTTP-01 (`proxy/src/acme.rs`) : seul le chemin `/.well-known/acme-challenge/{token}` est servi sans authentification ; certificats et clés chiffrés au repos. Un certificat n'est installé ou rechargé que si sa clé lui correspond et qu'un SAN DNS couvre l'hôte ; le dossier d'état et ses fichiers doivent appartenir au compte du proxy, sans droit pour le groupe ni les autres. Un hôte retiré pendant une émission n'en reçoit pas le certificat tardif.
 
 ### 3.5 Plan de contrôle → updater root (oneshot)

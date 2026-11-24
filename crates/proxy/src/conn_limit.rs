@@ -17,30 +17,39 @@
 //! (`max_pending_tls`, 1024) et par IP (`max_pending_tls_per_ip`, 32), et ne
 //! consomment pas la capacite des connexions actives : un flot de poignees
 //! de main ratees ne bloque jamais le port 80, et ne bloque une IP (un NAT)
-//! que pour ses nouvelles connexions TLS et pendant 11 s au plus. Les IPv6
-//! sont regroupees par /64.
+//! que pour ses nouvelles connexions TLS et pendant 11 s au plus.
 //!
-//! Plafond global plein (32 sources de 32 attentes suffisent, un /56 IPv6
-//! en a 256) : le nouveau venu n'est pas refuse, la plus ancienne poignee de
-//! main surveillee est coupee et son admission liberee. Pour priver les
-//! autres clients de TLS, un attaquant doit donc ouvrir plus de 1 024
-//! poignees de main pendant la duree d'une poignee de main legitime (bien
-//! moins d'une seconde), au lieu d'une centaine par seconde.
+//! Comptage par source : une IPv4 compte pour elle-meme, une IPv6 pour son
+//! /64 (64 connexions au plus, actives et en attente) ; les /64 d'un meme
+//! /56 IPv6 ont en plus un plafond commun (256), car un seul abonne recoit
+//! souvent un /56 entier.
+//!
+//! Plafond global des attentes TLS plein (32 sources de 32 attentes
+//! suffisent, soit 4 /56 IPv6) : le nouveau venu n'est pas refuse, la plus
+//! ancienne poignee de main surveillee est coupee et son admission liberee.
+//! Pour priver les autres clients de TLS, un attaquant doit donc ouvrir plus
+//! de 1 024 poignees de main pendant la duree d'une poignee de main
+//! legitime (bien moins d'une seconde), au lieu d'une centaine par seconde.
 //!
 //! Lecture des en-tetes : Pingora n'a qu'un delai entre deux lectures (60 s)
-//! et accepte jusqu'a 1 Mio d'en-tetes. `Capped` borne la duree totale de
-//! l'attente d'une requete, en-tetes compris (`header_timeout`, 20 s, depuis
-//! l'ouverture de la connexion ou la fin de la reponse precedente) : la
-//! connexion est coupee si les en-tetes ne sont pas tous lus a l'echeance.
-//! Le proxy (`Forwarder::early_request_filter`) desarme l'echeance des que
-//! les en-tetes sont lus : un corps ou une reponse lents ne sont pas
-//! concernes. Le plafond de 1 Mio de Pingora est garde : une connexion ne
-//! retient donc pas plus de 1 Mio pendant plus de 20 s.
+//! et accepte jusqu'a 1 Mio d'en-tetes. En HTTP/1, Pingora sert toutes les
+//! requetes d'une connexion persistante dans un seul appel de l'application
+//! (sa boucle de reutilisation est interne) : l'echeance est donc une valeur
+//! par connexion, reecrite a chaque requete et suivie par `Capped`
+//! (`header_deadline`). Elle vaut `header_timeout` (20 s) apres le premier
+//! octet de la connexion ; le proxy l'efface des que les en-tetes d'une
+//! requete sont lus (`Forwarder::early_request_filter`), puis la repose a
+//! maintenant + 20 s a la fin de la requete (`Forwarder::logging`, appele
+//! une fois par requete, avant la reutilisation de la connexion). Une
+//! connexion qui ne livre pas les en-tetes complets de sa requete suivante
+//! dans les 20 s (attente entre deux requetes comprise) est coupee ; un
+//! corps ou une reponse lents ne sont pas concernes. Le plafond de 1 Mio de
+//! Pingora est garde : une connexion ne retient donc pas plus de 1 Mio
+//! d'en-tetes pendant plus de 20 s.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsRawFd, BorrowedFd};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -50,13 +59,15 @@ use pingora::listeners::{ConnectionFilter, PreTlsProcess};
 use pingora::protocols::l4::stream::Stream as L4Stream;
 use pingora::protocols::{ALPN, GetSocketDigest, Stream, UniqueID, UniqueIDType};
 use pingora::server::ShutdownWatch;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 /// Connexions clientes simultanees, toutes IP confondues (une connexion
 /// transferee occupe deux descripteurs ; `LimitNOFILE=65536`).
 pub const MAX_CONNECTIONS: usize = 16_384;
 /// Connexions simultanees d'une meme IP (ou d'un meme /64 IPv6).
-pub const MAX_CONNECTIONS_PER_IP: usize = 256;
+pub const MAX_CONNECTIONS_PER_IP: usize = 64;
+/// Connexions simultanees de tous les /64 d'un meme /56 IPv6.
+pub const MAX_CONNECTIONS_PER_IPV6_56: usize = 256;
 /// Poignees de main TLS en cours ou ratees (non liberees), toutes IP
 /// confondues ; en plus de `MAX_CONNECTIONS`.
 pub const MAX_PENDING_TLS: usize = 1024;
@@ -82,6 +93,7 @@ const SWEEP_EVERY: Duration = Duration::from_secs(1);
 pub struct ConnLimits {
     pub max_connections: usize,
     pub max_connections_per_ip: usize,
+    pub max_connections_per_ipv6_56: usize,
     pub max_pending_tls: usize,
     pub max_pending_tls_per_ip: usize,
     pub first_byte_timeout: Duration,
@@ -94,6 +106,7 @@ impl Default for ConnLimits {
         Self {
             max_connections: MAX_CONNECTIONS,
             max_connections_per_ip: MAX_CONNECTIONS_PER_IP,
+            max_connections_per_ipv6_56: MAX_CONNECTIONS_PER_IPV6_56,
             max_pending_tls: MAX_PENDING_TLS,
             max_pending_tls_per_ip: MAX_PENDING_TLS_PER_IP,
             first_byte_timeout: FIRST_BYTE_TIMEOUT,
@@ -127,6 +140,49 @@ fn bucket(ip: IpAddr) -> IpAddr {
             IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
         }
         v4 => v4,
+    }
+}
+
+/// Second niveau de comptage d'une cle (`bucket`) : son /56 si c'est une
+/// IPv6, rien pour une IPv4.
+fn wide(key: IpAddr) -> Option<IpAddr> {
+    match key {
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            Some(IpAddr::V6(Ipv6Addr::new(
+                s[0],
+                s[1],
+                s[2],
+                s[3] & 0xff00,
+                0,
+                0,
+                0,
+                0,
+            )))
+        }
+        IpAddr::V4(_) => None,
+    }
+}
+
+/// Ajoute `n` connexions au /56 de `key`.
+fn grow_wide(per_56: &mut HashMap<IpAddr, usize>, key: IpAddr, n: usize) {
+    if n > 0
+        && let Some(w) = wide(key)
+    {
+        *per_56.entry(w).or_default() += n;
+    }
+}
+
+/// Retire `n` connexions du /56 de `key`.
+fn shrink_wide(per_56: &mut HashMap<IpAddr, usize>, key: IpAddr, n: usize) {
+    if n > 0
+        && let Some(w) = wide(key)
+        && let Some(c) = per_56.get_mut(&w)
+    {
+        *c = c.saturating_sub(n);
+        if *c == 0 {
+            per_56.remove(&w);
+        }
     }
 }
 
@@ -166,6 +222,9 @@ impl Counts {
 
 struct State {
     per_ip: HashMap<IpAddr, Counts>,
+    /// Connexions (actives et en attente) par /56 IPv6 : somme des `Counts`
+    /// de ses /64.
+    per_56: HashMap<IpAddr, usize>,
     active: usize,
     pending_plain: usize,
     pending_tls: usize,
@@ -191,15 +250,28 @@ struct Handshake {
     key: Option<IpAddr>,
 }
 
+/// Echeance de lecture des en-tetes d'une connexion HTTP/1 : `Some(t)`
+/// tant qu'elle attend les en-tetes d'une requete, `None` pendant le
+/// traitement d'une requete.
+type HeaderDeadline = Arc<watch::Sender<Option<Instant>>>;
+
+/// Echeance d'en-tetes enregistree pour une connexion.
+struct HeaderWatch {
+    serial: u64,
+    deadline: HeaderDeadline,
+}
+
 /// Echeances par connexion (cle : descripteur, unique parmi les connexions
-/// ouvertes) : poignees de main TLS surveillees (et leur ordre d'arrivee,
-/// par numero de serie) et en-tetes lus.
+/// ouvertes, mais reutilisable des sa fermeture : chaque enregistrement
+/// porte donc un numero de serie, et une connexion ne retire que le sien) :
+/// poignees de main TLS surveillees (et leur ordre d'arrivee) et echeances
+/// de lecture des en-tetes.
 #[derive(Default)]
 struct Watches {
     next: u64,
     handshakes: HashMap<UniqueIDType, Handshake>,
     order: BTreeMap<u64, UniqueIDType>,
-    headers: HashMap<UniqueIDType, Arc<AtomicBool>>,
+    headers: HashMap<UniqueIDType, HeaderWatch>,
 }
 
 impl Watches {
@@ -238,6 +310,7 @@ impl ConnLimiter {
             limits,
             state: Mutex::new(State {
                 per_ip: HashMap::new(),
+                per_56: HashMap::new(),
                 active: 0,
                 pending_plain: 0,
                 pending_tls: 0,
@@ -269,10 +342,12 @@ impl ConnLimiter {
         let st = &mut *guard;
         if now.duration_since(st.last_sweep) >= SWEEP_EVERY {
             let mut gone = (0, 0);
-            st.per_ip.retain(|_, c| {
+            let per_56 = &mut st.per_56;
+            st.per_ip.retain(|key, c| {
                 let (p, t) = c.expire(now, limits);
                 gone.0 += p;
                 gone.1 += t;
+                shrink_wide(per_56, *key, p + t);
                 c.total() > 0
             });
             st.forget(gone);
@@ -284,9 +359,12 @@ impl ConnLimiter {
         let ip_total = counts.total();
         let ip_tls = counts.tls.len();
         st.forget(gone);
+        shrink_wide(&mut st.per_56, key, gone.0 + gone.1);
+        let wide_total = wide(key).map_or(0, |w| st.per_56.get(&w).copied().unwrap_or(0));
         // Les attentes TLS ne comptent pas dans la capacite des actives.
         let mut full = st.active + st.pending_plain >= limits.max_connections
             || ip_total >= limits.max_connections_per_ip
+            || wide_total >= limits.max_connections_per_ipv6_56
             || (kind == Kind::Tls && ip_tls >= limits.max_pending_tls_per_ip);
         if !full && kind == Kind::Tls && st.pending_tls >= limits.max_pending_tls {
             // Plafond global des attentes TLS : la plus ancienne poignee de
@@ -296,6 +374,7 @@ impl ConnLimiter {
             {
                 if c.tls.pop_front().is_some() {
                     st.pending_tls -= 1;
+                    shrink_wide(&mut st.per_56, old, 1);
                 }
                 if c.total() == 0 && old != key {
                     st.per_ip.remove(&old);
@@ -311,6 +390,7 @@ impl ConnLimiter {
             return false;
         }
         counts.queue(kind).push_back(now);
+        grow_wide(&mut st.per_56, key, 1);
         match kind {
             Kind::Plain => st.pending_plain += 1,
             Kind::Tls => st.pending_tls += 1,
@@ -331,6 +411,9 @@ impl ConnLimiter {
                 Kind::Plain => st.pending_plain -= 1,
                 Kind::Tls => st.pending_tls -= 1,
             }
+        } else {
+            // Admission deja expiree (ou jamais comptee) : nouvelle place.
+            grow_wide(&mut st.per_56, key, 1);
         }
         st.active += 1;
         ConnGuard {
@@ -415,23 +498,55 @@ impl ConnLimiter {
         }
     }
 
-    /// Nouvelle attente de requete sur la connexion `id`.
-    fn arm_headers(&self, id: UniqueIDType) -> Arc<AtomicBool> {
-        let read = Arc::new(AtomicBool::new(false));
-        self.watches().headers.insert(id, read.clone());
-        read
+    /// Echeance de lecture des en-tetes de la connexion `id`, armee a
+    /// maintenant + `header_timeout` ; renvoie son numero de serie (pour
+    /// `disarm_headers`) et l'echeance partagee avec le proxy.
+    fn arm_headers(&self, id: UniqueIDType) -> (u64, HeaderDeadline) {
+        let deadline = Arc::new(watch::Sender::new(Some(
+            Instant::now() + self.limits.header_timeout,
+        )));
+        let mut w = self.watches();
+        w.next += 1;
+        let serial = w.next;
+        // Un ancien enregistrement du meme descripteur appartient a une
+        // connexion deja fermee : il est remplace.
+        w.headers.insert(
+            id,
+            HeaderWatch {
+                serial,
+                deadline: deadline.clone(),
+            },
+        );
+        (serial, deadline)
     }
 
-    fn disarm_headers(&self, id: UniqueIDType) {
-        self.watches().headers.remove(&id);
+    /// Fin de la connexion `id` : retire son echeance, sauf si le
+    /// descripteur a deja ete repris par une autre connexion.
+    fn disarm_headers(&self, id: UniqueIDType, serial: u64) {
+        let mut w = self.watches();
+        if w.headers.get(&id).is_some_and(|h| h.serial == serial) {
+            w.headers.remove(&id);
+        }
+    }
+
+    fn set_header_deadline(&self, id: UniqueIDType, at: Option<Instant>) {
+        if let Some(h) = self.watches().headers.get(&id) {
+            h.deadline.send_replace(at);
+        }
     }
 
     /// En-tetes de la requete en cours sur la connexion `id` entierement
-    /// lus (appele par le proxy) : l'echeance de lecture ne s'applique plus.
+    /// lus (appele par le proxy) : plus d'echeance jusqu'a la fin de la
+    /// requete.
     pub fn headers_read(&self, id: UniqueIDType) {
-        if let Some(read) = self.watches().headers.get(&id) {
-            read.store(true, Ordering::Release);
-        }
+        self.set_header_deadline(id, None);
+    }
+
+    /// Requete en cours sur la connexion `id` terminee (appele par le
+    /// proxy) : les en-tetes de la suivante doivent etre lus dans
+    /// `header_timeout`.
+    pub fn request_done(&self, id: UniqueIDType) {
+        self.set_header_deadline(id, Some(Instant::now() + self.limits.header_timeout));
     }
 }
 
@@ -446,9 +561,13 @@ impl Drop for ConnGuard {
         let mut st = self.limiter.lock();
         st.active = st.active.saturating_sub(1);
         if let Some(c) = st.per_ip.get_mut(&self.key) {
+            let released = c.active > 0;
             c.active = c.active.saturating_sub(1);
             if c.total() == 0 {
                 st.per_ip.remove(&self.key);
+            }
+            if released {
+                shrink_wide(&mut st.per_56, self.key, 1);
             }
         }
     }
@@ -538,12 +657,34 @@ fn is_h2(alpn: Option<ALPN>) -> bool {
     matches!(alpn, Some(ALPN::H2))
 }
 
-/// Echeance de lecture des en-tetes : ne se termine que si `read` est
-/// toujours faux a l'issue de `timeout`.
-async fn header_deadline(read: &AtomicBool, timeout: Duration) {
-    tokio::time::sleep(timeout).await;
-    if read.load(Ordering::Acquire) {
-        std::future::pending::<()>().await;
+/// Suit l'echeance de lecture des en-tetes d'une connexion : ne se termine
+/// qu'une fois l'echeance en cours depassee. Effacee (`None`), elle attend
+/// la suivante ; reposee, elle repart de la nouvelle valeur.
+async fn header_deadline(mut rx: watch::Receiver<Option<Instant>>) {
+    loop {
+        let at = *rx.borrow_and_update();
+        match at {
+            Some(at) => {
+                tokio::select! {
+                    () = tokio::time::sleep_until(at.into()) => {
+                        // Effacee ou reportee entre-temps : on continue.
+                        if rx.borrow().is_some_and(|t| t <= Instant::now()) {
+                            return;
+                        }
+                    }
+                    changed = rx.changed() => {
+                        if changed.is_err() {
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                }
+            }
+            None => {
+                if rx.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
     }
 }
 
@@ -583,17 +724,21 @@ impl<A: ServerApp + Send + Sync + 'static> ServerApp for Capped<A> {
             self.inner.process_new(stream, shutdown).await;
             return None;
         }
+        // HTTP/1 : Pingora sert toutes les requetes de la connexion dans cet
+        // appel ; le proxy efface et repose l'echeance a chaque requete.
+        let (serial, deadline) = self.limiter.arm_headers(id);
         let mut next = Some(stream);
         while let Some(stream) = next.take() {
-            let read = self.limiter.arm_headers(id);
             tokio::select! {
                 reused = self.inner.process_new(stream, shutdown) => next = reused,
-                () = header_deadline(&read, limits.header_timeout) => {
+                () = header_deadline(deadline.subscribe()) => {
                     tracing::debug!("en-tetes non lus dans le delai : connexion coupee");
                 }
             }
+            // Flux rendu par l'application : attente d'une nouvelle requete.
+            deadline.send_replace(Some(Instant::now() + limits.header_timeout));
         }
-        self.limiter.disarm_headers(id);
+        self.limiter.disarm_headers(id, serial);
         None
     }
 
@@ -714,6 +859,100 @@ mod tests {
         assert!(l.admit(ip("2001:db8:1:3::1"), Plain));
         assert!(l.admit(ip("192.0.2.1"), Plain));
         assert!(!l.admit(ip("::ffff:192.0.2.1"), Plain));
+    }
+
+    #[test]
+    fn per_ip_cap_64() {
+        assert_eq!(ConnLimits::default().max_connections_per_ip, 64);
+        let l = Arc::new(ConnLimiter::new(ConnLimits::default()));
+        let a = ip("203.0.113.9");
+        let held: Vec<_> = (0..64)
+            .map(|_| {
+                assert!(l.admit(a, Plain));
+                l.enter(a, Plain)
+            })
+            .collect();
+        assert!(!l.admit(a, Plain), "65e connexion de la meme IP");
+        assert!(!l.admit(a, Tls));
+        assert!(l.admit(ip("203.0.113.10"), Plain), "autre IP");
+        drop(held);
+        assert_eq!(l.count(a), 0);
+        assert!(l.admit(a, Plain));
+    }
+
+    #[test]
+    fn ipv6_56_cap() {
+        assert_eq!(ConnLimits::default().max_connections_per_ipv6_56, 256);
+        let l = Arc::new(ConnLimiter::new(ConnLimits {
+            max_pending_tls_per_ip: 64,
+            ..ConnLimits::default()
+        }));
+        // Quatre /64 du meme /56 (2001:db8:0:a00::/56), 64 chacun : 256.
+        let mut held = Vec::new();
+        for net in 0..4u16 {
+            let src = ip(&format!("2001:db8:0:a{net:02x}::1"));
+            for i in 0..64 {
+                let kind = if i % 2 == 0 { Plain } else { Tls };
+                assert!(l.admit(src, kind), "/64 {net}, connexion {i}");
+                held.push((src, kind));
+            }
+        }
+        let fifth = ip("2001:db8:0:aff::1");
+        assert_eq!(l.count(fifth), 0, "/64 encore vide");
+        assert!(!l.admit(fifth, Plain), "257e connexion du /56");
+        assert!(!l.admit(fifth, Tls));
+        assert!(l.admit(ip("2001:db8:0:b00::1"), Plain), "autre /56");
+        assert!(l.admit(ip("192.0.2.200"), Plain), "IPv4 non concernee");
+        // Une connexion active terminee rend une place au /56.
+        let (src, kind) = held[0];
+        let guard = l.enter(src, kind);
+        assert!(!l.admit(fifth, Plain), "promotion : rien de libere");
+        drop(guard);
+        assert!(l.admit(fifth, Plain), "place rendue au /56");
+        assert!(!l.admit(fifth, Plain));
+    }
+
+    #[test]
+    fn fd_reuse_does_not_clear_other_deadline() {
+        let l = Arc::new(ConnLimiter::new(ConnLimits::default()));
+        // Connexion A sur le descripteur 7, fermee ; B reprend le 7 avant
+        // que la fin de A ne soit traitee.
+        let (serial_a, deadline_a) = l.arm_headers(7);
+        let (serial_b, deadline_b) = l.arm_headers(7);
+        l.disarm_headers(7, serial_a);
+        // B reste suivie : ses en-tetes lus effacent bien son echeance.
+        l.headers_read(7);
+        assert_eq!(*deadline_b.borrow(), None);
+        assert!(deadline_a.borrow().is_some(), "A n'est plus concernee");
+        l.request_done(7);
+        assert!(deadline_b.borrow().is_some(), "B reposee");
+        // Fin de B : plus rien a suivre pour le 7.
+        l.disarm_headers(7, serial_b);
+        l.headers_read(7);
+        assert!(deadline_b.borrow().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn header_deadline_is_rearmed_for_each_request() {
+        let l = Arc::new(ConnLimiter::new(ConnLimits {
+            header_timeout: Duration::from_millis(300),
+            ..ConnLimits::default()
+        }));
+        let (_, deadline) = l.arm_headers(9);
+        let watch = tokio::spawn(header_deadline(deadline.subscribe()));
+        // Premiere requete : en-tetes lus a temps, traitement long.
+        l.headers_read(9);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(!watch.is_finished(), "pas d'echeance pendant la requete");
+        // Fin de la requete : la suivante a de nouveau 300 ms.
+        let start = Instant::now();
+        l.request_done(9);
+        tokio::time::timeout(Duration::from_secs(2), watch)
+            .await
+            .expect("echeance de la requete suivante")
+            .unwrap();
+        let waited = start.elapsed();
+        assert!(waited >= Duration::from_millis(250), "{waited:?}");
     }
 
     /// Paire de sockets locales : (cote serveur, surveille ; cote client).

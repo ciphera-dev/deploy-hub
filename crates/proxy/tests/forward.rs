@@ -938,3 +938,102 @@ fn pending_tls_handshakes_are_capped_per_ip_and_expire() {
     let (_, waited) = read_until_closed(&mut again, Duration::from_secs(5));
     assert!(waited >= Duration::from_millis(700), "admise : {waited:?}");
 }
+
+/// Lit une reponse dont le corps a une longueur annoncee
+/// (`Content-Length`), sans attendre la fermeture : renvoie le statut.
+fn read_one_response(s: &mut TcpStream) -> u16 {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        assert_eq!(s.read(&mut byte).unwrap(), 1, "reponse tronquee");
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&head).into_owned();
+    let len: usize = head
+        .split("\r\n")
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
+        .map(|(_, v)| v.trim().parse().unwrap())
+        .expect("Content-Length");
+    let mut body = vec![0u8; len];
+    s.read_exact(&mut body).unwrap();
+    head.split_whitespace().nth(1).unwrap().parse().unwrap()
+}
+
+/// Connexion persistante : l'echeance totale de lecture des en-tetes
+/// (20 s) s'applique aussi a la requete suivante, pas seulement a la
+/// premiere. Une requete complete est servie, puis les en-tetes de la
+/// suivante arrivent octet par octet (chaque octet bien sous le delai de
+/// lecture de Pingora) : la connexion est coupee vers 20 s, sans reponse.
+#[test]
+fn keepalive_second_request_headers_deadline() {
+    add_routes(vec![upstream_route("keepalive.forward.example")]);
+    let mut s = TcpStream::connect(harness().http).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    s.write_all(b"GET / HTTP/1.1\r\nHost: keepalive.forward.example\r\n\r\n")
+        .unwrap();
+    assert_eq!(read_one_response(&mut s), 200);
+    let start = std::time::Instant::now();
+    s.write_all(b"GET / HTTP/1.1\r\nHost: keepalive.forward.example\r\n")
+        .unwrap();
+    // Un octet toutes les 500 ms ; la lecture (bornee a 500 ms) sert aussi
+    // d'attente et voit la fermeture.
+    s.set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let mut out = Vec::new();
+    let mut buf = [0u8; 256];
+    let waited = loop {
+        match s.read(&mut buf) {
+            Ok(0) => break start.elapsed(),
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => break start.elapsed(),
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(40),
+            "connexion jamais coupee"
+        );
+        if s.write_all(b"X").is_err() {
+            break start.elapsed();
+        }
+    };
+    assert!(
+        out.is_empty(),
+        "coupee sans reponse : {:?}",
+        String::from_utf8_lossy(&out)
+    );
+    assert!(
+        waited >= Duration::from_secs(19) && waited <= Duration::from_secs(22),
+        "{waited:?}"
+    );
+}
+
+/// Plafond par IP par defaut : 64 connexions simultanees.
+#[test]
+fn per_ip_cap_64() {
+    let limits = ConnLimits {
+        first_byte_timeout: Duration::from_secs(30),
+        ..ConnLimits::default()
+    };
+    assert_eq!(limits.max_connections_per_ip, 64);
+    let (http, _) = start_server(Arc::new(RouteTable::new()), &TlsAssets::memory(), limits);
+    // La sonde de demarrage de start_server est deja liberee.
+    for _ in 0..50 {
+        if try_status(http) == Some(404) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let mut held: Vec<TcpStream> = (0..63).map(|_| TcpStream::connect(http).unwrap()).collect();
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(try_status(http), Some(404), "64e connexion admise");
+    thread::sleep(Duration::from_millis(200));
+    held.push(TcpStream::connect(http).unwrap());
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(try_status(http), None, "65e connexion refusee");
+    drop(held);
+}
