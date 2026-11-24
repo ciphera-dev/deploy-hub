@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use proptest::prelude::*;
 use proto::codec::{self, MAX_FRAME_LEN};
 use proto::*;
-use shared::ids::{DeploymentId, ProjectId, ServerId, ServiceId};
+use shared::ids::{DeploymentId, EnvironmentId, ProjectId, ServerId, ServiceId};
 
 fn image() -> ImageRef {
     ImageRef("ghcr.io/acme/web@sha256:0123".into())
@@ -32,6 +32,9 @@ fn control_messages() -> Vec<ControlToAgent> {
                 key: "DATABASE_URL".into(),
                 value: EnvValue::new("postgres://u:p@db/app".into()),
             }],
+            environment_id: None,
+            run_as: None,
+            read_only_rootfs: false,
         }),
         ControlToAgent::Deploy(DeploySpec {
             deployment_id,
@@ -50,6 +53,9 @@ fn control_messages() -> Vec<ControlToAgent> {
             }),
             service_name: None,
             env: Vec::new(),
+            environment_id: None,
+            run_as: None,
+            read_only_rootfs: false,
         }),
         ControlToAgent::Stop { deployment_id },
         ControlToAgent::Logs {
@@ -116,6 +122,8 @@ fn build_spec(deployment_id: DeploymentId) -> BuildSpec {
         },
         git_token: Some(GitToken::new("ghs_secret-token".into())),
         root_directory: Some("apps/web".into()),
+        project_id: Some(ProjectId::new()),
+        environment_id: Some(EnvironmentId::new()),
     }
 }
 
@@ -172,6 +180,7 @@ fn agent_messages() -> Vec<AgentToControl> {
                 image: image(),
                 healthy: true,
                 serving: true,
+                runs_as_root: false,
             }],
             in_progress: vec![DeploymentId::new()],
             outcomes: vec![
@@ -313,14 +322,14 @@ fn request_state_is_appended_after_remove_certificate() {
 
 #[test]
 fn renewed_certificate_is_appended_after_request_state() {
-    // Rang postcard 16, apres `RequestState` (15) ; version 5.
+    // Rang postcard 16, apres `RequestState` (15).
     let msg = ControlToAgent::RenewedCertificate {
         cert_pem: "-----BEGIN CERTIFICATE-----".into(),
     };
     let frame = codec::encode(&msg).unwrap();
     assert_eq!(frame[4], 16);
     assert_eq!(codec::decode::<ControlToAgent>(&frame).unwrap(), msg);
-    assert_eq!(proto::PROTO_VERSION, 5);
+    assert_eq!(proto::PROTO_VERSION, 6);
 }
 
 #[test]
@@ -337,17 +346,21 @@ fn deploy_without_service_name_from_an_older_peer_still_decodes() {
         compose: None,
         service_name: None,
         env: Vec::new(),
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
     });
     let frame = codec::encode(&msg).unwrap();
-    // `service_name` (None = 0) puis `env` (vide = 0) : une trame d'avant
-    // les deux champs est la meme charge sans ses deux derniers octets.
-    assert_eq!(&frame[frame.len() - 2..], &[0, 0]);
-    let old = &frame[4..frame.len() - 2];
+    // `service_name`, `env`, `environment_id`, `run_as` (vides = 0) et
+    // `read_only_rootfs` (faux = 0) : une trame d'avant ces champs est la
+    // meme charge sans ses cinq derniers octets.
+    assert_eq!(&frame[frame.len() - 5..], &[0; 5]);
+    let old = &frame[4..frame.len() - 5];
     let mut old_frame = (old.len() as u32).to_be_bytes().to_vec();
     old_frame.extend_from_slice(old);
     assert_eq!(codec::decode::<ControlToAgent>(&old_frame).unwrap(), msg);
     // Une charge tronquee ailleurs reste refusee.
-    let cut = &frame[4..frame.len() - 3];
+    let cut = &frame[4..frame.len() - 6];
     let mut cut_frame = (cut.len() as u32).to_be_bytes().to_vec();
     cut_frame.extend_from_slice(cut);
     assert!(codec::decode::<ControlToAgent>(&cut_frame).is_err());
@@ -368,10 +381,13 @@ fn deploy_without_env_from_an_older_peer_still_decodes() {
         compose: None,
         service_name: Some("web".into()),
         env: Vec::new(),
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
     });
     let frame = codec::encode(&msg).unwrap();
-    assert_eq!(frame.last(), Some(&0));
-    let old = &frame[4..frame.len() - 1];
+    assert_eq!(&frame[frame.len() - 4..], &[0; 4]);
+    let old = &frame[4..frame.len() - 4];
     let mut old_frame = (old.len() as u32).to_be_bytes().to_vec();
     old_frame.extend_from_slice(old);
     assert_eq!(codec::decode::<ControlToAgent>(&old_frame).unwrap(), msg);
@@ -392,6 +408,9 @@ fn env_values_never_appear_in_debug() {
             key: "API_KEY".into(),
             value: EnvValue::new("sk_test_TopSecretValue".into()),
         }],
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
     };
     let dbg = format!("{spec:?}");
     assert!(dbg.contains("API_KEY"), "{dbg}");
@@ -401,28 +420,6 @@ fn env_values_never_appear_in_debug() {
     let msg = ControlToAgent::Deploy(spec);
     let frame = codec::encode(&msg).unwrap();
     assert_eq!(codec::decode::<ControlToAgent>(&frame).unwrap(), msg);
-}
-
-#[test]
-fn build_without_root_directory_from_an_older_peer_still_decodes() {
-    // Champ ajoute en fin de `BuildSpec` (dernier champ de `Build`) : une
-    // trame d'avant ce champ est la meme charge sans son dernier octet
-    // (`None` = 0), et se lit avec `root_directory: None`.
-    let msg = ControlToAgent::Build(BuildSpec {
-        root_directory: None,
-        ..build_spec(DeploymentId::new())
-    });
-    let frame = codec::encode(&msg).unwrap();
-    assert_eq!(frame.last(), Some(&0));
-    let old = &frame[4..frame.len() - 1];
-    let mut old_frame = (old.len() as u32).to_be_bytes().to_vec();
-    old_frame.extend_from_slice(old);
-    assert_eq!(codec::decode::<ControlToAgent>(&old_frame).unwrap(), msg);
-    // Une charge tronquee ailleurs reste refusee.
-    let cut = &frame[4..frame.len() - 3];
-    let mut cut_frame = (cut.len() as u32).to_be_bytes().to_vec();
-    cut_frame.extend_from_slice(cut);
-    assert!(codec::decode::<ControlToAgent>(&cut_frame).is_err());
 }
 
 #[test]
@@ -586,4 +583,262 @@ async fn read_frame_reads_a_frame_close_to_the_maximum() {
             .unwrap(),
         Some(msg)
     );
+}
+
+/// Trame de la charge `payload` (prefixe de longueur compris).
+fn framed(payload: &[u8]) -> Vec<u8> {
+    let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+    frame.extend_from_slice(payload);
+    frame
+}
+
+/// Trame d'un message sans ses `n` derniers octets de charge.
+fn cut_tail<T: serde::Serialize>(msg: &T, n: usize) -> Vec<u8> {
+    let frame = codec::encode(msg).unwrap();
+    framed(&frame[4..frame.len() - n])
+}
+
+fn deploy_spec() -> DeploySpec {
+    DeploySpec {
+        deployment_id: DeploymentId::new(),
+        service_id: ServiceId::new(),
+        image: image(),
+        internal_port: Some(8080),
+        project_id: ProjectId::new(),
+        healthcheck: Healthcheck::default(),
+        compose: None,
+        service_name: Some("web".into()),
+        env: vec![EnvVar {
+            key: "A".into(),
+            value: EnvValue::new("b".into()),
+        }],
+        environment_id: Some(EnvironmentId::new()),
+        run_as: Some("1000:1000".into()),
+        read_only_rootfs: true,
+    }
+}
+
+#[test]
+fn v6_variants_are_appended_in_order() {
+    let frame = codec::encode(&ControlToAgent::RemoveProject {
+        project_id: ProjectId::new(),
+        purge_volumes: true,
+    })
+    .unwrap();
+    // Apres `RenewedCertificate` (16).
+    assert_eq!(frame[4], 17);
+    let frame = codec::encode(&AgentToControl::DeploymentRemoved {
+        deployment_id: DeploymentId::new(),
+    })
+    .unwrap();
+    // Apres `Certificate` (6).
+    assert_eq!(frame[4], 7);
+    let frame = codec::encode(&AgentToControl::ProjectRemoved {
+        project_id: ProjectId::new(),
+    })
+    .unwrap();
+    assert_eq!(frame[4], 8);
+}
+
+#[test]
+fn existing_variant_indices_are_unchanged() {
+    let d = DeploymentId::new();
+    let rank = |m: ControlToAgent| codec::encode(&m).unwrap()[4];
+    assert_eq!(rank(ControlToAgent::Hello { version: 6 }), 0);
+    assert_eq!(rank(ControlToAgent::Deploy(deploy_spec())), 1);
+    assert_eq!(rank(ControlToAgent::Stop { deployment_id: d }), 2);
+    assert_eq!(rank(ControlToAgent::RequestMetrics), 6);
+    assert_eq!(
+        rank(ControlToAgent::RemoveDeployment { deployment_id: d }),
+        7
+    );
+    assert_eq!(rank(ControlToAgent::Build(build_spec(d))), 8);
+    assert_eq!(rank(ControlToAgent::RequestState), 15);
+    let rank = |m: AgentToControl| codec::encode(&m).unwrap()[4];
+    assert_eq!(
+        rank(AgentToControl::Hello {
+            version: 6,
+            agent_id: ServerId::new()
+        }),
+        0
+    );
+    assert_eq!(
+        rank(AgentToControl::Error {
+            code: 1,
+            message: String::new()
+        }),
+        5
+    );
+    assert_eq!(
+        rank(AgentToControl::Certificate {
+            host: "a".into(),
+            outcome: CertificateOutcome::Missing
+        }),
+        6
+    );
+}
+
+#[test]
+fn buildspec_v5_frame_reads_none_ids() {
+    // Trame v5 : la charge s'arrete apres `root_directory`.
+    let msg = ControlToAgent::Build(BuildSpec {
+        project_id: None,
+        environment_id: None,
+        ..build_spec(DeploymentId::new())
+    });
+    assert_eq!(
+        codec::decode::<ControlToAgent>(&cut_tail(&msg, 2)).unwrap(),
+        msg
+    );
+    // Sans `root_directory` non plus (trame d'avant lui).
+    let msg = ControlToAgent::Build(BuildSpec {
+        root_directory: None,
+        project_id: None,
+        environment_id: None,
+        ..build_spec(DeploymentId::new())
+    });
+    assert_eq!(
+        codec::decode::<ControlToAgent>(&cut_tail(&msg, 3)).unwrap(),
+        msg
+    );
+    // `project_id` present, `environment_id` absent.
+    let msg = ControlToAgent::Build(BuildSpec {
+        project_id: Some(ProjectId::new()),
+        environment_id: None,
+        ..build_spec(DeploymentId::new())
+    });
+    assert_eq!(
+        codec::decode::<ControlToAgent>(&cut_tail(&msg, 1)).unwrap(),
+        msg
+    );
+}
+
+#[test]
+fn truncated_field_is_an_error() {
+    // Charge : [..., 1, 8, "apps/web", 0, 0]. On coupe un octet au milieu de
+    // `root_directory` (et les deux etiquettes qui suivent) : erreur.
+    let msg = BuildSpec {
+        project_id: None,
+        environment_id: None,
+        ..build_spec(DeploymentId::new())
+    };
+    let msg = ControlToAgent::Build(msg);
+    assert!(codec::decode::<ControlToAgent>(&cut_tail(&msg, 3)).is_err());
+    // Coupe dans un identifiant de projet ou d'environnement.
+    let msg = ControlToAgent::Build(BuildSpec {
+        project_id: Some(ProjectId::new()),
+        environment_id: Some(EnvironmentId::new()),
+        ..build_spec(DeploymentId::new())
+    });
+    let full = codec::encode(&msg).unwrap();
+    // Par identifiant : 1 etiquette + 17 octets (longueur comprise).
+    for n in (1..=17).chain(19..=35) {
+        assert!(
+            codec::decode::<ControlToAgent>(&framed(&full[4..full.len() - n])).is_err(),
+            "coupe de {n} octets"
+        );
+    }
+    // Meme regle pour `DeploySpec` : coupe dans `run_as`.
+    let msg = ControlToAgent::Deploy(deploy_spec());
+    for n in 2..=("1000:1000".len() + 1) {
+        assert!(
+            codec::decode::<ControlToAgent>(&cut_tail(&msg, n)).is_err(),
+            "coupe de {n} octets dans run_as"
+        );
+    }
+}
+
+#[test]
+fn trailing_bytes_rejected() {
+    for msg in [
+        ControlToAgent::Build(build_spec(DeploymentId::new())),
+        ControlToAgent::Deploy(deploy_spec()),
+    ] {
+        let mut frame = codec::encode(&msg).unwrap().to_vec();
+        frame.push(0);
+        let len = (frame.len() - 4) as u32;
+        frame[..4].copy_from_slice(&len.to_be_bytes());
+        assert!(codec::decode::<ControlToAgent>(&frame).is_err());
+    }
+}
+
+#[test]
+fn deploy_v5_frame_reads_defaults_for_new_fields() {
+    let msg = ControlToAgent::Deploy(DeploySpec {
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
+        ..deploy_spec()
+    });
+    // Trame v5 : sans `environment_id`, `run_as` ni `read_only_rootfs`.
+    assert_eq!(
+        codec::decode::<ControlToAgent>(&cut_tail(&msg, 3)).unwrap(),
+        msg
+    );
+    // Trame sans `run_as` ni `read_only_rootfs`.
+    let msg = ControlToAgent::Deploy(DeploySpec {
+        run_as: None,
+        read_only_rootfs: false,
+        ..deploy_spec()
+    });
+    assert_eq!(
+        codec::decode::<ControlToAgent>(&cut_tail(&msg, 2)).unwrap(),
+        msg
+    );
+    // `run_as` present, `read_only_rootfs` absent.
+    let msg = ControlToAgent::Deploy(DeploySpec {
+        read_only_rootfs: false,
+        ..deploy_spec()
+    });
+    assert_eq!(
+        codec::decode::<ControlToAgent>(&cut_tail(&msg, 1)).unwrap(),
+        msg
+    );
+}
+
+#[test]
+fn new_fields_and_messages_roundtrip() {
+    let project_id = ProjectId::new();
+    for msg in [
+        ControlToAgent::RemoveProject {
+            project_id,
+            purge_volumes: false,
+        },
+        ControlToAgent::RemoveProject {
+            project_id,
+            purge_volumes: true,
+        },
+        ControlToAgent::Deploy(deploy_spec()),
+        ControlToAgent::Build(build_spec(DeploymentId::new())),
+    ] {
+        let frame = codec::encode(&msg).unwrap();
+        assert_eq!(codec::decode::<ControlToAgent>(&frame).unwrap(), msg);
+    }
+    for msg in [
+        AgentToControl::DeploymentRemoved {
+            deployment_id: DeploymentId::new(),
+        },
+        AgentToControl::ProjectRemoved { project_id },
+    ] {
+        let frame = codec::encode(&msg).unwrap();
+        assert_eq!(codec::decode::<AgentToControl>(&frame).unwrap(), msg);
+    }
+}
+
+#[test]
+fn running_deployment_runs_as_root_roundtrips_and_defaults_to_false() {
+    let d = RunningDeployment {
+        deployment_id: DeploymentId::new(),
+        service_id: ServiceId::new(),
+        image: image(),
+        healthy: true,
+        serving: true,
+        runs_as_root: true,
+    };
+    let frame = codec::encode(&d).unwrap();
+    assert_eq!(codec::decode::<RunningDeployment>(&frame).unwrap(), d);
+    // Trame plus ancienne : sans le dernier octet.
+    let read = codec::decode::<RunningDeployment>(&cut_tail(&d, 1)).unwrap();
+    assert!(!read.runs_as_root);
+    assert_eq!(read.deployment_id, d.deployment_id);
 }

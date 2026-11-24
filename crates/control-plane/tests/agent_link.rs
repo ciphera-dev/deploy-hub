@@ -201,6 +201,7 @@ fn running() -> AgentState {
             image: ImageRef("ghcr.io/acme/web:1".into()),
             healthy: true,
             serving: true,
+            runs_as_root: false,
         }],
         in_progress: vec![DeploymentId::new()],
         outcomes: vec![DeploymentOutcome {

@@ -192,6 +192,9 @@ fn app(project: ProjectId, service: ServiceId, image: &str, tries: u8) -> Deploy
         compose: None,
         service_name: Some("web".into()),
         env: Vec::new(),
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
     }
 }
 
@@ -333,6 +336,9 @@ async fn real_compose_deploy_forces_every_service_onto_the_project_network() {
                 value: EnvValue::new("t0k$n with spaces".into()),
             },
         ],
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
     };
     let (result, stages) = bench.deploy(&spec).await;
     result.unwrap_or_else(|e| panic!("compose : {e} ({stages:?})"));

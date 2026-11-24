@@ -24,7 +24,7 @@ use proto::{
     DeploySpec, GitToken, Healthcheck, ImageRef, LogTarget, Stage, StageStatus,
 };
 use serde_json::json;
-use shared::ids::{DeploymentId, ProjectId, ServerId, ServiceId};
+use shared::ids::{DeploymentId, EnvironmentId, ProjectId, ServerId, ServiceId};
 use sqlx::PgConnection;
 use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
@@ -966,6 +966,8 @@ async fn send_build(state: &AppState, info: Info) -> Result<(), HandlerError> {
         git_token: token,
         // Valeur deja normalisee a l'enregistrement ; vide = racine.
         root_directory: info.root_directory.clone().filter(|r| !r.is_empty()),
+        project_id: Some(ProjectId(info.project_id)),
+        environment_id: Some(EnvironmentId(info.environment_id)),
     };
 
     let mut tx = state
@@ -1142,6 +1144,9 @@ async fn send_deploy(
         }),
         service_name: info.service_name.clone(),
         env,
+        environment_id: Some(EnvironmentId(info.environment_id)),
+        run_as: None,
+        read_only_rootfs: false,
     };
     // Table complete des routes (domaines) : elle part avant chaque `Deploy`
     // (l'agent refuse de basculer sans table), meme vide.

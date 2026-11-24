@@ -547,6 +547,7 @@ where
                 image: spec.image.clone(),
                 healthy: false,
                 serving: false,
+                runs_as_root: false,
             },
             container: container.clone(),
             port: spec.internal_port,

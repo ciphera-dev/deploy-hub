@@ -340,6 +340,9 @@ fn spec(project: ProjectId, service: ServiceId, image: &str) -> DeploySpec {
         compose: None,
         service_name: Some("web".into()),
         env: Vec::new(),
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
     }
 }
 
@@ -845,6 +848,8 @@ async fn cancel_during_build_cleans_up() {
         build: BuildMethod::Railpack,
         git_token: None,
         root_directory: None,
+        project_id: None,
+        environment_id: None,
     };
     let cfg = BuildConfig {
         builds_dir: bench.builds_dir(),
@@ -1170,6 +1175,8 @@ fn image_build(id: DeploymentId) -> BuildSpec {
         build: BuildMethod::Railpack,
         git_token: None,
         root_directory: None,
+        project_id: None,
+        environment_id: None,
     }
 }
 
@@ -1949,6 +1956,9 @@ async fn compose_deploy_restarts_others_in_order_and_switches_the_exposed_servic
         }),
         service_name: Some("web".into()),
         env: Vec::new(),
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
     };
     let first = deploy(build);
     // Adresses attribuees par le faux Compose : 172.18.1.<100 + rang>.
@@ -2132,6 +2142,9 @@ async fn compose_env_keys_on_disk_values_only_in_child_env() {
             }),
             service_name: Some("web".into()),
             env: Vec::new(),
+            environment_id: None,
+            run_as: None,
+            read_only_rootfs: false,
         },
         &[
             ("API_HOST", "from-ciphera"),

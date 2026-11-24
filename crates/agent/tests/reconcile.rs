@@ -22,6 +22,7 @@ fn deployment(image: &str, healthy: bool) -> RunningDeployment {
         image: ImageRef(image.into()),
         healthy,
         serving: false,
+        runs_as_root: false,
     }
 }
 

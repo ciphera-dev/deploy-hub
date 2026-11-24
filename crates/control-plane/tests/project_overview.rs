@@ -470,6 +470,7 @@ async fn agent_reported_state_and_metrics_feed_the_overview() {
                 image: ImageRef("ciphera/web-production:1".into()),
                 healthy: true,
                 serving: true,
+                runs_as_root: false,
             }],
             ..AgentState::default()
         }),

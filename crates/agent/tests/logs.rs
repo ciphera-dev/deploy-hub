@@ -45,6 +45,7 @@ impl Env {
                 image: ImageRef("ciphera/web-production:1".into()),
                 healthy: true,
                 serving: false,
+                runs_as_root: false,
             },
             &ContainerId("c-web".into()),
         )
@@ -181,6 +182,7 @@ async fn service_follow_moves_to_the_new_serving_container() {
                 image: ImageRef("ciphera/web-production:2".into()),
                 healthy: true,
                 serving: false,
+                runs_as_root: false,
             },
             &ContainerId("c-web-2".into()),
         )

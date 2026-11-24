@@ -779,6 +779,7 @@ async fn agent_disconnect_marks_failed_after_10min() {
             image: proto::ImageRef("x".into()),
             healthy: true,
             serving: true,
+            runs_as_root: false,
         }],
         in_progress: vec![],
         outcomes: vec![DeploymentOutcome {

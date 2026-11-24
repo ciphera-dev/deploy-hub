@@ -12,13 +12,15 @@ pub use messages::*;
 /// `root_directory`, `StopContainers`, `service_name`,
 /// `RemoveCertificate`/`CheckCertificate`, `env`, metriques). 4 :
 /// `RequestState` (resynchronisation apres des messages perdus). 5 :
-/// `RenewedCertificate` (renouvellement du certificat de l'agent).
+/// `RenewedCertificate` (renouvellement du certificat de l'agent). 6 :
+/// `RemoveProject`, `DeploymentRemoved`, `ProjectRemoved`, identifiants de
+/// projet et d'environnement dans `BuildSpec` et `DeploySpec`.
 ///
 /// Regle : tout changement de `messages` (meme un ajout) incremente cette
 /// version. Plan de controle, agent et proxy sont livres et mis a jour
 /// ensemble (`ciphera-cli updater`) ; un `Hello` d'une autre version est
 /// refuse avec `error_code::VERSION_MISMATCH`.
-pub const PROTO_VERSION: u16 = 5;
+pub const PROTO_VERSION: u16 = 6;
 
 /// Identifiant ALPN du lien plan de controle <-> agent.
 pub const ALPN: &[u8] = b"ciphera/1";

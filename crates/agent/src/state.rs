@@ -267,6 +267,7 @@ impl StateDb {
                     image: ImageRef(image),
                     healthy,
                     serving,
+                    runs_as_root: false,
                 },
                 container: ContainerId(container),
                 port,

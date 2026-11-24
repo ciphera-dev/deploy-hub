@@ -356,7 +356,21 @@ async fn handle(incoming: Incoming, registry: &AgentRegistry, db: &PgPool, ca: O
                 close(&conn, error_code::PROTOCOL, "Hello en double");
                 break;
             }
-            Ok(Some(msg)) => registry.publish(id, msg),
+            Ok(Some(msg)) => {
+                // Accuses de suppression : branches plus tard, journalises ici.
+                match &msg {
+                    AgentToControl::DeploymentRemoved { deployment_id } => {
+                        tracing::info!(
+                            "lien agents : {id} a supprime le deploiement {deployment_id}"
+                        )
+                    }
+                    AgentToControl::ProjectRemoved { project_id } => {
+                        tracing::info!("lien agents : {id} a supprime le projet {project_id}")
+                    }
+                    _ => {}
+                }
+                registry.publish(id, msg)
+            }
             Ok(None) | Err(codec::Error::Io(_)) => break,
             Err(_) => {
                 close(&conn, error_code::PROTOCOL, "message illisible");

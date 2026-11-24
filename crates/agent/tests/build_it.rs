@@ -133,6 +133,8 @@ fn spec(project: &str, source: BuildSource, build: BuildMethod) -> BuildSpec {
         build,
         git_token: None,
         root_directory: None,
+        project_id: None,
+        environment_id: None,
     }
 }
 

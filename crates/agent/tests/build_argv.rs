@@ -218,6 +218,8 @@ fn spec(build: BuildMethod) -> BuildSpec {
         build,
         git_token: Some(GitToken::new(TOKEN.into())),
         root_directory: None,
+        project_id: None,
+        environment_id: None,
     }
 }
 

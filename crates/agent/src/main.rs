@@ -298,5 +298,6 @@ fn kind(msg: &ControlToAgent) -> &'static str {
         ControlToAgent::RemoveCertificate { .. } => "remove-certificate",
         ControlToAgent::RequestState => "request-state",
         ControlToAgent::RenewedCertificate { .. } => "renewed-certificate",
+        ControlToAgent::RemoveProject { .. } => "remove-project",
     }
 }

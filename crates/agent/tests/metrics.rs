@@ -94,6 +94,7 @@ async fn metrics_include_each_serving_container() {
             image: ImageRef("ghcr.io/acme/app:1".into()),
             healthy: true,
             serving: false,
+            runs_as_root: false,
         };
         db.put_deployment(&d, &ContainerId(container.into()))
             .unwrap();
