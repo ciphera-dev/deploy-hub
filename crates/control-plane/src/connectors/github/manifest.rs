@@ -32,6 +32,7 @@ use super::app::valid_private_key;
 use super::{already_connected, load, not_connected, unavailable};
 use crate::auth::internal;
 use crate::authz::{Require, lvl, res};
+use crate::secrets::labels;
 use crate::state::AppState;
 
 /// Duree de vie du `state` du flux manifest (1 h).
@@ -244,11 +245,11 @@ async fn callback(
     }
     let key_sealed = state
         .secrets
-        .seal(app.pem.as_bytes())
+        .seal_bound(labels::GITHUB_PRIVATE_KEY, app.pem.as_bytes())
         .map_err(|e| internal("chiffrement de la cle de la GitHub App", e))?;
     let secret_sealed = state
         .secrets
-        .seal(secret.as_bytes())
+        .seal_bound(labels::GITHUB_WEBHOOK_SECRET, secret.as_bytes())
         .map_err(|e| internal("chiffrement du secret de webhook", e))?;
 
     let mut tx = state

@@ -38,6 +38,7 @@ use crate::domain::notifications::{self, Event};
 use crate::domain::{domains, variables};
 use crate::jobs::worker::{HandlerError, Handlers};
 use crate::jobs::{self, Job, JobKind};
+use crate::secrets::labels;
 use crate::state::AppState;
 
 /// Ecart minimal entre deux mises a jour de `last_event_at` dues aux lignes
@@ -836,10 +837,13 @@ async fn git_access(
     let now = state.clock.unix_secs() as i64;
     let token = match app {
         Some(app) => {
-            let pem = state.secrets.open(&app.private_key_sealed).map_err(|_| {
-                tracing::error!("cle de la GitHub App illisible");
-                GitAccessError::Fail("Clé de la GitHub App illisible.".into())
-            })?;
+            let pem = state
+                .secrets
+                .open_bound(labels::GITHUB_PRIVATE_KEY, &app.private_key_sealed)
+                .map_err(|_| {
+                    tracing::error!("cle de la GitHub App illisible");
+                    GitAccessError::Fail("Clé de la GitHub App illisible.".into())
+                })?;
             state
                 .github
                 .repository_token(base, app.app_id, &pem, repository, now)

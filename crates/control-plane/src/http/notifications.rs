@@ -154,7 +154,7 @@ async fn update(
         Some(p) => Some(
             state
                 .secrets
-                .seal(p.as_bytes())
+                .seal_bound(crate::secrets::labels::SMTP_PASSWORD, p.as_bytes())
                 .map_err(|e| internal("chiffrement du mot de passe SMTP", e))?,
         ),
         None => None,

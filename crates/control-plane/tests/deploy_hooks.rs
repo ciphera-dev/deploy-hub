@@ -359,8 +359,24 @@ async fn install_app(state: &AppState) {
          VALUES (123, 'ciphera-ab12cd', 'Ciphera ab12cd', 'acme', \
          'https://github.com/apps/ciphera-ab12cd', $1, $2)",
     )
-    .bind(state.secrets.seal(b"inutilise par le webhook").unwrap())
-    .bind(state.secrets.seal(WEBHOOK_SECRET.as_bytes()).unwrap())
+    .bind(
+        state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_PRIVATE_KEY,
+                b"inutilise par le webhook",
+            )
+            .unwrap(),
+    )
+    .bind(
+        state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_WEBHOOK_SECRET,
+                WEBHOOK_SECRET.as_bytes(),
+            )
+            .unwrap(),
+    )
     .execute(&state.db)
     .await
     .unwrap();

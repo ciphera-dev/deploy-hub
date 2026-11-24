@@ -657,7 +657,11 @@ async fn smtp_password_write_only() {
             .any(|w| w == SMTP_PASSWORD.as_bytes())
     );
     assert_eq!(
-        state.secrets.open(&sealed).unwrap().as_slice(),
+        state
+            .secrets
+            .open_bound(control_plane::secrets::labels::SMTP_PASSWORD, &sealed)
+            .unwrap()
+            .as_slice(),
         SMTP_PASSWORD.as_bytes()
     );
 
@@ -682,7 +686,11 @@ async fn smtp_password_write_only() {
         .await
         .unwrap();
     assert_eq!(
-        state.secrets.open(&sealed).unwrap().as_slice(),
+        state
+            .secrets
+            .open_bound(control_plane::secrets::labels::SMTP_PASSWORD, &sealed)
+            .unwrap()
+            .as_slice(),
         SMTP_PASSWORD.as_bytes()
     );
 

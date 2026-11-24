@@ -117,8 +117,24 @@ async fn install_app(state: &AppState) {
          VALUES (123, 'ciphera-ab12cd', 'Ciphera ab12cd', 'acme', \
          'https://github.com/apps/ciphera-ab12cd', $1, $2)",
     )
-    .bind(state.secrets.seal(pem.as_bytes()).unwrap())
-    .bind(state.secrets.seal(WEBHOOK_SECRET.as_bytes()).unwrap())
+    .bind(
+        state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_PRIVATE_KEY,
+                pem.as_bytes(),
+            )
+            .unwrap(),
+    )
+    .bind(
+        state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_WEBHOOK_SECRET,
+                WEBHOOK_SECRET.as_bytes(),
+            )
+            .unwrap(),
+    )
     .execute(&state.db)
     .await
     .unwrap();
@@ -658,9 +674,20 @@ async fn private_key_never_returned() {
             .unwrap();
     assert!(!String::from_utf8_lossy(&key).contains(pem_body));
     assert!(!String::from_utf8_lossy(&hook).contains(WEBHOOK_SECRET));
-    assert_eq!(state.secrets.open(&key).unwrap().as_slice(), pem.as_bytes());
     assert_eq!(
-        state.secrets.open(&hook).unwrap().as_slice(),
+        state
+            .secrets
+            .open_bound(control_plane::secrets::labels::GITHUB_PRIVATE_KEY, &key)
+            .unwrap()
+            .as_slice(),
+        pem.as_bytes()
+    );
+    assert_eq!(
+        state
+            .secrets
+            .open_bound(control_plane::secrets::labels::GITHUB_WEBHOOK_SECRET, &hook)
+            .unwrap()
+            .as_slice(),
         WEBHOOK_SECRET.as_bytes()
     );
 

@@ -1263,7 +1263,7 @@ async fn legacy_ciphertexts_are_rebound_once() {
     .await
     .unwrap();
     assert_eq!(
-        variables::rebind_legacy(&state.db, &state.secrets)
+        variables::rebind_all(&state.db, &state.secrets)
             .await
             .unwrap(),
         2
@@ -1282,7 +1282,7 @@ async fn legacy_ciphertexts_are_rebound_once() {
         .await
         .unwrap();
     assert_eq!(
-        variables::rebind_legacy(&state.db, &state.secrets)
+        variables::rebind_all(&state.db, &state.secrets)
             .await
             .unwrap(),
         0

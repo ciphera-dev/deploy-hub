@@ -1084,8 +1084,24 @@ async fn push_deploys_are_deduplicated_and_token_is_minted_at_dispatch() {
          VALUES (123, 'ciphera-ab12cd', 'Ciphera ab12cd', 'acme', \
          'https://github.com/apps/ciphera-ab12cd', $1, $2)",
     )
-    .bind(env.state.secrets.seal(test_key().as_bytes()).unwrap())
-    .bind(env.state.secrets.seal(b"whsec-test").unwrap())
+    .bind(
+        env.state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_PRIVATE_KEY,
+                test_key().as_bytes(),
+            )
+            .unwrap(),
+    )
+    .bind(
+        env.state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_WEBHOOK_SECRET,
+                b"whsec-test",
+            )
+            .unwrap(),
+    )
     .execute(&env.state.db)
     .await
     .unwrap();

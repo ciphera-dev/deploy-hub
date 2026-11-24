@@ -29,6 +29,7 @@ use zeroize::Zeroizing;
 use super::{load, not_connected, unavailable};
 use crate::auth::internal;
 use crate::authz::{Require, lvl, res};
+use crate::secrets::labels;
 use crate::state::AppState;
 
 /// Marge avant l'echeance d'un jeton d'installation : au-dela, on le redemande.
@@ -454,7 +455,7 @@ async fn repos(
         .ok_or_else(not_connected)?;
     let pem = state
         .secrets
-        .open(&app.private_key_sealed)
+        .open_bound(labels::GITHUB_PRIVATE_KEY, &app.private_key_sealed)
         .map_err(|e| internal("ouverture de la cle de la GitHub App", e))?;
     let now = state.clock.unix_secs() as i64;
     let repos = state

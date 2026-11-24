@@ -29,6 +29,7 @@ use crate::auth::{
     webauthn,
 };
 use crate::http::client_ip::ClientIp;
+use crate::secrets::labels;
 use crate::state::AppState;
 
 /// Corps JSON maximal (mot de passe de 1024 caracteres compris).
@@ -127,7 +128,7 @@ async fn start(
     let qr_svg = totp::qr_svg(&uri).ok_or_else(|| internal("QR code TOTP", "encodage"))?;
     let sealed = state
         .secrets
-        .seal(&secret)
+        .seal_bound(&labels::totp_seed(user.id), &secret)
         .map_err(|e| internal("scellement de la graine TOTP", e))?;
     if !totp::save_pending(&state.db, user.id, &sealed)
         .await
@@ -162,7 +163,7 @@ async fn confirm(
         })?;
     let secret = state
         .secrets
-        .open(&sealed)
+        .open_bound(&labels::totp_seed(user.id), &sealed)
         .map_err(|e| internal("ouverture de la graine TOTP", e))?;
     let step = totp::matching_step(&secret, &code, totp::unix_now(), None)
         .ok_or_else(|| invalid_code(422))?;
@@ -420,7 +421,7 @@ async fn totp_candidate(
     };
     let secret = state
         .secrets
-        .open(&sealed)
+        .open_bound(&labels::totp_seed(user_id), &sealed)
         .map_err(|e| internal("ouverture de la graine TOTP", e))?;
     Ok(totp::matching_step(&secret, code, totp::unix_now(), last_used).map(Candidate::Step))
 }

@@ -575,6 +575,15 @@ fn env() -> Env {
     std::fs::write(tmp.0.join("var/run/docker.sock"), b"").unwrap();
     let (secrets, identity) = SecretBox::generate();
     std::fs::write(paths.config_dir.join("age.key"), identity.as_bytes()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            paths.config_dir.join("age.key"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
 
     let good = keys();
     let mut files = HashMap::new();

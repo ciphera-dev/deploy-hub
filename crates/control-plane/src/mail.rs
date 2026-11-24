@@ -285,7 +285,7 @@ pub async fn load_settings(
     let password = match sealed {
         Some(sealed) => {
             let plain = secrets
-                .open(&sealed)
+                .open_bound(crate::secrets::labels::SMTP_PASSWORD, &sealed)
                 .map_err(|e| MailError::new("mot de passe SMTP", e))?;
             let text = std::str::from_utf8(&plain)
                 .map_err(|_| MailError("mot de passe SMTP illisible".into()))?;

@@ -321,7 +321,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     sqlx::migrate!().run(&db).await?;
     tracing::info!("base de donnees prete, migrations appliquees");
     // Secrets chiffres avant la liaison a leur ligne : rechiffres une fois.
-    control_plane::domain::variables::rebind_legacy(&db, &secrets).await?;
+    control_plane::domain::variables::rebind_all(&db, &secrets).await?;
 
     // CA de l'instance : certificats du lien et du panneau renouveles aux
     // deux tiers de leur validite (ici puis toutes les 12 h), certificats

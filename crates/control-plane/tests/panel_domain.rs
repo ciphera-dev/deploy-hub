@@ -738,8 +738,24 @@ async fn panel_domain_confirm_moves_the_github_app_to_the_new_origin() {
          VALUES (123, 'ciphera-ab12cd', 'Ciphera ab12cd', 'acme', \
          'https://github.com/apps/ciphera-ab12cd', $1, $2)",
     )
-    .bind(env.state.secrets.seal(test_key().as_bytes()).unwrap())
-    .bind(env.state.secrets.seal(b"whsec-test-value").unwrap())
+    .bind(
+        env.state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_PRIVATE_KEY,
+                test_key().as_bytes(),
+            )
+            .unwrap(),
+    )
+    .bind(
+        env.state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_WEBHOOK_SECRET,
+                b"whsec-test-value",
+            )
+            .unwrap(),
+    )
     .execute(&env.state.db)
     .await
     .unwrap();
@@ -832,8 +848,24 @@ async fn github_app(env: &Env) {
          VALUES (123, 'ciphera-ab12cd', 'Ciphera ab12cd', 'acme', \
          'https://github.com/apps/ciphera-ab12cd', $1, $2)",
     )
-    .bind(env.state.secrets.seal(test_key().as_bytes()).unwrap())
-    .bind(env.state.secrets.seal(b"whsec-test-value").unwrap())
+    .bind(
+        env.state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_PRIVATE_KEY,
+                test_key().as_bytes(),
+            )
+            .unwrap(),
+    )
+    .bind(
+        env.state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_WEBHOOK_SECRET,
+                b"whsec-test-value",
+            )
+            .unwrap(),
+    )
     .execute(&env.state.db)
     .await
     .unwrap();

@@ -21,7 +21,7 @@ use sqlx::PgPool;
 
 use shared::config::Config;
 
-use crate::secrets::SecretBox;
+use crate::secrets::{SecretBox, labels};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -96,7 +96,7 @@ pub async fn move_webhook(
         return Ok(None);
     };
     let pem = secrets
-        .open(&stored.private_key_sealed)
+        .open_bound(labels::GITHUB_PRIVATE_KEY, &stored.private_key_sealed)
         .map_err(|_| WebhookMoveError::Key)?;
     let url = format!("{origin}/v1/webhooks/github");
     client

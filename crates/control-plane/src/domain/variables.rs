@@ -25,7 +25,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::domain::logs::redact::{SecretValues, SecretsResult, SecretsUnavailable};
-use crate::secrets::{SecretBox, SecretError};
+use crate::secrets::{SecretBox, SecretError, labels};
 
 /// Taille maximale d'une valeur (octets).
 pub const MAX_VALUE_BYTES: usize = 32 * 1024;
@@ -1097,25 +1097,76 @@ pub async fn resolve_env(
     Ok(env)
 }
 
-/// Rechiffre, liees a leur ligne ([`Owner`]), les valeurs secretes chiffrees
-/// avant la liaison (age seul), une seule fois par instance : au demarrage,
-/// apres les migrations et avant de servir. Une fois fait (table
-/// `secrets_rebound`), plus rien n'est rechiffre : un chiffre non lie
-/// introduit ensuite reste illisible. Une valeur indechiffrable est laissee
-/// telle quelle (illisible, comme avant). Renvoie le nombre de valeurs
-/// rechiffrees.
-pub async fn rebind_legacy(db: &PgPool, secrets: &SecretBox) -> sqlx::Result<u64> {
+/// Portees de `rebind_all`, une par famille de secrets (marqueurs de la table
+/// `secret_rebinds`). A retirer en v0.2 avec `rebind_all`.
+const REBIND_SCOPES: [&str; 4] = ["variables", "smtp", "github", "totp"];
+
+/// Rechiffre, liees a leur ligne, les valeurs secretes chiffrees avant la
+/// liaison (age seul) : variables ([`Owner`]), mot de passe SMTP, GitHub App
+/// et graines TOTP. Une fois par instance et par portee : au demarrage, apres
+/// les migrations et avant de servir, dans une seule transaction. Une portee
+/// faite (table `secret_rebinds`) n'est plus jamais rechiffree : un chiffre
+/// non lie introduit ensuite reste illisible. Une valeur indechiffrable, ou
+/// dont le clair est lui-meme un chiffre lie (copie d'une autre ligne), est
+/// laissee telle quelle (illisible). Renvoie le nombre de valeurs rechiffrees.
+pub async fn rebind_all(db: &PgPool, secrets: &SecretBox) -> sqlx::Result<u64> {
     let mut tx = db.begin().await?;
-    sqlx::query("LOCK TABLE secrets_rebound IN EXCLUSIVE MODE")
+    sqlx::query("LOCK TABLE secret_rebinds IN EXCLUSIVE MODE")
         .execute(&mut *tx)
         .await?;
-    let done: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM secrets_rebound)")
-        .fetch_one(&mut *tx)
-        .await?;
-    if done {
-        tx.commit().await?;
-        return Ok(0);
+    let mut rebound = 0;
+    for scope in REBIND_SCOPES {
+        let done: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM secret_rebinds WHERE scope = $1)")
+                .bind(scope)
+                .fetch_one(&mut *tx)
+                .await?;
+        if done {
+            continue;
+        }
+        rebound += match scope {
+            "variables" => rebind_variables(&mut tx, secrets).await?,
+            "smtp" => rebind_smtp(&mut tx, secrets).await?,
+            "github" => rebind_github(&mut tx, secrets).await?,
+            _ => rebind_totp(&mut tx, secrets).await?,
+        };
+        sqlx::query("INSERT INTO secret_rebinds (scope, done_at) VALUES ($1, now())")
+            .bind(scope)
+            .execute(&mut *tx)
+            .await?;
     }
+    tx.commit().await?;
+    if rebound > 0 {
+        tracing::info!("{rebound} secrets rechiffres lies a leur ligne");
+    }
+    Ok(rebound)
+}
+
+/// Chiffre lie a `label` pour un ancien chiffre `sealed`, ou `None` s'il est
+/// deja lie a `label`, indechiffrable ou lie a une autre ligne.
+fn rebound_value(
+    secrets: &SecretBox,
+    what: &str,
+    label: &[u8],
+    sealed: &[u8],
+) -> sqlx::Result<Option<Vec<u8>>> {
+    if secrets.open_bound(label, sealed).is_ok() {
+        return Ok(None);
+    }
+    let Ok(clear) = secrets.open_unbound(sealed) else {
+        tracing::warn!(
+            what,
+            "secret illisible ou deja lie a une autre ligne : laisse tel quel"
+        );
+        return Ok(None);
+    };
+    secrets
+        .seal_bound(label, &clear)
+        .map(Some)
+        .map_err(|e| sqlx::Error::Encode(Box::new(e)))
+}
+
+async fn rebind_variables(tx: &mut PgConnection, secrets: &SecretBox) -> sqlx::Result<u64> {
     let own: Vec<(Uuid, Uuid, String, Vec<u8>)> = sqlx::query_as(
         "SELECT id, environment_id, key, value_sealed FROM project_variables \
          WHERE secret FOR UPDATE",
@@ -1142,16 +1193,10 @@ pub async fn rebind_legacy(db: &PgPool, secrets: &SecretBox) -> sqlx::Result<u64
         );
     let mut rebound = 0;
     for (table, id, owner, sealed) in rows {
-        if owner.open(secrets, sealed).is_ok() {
-            continue;
-        }
-        let Ok(clear) = secrets.open(sealed) else {
-            tracing::warn!(%id, "secret illisible : laisse tel quel");
+        let Some(resealed) = rebound_value(secrets, table, owner.label().as_bytes(), sealed)?
+        else {
             continue;
         };
-        let resealed = owner
-            .seal(secrets, &clear)
-            .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
         // Nom de table fixe (deux valeurs ci-dessus), aucune donnee.
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE {table} SET value_sealed = $2 WHERE id = $1"
@@ -1162,16 +1207,83 @@ pub async fn rebind_legacy(db: &PgPool, secrets: &SecretBox) -> sqlx::Result<u64
         .await?;
         rebound += 1;
     }
-    sqlx::query("INSERT INTO secrets_rebound (done_at) VALUES (now())")
+    Ok(rebound)
+}
+
+async fn rebind_smtp(tx: &mut PgConnection, secrets: &SecretBox) -> sqlx::Result<u64> {
+    let sealed: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT password_sealed FROM smtp_settings WHERE password_sealed IS NOT NULL FOR UPDATE",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(sealed) = sealed else { return Ok(0) };
+    let Some(resealed) = rebound_value(secrets, "smtp_settings", labels::SMTP_PASSWORD, &sealed)?
+    else {
+        return Ok(0);
+    };
+    sqlx::query("UPDATE smtp_settings SET password_sealed = $1")
+        .bind(resealed)
         .execute(&mut *tx)
         .await?;
-    tx.commit().await?;
-    if rebound > 0 {
-        tracing::info!("{rebound} secrets rechiffres lies a leur ligne");
+    Ok(1)
+}
+
+async fn rebind_github(tx: &mut PgConnection, secrets: &SecretBox) -> sqlx::Result<u64> {
+    let row: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        "SELECT private_key_sealed, webhook_secret_sealed FROM github_app FOR UPDATE",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((key, hook)) = row else { return Ok(0) };
+    let key = rebound_value(
+        secrets,
+        "github_app.private_key",
+        labels::GITHUB_PRIVATE_KEY,
+        &key,
+    )?;
+    let hook = rebound_value(
+        secrets,
+        "github_app.webhook_secret",
+        labels::GITHUB_WEBHOOK_SECRET,
+        &hook,
+    )?;
+    let rebound = u64::from(key.is_some()) + u64::from(hook.is_some());
+    if let Some(key) = key {
+        sqlx::query("UPDATE github_app SET private_key_sealed = $1")
+            .bind(key)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(hook) = hook {
+        sqlx::query("UPDATE github_app SET webhook_secret_sealed = $1")
+            .bind(hook)
+            .execute(&mut *tx)
+            .await?;
     }
     Ok(rebound)
 }
 
+async fn rebind_totp(tx: &mut PgConnection, secrets: &SecretBox) -> sqlx::Result<u64> {
+    let rows: Vec<(Uuid, Vec<u8>)> =
+        sqlx::query_as("SELECT user_id, secret_sealed FROM user_totp FOR UPDATE")
+            .fetch_all(&mut *tx)
+            .await?;
+    let mut rebound = 0;
+    for (user_id, sealed) in rows {
+        let Some(resealed) =
+            rebound_value(secrets, "user_totp", &labels::totp_seed(user_id), &sealed)?
+        else {
+            continue;
+        };
+        sqlx::query("UPDATE user_totp SET secret_sealed = $2 WHERE user_id = $1")
+            .bind(user_id)
+            .bind(resealed)
+            .execute(&mut *tx)
+            .await?;
+        rebound += 1;
+    }
+    Ok(rebound)
+}
 /// Valeurs secretes d'un projet (tous environnements, globales comprises),
 /// pour le masquage des journaux.
 pub struct VariableSecrets {

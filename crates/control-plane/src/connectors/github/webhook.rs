@@ -43,6 +43,7 @@ use crate::auth::internal;
 use crate::domain::projects::git::{PushFacts, PushSettings, skip_reason};
 use crate::http::client_ip::ClientIp;
 use crate::jobs::{self, JobKind};
+use crate::secrets::labels;
 use crate::state::AppState;
 
 /// Taille maximale d'une livraison (GitHub plafonne a 25 Mio ; un `push`
@@ -243,7 +244,7 @@ async fn receive(
         .ok_or_else(bad_signature)?;
     let secret = state
         .secrets
-        .open(&app.webhook_secret_sealed)
+        .open_bound(labels::GITHUB_WEBHOOK_SECRET, &app.webhook_secret_sealed)
         .map_err(|e| internal("ouverture du secret de webhook", e))?;
     if !signature_valid(&secret, &body, header(&headers, "x-hub-signature-256")) {
         return Err(bad_signature());

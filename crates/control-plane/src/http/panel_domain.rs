@@ -36,6 +36,7 @@ use crate::auth::webauthn::request_host;
 use crate::connectors::github;
 use crate::domain::domains::{self, acme, dns, panel};
 use crate::http::settings::{Admin, owner_only};
+use crate::secrets::labels;
 use crate::state::AppState;
 
 const MAX_BODY: usize = 16 * 1024;
@@ -385,7 +386,7 @@ async fn move_github_app(
     }
     let pem = state
         .secrets
-        .open(&app.private_key_sealed)
+        .open_bound(labels::GITHUB_PRIVATE_KEY, &app.private_key_sealed)
         .map_err(|e| internal("ouverture de la cle de la GitHub App", e))?;
     let url = format!("https://{host}/v1/webhooks/github");
     state

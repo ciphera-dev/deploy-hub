@@ -589,7 +589,15 @@ async fn export_has_no_secrets() {
         "INSERT INTO user_totp (user_id, secret_sealed, confirmed_at) VALUES ($1, $2, now())",
     )
     .bind(owner_id)
-    .bind(state.secrets.seal(b"FIXTURETOTPSEED").unwrap())
+    .bind(
+        state
+            .secrets
+            .seal_bound(
+                &control_plane::secrets::labels::totp_seed(owner_id),
+                b"FIXTURETOTPSEED",
+            )
+            .unwrap(),
+    )
     .execute(&state.db)
     .await
     .unwrap();
@@ -602,10 +610,21 @@ async fn export_has_no_secrets() {
     .bind(
         state
             .secrets
-            .seal(concat!("-----BEGIN RSA ", "PRIVATE KEY-----fixture").as_bytes())
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_PRIVATE_KEY,
+                concat!("-----BEGIN RSA ", "PRIVATE KEY-----fixture").as_bytes(),
+            )
             .unwrap(),
     )
-    .bind(state.secrets.seal(b"fixture-webhook-secret").unwrap())
+    .bind(
+        state
+            .secrets
+            .seal_bound(
+                control_plane::secrets::labels::GITHUB_WEBHOOK_SECRET,
+                b"fixture-webhook-secret",
+            )
+            .unwrap(),
+    )
     .execute(&state.db)
     .await
     .unwrap();

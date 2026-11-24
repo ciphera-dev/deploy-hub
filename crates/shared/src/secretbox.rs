@@ -30,14 +30,45 @@ impl fmt::Debug for SecretBox {
     }
 }
 
+/// `age.key` doit etre prive : aucun droit pour le groupe ni les autres, et
+/// propriete de l'utilisateur courant ou de root (Unix seulement).
+#[cfg(unix)]
+fn check_private(file: &std::fs::File) -> Result<(), SecretError> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file
+        .metadata()
+        .map_err(|_| SecretError("fichier d'identite illisible"))?;
+    if !meta.is_file() {
+        return Err(SecretError("fichier d'identite : pas un fichier ordinaire"));
+    }
+    if meta.mode() & 0o077 != 0 {
+        return Err(SecretError(
+            "fichier d'identite : droits trop larges (0600 attendu)",
+        ));
+    }
+    let me = rustix::process::geteuid().as_raw();
+    if meta.uid() != me && meta.uid() != 0 {
+        return Err(SecretError("fichier d'identite : proprietaire inattendu"));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_private(_file: &std::fs::File) -> Result<(), SecretError> {
+    Ok(())
+}
 impl SecretBox {
     /// Charge l'identite age ecrite par `ciphera init` (`age.key`). Les lignes
     /// vides et les commentaires (`#`) sont ignores.
     pub fn load(identity_path: &Path) -> Result<SecretBox, SecretError> {
-        let content = Zeroizing::new(
-            std::fs::read_to_string(identity_path)
-                .map_err(|_| SecretError("fichier d'identite illisible"))?,
-        );
+        use std::io::Read;
+        let mut file = std::fs::File::open(identity_path)
+            .map_err(|_| SecretError("fichier d'identite illisible"))?;
+        check_private(&file)?;
+        let mut raw = Zeroizing::new(String::new());
+        file.read_to_string(&mut raw)
+            .map_err(|_| SecretError("fichier d'identite illisible"))?;
+        let content = raw;
         let line = content
             .lines()
             .map(str::trim)
@@ -114,6 +145,17 @@ impl SecretBox {
         self.seal(&framed)
     }
 
+    /// Dechiffre un chiffre d'avant la liaison (age seul), pour le
+    /// rechiffrer lie a sa ligne. Refuse un clair qui commence par
+    /// `BOUND_MAGIC` : c'est un chiffre lie a une autre ligne, pas une
+    /// ancienne valeur.
+    pub fn open_unbound(&self, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretError> {
+        let clear = self.open(sealed)?;
+        if clear.starts_with(BOUND_MAGIC) {
+            return Err(SecretError("chiffre deja lie : rechiffrement refuse"));
+        }
+        Ok(clear)
+    }
     /// Dechiffre un chiffre lie a `label` ; refuse un autre label et un
     /// chiffre non lie (`seal`).
     pub fn open_bound(
@@ -159,5 +201,36 @@ mod tests {
         // Valeur vide et label vide.
         let empty = sb.seal_bound(b"", b"").unwrap();
         assert_eq!(sb.open_bound(b"", &empty).unwrap().as_slice(), b"");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn age_key_mode_0644_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ciphera-agekey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("age.key");
+        let (_, line) = SecretBox::generate();
+        std::fs::write(&path, line.as_bytes()).unwrap();
+        for (mode, ok) in [
+            (0o600, true),
+            (0o400, true),
+            (0o644, false),
+            (0o640, false),
+            (0o606, false),
+        ] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(SecretBox::load(&path).is_ok(), ok, "mode {mode:o}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn open_unbound_refuses_bound_clear() {
+        let (sb, _) = SecretBox::generate();
+        let bound = sb.seal_bound(b"a|b|c", b"v").unwrap();
+        assert!(sb.open_unbound(&bound).is_err());
+        let legacy = sb.seal(b"v").unwrap();
+        assert_eq!(sb.open_unbound(&legacy).unwrap().as_slice(), b"v");
     }
 }
