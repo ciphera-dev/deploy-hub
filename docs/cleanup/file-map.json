@@ -1,0 +1,3822 @@
+{
+ "source": "c:/Users/Lenovo/Documents/Projets/ciphera-deploy-main",
+ "target": "c:/Users/Lenovo/Documents/Projets/ciphera-deploy",
+ "date": "2026-11-21 12:48",
+ "files": [
+  {
+   "src": ".thumbnail",
+   "dst": null,
+   "action": "delete",
+   "reason": "vignette / métadonnées d'export, lues par aucun fichier conservé",
+   "replaced_by": null
+  },
+  {
+   "src": "SKILL.md",
+   "dst": ".agents/skills/ciphera-design/SKILL.md",
+   "action": "move",
+   "reason": "skill de marque de l'outil de design (chemins à corriger)",
+   "replaced_by": null
+  },
+  {
+   "src": "_adherence.oxlintrc.json",
+   "dst": "config/oxlintrc.adherence.json",
+   "action": "move",
+   "reason": "règles oxlint d'adhérence au DS (globs à mettre à jour) — gardé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "_ds_bundle.js",
+   "dst": "prototypes/vendor/ds-bundle.js",
+   "action": "move",
+   "reason": "bundle généré, chargé par les 8 pages du prototype et les specimens",
+   "replaced_by": null
+  },
+  {
+   "src": "_ds_manifest.json",
+   "dst": null,
+   "action": "delete",
+   "reason": "vignette / métadonnées d'export, lues par aucun fichier conservé",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/billions/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-6/andy.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-6/bg-vice-city.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-6/jason-duval.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-6/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-6/lucia-caminos.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-san-andreas/bg-skyline.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-san-andreas/carl-johnson.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-san-andreas/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-v/bg-los-santos.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-v/franklin-clinton.jpeg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-v/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-v/michael-de-santa.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/gta-v/trevor-philips.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/la-casa-de-papel/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/lupin/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/naruto/bg-akatsuki.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/naruto/itachi-uchiha.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/naruto/kakashi-hatake.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/naruto/logo.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/naruto/madara-uchiha.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/naruto/minato-namikaze.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/naruto/naruto-uzumaki.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/naruto/obito-uchiha.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/naruto/orochimaru.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/naruto/sasuke-uchiha.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/one-piece/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/prison-break/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/solo-leveling/baek-yoonho.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/solo-leveling/bg-shadow-monarch.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/solo-leveling/cha-hae-in.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/solo-leveling/choi-jong-in.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/solo-leveling/go-gunhee.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/solo-leveling/lee-joohee.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/solo-leveling/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/solo-leveling/sung-jinah.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/solo-leveling/sung-jinwoo.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/solo-leveling/yoo-jinho.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/suits/daniel-hardman.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/suits/donna-paulsen.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/suits/harvey-specter.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/suits/jessica-pearson.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/suits/logo.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/suits/louis-litt.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/suits/mike-ross.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/suits/rachel-zane.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/avatars/suits/robert-zane.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/bg-sunset.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "doublon exact de avatars/gta-6/bg-vice-city.png, non utilisé",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/ciphera-icon.svg",
+   "dst": "web/src/assets/brand/ciphera-icon.svg",
+   "action": "move",
+   "reason": "logo / icône Ciphera",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/cloudflare-logo-light.png",
+   "dst": "web/src/assets/images/cloudflare/cloudflare-logo-light.png",
+   "action": "move",
+   "reason": "logo Cloudflare utilisé par Connecteurs/Domaines",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/cloudflare-logo.webp",
+   "dst": "web/src/assets/images/cloudflare/cloudflare-logo.webp",
+   "action": "move",
+   "reason": "logo Cloudflare utilisé par Connecteurs/Domaines",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/cloudflare-mark.png",
+   "dst": "web/src/assets/images/cloudflare/cloudflare-mark.png",
+   "action": "move",
+   "reason": "logo Cloudflare utilisé par Connecteurs/Domaines",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/connectors/anthropic.png",
+   "dst": "web/src/assets/images/connectors/anthropic.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/connectors/chatgpt-mark.png",
+   "dst": "web/src/assets/images/connectors/chatgpt-mark.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/connectors/claude-mark.png",
+   "dst": "web/src/assets/images/connectors/claude-mark.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/connectors/crowdsec-mark.png",
+   "dst": "web/src/assets/images/connectors/crowdsec-mark.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/connectors/github-mark.png",
+   "dst": "web/src/assets/images/connectors/github-mark.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/connectors/groq-mark.png",
+   "dst": "web/src/assets/images/connectors/groq-mark.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/connectors/groq.png",
+   "dst": "web/src/assets/images/connectors/groq.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/connectors/openai.png",
+   "dst": "web/src/assets/images/connectors/openai.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/connectors/openrouter-mark.png",
+   "dst": "web/src/assets/images/connectors/openrouter-mark.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/connectors/supabase-mark.png",
+   "dst": "web/src/assets/images/connectors/supabase-mark.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/db/couchdb.png",
+   "dst": "web/src/assets/images/db/couchdb.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/db/mariadb.png",
+   "dst": "web/src/assets/images/db/mariadb.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/db/mongodb.png",
+   "dst": "web/src/assets/images/db/mongodb.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/db/mysql.png",
+   "dst": "web/src/assets/images/db/mysql.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/db/postgresql.png",
+   "dst": "web/src/assets/images/db/postgresql.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/favicon.svg",
+   "dst": "web/public/favicon.svg",
+   "action": "move",
+   "reason": "favicon Ciphera",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/logo-dark.svg",
+   "dst": "web/src/assets/brand/logo-dark.svg",
+   "action": "move",
+   "reason": "logo / icône Ciphera",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/logo.svg",
+   "dst": "web/src/assets/brand/logo.svg",
+   "action": "move",
+   "reason": "logo / icône Ciphera",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/os/debian.png",
+   "dst": "web/src/assets/images/os/debian.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/os/fedora.png",
+   "dst": "web/src/assets/images/os/fedora.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/os/linux.png",
+   "dst": "web/src/assets/images/os/linux.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/os/ubuntu.png",
+   "dst": "web/src/assets/images/os/ubuntu.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/smtp/brevo.png",
+   "dst": "web/src/assets/images/smtp/brevo.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/smtp/gmail.png",
+   "dst": "web/src/assets/images/smtp/gmail.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/smtp/hostinger.png",
+   "dst": "web/src/assets/images/smtp/hostinger.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/smtp/infomaniak.png",
+   "dst": "web/src/assets/images/smtp/infomaniak.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/smtp/outlook.png",
+   "dst": "web/src/assets/images/smtp/outlook.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/smtp/ovh.png",
+   "dst": "web/src/assets/images/smtp/ovh.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/ssh-icons/claude.png",
+   "dst": "web/src/assets/images/ssh-icons/claude.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/ssh-icons/codex.png",
+   "dst": "web/src/assets/images/ssh-icons/codex.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/ssh-icons/grok.png",
+   "dst": "web/src/assets/images/ssh-icons/grok.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/ssh-icons/kimi.png",
+   "dst": "web/src/assets/images/ssh-icons/kimi.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "assets/ssh-icons/user.png",
+   "dst": "web/src/assets/images/ssh-icons/user.png",
+   "action": "move",
+   "reason": "logo d'intégration utilisé par les écrans (chemins dynamiques)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/cards/InsightText.d.ts",
+   "dst": "web/src/design-system/components/cards/InsightText.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/cards/InsightText.jsx",
+   "dst": "web/src/design-system/components/cards/InsightText.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/cards/InsightText.prompt.md",
+   "dst": "web/src/design-system/components/cards/InsightText.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/cards/Panel.d.ts",
+   "dst": "web/src/design-system/components/cards/Panel.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/cards/Panel.jsx",
+   "dst": "web/src/design-system/components/cards/Panel.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/cards/Panel.prompt.md",
+   "dst": "web/src/design-system/components/cards/Panel.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/cards/UpdateCard.d.ts",
+   "dst": "web/src/design-system/components/cards/UpdateCard.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/cards/UpdateCard.jsx",
+   "dst": "web/src/design-system/components/cards/UpdateCard.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/cards/UpdateCard.prompt.md",
+   "dst": "web/src/design-system/components/cards/UpdateCard.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/cards/cards.card.html",
+   "dst": "docs/design-system/specimens/components/cards.card.html",
+   "action": "move",
+   "reason": "carte specimen du DS",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Badge.d.ts",
+   "dst": "web/src/design-system/components/core/Badge.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Badge.jsx",
+   "dst": "web/src/design-system/components/core/Badge.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Badge.prompt.md",
+   "dst": "web/src/design-system/components/core/Badge.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Button.d.ts",
+   "dst": "web/src/design-system/components/core/Button.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Button.jsx",
+   "dst": "web/src/design-system/components/core/Button.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Button.prompt.md",
+   "dst": "web/src/design-system/components/core/Button.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/ButtonGroup.d.ts",
+   "dst": "web/src/design-system/components/core/ButtonGroup.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/ButtonGroup.jsx",
+   "dst": "web/src/design-system/components/core/ButtonGroup.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/ButtonGroup.prompt.md",
+   "dst": "web/src/design-system/components/core/ButtonGroup.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Delta.d.ts",
+   "dst": "web/src/design-system/components/core/Delta.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Delta.jsx",
+   "dst": "web/src/design-system/components/core/Delta.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Delta.prompt.md",
+   "dst": "web/src/design-system/components/core/Delta.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/GroupButton.d.ts",
+   "dst": "web/src/design-system/components/core/GroupButton.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/GroupButton.jsx",
+   "dst": "web/src/design-system/components/core/GroupButton.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/GroupButton.prompt.md",
+   "dst": "web/src/design-system/components/core/GroupButton.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Icon.d.ts",
+   "dst": "web/src/design-system/components/core/Icon.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Icon.jsx",
+   "dst": "web/src/design-system/components/core/Icon.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Icon.prompt.md",
+   "dst": "web/src/design-system/components/core/Icon.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/IconButton.d.ts",
+   "dst": "web/src/design-system/components/core/IconButton.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/IconButton.jsx",
+   "dst": "web/src/design-system/components/core/IconButton.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/IconButton.prompt.md",
+   "dst": "web/src/design-system/components/core/IconButton.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/LegendItem.d.ts",
+   "dst": "web/src/design-system/components/core/LegendItem.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/LegendItem.jsx",
+   "dst": "web/src/design-system/components/core/LegendItem.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/LegendItem.prompt.md",
+   "dst": "web/src/design-system/components/core/LegendItem.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Select.d.ts",
+   "dst": "web/src/design-system/components/core/Select.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Select.jsx",
+   "dst": "web/src/design-system/components/core/Select.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/Select.prompt.md",
+   "dst": "web/src/design-system/components/core/Select.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/core/core.card.html",
+   "dst": "docs/design-system/specimens/components/core.card.html",
+   "action": "move",
+   "reason": "carte specimen du DS",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/AreaChart.d.ts",
+   "dst": "web/src/design-system/components/data/AreaChart.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/AreaChart.jsx",
+   "dst": "web/src/design-system/components/data/AreaChart.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/AreaChart.prompt.md",
+   "dst": "web/src/design-system/components/data/AreaChart.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/CodeBlock.d.ts",
+   "dst": "web/src/design-system/components/data/CodeBlock.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/CodeBlock.jsx",
+   "dst": "web/src/design-system/components/data/CodeBlock.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/CodeBlock.prompt.md",
+   "dst": "web/src/design-system/components/data/CodeBlock.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/DataTable.d.ts",
+   "dst": "web/src/design-system/components/data/DataTable.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/DataTable.jsx",
+   "dst": "web/src/design-system/components/data/DataTable.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/DataTable.prompt.md",
+   "dst": "web/src/design-system/components/data/DataTable.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/KeyValueList.d.ts",
+   "dst": "web/src/design-system/components/data/KeyValueList.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/KeyValueList.jsx",
+   "dst": "web/src/design-system/components/data/KeyValueList.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/KeyValueList.prompt.md",
+   "dst": "web/src/design-system/components/data/KeyValueList.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/RadialGauge.d.ts",
+   "dst": "web/src/design-system/components/data/RadialGauge.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/RadialGauge.jsx",
+   "dst": "web/src/design-system/components/data/RadialGauge.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/RadialGauge.prompt.md",
+   "dst": "web/src/design-system/components/data/RadialGauge.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/SegmentedBar.d.ts",
+   "dst": "web/src/design-system/components/data/SegmentedBar.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/SegmentedBar.jsx",
+   "dst": "web/src/design-system/components/data/SegmentedBar.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/SegmentedBar.prompt.md",
+   "dst": "web/src/design-system/components/data/SegmentedBar.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/Stat.d.ts",
+   "dst": "web/src/design-system/components/data/Stat.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/Stat.jsx",
+   "dst": "web/src/design-system/components/data/Stat.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/Stat.prompt.md",
+   "dst": "web/src/design-system/components/data/Stat.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/StatGroup.d.ts",
+   "dst": "web/src/design-system/components/data/StatGroup.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/StatGroup.jsx",
+   "dst": "web/src/design-system/components/data/StatGroup.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/StatGroup.prompt.md",
+   "dst": "web/src/design-system/components/data/StatGroup.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/StatusDot.d.ts",
+   "dst": "web/src/design-system/components/data/StatusDot.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/StatusDot.jsx",
+   "dst": "web/src/design-system/components/data/StatusDot.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/StatusDot.prompt.md",
+   "dst": "web/src/design-system/components/data/StatusDot.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/TickBar.d.ts",
+   "dst": "web/src/design-system/components/data/TickBar.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/TickBar.jsx",
+   "dst": "web/src/design-system/components/data/TickBar.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/TickBar.prompt.md",
+   "dst": "web/src/design-system/components/data/TickBar.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/data/data.card.html",
+   "dst": "docs/design-system/specimens/components/data.card.html",
+   "action": "move",
+   "reason": "carte specimen du DS",
+   "replaced_by": null
+  },
+  {
+   "src": "components/forms/RadioCard.d.ts",
+   "dst": "web/src/design-system/components/forms/RadioCard.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/forms/RadioCard.jsx",
+   "dst": "web/src/design-system/components/forms/RadioCard.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/forms/RadioCard.prompt.md",
+   "dst": "web/src/design-system/components/forms/RadioCard.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/forms/Switch.d.ts",
+   "dst": "web/src/design-system/components/forms/Switch.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/forms/Switch.jsx",
+   "dst": "web/src/design-system/components/forms/Switch.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/forms/Switch.prompt.md",
+   "dst": "web/src/design-system/components/forms/Switch.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/forms/TextField.d.ts",
+   "dst": "web/src/design-system/components/forms/TextField.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/forms/TextField.jsx",
+   "dst": "web/src/design-system/components/forms/TextField.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/forms/TextField.prompt.md",
+   "dst": "web/src/design-system/components/forms/TextField.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/forms/forms.card.html",
+   "dst": "docs/design-system/specimens/components/forms.card.html",
+   "action": "move",
+   "reason": "carte specimen du DS",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/BrandMark.d.ts",
+   "dst": "web/src/design-system/components/navigation/BrandMark.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/BrandMark.jsx",
+   "dst": "web/src/design-system/components/navigation/BrandMark.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/BrandMark.prompt.md",
+   "dst": "web/src/design-system/components/navigation/BrandMark.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/NavItem.d.ts",
+   "dst": "web/src/design-system/components/navigation/NavItem.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/NavItem.jsx",
+   "dst": "web/src/design-system/components/navigation/NavItem.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/NavItem.prompt.md",
+   "dst": "web/src/design-system/components/navigation/NavItem.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/NavSection.d.ts",
+   "dst": "web/src/design-system/components/navigation/NavSection.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/NavSection.jsx",
+   "dst": "web/src/design-system/components/navigation/NavSection.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/NavSection.prompt.md",
+   "dst": "web/src/design-system/components/navigation/NavSection.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/Sidebar.d.ts",
+   "dst": "web/src/design-system/components/navigation/Sidebar.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/Sidebar.jsx",
+   "dst": "web/src/design-system/components/navigation/Sidebar.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/Sidebar.prompt.md",
+   "dst": "web/src/design-system/components/navigation/Sidebar.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/Tabs.d.ts",
+   "dst": "web/src/design-system/components/navigation/Tabs.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/Tabs.jsx",
+   "dst": "web/src/design-system/components/navigation/Tabs.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/Tabs.prompt.md",
+   "dst": "web/src/design-system/components/navigation/Tabs.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/UserMenu.d.ts",
+   "dst": "web/src/design-system/components/navigation/UserMenu.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/UserMenu.jsx",
+   "dst": "web/src/design-system/components/navigation/UserMenu.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/UserMenu.prompt.md",
+   "dst": "web/src/design-system/components/navigation/UserMenu.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/WorkspaceSwitcher.d.ts",
+   "dst": "web/src/design-system/components/navigation/WorkspaceSwitcher.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/WorkspaceSwitcher.jsx",
+   "dst": "web/src/design-system/components/navigation/WorkspaceSwitcher.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/WorkspaceSwitcher.prompt.md",
+   "dst": "web/src/design-system/components/navigation/WorkspaceSwitcher.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/navigation/navigation.card.html",
+   "dst": "docs/design-system/specimens/components/navigation.card.html",
+   "action": "move",
+   "reason": "carte specimen du DS",
+   "replaced_by": null
+  },
+  {
+   "src": "components/overlay/Modal.d.ts",
+   "dst": "web/src/design-system/components/overlay/Modal.d.ts",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/overlay/Modal.jsx",
+   "dst": "web/src/design-system/components/overlay/Modal.jsx",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/overlay/Modal.prompt.md",
+   "dst": "web/src/design-system/components/overlay/Modal.prompt.md",
+   "action": "move",
+   "reason": "primitive du design system (module ESM, à porter en TSX)",
+   "replaced_by": null
+  },
+  {
+   "src": "components/overlay/overlay.card.html",
+   "dst": "docs/design-system/specimens/components/overlay.card.html",
+   "action": "move",
+   "reason": "carte specimen du DS",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/brand-motifs.html",
+   "dst": "docs/design-system/specimens/guidelines/brand-motifs.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/brand-name.html",
+   "dst": "docs/design-system/specimens/guidelines/brand-name.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/colors-borders.html",
+   "dst": "docs/design-system/specimens/guidelines/colors-borders.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/colors-neutral.html",
+   "dst": "docs/design-system/specimens/guidelines/colors-neutral.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/colors-semantic.html",
+   "dst": "docs/design-system/specimens/guidelines/colors-semantic.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/colors-surfaces.html",
+   "dst": "docs/design-system/specimens/guidelines/colors-surfaces.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/colors-text.html",
+   "dst": "docs/design-system/specimens/guidelines/colors-text.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/colors-viz.html",
+   "dst": "docs/design-system/specimens/guidelines/colors-viz.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/radii.html",
+   "dst": "docs/design-system/specimens/guidelines/radii.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/shadows.html",
+   "dst": "docs/design-system/specimens/guidelines/shadows.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/spacing.html",
+   "dst": "docs/design-system/specimens/guidelines/spacing.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/type-display.html",
+   "dst": "docs/design-system/specimens/guidelines/type-display.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/type-mono.html",
+   "dst": "docs/design-system/specimens/guidelines/type-mono.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "guidelines/type-ui.html",
+   "dst": "docs/design-system/specimens/guidelines/type-ui.html",
+   "action": "move",
+   "reason": "specimen de fondation",
+   "replaced_by": null
+  },
+  {
+   "src": "readme.md",
+   "dst": "docs/design-system/README.md",
+   "action": "move",
+   "reason": "fondations du design system",
+   "replaced_by": null
+  },
+  {
+   "src": "scraps/av.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "découpe inutile (avatar d'une vraie personne / logo tiers)",
+   "replaced_by": null
+  },
+  {
+   "src": "scraps/bottom.png",
+   "dst": "docs/design-system/references/efferd-dashboard-bottom-01.png",
+   "action": "move",
+   "reason": "découpe de la référence visuelle",
+   "replaced_by": null
+  },
+  {
+   "src": "scraps/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "découpe inutile (avatar d'une vraie personne / logo tiers)",
+   "replaced_by": null
+  },
+  {
+   "src": "scraps/main.png",
+   "dst": "docs/design-system/references/efferd-dashboard-main-01.png",
+   "action": "move",
+   "reason": "découpe de la référence visuelle",
+   "replaced_by": null
+  },
+  {
+   "src": "scraps/right.png",
+   "dst": "docs/design-system/references/efferd-dashboard-right-panel-01.png",
+   "action": "move",
+   "reason": "découpe de la référence visuelle",
+   "replaced_by": null
+  },
+  {
+   "src": "scraps/side.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "contient nom/e-mail/photo d'une personne réelle (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "styles.css",
+   "dst": "web/src/styles/index.css",
+   "action": "move",
+   "reason": "point d'entrée CSS (imports des tokens)",
+   "replaced_by": null
+  },
+  {
+   "src": "thumbnail.html",
+   "dst": null,
+   "action": "delete",
+   "reason": "vignette / métadonnées d'export, lues par aucun fichier conservé",
+   "replaced_by": null
+  },
+  {
+   "src": "tokens/base.css",
+   "dst": "web/src/styles/tokens/base.css",
+   "action": "move",
+   "reason": "token CSS / reset global",
+   "replaced_by": null
+  },
+  {
+   "src": "tokens/colors.css",
+   "dst": "web/src/styles/tokens/colors.css",
+   "action": "move",
+   "reason": "token CSS / reset global",
+   "replaced_by": null
+  },
+  {
+   "src": "tokens/effects.css",
+   "dst": "web/src/styles/tokens/effects.css",
+   "action": "move",
+   "reason": "token CSS / reset global",
+   "replaced_by": null
+  },
+  {
+   "src": "tokens/fonts.css",
+   "dst": "web/src/styles/tokens/fonts.css",
+   "action": "move",
+   "reason": "token CSS / reset global",
+   "replaced_by": null
+  },
+  {
+   "src": "tokens/spacing.css",
+   "dst": "web/src/styles/tokens/spacing.css",
+   "action": "move",
+   "reason": "token CSS / reset global",
+   "replaced_by": null
+  },
+  {
+   "src": "tokens/typography.css",
+   "dst": "web/src/styles/tokens/typography.css",
+   "action": "move",
+   "reason": "token CSS / reset global",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/2fa.html",
+   "dst": "prototypes/dashboard/2fa.html",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/404.html",
+   "dst": "prototypes/dashboard/404.html",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ApiPage.jsx",
+   "dst": "prototypes/dashboard/ApiPage.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/AppSidebar.jsx",
+   "dst": "prototypes/dashboard/AppSidebar.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Avatar.jsx",
+   "dst": "prototypes/dashboard/Avatar.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Backups.jsx",
+   "dst": "prototypes/dashboard/Backups.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Connectors.jsx",
+   "dst": "prototypes/dashboard/Connectors.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/DashTweaks.jsx",
+   "dst": "prototypes/dashboard/DashTweaks.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/DashboardHeader.jsx",
+   "dst": "prototypes/dashboard/DashboardHeader.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Databases.jsx",
+   "dst": "prototypes/dashboard/Databases.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Docker.jsx",
+   "dst": "prototypes/dashboard/Docker.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/DomainsPage.jsx",
+   "dst": "prototypes/dashboard/DomainsPage.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/GlobalVariables.jsx",
+   "dst": "prototypes/dashboard/GlobalVariables.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Monitoring.jsx",
+   "dst": "prototypes/dashboard/Monitoring.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Notifications.jsx",
+   "dst": "prototypes/dashboard/Notifications.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Overview.jsx",
+   "dst": "prototypes/dashboard/Overview.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Pages2.jsx",
+   "dst": "prototypes/dashboard/Pages2.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Pages3.jsx",
+   "dst": "prototypes/dashboard/Pages3.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ProfileNotif.jsx",
+   "dst": "prototypes/dashboard/ProfileNotif.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ProfilePage.jsx",
+   "dst": "prototypes/dashboard/ProfilePage.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ProfileSecurity.jsx",
+   "dst": "prototypes/dashboard/ProfileSecurity.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ProjectCloudflare.jsx",
+   "dst": "prototypes/dashboard/ProjectCloudflare.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ProjectDeployments.jsx",
+   "dst": "prototypes/dashboard/ProjectDeployments.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ProjectDomains.jsx",
+   "dst": "prototypes/dashboard/ProjectDomains.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ProjectGit.jsx",
+   "dst": "prototypes/dashboard/ProjectGit.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ProjectLogs.jsx",
+   "dst": "prototypes/dashboard/ProjectLogs.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ProjectOverview.jsx",
+   "dst": "prototypes/dashboard/ProjectOverview.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ProjectVariables.jsx",
+   "dst": "prototypes/dashboard/ProjectVariables.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Projects.jsx",
+   "dst": "prototypes/dashboard/Projects.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/README.md",
+   "dst": "prototypes/dashboard/README.md",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ResourcePage.jsx",
+   "dst": "prototypes/dashboard/ResourcePage.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Security.jsx",
+   "dst": "prototypes/dashboard/Security.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ServerManage.jsx",
+   "dst": "prototypes/dashboard/ServerManage.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ServerSecurity.jsx",
+   "dst": "prototypes/dashboard/ServerSecurity.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Servers.jsx",
+   "dst": "prototypes/dashboard/Servers.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/ServersPage.jsx",
+   "dst": "prototypes/dashboard/ServersPage.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Team.jsx",
+   "dst": "prototypes/dashboard/Team.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Terminal.jsx",
+   "dst": "prototypes/dashboard/Terminal.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/TicketAI.jsx",
+   "dst": "prototypes/dashboard/TicketAI.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Tickets.jsx",
+   "dst": "prototypes/dashboard/Tickets.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/Workspace.jsx",
+   "dst": "prototypes/dashboard/Workspace.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/cloud-admin.html",
+   "dst": null,
+   "action": "delete",
+   "reason": "version Ciphera Cloud supprimée : projet 100 % open source, self-hosted uniquement (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/cloud-billing.html",
+   "dst": null,
+   "action": "delete",
+   "reason": "version Ciphera Cloud supprimée : projet 100 % open source, self-hosted uniquement (décision utilisateur) ; le seul lien (Paramètres › Licence) est retiré avec la section Licence",
+   "replaced_by": "ui_kits/dashboard/index.html"
+  },
+  {
+   "src": "ui_kits/dashboard/data.js",
+   "dst": "prototypes/dashboard/data.js",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/index.html",
+   "dst": "prototypes/dashboard/index.html",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/install.html",
+   "dst": "prototypes/dashboard/install.html",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/login.html",
+   "dst": "prototypes/dashboard/login.html",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/pages.js",
+   "dst": "prototypes/dashboard/pages.js",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/register.html",
+   "dst": "prototypes/dashboard/register.html",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "ui_kits/dashboard/tweaks-panel.jsx",
+   "dst": "prototypes/dashboard/tweaks-panel.jsx",
+   "action": "move",
+   "reason": "écran/maquette du dashboard, réutilisé (porté vers web/)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/05fe058f546e093142f75de8676f347a.jpg",
+   "dst": "docs/design-system/references/reference-dashboard.jpg",
+   "action": "move",
+   "reason": "Capture de référence citée par readme.md",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/13559-0ff3c10a.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact de assets/avatars/gta-6/bg-vice-city.png",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/13559.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact de assets/avatars/gta-6/bg-vice-city.png",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/3c184dcd417be3257ecc68d4c195b463 (1).png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/3c184dcd417be3257ecc68d4c195b463.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Anthropic-Logo.wine.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/connectors/anthropic.png"
+  },
+  {
+   "src": "uploads/Baek Yoonho.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Brevo-Logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/smtp/brevo.png"
+  },
+  {
+   "src": "uploads/CJ-GTASA.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Cha Hae-in.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Choi Jong-in.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Cloudflare_Logo.svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": "assets/cloudflare-logo.webp"
+  },
+  {
+   "src": "uploads/Fedora_icon_(2021).svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/os/fedora.png"
+  },
+  {
+   "src": "uploads/Google_2015_logo.svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/smtp/gmail.png"
+  },
+  {
+   "src": "uploads/Grand_Theft_Auto_San_Andreas_logo.svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Grand_Theft_Auto_VI_logo.svg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Logo SVG tiers (marque Rockstar) ; PNG dans assets/, garder si vectoriel voulu — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Grand_Theft_Auto_V_Logo.svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Groq_logo.svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/connectors/groq.png"
+  },
+  {
+   "src": "uploads/Gunhee1.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Harvey_Specter_(Gabriel_Macht)_in_Suits.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Photo d'acteur réel (Gabriel Macht) ; version déjà dans assets/ — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Hostinger_logo_purple.svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/smtp/hostinger.png"
+  },
+  {
+   "src": "uploads/Itachi_Uchiwa_2.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/JasonDuval-GTAVI-Portrait.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Kakashi_Hatake.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Lee Joohee.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Logo_OVH.svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/smtp/ovh.png"
+  },
+  {
+   "src": "uploads/Louis.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact ; photo d'acteur réel (Suits), droit à l'image — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Lucia-GTAVI-Portrait.PNG.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Michael-desanta.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Mike_Ross_29.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact ; photo d'acteur réel (Suits), droit à l'image — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Minato_Namikaze.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Naruto_logo.svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Obito_Uchiha.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/One-Piece-Logo-1997.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/OpenAI-Logo-8f871820.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact interne ; version optimisée dans assets/",
+   "replaced_by": "assets/connectors/openai.png"
+  },
+  {
+   "src": "uploads/OpenAI-Logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact interne ; version optimisée dans assets/",
+   "replaced_by": "assets/connectors/openai.png"
+  },
+  {
+   "src": "uploads/Orochimaru_Infobox.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Outlook-Logo-2012-2019.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/smtp/outlook.png"
+  },
+  {
+   "src": "uploads/Postgresql_elephant.svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/db/postgresql.png"
+  },
+  {
+   "src": "uploads/Prison_Break_logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Robert_Zane_29_Promotional.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact ; photo d'acteur réel (Suits), droit à l'image — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Sasuke_Part_2.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Solo_Leveling_logo.svg.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Suits_-_Logo.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Sung Jinah.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/Yoo Jinho.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/andy-gta-6-3-1200x900.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/anthropic-icon-tdvkiqisswbrmtkiygb0ia.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/connectors/anthropic.png"
+  },
+  {
+   "src": "uploads/anthropic-light.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/connectors/anthropic.png"
+  },
+  {
+   "src": "uploads/billions.avif",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/c5eca249d12876374526161740652ea0.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/chat-gpt-trend-czy-niezbedne-narzedzie-programistyczne.hG_Bfdoo_Z8KPD7.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/connectors/chatgpt-mark.png"
+  },
+  {
+   "src": "uploads/claude-agent.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/ssh-icons/claude.png"
+  },
+  {
+   "src": "uploads/codex-agent.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/ssh-icons/codex.png"
+  },
+  {
+   "src": "uploads/couch@2x.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/db/couchdb.png"
+  },
+  {
+   "src": "uploads/crowdsec.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": "assets/connectors/crowdsec-mark.png"
+  },
+  {
+   "src": "uploads/distributorlogodebian_103834.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/os/debian.png"
+  },
+  {
+   "src": "uploads/github-6980894_640.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/connectors/github-mark.png"
+  },
+  {
+   "src": "uploads/glyph-grape@2x.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Logo violet non identifié, sans équivalent ni référence — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/grand-theft-auto-gta-v-logo-grand-theft-auto-gta-v-icon-transparent-free-png.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/grok--v2.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/ssh-icons/grok.png"
+  },
+  {
+   "src": "uploads/groq.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/connectors/groq-mark.png"
+  },
+  {
+   "src": "uploads/harveyspec-img-1.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact ; photo d'acteur réel (Suits), droit à l'image — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/images (2).jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact ; photo d'acteur réel (Suits), droit à l'image — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/images (3).jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact ; photo d'acteur réel (Suits), droit à l'image — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/images (4).jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/images (5).jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/images (6).jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/images.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact ; photo d'acteur réel (Suits), droit à l'image — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/images.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/connectors/claude-mark.png"
+  },
+  {
+   "src": "uploads/infomaniak-only-blue.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/smtp/infomaniak.png"
+  },
+  {
+   "src": "uploads/kimi-agent.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/ssh-icons/kimi.png"
+  },
+  {
+   "src": "uploads/la casa de papel.avif",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/linux.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/os/linux.png"
+  },
+  {
+   "src": "uploads/logo.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/connectors/anthropic.png"
+  },
+  {
+   "src": "uploads/lupin.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/mariadb.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/db/mariadb.png"
+  },
+  {
+   "src": "uploads/mongodb_original_logo_icon_146424.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/db/mongodb.png"
+  },
+  {
+   "src": "uploads/mysql-logo.svg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Logo SVG non référencé ; PNG dans assets/db/, garder si vectoriel voulu — supprimé (décision utilisateur)",
+   "replaced_by": "assets/db/mysql.png"
+  },
+  {
+   "src": "uploads/mysql.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/db/mysql.png"
+  },
+  {
+   "src": "uploads/naruto.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/ovh-icon.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/smtp/ovh.png"
+  },
+  {
+   "src": "uploads/pasted-1795041458003-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795041612490-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795042277818-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795042509657-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795042665073-0.png",
+   "dst": "docs/design-system/references/overview-stats-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795043393052-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795043564419-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795043657734-0.png",
+   "dst": "docs/design-system/references/logs-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795043806486-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795043932986-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795044049314-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795044272030-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795044298341-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795044318992-0.png",
+   "dst": "docs/design-system/references/project-git-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795044592442-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795044600657-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795044744960-0.png",
+   "dst": "docs/design-system/references/monitoring-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795044947487-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795176264334-0.png",
+   "dst": "docs/design-system/references/domains-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795176732188-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795176809476-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795176888716-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795176989399-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795177064464-0.png",
+   "dst": "docs/design-system/references/domains-ssl-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795177570012-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795177680647-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795177758306-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795177782115-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795177948398-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795178081397-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795178183983-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795178325030-0.png",
+   "dst": "docs/design-system/references/projects-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795178443834-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795178669779-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795178680508-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795178801463-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795178967647-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795179259126-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795179345405-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795179414926-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795179459217-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795179544520-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180150322-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180156889-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180176899-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180267009-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180359898-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180422140-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180436152-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180563818-0.png",
+   "dst": "docs/design-system/references/api-keys-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180691313-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180735789-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180788653-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795180878403-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795181299416-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795181359518-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795181553092-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Contient photo de l'acteur jouant Harvey Specter (Suits) ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795181833127-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Profil : nom, adresse postale, téléphone visibles ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795181995808-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Profil : nom, adresse, téléphone, email visibles ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795182090929-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795182094665-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795182098180-0.png",
+   "dst": "docs/design-system/references/settings-notifications-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795182120151-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795182160164-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795182173046-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Profil : nom, adresse, téléphone, email visibles ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795182252292-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795182268925-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Sessions actives : appareils, villes, adresses IP ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795182873324-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795182929160-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795184457380-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795184621309-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795184828097-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795185607851-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795185688695-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795185728693-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795185745548-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795185807484-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795185944838-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795186614109-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795186756770-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Contient photo d'un acteur réel (Suits) ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795186827461-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795186911912-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795187030716-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795187107820-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795187213445-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795187373169-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188086122-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188104470-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188121794-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188139018-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188265307-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188369463-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188643321-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188644408-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "doublon exact d'une autre capture, elle aussi supprimée",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188705466-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188811516-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188905685-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188922191-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795188985068-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795189062180-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795189333834-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Panneau Hostinger avec prénom et historique de conversations ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795189359495-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Panneau Hostinger avec liste de conversations ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795189389072-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Panneau Hostinger avec liste de conversations ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795189455134-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795189499115-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795190313180-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795190417817-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795190675215-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795190859001-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795190938518-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795191014205-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795191084917-0.png",
+   "dst": "docs/design-system/references/servers-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795191099365-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795191104421-0.png",
+   "dst": "docs/design-system/references/connectors-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795191325894-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795191589329-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795191775550-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795191780128-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192099746-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192156118-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192184276-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192208040-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192217986-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192246037-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192307756-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192312289-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192324252-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192410598-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192456476-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192475518-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Facture tierce avec noms de personnes ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192541564-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192583114-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "doublon exact d'une autre capture, elle aussi supprimée",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795192671824-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Accueil avec prénom utilisateur et barre des tâches ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795193646266-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795193752511-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795193805253-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795193840609-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795193865767-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795193900906-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795193916310-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795193978867-0.png",
+   "dst": "docs/design-system/references/server-detail-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795193987454-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795194081167-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795194174650-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795194178292-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795194565203-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795194632267-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795194944928-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795194950708-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195016822-0.png",
+   "dst": "docs/design-system/references/tickets-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195345602-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195365545-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195437437-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195440679-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195634255-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195639218-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195823839-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Connexion Cloudflare avec adresses email ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195837080-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Connexion Cloudflare tierce, emails possibles ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195930580-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795195959000-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795196017911-0.png",
+   "dst": "docs/design-system/references/login-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795196028422-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Écran de connexion avec adresses email nominatives ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795196068395-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795196117041-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795196151413-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Écran de connexion avec adresses email nominatives ; ne pas recopier — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795196171986-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795196257574-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795196912728-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795197016292-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795197077952-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795197238461-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795197323230-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "doublon exact d'une autre capture, elle aussi supprimée",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795197528372-0.png",
+   "dst": "docs/design-system/references/onboarding-checks-01.png",
+   "action": "move",
+   "reason": "Capture représentative d'un écran Ciphera (référence visuelle)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795197646456-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795197764501-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795197782709-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795259325784-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795259641785-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795259706965-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795259872125-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pasted-1795260652525-0.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Captures d'inspiration non référencées ; écrans déjà présents en prototypes",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/photo.avif",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact de « la casa de papel.avif » ; logo déjà dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/pm4n5rvu91dc1.jpeg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/suits-gina-torres.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact ; photo d'acteur réel (Suits), droit à l'image — supprimé (décision utilisateur)",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/sunjiwoo.jpg",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  },
+  {
+   "src": "uploads/supabase-icon-green-transparent.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": "assets/connectors/supabase-mark.png"
+  },
+  {
+   "src": "uploads/ubuntu.png",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/os/ubuntu.png"
+  },
+  {
+   "src": "uploads/user-icon-line-art-logo-set_1223784-17839.avif",
+   "dst": null,
+   "action": "delete",
+   "reason": "Original non référencé ; version retravaillée déjà dans assets/",
+   "replaced_by": "assets/ssh-icons/user.png"
+  },
+  {
+   "src": "uploads/what-protagonist-do-you-think-takes-out-trevor-with-the-v0-2md3eb5gbfzh1.webp",
+   "dst": null,
+   "action": "delete",
+   "reason": "Doublon exact (sha1) de la copie rangée dans assets/",
+   "replaced_by": null
+  }
+ ]
+}

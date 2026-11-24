@@ -1,0 +1,15 @@
+<!-- @dsCard group="Components" viewport="700x260" name="Panels & cards" -->
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../../../web/src/styles/index.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../../../prototypes/vendor/ds-bundle.js"></script>
+<style>body{padding:20px;background:var(--surface-app)}.r{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.c{display:flex;flex-direction:column;gap:16px}</style></head><body><div id="root"></div>
+<script type="text/babel">
+const NS=window.CipheraDesignSystem;const {Panel,UpdateCard,InsightText,Button}=NS;
+function App(){return (<div style={{display:'grid',gridTemplateColumns:'220px 1fr',gap:24,alignItems:'start'}}>
+<UpdateCard/>
+<Panel padding="0" icon="chart-pie" title="AI Insights" action={<Button variant="ghost" icon="message-circle">Ask AI</Button>}><InsightText highlight="3.5% this month" after="vs. trailing burn.">Unused budget runway improved by</InsightText></Panel>
+</div>);}
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script></body></html>

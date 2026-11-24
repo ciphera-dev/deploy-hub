@@ -1,0 +1,11 @@
+# Machine de test Fedora 45 avec systemd. PostgreSQL de la distribution :
+# fixture de test seulement (en production, conteneur epingle lance par l'agent).
+FROM docker.io/library/fedora:45
+RUN dnf -y install systemd procps-ng iproute curl ca-certificates python3 openssl \
+      shadow-utils util-linux tar gzip postgresql-server nftables \
+ && dnf clean all \
+ && postgresql-setup --initdb \
+ && sed -i 's/^\(host[[:space:]].*\)ident$/\1scram-sha-256/' /var/lib/pgsql/data/pg_hba.conf \
+ && systemctl enable postgresql
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

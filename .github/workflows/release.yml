@@ -1,0 +1,344 @@
+name: Release
+
+# Chaine de release : binaires musl, archives, install.sh publie (cle
+# injectee), SHA256SUMS signes (minisign), installation de bout en bout dans
+# des conteneurs systemd.
+# - push sur main, ou lancement manuel (meme sur un tag) : release de TEST
+#   (cle de test, artefacts de workflow seulement, aucune publication) ;
+# - push d'un tag v* : release de PRODUCTION (commit de main exige,
+#   environnement protege `release`, cle minisign de production, cosign
+#   keyless, attestation SLSA, GitHub Release, puis site get.ciphera.ch
+#   construit depuis les fichiers signes de CE run et deploye dans
+#   l'environnement protege `github-pages`). docs/security/release-signing.md.
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+    paths:
+      - "install/**"
+      - "deploy/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: web
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Version (Cargo.toml = install.sh = tag)
+        id: version
+        run: |
+          version="v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          script_version=$(sed -n "s/^DEFAULT_VERSION='\(.*\)'\$/\1/p" install/install.sh)
+          if [ "$version" != "$script_version" ]; then
+            echo "::error::Cargo.toml ($version) et install.sh ($script_version) divergent"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "$version" ]; then
+            echo "::error::le tag ne correspond pas a la version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist
+          path: web/dist
+      - run: rustup show
+      - run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+      # zig sert aussi de compilateur C croise (cc et cmake) pour zlib-ng et
+      # zstd, dependances C de Pingora ; cmake vient de l'image ubuntu-latest.
+      - name: zig et cargo-zigbuild (versions epinglees)
+        run: |
+          cmake --version
+          python3 -m venv "$RUNNER_TEMP/zig"
+          printf '%s\n' 'ziglang==0.17.1 --hash=sha256:ea6cc5d87b033cf0aedfbc8f9549a908cae6c50ac31f1698188fa48a74524b54' \
+            > "$RUNNER_TEMP/zig-requirements.txt"
+          "$RUNNER_TEMP/zig/bin/pip" install --require-hashes -r "$RUNNER_TEMP/zig-requirements.txt"
+          echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+          cargo install cargo-zigbuild --locked --version 0.24.1
+      - name: Binaires musl statiques
+        run: >-
+          cargo zigbuild --release --locked
+          --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+          --bin ciphera --bin ciphera-agent --bin ciphera-proxy --bin ciphera-cli
+      - name: Archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            sh install/package.sh "$VERSION" "$t" "target/$t/release" dist
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: archives
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  sign-test:
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archives
+          path: dist
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      - name: Release de test signee (minisign)
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          MINISIGN_KEY: ${{ secrets.CIPHERA_TEST_MINISIGN_KEY }}
+        run: |
+          set -eu
+          umask 077
+          key="$RUNNER_TEMP/minisign.key"
+          trap 'rm -f "$key"' EXIT
+          if [ -n "$MINISIGN_KEY" ]; then
+            printf '%s\n' "$MINISIGN_KEY" | tr -d '\r' > "$key"
+            pub=install/tests/ciphera-test.pub
+          else
+            echo "::warning::secret CIPHERA_TEST_MINISIGN_KEY absent : cle ephemere, artefacts de TEST seulement"
+            minisign -G -W -p "$RUNNER_TEMP/EPHEMERAL-TEST-ONLY.pub" -s "$key" > /dev/null
+            pub="$RUNNER_TEMP/EPHEMERAL-TEST-ONLY.pub"
+            cp "$pub" dist/
+          fi
+          sh install/sign-release.sh "$VERSION" "$key" "$pub" dist "release de test"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-test
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  install-e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archives
+          path: dist
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      - name: Binaires x86_64 extraits de l'archive
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          name="ciphera-$VERSION-x86_64-unknown-linux-musl"
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "dist/$name.tar.gz" -C "$RUNNER_TEMP/bin" --strip-components=2 "$name/bin"
+      # Podman rootful : conteneurs systemd (Debian, Ubuntu, Fedora).
+      - name: install.sh de bout en bout
+        run: sudo CIPHERA_TEST_BIN_DIR="$RUNNER_TEMP/bin" bash install/tests/run.sh debian ubuntu fedora
+      # Mise a jour de bout en bout (ciphera-cli updater, unites .path et
+      # .service, HMAC, minisign + SHA-256, pg_dump, retour arriere) : Debian.
+      - name: Mise a jour de bout en bout
+        run: sudo CIPHERA_TEST_BIN_DIR="$RUNNER_TEMP/bin" bash install/tests/update.sh debian
+
+  # Production : apres les tests de bout en bout, avec l'approbation de
+  # l'environnement `release` (tags v* seulement). Seul job qui lit la cle
+  # minisign de production ; id-token pour cosign keyless et l'attestation.
+  sign-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, install-e2e]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Le commit du tag est sur main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::le tag $GITHUB_REF_NAME ($GITHUB_SHA) n'est pas un commit de main"
+            exit 1
+          }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archives
+          path: dist
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      - name: Cles de confiance de production (jamais la cle de test)
+        run: |
+          # Meme lecture que release-script.sh : commentaires et espaces retires.
+          keys() { sed -e 's/\r$//' -e '/^untrusted comment:/d' "$1" | tr -d ' \t' | sed '/^$/d'; }
+          if keys install/ciphera.pub | grep -qxF "$(keys install/tests/ciphera-test.pub)"; then
+            echo "::error::install/ciphera.pub contient la cle de TEST : lancer scripts/release/new-signing-key.ps1 (docs/operations/release.md)"
+            exit 1
+          fi
+      - name: Release signee (minisign, cle de production)
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          MINISIGN_KEY: ${{ secrets.CIPHERA_MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.CIPHERA_MINISIGN_PASSWORD }}
+        run: |
+          set -eu
+          if [ -z "$MINISIGN_KEY" ] || [ -z "$MINISIGN_PASSWORD" ]; then
+            echo "::error::secrets CIPHERA_MINISIGN_SECRET_KEY / CIPHERA_MINISIGN_PASSWORD absents de l'environnement release"
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/minisign.key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_KEY" | tr -d '\r' > "$key"
+          sh install/sign-release.sh "$VERSION" "$key" install/ciphera.pub dist release
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - name: Signatures cosign keyless (OIDC GitHub) et verification
+        env:
+          IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          set -eu
+          for f in dist/ciphera-*.tar.gz dist/SHA256SUMS dist/install.sh; do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f" > /dev/null
+            cosign verify-blob --bundle "$f.sigstore.json" \
+              --certificate-identity "$IDENTITY" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$f"
+          done
+      - name: Attestation de provenance SLSA
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/ciphera-*.tar.gz
+            dist/SHA256SUMS
+            dist/install.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [build, sign-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: >-
+          gh release create "$VERSION" dist/*
+          --verify-tag --title "Ciphera $VERSION"
+          --notes "Verification : docs/security/release-signing.md (minisign, cosign, gh attestation verify)."
+
+  # Site get.ciphera.ch : seulement dans ce run approuve, depuis les fichiers
+  # signes par sign-release (artefact `release`) et les scripts/cles du meme
+  # commit. Deploiement dans l'environnement protege `github-pages`.
+  pages-site:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      - name: Site (fichiers signes de ce run, releases precedentes verifiees)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: >-
+          sh install/pages-site.sh "$REPO" install/ciphera.pub install/ciphera.retired.pub
+          dist "$VERSION" "$RUNNER_TEMP/site"
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/site
+
+  # Un deploiement a la fois ; juste avant, apres l'approbation, la release
+  # de ce run doit encore etre la derniere publiee (un run plus ancien
+  # approuve plus tard n'ecrase pas le site).
+  pages-deploy:
+    needs: [build, pages-site]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Release de ce run = derniere release publiee
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          published=$(gh release view --json tagName --jq .tagName)
+          if [ "$published" != "$VERSION" ]; then
+            echo "::error::derniere release publiee : $published, ce run : $VERSION ; site non deploye"
+            exit 1
+          fi
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

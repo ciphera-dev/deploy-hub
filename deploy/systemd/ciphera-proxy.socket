@@ -1,0 +1,20 @@
+# Socket de pilotage du reverse proxy : l'agent local (groupe ciphera-agent)
+# y pousse la table de routes (codec proto). Socket Unix seulement, jamais
+# TCP. Cree par systemd (activation par socket) et transmis a
+# ciphera-proxy.service : le proxy n'a aucun droit d'ecriture dans
+# /run/ciphera, et le socket survit a un redemarrage du proxy.
+[Unit]
+Description=Ciphera - socket de pilotage du reverse proxy
+
+[Socket]
+ListenStream=/run/ciphera/proxy.sock
+SocketUser=ciphera-proxy
+SocketGroup=ciphera-agent
+SocketMode=0660
+# /run/ciphera est normalement deja cree par ciphera.tmpfiles.conf.
+DirectoryMode=0751
+RemoveOnStop=yes
+Service=ciphera-proxy.service
+
+[Install]
+WantedBy=sockets.target

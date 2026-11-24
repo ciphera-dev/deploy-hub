@@ -1,0 +1,4 @@
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;font-family:var(--font-sans);color:var(--text-body);background:var(--surface-app);-webkit-font-smoothing:antialiased;font-feature-settings:"tnum" 1}
+a{color:var(--text-body);text-decoration:none}a:hover{color:var(--text-strong)}
+.ds-scroll-hidden::-webkit-scrollbar{display:none}

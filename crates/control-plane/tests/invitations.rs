@@ -1,0 +1,462 @@
+mod common;
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
+
+use common::api::{Reply, Req, call};
+use control_plane::auth::password;
+use control_plane::state::{AppState, Clock};
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+const PASSWORD: &str = "correct horse battery staple";
+const NEW_PASSWORD: &str = "une phrase de passe assez longue";
+
+async fn user(state: &AppState, email: &str, role: &str) {
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, $4, 'Test')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(email)
+    .bind(password::hash(PASSWORD).unwrap())
+    .bind(role)
+    .execute(&state.db)
+    .await
+    .unwrap();
+}
+
+async fn login_as(state: &AppState, email: &str, pw: &str) -> Reply {
+    call(
+        state,
+        "POST",
+        "/api/auth/login",
+        Req {
+            body: Some(json!({ "email": email, "password": pw })),
+            ..Req::default()
+        },
+    )
+    .await
+}
+
+/// (jeton de session, jeton CSRF)
+async fn session(state: &AppState, email: &str) -> (String, String) {
+    let r = login_as(state, email, PASSWORD).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    (r.token(), r.csrf())
+}
+
+async fn invite(state: &AppState, by: &(String, String), body: Value) -> Reply {
+    call(
+        state,
+        "POST",
+        "/api/team/invitations",
+        Req {
+            cookie: Some(&by.0),
+            csrf: Some(&by.1),
+            body: Some(body),
+            ..Req::default()
+        },
+    )
+    .await
+}
+
+/// Jeton contenu dans le lien `.../invite/<jeton>`.
+fn token_of(r: &Reply) -> String {
+    assert_eq!(r.status, 201, "{}", r.raw);
+    let link = r.json()["link"].as_str().expect("link").to_string();
+    let (_, token) = link.rsplit_once("/invite/").expect("lien /invite/<jeton>");
+    assert_eq!(token.len(), 43, "32 octets en base64url");
+    token.to_string()
+}
+
+async fn accept(state: &AppState, token: &str, peer: Option<&str>) -> Reply {
+    call(
+        state,
+        "POST",
+        &format!("/api/auth/invitations/{token}/accept"),
+        Req {
+            peer,
+            body: Some(json!({ "name": "Nora Kaci", "password": NEW_PASSWORD })),
+            ..Req::default()
+        },
+    )
+    .await
+}
+
+async fn lookup(state: &AppState, token: &str) -> Reply {
+    call(
+        state,
+        "GET",
+        &format!("/api/auth/invitations/{token}"),
+        Req::default(),
+    )
+    .await
+}
+
+async fn owner_env() -> (AppState, common::TestDb, (String, String)) {
+    let (state, pg) = common::state().await;
+    user(&state, "owner@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    (state, pg, owner)
+}
+
+#[tokio::test]
+async fn invitation_link_single_use() {
+    let (state, _pg, owner) = owner_env().await;
+    let r = invite(
+        &state,
+        &owner,
+        json!({ "email": "Nora@Example.com", "role": "developer" }),
+    )
+    .await;
+    let token = token_of(&r);
+    assert_eq!(r.json()["link"], format!("/invite/{token}"));
+
+    // Seule l'empreinte est stockee.
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT token_hash FROM invitations")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(stored.len(), 32);
+    assert_ne!(stored, token.as_bytes());
+
+    let info = lookup(&state, &token).await;
+    assert_eq!(info.status, 200, "{}", info.raw);
+    assert_eq!(info.json()["email"], "Nora@Example.com");
+    assert_eq!(info.json()["role"], "developer");
+
+    let r = accept(&state, &token, None).await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    assert!(
+        r.set_cookie.is_none(),
+        "l'acceptation n'ouvre pas de session"
+    );
+    let (role, name): (String, String) =
+        sqlx::query_as("SELECT role, name FROM users WHERE lower(email) = 'nora@example.com'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!((role.as_str(), name.as_str()), ("developer", "Nora Kaci"));
+    assert_eq!(
+        login_as(&state, "nora@example.com", NEW_PASSWORD)
+            .await
+            .status,
+        200
+    );
+
+    // Second usage : refuse, aucun autre compte.
+    let again = accept(&state, &token, None).await;
+    assert_eq!(again.status, 404, "{}", again.raw);
+    assert_eq!(again.code(), "invitation_invalid");
+    assert_eq!(lookup(&state, &token).await.status, 404);
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(users, 2);
+
+    // Audit : creation et acceptation, jamais le jeton.
+    let audit: Vec<(String, String)> = sqlx::query_as(
+        "SELECT action, detail::text FROM audit_events WHERE action LIKE 'team.%' ORDER BY at",
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap();
+    let actions: Vec<&str> = audit.iter().map(|(a, _)| a.as_str()).collect();
+    assert_eq!(
+        actions,
+        ["team.invitation.created", "team.invitation.accepted"]
+    );
+    assert!(audit.iter().all(|(_, d)| !d.contains(&token)));
+}
+
+#[tokio::test]
+async fn invitation_expires_after_72h() {
+    let (mut state, _pg, owner) = owner_env().await;
+    let offset = Arc::new(AtomicU64::new(0));
+    let o = offset.clone();
+    state.clock =
+        Clock::from_fn(move || SystemTime::now() + Duration::from_secs(o.load(Ordering::SeqCst)));
+    let token = token_of(
+        &invite(
+            &state,
+            &owner,
+            json!({ "email": "late@example.com", "role": "viewer" }),
+        )
+        .await,
+    );
+
+    offset.store(72 * 3600 - 60, Ordering::SeqCst);
+    assert_eq!(lookup(&state, &token).await.status, 200);
+
+    offset.store(72 * 3600 + 60, Ordering::SeqCst);
+    let info = lookup(&state, &token).await;
+    assert_eq!(info.status, 410, "{}", info.raw);
+    assert_eq!(info.code(), "invitation_expired");
+    let r = accept(&state, &token, None).await;
+    assert_eq!(r.status, 410, "{}", r.raw);
+    assert_eq!(r.code(), "invitation_expired");
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE email = 'late@example.com')")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert!(!exists);
+}
+
+#[tokio::test]
+async fn owner_role_cannot_be_granted_by_admin() {
+    let (state, _pg, owner) = owner_env().await;
+    user(&state, "admin@example.com", "admin").await;
+    user(&state, "dev@example.com", "developer").await;
+    let admin = session(&state, "admin@example.com").await;
+    let dev = session(&state, "dev@example.com").await;
+
+    let r = invite(
+        &state,
+        &admin,
+        json!({ "email": "boss@example.com", "role": "owner" }),
+    )
+    .await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(r.code(), "forbidden");
+    let r = invite(
+        &state,
+        &admin,
+        json!({ "email": "ops@example.com", "role": "admin" }),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+    let r = invite(
+        &state,
+        &owner,
+        json!({ "email": "boss@example.com", "role": "owner" }),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+
+    // Equipe : Aucun pour un developpeur.
+    let r = invite(
+        &state,
+        &dev,
+        json!({ "email": "x@example.com", "role": "viewer" }),
+    )
+    .await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(r.code(), "forbidden");
+
+    let r = invite(
+        &state,
+        &owner,
+        json!({ "email": "x@example.com", "role": "root" }),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn invitation_for_existing_account_409() {
+    let (state, _pg, owner) = owner_env().await;
+    let r = invite(
+        &state,
+        &owner,
+        json!({ "email": "OWNER@example.com", "role": "viewer" }),
+    )
+    .await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "email_taken");
+
+    // Compte cree entre l'invitation et son acceptation : 409, jeton intact.
+    let token = token_of(
+        &invite(
+            &state,
+            &owner,
+            json!({ "email": "race@example.com", "role": "viewer" }),
+        )
+        .await,
+    );
+    user(&state, "race@example.com", "viewer").await;
+    let r = accept(&state, &token, None).await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "email_taken");
+}
+
+#[tokio::test]
+async fn new_invitation_replaces_pending_one() {
+    let (state, _pg, owner) = owner_env().await;
+    let body = json!({ "email": "nora@example.com", "role": "viewer" });
+    let first = token_of(&invite(&state, &owner, body.clone()).await);
+    let second = token_of(&invite(&state, &owner, body).await);
+    assert_eq!(lookup(&state, &first).await.status, 404);
+    assert_eq!(lookup(&state, &second).await.status, 200);
+}
+
+#[tokio::test]
+async fn accept_validates_and_is_rate_limited() {
+    let (state, _pg, owner) = owner_env().await;
+    let token = token_of(
+        &invite(
+            &state,
+            &owner,
+            json!({ "email": "nora@example.com", "role": "viewer" }),
+        )
+        .await,
+    );
+    let short = call(
+        &state,
+        "POST",
+        &format!("/api/auth/invitations/{token}/accept"),
+        Req {
+            body: Some(json!({ "name": "Nora", "password": "court" })),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(short.status, 422, "{}", short.raw);
+
+    let peer = Some("198.51.100.9:1234");
+    for _ in 0..5 {
+        assert_eq!(accept(&state, "jeton-inconnu", peer).await.status, 404);
+    }
+    let limited = accept(&state, "jeton-inconnu", peer).await;
+    assert_eq!(limited.status, 429, "{}", limited.raw);
+    assert!(limited.retry_after.is_some());
+    // Meme un jeton valide est refuse tant que la limite court (pour cette IP).
+    assert_eq!(accept(&state, &token, peer).await.status, 429);
+    assert_eq!(accept(&state, &token, None).await.status, 204);
+}
+
+#[tokio::test]
+async fn invitations_require_session_and_csrf() {
+    let (state, _pg, owner) = owner_env().await;
+    let body = json!({ "email": "nora@example.com", "role": "viewer" });
+    let r = call(
+        &state,
+        "POST",
+        "/api/team/invitations",
+        Req {
+            cookie: Some(&owner.0),
+            body: Some(body.clone()),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(r.status, 403);
+    assert_eq!(r.code(), "csrf");
+    let r = call(
+        &state,
+        "POST",
+        "/api/team/invitations",
+        Req {
+            body: Some(body),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(r.status, 403, "sans session, la couche CSRF refuse d'abord");
+}
+
+#[tokio::test]
+async fn register_disabled_by_default_403() {
+    let (state, _pg) = common::state().await;
+    // Instance creee comme par l'assistant : public_signup prend la valeur
+    // par defaut de la colonne (pas le repli de coalesce sans instance).
+    sqlx::query(
+        "INSERT INTO instance (id, name, slug, timezone, language) VALUES ($1, 'Org', 'org', 'UTC', 'fr')",
+    )
+    .bind(Uuid::new_v4())
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let status = call(&state, "GET", "/api/auth/register", Req::default()).await;
+    assert_eq!(status.status, 200, "{}", status.raw);
+    assert_eq!(status.json()["public_signup"], false);
+
+    let body = json!({ "name": "Eve", "email": "eve@example.com", "password": NEW_PASSWORD });
+    let r = call(
+        &state,
+        "POST",
+        "/api/auth/register",
+        Req {
+            body: Some(body.clone()),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(r.code(), "signup_disabled");
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(users, 0);
+}
+
+#[tokio::test]
+async fn register_when_enabled_creates_viewer() {
+    let (state, _pg) = common::state().await;
+    sqlx::query("INSERT INTO instance (id, name, public_signup) VALUES ($1, 'Org', true)")
+        .bind(Uuid::new_v4())
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let status = call(&state, "GET", "/api/auth/register", Req::default()).await;
+    assert_eq!(status.json()["public_signup"], true);
+
+    let body = json!({ "name": "Eve", "email": "eve@example.com", "password": NEW_PASSWORD });
+    let r = call(
+        &state,
+        "POST",
+        "/api/auth/register",
+        Req {
+            body: Some(body.clone()),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    assert!(r.set_cookie.is_none());
+    let role: String = sqlx::query_scalar("SELECT role FROM users WHERE email = 'eve@example.com'")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(role, "viewer");
+    let again = call(
+        &state,
+        "POST",
+        "/api/auth/register",
+        Req {
+            body: Some(body),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(again.status, 409, "{}", again.raw);
+}
+
+#[tokio::test]
+async fn concurrent_accepts_create_one_account() {
+    let (state, _pg, owner) = owner_env().await;
+    let token = token_of(
+        &invite(
+            &state,
+            &owner,
+            json!({ "email": "nora@example.com", "role": "viewer" }),
+        )
+        .await,
+    );
+    let (a, b) = tokio::join!(
+        accept(&state, &token, Some("198.51.100.1:1000")),
+        accept(&state, &token, Some("198.51.100.2:1000")),
+    );
+    let mut statuses = [a.status, b.status];
+    statuses.sort();
+    assert_eq!(statuses, [204, 404], "{} / {}", a.raw, b.raw);
+    let users: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE lower(email) = 'nora@example.com'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(users, 1);
+}

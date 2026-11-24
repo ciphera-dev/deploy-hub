@@ -1,0 +1,12 @@
+<!-- @dsCard group="Components" viewport="700x300" name="Forms" -->
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../../../web/src/styles/index.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../../../prototypes/vendor/ds-bundle.js"></script>
+<style>body{padding:20px;background:var(--surface-app)}</style></head><body><div id="root"></div>
+<script type="text/babel">
+const {TextField,RadioCard,Switch}=window.CipheraDesignSystem;
+function App(){const [s,setS]=React.useState('railpack');const [a,setA]=React.useState(true);const [b,setB]=React.useState(false);return <div style={{display:'flex',flexDirection:'column',gap:20}}><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}><div style={{display:'flex',flexDirection:'column',gap:16}}><TextField label="Nom du projet" placeholder="mon-app"/><TextField label="Dépôt Git" mono defaultValue="github.com/ciphera/web" hint="Branche main par défaut"/></div><div style={{display:'flex',flexDirection:'column',gap:8}}><RadioCard icon="package" title="Railpack" description="Détection automatique du langage" selected={s==='railpack'} onClick={()=>setS('railpack')}/><RadioCard icon="file-code" title="Dockerfile" description="Utilise le Dockerfile du dépôt" selected={s==='docker'} onClick={()=>setS('docker')}/></div></div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:24}}><Switch checked={a} onChange={setA} label="Déploiement automatique" description="À chaque push sur main."/><Switch checked={b} onChange={setB} label="Previews de PR" description="Un environnement par pull request."/></div></div>;}
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script></body></html>

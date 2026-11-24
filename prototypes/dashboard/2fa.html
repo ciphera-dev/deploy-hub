@@ -1,0 +1,142 @@
+<!-- @dsCard group="Dashboard" viewport="1440x900" name="Double authentification · version serveur" subtitle="Vérification en deux étapes : code de l'application, clé de sécurité, code de secours" -->
+<!doctype html><html lang="fr"><head>
+<link rel="icon" type="image/svg+xml" href="../../web/public/favicon.svg"><meta charset="utf-8"><title>Vérification · Ciphera</title><link rel="stylesheet" href="../../web/src/styles/index.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../vendor/ds-bundle.js"></script>
+<style>html,body{height:100%;margin:0}body{background:#070708;font-family:var(--font-sans)}#root{height:100%}a{color:#a78bfa;text-decoration:none}a:hover{color:#c4b5fd}input::placeholder{color:var(--text-faint)}@keyframes spin{to{transform:rotate(360deg)}}@keyframes shake{0%,100%{transform:none}25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const {Icon}=window.CipheraDesignSystem;
+const INSTANCE={host:'ciphera.mondomaine.com',version:'2.4.0',server:'srv-par-01'};
+const lbl={font:'400 12px/1 var(--font-sans)',color:'var(--text-muted)'};
+function Field({label,icon,type='text',value,onChange,placeholder,right,autoFocus,error}){
+  const [f,setF]=React.useState(false);
+  return <label style={{display:'flex',flexDirection:'column',gap:8}}>
+    <span style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><span style={lbl}>{label}</span>{right}</span>
+    <span style={{display:'flex',alignItems:'center',gap:10,height:44,padding:'0 14px',borderRadius:11,border:'1px solid '+(error?'rgba(248,113,113,.6)':f?'rgba(167,139,250,.7)':'var(--border-default)'),background:'var(--surface-raised)',boxShadow:f?'0 0 0 3px rgba(139,124,246,.15)':'none',transition:'all .15s'}}>
+      <Icon name={icon} size={15} color={f?'#c4b5fd':'var(--text-subtle)'}/>
+      <input autoFocus={autoFocus} type={type} value={value} onChange={e=>onChange(e.target.value)} onFocus={()=>setF(true)} onBlur={()=>setF(false)} placeholder={placeholder} style={{flex:1,minWidth:0,background:'transparent',border:0,outline:'none',color:'var(--text-strong)',font:'400 14px/1 var(--font-sans)'}}/>
+    </span>
+  </label>;
+}
+function Primary({children,onClick,busy,disabled}){return <button onClick={onClick} disabled={busy||disabled} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,height:44,width:'100%',borderRadius:11,border:0,cursor:busy||disabled?'default':'pointer',background:disabled?'rgba(139,124,246,.4)':'#8b7cf6',color:'#fff',font:'600 14px/1 var(--font-sans)',transition:'background .15s'}} onMouseEnter={e=>{if(!disabled)e.currentTarget.style.background='#7c6cf0'}} onMouseLeave={e=>{if(!disabled)e.currentTarget.style.background='#8b7cf6'}}>{busy&&<Icon name="loader" size={15} color="#fff" style={{animation:'spin 1s linear infinite'}}/>}{children}</button>}
+function Code({onDone,onBack}){
+  const [v,setV]=React.useState(['','','','','','']);const refs=React.useRef([]);const [busy,setBusy]=React.useState(false);const [err,setErr]=React.useState(false);const [trust,setTrust]=React.useState(true);const [mode,setMode]=React.useState('totp');const [sec,setSec]=React.useState(30-(Math.floor(Date.now()/1000)%30));const [backup,setBackup]=React.useState('');
+  React.useEffect(()=>{const t=setInterval(()=>setSec(30-(Math.floor(Date.now()/1000)%30)),1000);return()=>clearInterval(t)},[]);
+  const check=code=>{setBusy(true);setTimeout(()=>{setBusy(false);if(code==='000000'){setErr(true);setV(['','','','','','']);refs.current[0]&&refs.current[0].focus()}else onDone()},800)};
+  const set=(i,c)=>{if(!/^\d?$/.test(c))return;const n=[...v];n[i]=c;setV(n);setErr(false);if(c&&i<5)refs.current[i+1].focus();if(n.every(Boolean))check(n.join(''))};
+  const R=14,C=2*Math.PI*R;
+  const box=(c,i)=><input key={i} ref={el=>refs.current[i]=el} autoFocus={i===0} value={c} inputMode="numeric" maxLength={1} onChange={e=>set(i,e.target.value.slice(-1))} onKeyDown={e=>{if(e.key==='Backspace'&&!c&&i>0)refs.current[i-1].focus();if(e.key==='ArrowLeft'&&i>0)refs.current[i-1].focus();if(e.key==='ArrowRight'&&i<5)refs.current[i+1].focus()}} onPaste={e=>{const t=e.clipboardData.getData('text').replace(/\D/g,'').slice(0,6);if(t.length===6){e.preventDefault();setV(t.split(''));check(t)}}} onFocus={e=>e.target.select()} style={{width:0,flex:1,height:56,textAlign:'center',borderRadius:12,border:'1px solid '+(err?'rgba(248,113,113,.6)':c?'var(--border-strong)':'var(--border-default)'),background:c?'var(--surface-selected)':'var(--surface-raised)',color:'var(--text-strong)',font:'600 24px/1 var(--font-mono)',outline:'none',caretColor:'#a78bfa',transition:'all .15s'}}/>;
+  const alt=(ic,t,d,f)=><button type="button" onClick={f} style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'12px 14px',borderRadius:12,border:'1px solid var(--border-default)',background:'transparent',cursor:'pointer',textAlign:'left'}} onMouseEnter={e=>e.currentTarget.style.background='var(--surface-raised)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}><span style={{width:34,height:34,borderRadius:9,flex:'none',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--surface-selected)'}}><Icon name={ic} size={15} color="var(--text-strong)"/></span><span style={{display:'flex',flexDirection:'column',gap:5,flex:1}}><span style={{font:'500 13px/1 var(--font-sans)',color:'var(--text-strong)'}}>{t}</span><span style={{font:'400 12px/1 var(--font-sans)',color:'var(--text-subtle)'}}>{d}</span></span><Icon name="chevron-right" size={14} color="var(--text-subtle)"/></button>;
+  return <div style={{display:'flex',flexDirection:'column',gap:20,animation:'fadeUp .25s ease-out'}}>
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',textAlign:'center',gap:14}}>
+      <span style={{position:'relative',width:60,height:60}}><span style={{position:'absolute',left:8,right:8,bottom:-8,height:10,borderRadius:'50%',background:'rgba(0,0,0,.6)',filter:'blur(5px)'}}></span><span style={{position:'absolute',inset:0,borderRadius:16,transform:'rotate(-8deg)',background:'linear-gradient(145deg,#4a4a52,#26262c)',boxShadow:'inset 0 1px 0 rgba(255,255,255,.18),inset 0 -2px 0 rgba(0,0,0,.35)',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name={mode==='totp'?'smartphone':mode==='key'?'key-round':'life-buoy'} size={24} color="#f2f2f2"/></span></span>
+      <span style={{font:'600 22px/1.2 var(--font-sans)',color:'var(--text-strong)',marginTop:4}}>{mode==='totp'?'Vérification en deux étapes':mode==='key'?'Clé de sécurité':'Code de secours'}</span>
+      <span style={{font:'400 13px/1.5 var(--font-sans)',color:'var(--text-muted)',maxWidth:320}}>{mode==='totp'?'Ouvrez votre application d\'authentification et saisissez le code affiché.':mode==='key'?'Insérez votre clé ou utilisez la biométrie de votre appareil.':'Saisissez l\'un des codes de secours reçus lors de l\'activation.'}</span>
+    </div>
+    {mode==='totp'&&<>
+      <div style={{display:'flex',alignItems:'center',gap:8,animation:err?'shake .3s':'none'}}>{v.slice(0,3).map((c,i)=>box(c,i))}<span style={{width:10,height:2,borderRadius:2,background:'var(--border-strong)',flex:'none'}}></span>{v.slice(3).map((c,i)=>box(c,i+3))}</div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:-4}}>
+        {err?<span style={{display:'flex',alignItems:'center',gap:6,font:'400 12px/1 var(--font-sans)',color:'#f87171'}}><Icon name="circle-x" size={13}/>Code incorrect, réessayez.</span>:<span style={{font:'400 12px/1 var(--font-sans)',color:'var(--text-subtle)'}}>Collez le code ou saisissez-le</span>}
+        <span style={{display:'flex',alignItems:'center',gap:7,font:'500 12px/1 var(--font-mono)',color:sec<=5?'#e5b454':'var(--text-muted)'}}><svg width="18" height="18" viewBox="0 0 32 32" style={{transform:'rotate(-90deg)'}}><circle cx="16" cy="16" r={R} fill="none" stroke="var(--surface-selected)" strokeWidth="3"/><circle cx="16" cy="16" r={R} fill="none" stroke={sec<=5?'#e5b454':'#ededed'} strokeWidth="3" strokeLinecap="round" strokeDasharray={C} strokeDashoffset={C*(1-sec/30)} style={{transition:'stroke-dashoffset 1s linear'}}/></svg>{sec} s</span>
+      </div>
+      <label style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',font:'400 13px/1 var(--font-sans)',color:'var(--text-body)'}}><input type="checkbox" checked={trust} onChange={e=>setTrust(e.target.checked)} style={{accentColor:'#8b7cf6',width:16,height:16}}/>Faire confiance à cet appareil pendant 30 jours</label>
+      <Primary busy={busy} disabled={!v.every(Boolean)} onClick={()=>check(v.join(''))}>Vérifier</Primary>
+      <div style={{display:'flex',alignItems:'center',gap:14,font:'400 12px/1 var(--font-sans)',color:'var(--text-subtle)',marginTop:4}}><span style={{flex:1,height:1,background:'var(--border-subtle)'}}></span>Autres méthodes<span style={{flex:1,height:1,background:'var(--border-subtle)'}}></span></div>
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>{alt('key-round','Clé de sécurité','Clé physique ou biométrie',()=>setMode('key'))}{alt('life-buoy','Code de secours','Un des 10 codes de récupération',()=>setMode('backup'))}</div>
+    </>}
+    {mode==='key'&&<>
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:12,padding:'26px 16px',borderRadius:14,border:'1px dashed var(--border-strong)',background:'var(--surface-raised)'}}><Icon name="loader" size={20} color="var(--text-muted)" style={{animation:'spin 1.2s linear infinite'}}/><span style={{font:'400 13px/1 var(--font-sans)',color:'var(--text-muted)'}}>En attente de votre clé…</span></div>
+      <Primary onClick={onDone}>Simuler la validation</Primary>
+    </>}
+    {mode==='backup'&&<>
+      <label style={{display:'flex',flexDirection:'column',gap:8}}><span style={{font:'500 13px/1 var(--font-sans)',color:'var(--text-strong)'}}>Code de secours</span><input autoFocus value={backup} onChange={e=>setBackup(e.target.value.toUpperCase())} placeholder="XXXX-XXXX" style={{height:46,padding:'0 14px',borderRadius:10,border:'1px solid var(--border-default)',background:'var(--surface-raised)',color:'var(--text-strong)',font:'500 16px/1 var(--font-mono)',letterSpacing:'.12em',outline:'none'}}/></label>
+      <Primary busy={busy} disabled={backup.replace(/\W/g,'').length<8} onClick={()=>{setBusy(true);setTimeout(onDone,700)}}>Vérifier</Primary>
+    </>}
+    <button type="button" onClick={mode==='totp'?onBack:()=>setMode('totp')} style={{alignSelf:'center',padding:0,border:0,background:'transparent',cursor:'pointer',color:'var(--text-muted)',display:'flex',alignItems:'center',gap:6,font:'400 13px/1 var(--font-sans)'}}><Icon name="arrow-left" size={13}/>{mode==='totp'?'Retour':'Utiliser l\'application d\'authentification'}</button>
+  </div>;
+}
+function In({label,type='text',value,onChange,autoFocus,right,error}){const [f,setF]=React.useState(false);
+  return <label style={{display:'flex',flexDirection:'column',gap:8}}><span style={{font:'500 13px/1 var(--font-sans)',color:'var(--text-strong)'}}>{label}</span>
+    <span style={{display:'flex',alignItems:'center',height:42,padding:'0 12px',borderRadius:10,border:'1px solid '+(error?'rgba(248,113,113,.6)':f?'rgba(167,139,250,.7)':'var(--border-default)'),background:'var(--surface-raised)',boxShadow:f?'0 0 0 3px rgba(139,124,246,.15)':'none',transition:'all .15s'}}>
+      <input autoFocus={autoFocus} type={type} value={value} onChange={e=>onChange(e.target.value)} onFocus={()=>setF(true)} onBlur={()=>setF(false)} style={{flex:1,minWidth:0,background:'transparent',border:0,outline:'none',color:'var(--text-strong)',font:'400 14px/1 var(--font-sans)'}}/>{right}
+    </span></label>}
+const Sec=({children,onClick,flex})=><button type="button" onClick={onClick} style={{flex,display:'flex',alignItems:'center',justifyContent:'center',gap:8,height:42,borderRadius:10,border:'1px solid var(--border-default)',background:'transparent',cursor:'pointer',font:'500 14px/1 var(--font-sans)',color:'var(--text-strong)',transition:'background .15s'}} onMouseEnter={e=>e.currentTarget.style.background='var(--surface-raised)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>{children}</button>;
+const Or=()=><div style={{display:'flex',alignItems:'center',gap:14,font:'400 12px/1 var(--font-sans)',color:'var(--text-subtle)'}}><span style={{flex:1,height:1,background:'var(--border-subtle)'}}></span>ou<span style={{flex:1,height:1,background:'var(--border-subtle)'}}></span></div>;
+const PROFILES=[['alex@ciphera.com',true],['admin@ciphera.mondomaine.com',false]];
+function Login(){
+  const [step,setStep]=React.useState('2fa');const [name,setName]=React.useState('');const [email,setEmail]=React.useState('');const [pwd,setPwd]=React.useState('');const [show,setShow]=React.useState(false);const [rem,setRem]=React.useState(true);const [busy,setBusy]=React.useState(false);const [err,setErr]=React.useState('');const [lang,setLang]=React.useState(false);
+  const valid=/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(email)&&pwd.length>=6;
+  const submit=e=>{e&&e.preventDefault();if(!valid)return setErr('Vérifiez votre e-mail et votre mot de passe.');setErr('');setBusy(true);setTimeout(()=>{setBusy(false);setStep('2fa')},900)};
+  const enter=()=>{setStep('ok');setTimeout(()=>{location.href='index.html'},900)};
+  const H=t=><span style={{font:'600 24px/1.2 var(--font-sans)',color:'var(--text-strong)',letterSpacing:'-0.01em',textAlign:'center'}}>{t}</span>;
+  const cur=step==='2fa'?2:step==='ok'?3:1;const isReg=step==='register';
+  const STEPS=[[1,isReg?'Inscription':'Connexion','Vos identifiants'],[2,'Vérification','Confirmez votre identité'],[3,'Accès','Bienvenue sur Ciphera']];
+  return <div style={{height:'100%',display:'grid',gridTemplateColumns:'minmax(0,1.05fr) minmax(0,1fr)',gap:0,padding:12,boxSizing:'border-box'}}>
+    <div style={{position:'relative',borderRadius:24,overflow:'hidden',display:'flex',flexDirection:'column',padding:'34px 38px',border:'1px solid var(--border-default)',background:'radial-gradient(70% 55% at 30% 25%,rgba(255,255,255,.07),transparent 70%),linear-gradient(170deg,#18181c,#0d0d10 70%)'}}>
+      <span style={{position:'absolute',inset:0,backgroundImage:'radial-gradient(rgba(255,255,255,.09) 1px,transparent 1px)',backgroundSize:'18px 18px',maskImage:'radial-gradient(80% 60% at 50% 35%,#000,transparent)',WebkitMaskImage:'radial-gradient(80% 60% at 50% 35%,#000,transparent)',opacity:.8}}></span>
+      <img src="../../web/src/assets/brand/logo.svg" alt="Ciphera" style={{position:'relative',height:18,width:'auto',alignSelf:'flex-start'}}/>
+      <div style={{flex:1}}></div>
+      <div style={{position:'relative',display:'flex',flexDirection:'column',gap:18}}>
+        <span style={{width:'fit-content',display:'flex',alignItems:'center',gap:8,height:32,padding:'0 14px',borderRadius:99,background:'var(--surface-raised)',border:'1px solid var(--border-default)',font:'500 13px/1 var(--font-sans)',color:'var(--text-body)'}}><span style={{width:6,height:6,borderRadius:99,background:'var(--green-500)'}}></span>Instance auto-hébergée</span>
+        <span style={{font:'600 40px/1.08 var(--font-sans)',color:'var(--text-strong)',letterSpacing:'-0.03em',maxWidth:460}}>Votre infrastructure, sur vos serveurs</span>
+        <span style={{font:'400 15px/1.5 var(--font-sans)',color:'var(--text-muted)',maxWidth:440}}>Connectez-vous en trois étapes pour accéder à {INSTANCE.host}.</span>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:12,marginTop:14}}>
+          {STEPS.map(([n,t,d])=>{const on=n===cur,done=n<cur;return <div key={n} style={{display:'flex',flexDirection:'column',gap:28,padding:'16px 16px 18px',minHeight:118,boxSizing:'border-box',borderRadius:16,background:on?'var(--surface-raised)':'transparent',border:'1px solid '+(on?'var(--border-strong)':'var(--border-subtle)'),transition:'all .3s'}}>
+            <span style={{width:26,height:26,borderRadius:99,display:'flex',alignItems:'center',justifyContent:'center',background:on?'#ededed':done?'var(--green-500)':'transparent',border:on||done?'none':'1px solid var(--border-strong)',font:'600 12px/1 var(--font-sans)',color:on||done?'#0b0b0b':'var(--text-muted)'}}>{done?<Icon name="check" size={13} color="#0b0b0b"/>:n}</span>
+            <span style={{display:'flex',flexDirection:'column',gap:5}}><span style={{font:'600 13px/1.25 var(--font-sans)',color:on?'var(--text-strong)':'var(--text-body)'}}>{t}</span><span style={{font:'400 12px/1.3 var(--font-sans)',color:'var(--text-subtle)'}}>{d}</span></span>
+          </div>})}
+        </div>
+      </div>
+    </div>
+    <div style={{display:'flex',flexDirection:'column',minHeight:0,overflow:'auto'}}>
+    <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',padding:'14px 18px'}}>
+      <div style={{display:'flex',alignItems:'center',gap:10}}>
+        <div style={{position:'relative'}}><button onClick={()=>setLang(l=>!l)} style={{display:'flex',alignItems:'center',gap:7,height:36,padding:'0 10px',border:0,borderRadius:9,background:'transparent',cursor:'pointer',font:'500 13px/1 var(--font-sans)',color:'var(--text-strong)'}}><Icon name="globe" size={14}/>Français<Icon name="chevron-down" size={13} color="var(--text-muted)"/></button>
+          {lang&&<div style={{position:'absolute',top:40,right:0,width:150,padding:4,borderRadius:10,background:'var(--surface-tooltip)',boxShadow:'var(--shadow-tooltip)',zIndex:10}}>{['Français','English','Deutsch'].map(x=><button key={x} onClick={()=>setLang(false)} style={{display:'flex',width:'100%',padding:'8px 10px',border:0,borderRadius:7,background:'transparent',cursor:'pointer',font:'400 13px/1 var(--font-sans)',color:'var(--text-body)'}}>{x}</button>)}</div>}</div>
+      </div>
+    </div>
+    <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px 20px 40px'}}>
+      <div style={{width:'100%',maxWidth:356,display:'flex',flexDirection:'column',gap:18}}>
+        {step==='login'&&<form onSubmit={submit} style={{display:'flex',flexDirection:'column',gap:16,animation:'fadeUp .25s ease-out'}}>
+          {H('Connectez-vous à Ciphera')}
+          <div style={{height:4}}></div>
+          <In label="E-mail" value={email} onChange={v=>{setEmail(v);setErr('')}} autoFocus={!email} error={!!err}/>
+          <In label="Mot de passe" type={show?'text':'password'} value={pwd} onChange={v=>{setPwd(v);setErr('')}} autoFocus={!!email} error={!!err} right={<button type="button" onClick={()=>setShow(s=>!s)} style={{padding:0,border:0,background:'transparent',cursor:'pointer',display:'flex'}}><Icon name={show?'eye-off':'eye'} size={16} color="var(--text-muted)"/></button>}/>
+          <label style={{display:'flex',alignItems:'flex-start',gap:10,cursor:'pointer',font:'400 13px/1.45 var(--font-sans)',color:'var(--text-body)',marginTop:4}}><input type="checkbox" checked={rem} onChange={e=>setRem(e.target.checked)} style={{accentColor:'#8b7cf6',width:16,height:16,marginTop:1}}/>Enregistrer l'e-mail et la méthode de connexion sur cet appareil</label>
+          {err&&<span style={{display:'flex',alignItems:'center',gap:6,font:'400 12px/1 var(--font-sans)',color:'#f87171'}}><Icon name="circle-x" size={13}/>{err}</span>}
+          <Primary busy={busy} disabled={!valid}>Se connecter</Primary>
+          <div style={{display:'flex',flexDirection:'column',gap:10,alignItems:'center',marginTop:6,font:'400 13px/1 var(--font-sans)',color:'var(--text-muted)'}}>
+                        <span>Vous avez oublié votre <a href="#" onClick={e=>{e.preventDefault();setStep('forgot')}}>mot de passe</a> ?</span>
+          </div>
+        </form>}
+        {step==='register'&&<form onSubmit={e=>{e.preventDefault();if(name.trim().length<2||!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(email)||pwd.length<8)return setErr('Complétez tous les champs (mot de passe : 8 caractères minimum).');setErr('');setBusy(true);setTimeout(()=>{setBusy(false);setStep('2fa')},900)}} style={{display:'flex',flexDirection:'column',gap:16,animation:'fadeUp .25s ease-out'}}>
+          {H('Créer un compte')}
+          <div style={{height:4}}></div>
+          <In label="Nom complet" value={name} onChange={v=>{setName(v);setErr('')}} autoFocus/>
+          <In label="E-mail" value={email} onChange={v=>{setEmail(v);setErr('')}}/>
+          <In label="Mot de passe" type={show?'text':'password'} value={pwd} onChange={v=>{setPwd(v);setErr('')}} right={<button type="button" onClick={()=>setShow(s=>!s)} style={{padding:0,border:0,background:'transparent',cursor:'pointer',display:'flex'}}><Icon name={show?'eye-off':'eye'} size={16} color="var(--text-muted)"/></button>}/>
+          <span style={{font:'400 12px/1.4 var(--font-sans)',color:'var(--text-subtle)',marginTop:-6}}>8 caractères minimum, avec une majuscule et un chiffre.</span>
+          {err&&<span style={{display:'flex',alignItems:'center',gap:6,font:'400 12px/1 var(--font-sans)',color:'#f87171'}}><Icon name="circle-x" size={13}/>{err}</span>}
+          <Primary busy={busy} disabled={name.trim().length<2||!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(email)||pwd.length<8}>Créer le compte</Primary>
+          <span style={{textAlign:'center',marginTop:6,font:'400 13px/1 var(--font-sans)',color:'var(--text-muted)'}}>Déjà un compte ? <a href="#" onClick={e=>{e.preventDefault();setErr('');setStep('login')}}>Se connecter</a></span>
+        </form>}
+        {step==='2fa'&&<Code onDone={enter} onBack={()=>{location.href='login.html'}}/>}
+        {step==='forgot'&&<div style={{display:'flex',flexDirection:'column',gap:16,animation:'fadeUp .25s ease-out'}}>
+          {H('Réinitialiser le mot de passe')}
+          <span style={{font:'400 13px/1.5 var(--font-sans)',color:'var(--text-muted)',textAlign:'center'}}>Un lien sera envoyé via le serveur SMTP configuré sur cette instance.</span>
+          <In label="E-mail" value={email} onChange={setEmail} autoFocus/>
+          <Primary onClick={()=>setStep('sent')} disabled={!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(email)}>Envoyer le lien</Primary>
+          <button onClick={()=>setStep('login')} style={{padding:0,border:0,background:'transparent',cursor:'pointer',font:'500 14px/1 var(--font-sans)',color:'var(--text-strong)'}}>Retour à la connexion</button>
+        </div>}
+        {step==='sent'&&<div style={{display:'flex',flexDirection:'column',alignItems:'center',textAlign:'center',gap:14,animation:'fadeUp .25s ease-out'}}><span style={{width:48,height:48,borderRadius:99,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(134,239,172,.12)'}}><Icon name="mail-check" size={20} color="#86efac"/></span>{H('Vérifiez votre boîte mail')}<span style={{font:'400 13px/1.5 var(--font-sans)',color:'var(--text-muted)'}}>Si un compte existe pour {email}, un lien valable 30 minutes vient d'être envoyé.</span><button onClick={()=>setStep('login')} style={{marginTop:6,padding:0,border:0,background:'transparent',cursor:'pointer',color:'#a78bfa',font:'500 13px/1 var(--font-sans)'}}>Retour à la connexion</button></div>}
+        {step==='ok'&&<div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:14,paddingTop:40,animation:'fadeUp .25s ease-out'}}><Icon name="loader" size={22} color="#a78bfa" style={{animation:'spin 1s linear infinite'}}/><span style={{font:'500 14px/1 var(--font-sans)',color:'var(--text-strong)'}}>Ouverture du dashboard…</span></div>}
+      </div>
+    </div>
+    </div>
+  </div>;
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<Login/>);
+</script></body></html>

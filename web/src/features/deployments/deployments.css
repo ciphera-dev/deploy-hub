@@ -1,0 +1,46 @@
+@keyframes dep-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes dep-run {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes dep-pulse {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+.dep-spin {
+  animation: dep-spin 1.2s linear infinite;
+}
+
+.dep-bar-run {
+  animation: dep-run 1.4s ease-in-out infinite;
+}
+
+.dep-pulse {
+  animation: dep-pulse 1.4s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dep-spin,
+  .dep-bar-run,
+  .dep-pulse {
+    animation: none;
+  }
+}

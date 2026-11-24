@@ -1,0 +1,102 @@
+# Ciphera
+
+Ciphera est un PaaS auto-hébergé et **entièrement open source**, écrit en Rust. Il vise la même place que Dokploy et Coolify, en plus léger et plus sûr :
+- **Un seul binaire** pour le plan de contrôle, qui sert aussi l'interface.
+- **Un agent natif** sur chaque nœud.
+- **Un proxy** Pingora + ACME.
+- **Des builds** BuildKit/Railpack.
+
+Il n'existe qu'une version : celle que vous installez sur vos serveurs. Pas d'offre cloud et pas de fonctionnalités sous licence.
+
+> **État : pré-production.** Le design (maquettes complètes du panneau) est rangé et prêt à être porté. Le code de la v0.1 est dans `crates/` et `web/` : voir « Démarrer le développement » et [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Installation (cible)
+
+```sh
+curl -fsSL https://get.ciphera.ch/install.sh | sh
+```
+
+Le script :
+1. télécharge l'archive de la release et `SHA256SUMS` ;
+2. vérifie la signature minisign puis le SHA-256 ;
+3. s'arrête sans rien installer si une vérification échoue ;
+4. installe les binaires et les unités systemd ;
+5. affiche l'URL de l'assistant d'installation avec un jeton à usage unique.
+
+Le détail est dans [docs/adr/0003-installation-et-verification-des-releases.md](docs/adr/0003-installation-et-verification-des-releases.md).
+
+## Stack
+
+| Couche | Choix |
+|---|---|
+| Interface | React 19 + Vite + TypeScript + TanStack Router/Query + Tailwind v4 + shadcn/ui. SPA statique embarquée dans le binaire via `rust-embed` |
+| Plan de contrôle | Axum (REST + WebSocket), PostgreSQL 17 + SQLx, files de tâches en Postgres (`SKIP LOCKED` / apalis), sans Redis |
+| Authentification | Passkeys/WebAuthn (`webauthn-rs`), TOTP, jetons API à permissions |
+| Secrets | Chiffrement enveloppe avec `age`, champs en écriture seule dans l'API |
+| Observabilité | OpenTelemetry + export Prometheus |
+| Agent de nœud | Tokio + QUIC (`quinn`), mTLS obligatoire (mini-PKI `rcgen`), Docker via `bollard`, état local SQLite (`rusqlite`). API étroite, jamais d'exécution arbitraire |
+| Builds | BuildKit (`buildkitd`) piloté par l'agent : Railpack par défaut, Dockerfile, Compose |
+| Proxy / TLS | Pingora + `instant-acme` |
+| CLI | Rust (`clap`), client généré depuis le même schéma OpenAPI que l'interface |
+
+Les raisons de ces choix sont dans [docs/architecture/stack.md](docs/architecture/stack.md) et [docs/adr/](docs/adr/).
+
+## Arborescence
+
+```
+.
+├── web/                        interface (SPA React) — composants et tokens déjà présents
+│   ├── public/                 favicon
+│   └── src/
+│       ├── design-system/      32 composants du design system (JSX + .d.ts + doc), à porter en TSX
+│       ├── styles/             index.css + tokens/ (couleurs, typo, espacements, effets)
+│       └── assets/             brand/ (logos Ciphera) + images/ (connecteurs, BDD, OS, SMTP, SSH, Cloudflare)
+├── prototypes/                 maquettes d'origine, lançables (référence visuelle, jamais importées)
+│   ├── dashboard/              ~45 écrans + login / register / 2fa / install / 404
+│   └── vendor/ds-bundle.js     bundle généré du design system (pour les maquettes uniquement)
+├── docs/
+│   ├── adr/                    décisions d'architecture
+│   ├── architecture/stack.md   stack, arborescence cible, contrat backend
+│   ├── design/screens.md       contrat de production : écran → route → endpoint
+│   ├── design-system/          fondations, specimens, captures de référence
+│   ├── research/analyse-paas/  analyse de Dokploy et Coolify (fonctionnalités, CVE, blueprint)
+│   ├── security/               fondations et exigences de sécurité
+│   └── cleanup/                trace du rangement de l'export design (file-map.json, report.md)
+├── config/                     règles oxlint d'adhérence au design system
+├── .agents/                    mémoire multi-agents (lire .agents/memory/etat.md en premier)
+├── AGENTS.md · CLAUDE.md       consignes pour les agents
+└── (à créer) crates/  install/  deploy/  scripts/  justfile  Cargo.toml
+```
+
+## Voir les maquettes
+
+Servir la **racine du dépôt** en HTTP (pas en `file://`, car Babel et les imports l'exigent), puis ouvrir `prototypes/dashboard/index.html` :
+
+```sh
+python -m http.server 8000
+# → http://localhost:8000/prototypes/dashboard/index.html
+#   aussi : login.html, register.html, 2fa.html, install.html, 404.html
+```
+
+Les maquettes chargent React 18 (dev) et Babel depuis unpkg. Elles servent de référence visuelle seulement, jamais de base de production.
+
+## Démarrer le développement
+
+Prérequis, commandes locales (`just dev`, `just gen`, `just test`, `just lint`) et conventions : voir [CONTRIBUTING.md](CONTRIBUTING.md). Pour signaler une faille en privé : [SECURITY.md](SECURITY.md).
+
+## Tests de bout en bout (Playwright)
+
+- `npm --prefix web run e2e` : la SPA construite servie par `vite preview` (aucune instance requise ; `golden-path.spec.ts` est ignoré).
+- Parcours golden-path (`web/e2e/golden-path.spec.ts` : setup → TOTP → GitHub App simulée → déploiement → domaine via Pebble → HTTPS → rollback) : seulement sur une machine Linux jetable avec systemd et Docker (job CI `e2e-golden-path`). `install/tests/golden-path/setup.sh` y installe Ciphera, Pebble et un GitHub simulé, puis écrit les variables `CIPHERA_E2E_*` :
+
+  ```sh
+  sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 bash install/tests/golden-path/setup.sh /tmp/golden-path
+  set -a; . /tmp/golden-path/e2e.env; set +a
+  npm --prefix web run e2e -- golden-path
+  ```
+
+  Sans `CIPHERA_E2E_URL`, le parcours est sauté. Le script modifie la machine (`/etc/hosts`, magasin de certificats, unités systemd).
+
+## Licence
+
+Ciphera est distribué sous **GNU Affero General Public License v3.0** ([LICENSE](LICENSE)). Quiconque propose une version modifiée de Ciphera comme service réseau doit en publier le code source.

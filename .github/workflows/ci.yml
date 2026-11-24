@@ -1,0 +1,411 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Cible plus petite : pas d'incremental, infos de debogage reduites
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      # Libere du disque du runner (outils preinstalles inutiles ici) : la
+      # cible de compilation du workspace est volumineuse
+      - name: Liberer de l'espace disque
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Libere du disque du runner (outils preinstalles inutiles ici) : la
+      # cible de compilation du workspace est volumineuse
+      - name: Liberer de l'espace disque
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # L'interface est embarquee dans le binaire : web/dist doit exister
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      # Comprend les tests Linux seulement du proxy (Pingora, socket de
+      # pilotage) et du client du proxy dans l'agent (#[cfg(unix)]).
+      # Pingora compile zlib-ng avec cmake (present sur ubuntu-latest).
+      - run: cargo test --workspace
+      # Tests Linux-only marques #[ignore] (ceux de l'agent : job agent-docker ;
+      # emission ACME contre Pebble : job acme-pebble)
+      - run: cargo test --workspace --exclude ciphera-agent -- --ignored --skip issues_cert_via_pebble_http01
+
+  # Agent contre le Docker reel du runner (bollard, images epinglees,
+  # isolement des reseaux) : tests #[ignore] de crates/agent/tests/docker_it.rs.
+  agent-docker:
+    runs-on: ubuntu-latest
+    steps:
+      # Libere du disque du runner (outils preinstalles inutiles ici) : la
+      # cible de compilation du workspace est volumineuse
+      - name: Liberer de l'espace disque
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - run: docker info
+      # Comme install.sh : profil AppArmor de buildkitd rootless la ou le
+      # noyau restreint les espaces de noms utilisateur (Ubuntu >= 23.10).
+      - run: |
+          if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo install -m 0644 deploy/apparmor/ciphera-buildkitd /etc/apparmor.d/ciphera-buildkitd
+            sudo apparmor_parser -r -W /etc/apparmor.d/ciphera-buildkitd
+          fi
+      # Outils du pipeline de build, memes versions et SHA-256 que
+      # install.sh (lus dans le script) : tests de crates/agent/tests/build_it.rs.
+      - name: Outils de build (railpack, buildctl, mise)
+        run: |
+          set -eu
+          pin() { sed -n "s/^$1='\(.*\)'\$/\1/p" install/install.sh; }
+          rp_version=$(pin RAILPACK_VERSION)
+          bk_version=$(pin BUILDKIT_VERSION)
+          rp="railpack-$rp_version-x86_64-unknown-linux-musl.tar.gz"
+          bk="buildkit-$bk_version.linux-amd64.tar.gz"
+          mise_version=$(pin MISE_VERSION)
+          mise="mise-v$mise_version-linux-x64-musl.tar.gz"
+          curl -fsSLO "https://github.com/railwayapp/railpack/releases/download/$rp_version/$rp"
+          echo "$(pin RAILPACK_SHA256_AMD64)  $rp" | sha256sum -c -
+          curl -fsSLO "https://github.com/moby/buildkit/releases/download/$bk_version/$bk"
+          echo "$(pin BUILDKIT_SHA256_AMD64)  $bk" | sha256sum -c -
+          curl -fsSLO "https://github.com/jdx/mise/releases/download/v$mise_version/$mise"
+          echo "$(pin MISE_SHA256_AMD64)  $mise" | sha256sum -c -
+          tar -xzf "$rp" railpack
+          tar -xzf "$bk" bin/buildctl
+          tar -xzf "$mise" mise/bin/mise
+          sudo install -d -m 0755 /usr/local/lib/ciphera/bin
+          sudo install -m 0755 railpack bin/buildctl /usr/local/lib/ciphera/bin/
+          sudo install -m 0755 mise/bin/mise "/usr/local/lib/ciphera/bin/mise-$mise_version"
+          rm -rf "$rp" "$bk" "$mise" railpack bin mise
+          docker compose version
+      # Infrastructure (PostgreSQL, buildkitd rootless : build par son
+      # socket), isolation des reseaux, etiquettes, cycle de vie d'une app ;
+      # pipeline de build (fixtures node-app, dockerfile-app, compose-app,
+      # mise epingle seul) ; deploiements (bascule, healthcheck en echec,
+      # Compose sur le reseau du projet : crates/agent/tests/deploy_it.rs).
+      - run: cargo test -p ciphera-agent -- --ignored --test-threads=1
+
+  # Emission ACME HTTP-01 de bout en bout (proxy, socket de pilotage,
+  # certificat chiffre, 308) contre Pebble, le serveur ACME de test de
+  # Let's Encrypt, et son DNS de test qui resout tout nom vers 127.0.0.1.
+  # Images epinglees par digest (index multi-architecture).
+  acme-pebble:
+    runs-on: ubuntu-latest
+    steps:
+      # Libere du disque du runner (outils preinstalles inutiles ici) : la
+      # cible de compilation du workspace est volumineuse
+      - name: Liberer de l'espace disque
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - name: Pebble et pebble-challtestsrv
+        run: |
+          set -eu
+          docker run -d --name challtestsrv --network host \
+            ghcr.io/letsencrypt/pebble-challtestsrv@sha256:0152c8cb506e2ecba2900ed47d23932e27e3e6575a7d2c8ef93c7719ee3dea4c \
+            -defaultIPv4 127.0.0.1 -defaultIPv6 "" -http01 "" -https01 "" -tlsalpn01 "" -doh ""
+          docker run -d --name pebble --network host \
+            -e PEBBLE_VA_NOSLEEP=1 -e PEBBLE_WFE_NONCEREJECT=0 \
+            ghcr.io/letsencrypt/pebble@sha256:0c81f05db371f436c97fb894bd6d2ab8fc9c8e2ce40f8bef8a8e15941bcd75ef \
+            -config /test/config/pebble-config.json -dnsserver 127.0.0.1:8053
+          docker cp pebble:/test/certs/pebble.minica.pem "$RUNNER_TEMP/pebble.minica.pem"
+          for _ in $(seq 1 30); do
+            if curl -fsS --cacert "$RUNNER_TEMP/pebble.minica.pem" https://localhost:14000/dir >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs pebble
+          exit 1
+      - run: cargo test -p ciphera-proxy --test acme -- --ignored issues_cert_via_pebble_http01
+        env:
+          CIPHERA_TEST_ACME_DIRECTORY: https://localhost:14000/dir
+          CIPHERA_TEST_ACME_CA_FILE: ${{ runner.temp }}/pebble.minica.pem
+      - if: failure()
+        run: docker logs pebble
+
+  # install.sh sur le runner lui-meme (systemd + Docker) : chemin de
+  # production, PostgreSQL et buildkitd lances par l'agent. Machine jetable.
+  install-docker:
+    runs-on: ubuntu-latest
+    steps:
+      # Libere du disque du runner (outils preinstalles inutiles ici) : la
+      # cible de compilation du workspace est volumineuse
+      - name: Liberer de l'espace disque
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools minisign
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: >-
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          -p control-plane -p ciphera-agent -p ciphera-proxy -p ciphera-cli
+      - run: sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 bash install/tests/run-docker-host.sh
+
+  # Parcours golden-path dans le navigateur (web/e2e/golden-path.spec.ts) sur
+  # une instance installee par install.sh sur le runner (systemd + Docker) :
+  # setup, TOTP, GitHub App simulee, deploiement, domaine via Pebble, HTTPS,
+  # rollback. Ici (et non dans release.yml) : il construit ses binaires comme
+  # install-docker et garde chaque push et pull request. Machine jetable.
+  e2e-golden-path:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      # Libere du disque du runner (outils preinstalles inutiles ici) : la
+      # cible de compilation du workspace est volumineuse
+      - name: Liberer de l'espace disque
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools minisign
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: >-
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          -p control-plane -p ciphera-agent -p ciphera-proxy -p ciphera-cli
+      # Avant setup.sh, qui detourne github.com vers le GitHub simule.
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: Instance, Pebble et GitHub simule
+        run: sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 bash install/tests/golden-path/setup.sh "$RUNNER_TEMP/golden-path"
+      - run: cat "$RUNNER_TEMP/golden-path/e2e.env" >> "$GITHUB_ENV"
+      - run: npm --prefix web run e2e -- golden-path
+      - if: failure()
+        name: Diagnostic
+        run: |
+          sudo journalctl -u ciphera -u ciphera-agent -u ciphera-proxy -u ciphera-e2e-github --no-pager -n 300 || true
+          sudo docker ps -a || true
+          sudo docker logs --tail 80 pebble 2>&1 || true
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-path-playwright
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 7
+
+  # Fuzzing du decodeur du protocole agent (cargo-fuzz, libFuzzer + ASan) :
+  # crates/proto/fuzz, hors du workspace, chaine nightly (epinglee) seulement
+  # ici. Ses dependances (propre Cargo.lock) sont auditees et le crate passe
+  # fmt et clippy comme le reste.
+  fuzz-proto:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NIGHTLY: nightly-2026-11-22
+    defaults:
+      run:
+        working-directory: crates/proto
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$NIGHTLY" --profile minimal --component rustfmt,clippy
+      - run: cargo +"$NIGHTLY" fmt --manifest-path fuzz/Cargo.toml --check
+      - run: cargo +"$NIGHTLY" clippy --manifest-path fuzz/Cargo.toml --locked --all-targets -- -D warnings
+      - run: cargo install cargo-audit --locked --version 0.22.2
+      - run: cargo audit --file fuzz/Cargo.lock
+      - run: cargo +"$NIGHTLY" install cargo-fuzz --locked --version 0.13.2
+      - run: cargo +"$NIGHTLY" fuzz run decode -- -max_total_time=300
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts
+          path: crates/proto/fuzz/artifacts
+
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: cargo install cargo-audit --locked --version 0.22.2
+      - run: cargo audit
+
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2.1.3
+        with:
+          command: check
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # Actif des que web/package.json existe (tache panneau)
+      - if: hashFiles('web/package.json') != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - if: hashFiles('web/package.json') != ''
+        run: npm ci
+      - if: hashFiles('web/package.json') != ''
+        run: npm test
+      - if: hashFiles('web/package.json') != ''
+        run: npm run lint
+      - if: hashFiles('web/package.json') != ''
+        run: npx playwright install --with-deps chromium
+      - if: hashFiles('web/package.json') != ''
+        run: npm run e2e
+      - if: hashFiles('web/package.json') != ''
+        run: npm audit --audit-level=high
+
+  gen-is-fresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      # Memes commandes que `just gen` (sans installer just)
+      - run: cargo run -q -p control-plane --bin gen-openapi -- openapi.json
+      - run: npx --prefix web openapi-typescript openapi.json -o web/src/lib/api/schema.d.ts
+      - run: git diff --exit-code openapi.json web/src/lib/api/schema.d.ts
+
+  # Ordre des unites systemd au demarrage (deploy/systemd/) : installees et
+  # activees dans des conteneurs systemd (Debian, Ubuntu, Fedora), verifiees
+  # par systemd-analyze puis par un vrai redemarrage (aucun cycle d'ordre,
+  # sockets.target et paths.target actifs).
+  units-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: sudo bash install/tests/units-boot.sh debian ubuntu fedora
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: find install -type f -name '*.sh' -print0 | xargs -0 -r shellcheck
+
+  # Scripts de publication (install.sh publie, signature, site Pages) et
+  # script de creation de la cle de production (bouchons, aucune vraie cle).
+  release-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      - run: bash install/tests/release-scripts.sh
+      - run: pwsh -NoProfile -File scripts/release/tests/new-signing-key.tests.ps1
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: |
+          curl -fsSLO https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint_1.7.12_linux_amd64.tar.gz" | sha256sum -c -
+          tar xzf actionlint_1.7.12_linux_amd64.tar.gz actionlint
+      - run: ./actionlint -color
+
+  ai-traces:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - run: npx --yes design-to-dev@2.7.0 ai-traces scan . --strict

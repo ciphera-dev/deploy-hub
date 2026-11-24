@@ -1,0 +1,30 @@
+# Fuzzing de `proto::codec::decode` (cargo-fuzz, nightly). Hors du workspace
+# racine (`exclude` dans ../../../Cargo.toml) : `cargo test --workspace` reste
+# sur la chaine stable. Lancer : `cargo +nightly fuzz run decode` dans
+# crates/proto.
+
+[package]
+name = "proto-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+proto = { path = ".." }
+serde = "1.0.229"
+
+# Espace de travail propre : cargo-fuzz compile ce crate seul.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false

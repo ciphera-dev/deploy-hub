@@ -1,0 +1,228 @@
+# Journal (append-only)
+
+Ne jamais réécrire ni supprimer une entrée : pour corriger, ajouter une nouvelle entrée.
+Chaque entrée indique l'agent qui l'a écrite.
+
+## 2026-11-21 12:37 — Session préproduction — claude-code — Étape 0 : Cadrage
+- fait : cadrage — source ciphera-deploy-main, cible Projets/ciphera-deploy, mode complet, stack à recommander, mémoire partagée claude+codex
+- résultat : périmètre limité à ciphera-deploy-main (les autres dossiers ciphera de Projets sont hors sujet)
+
+## 2026-11-21 12:37 — Session préproduction — claude-code — Étape 1 : Inventaire
+- fait : inventory + scan — 545 fichiers (uploads 271 = 53 %, assets 85, ui_kits 50, components 105)
+- résultat : mode fresh, intention dashboard web + API, aucun framework, 36 pages (35 static, 1 wired), 92 doublons, 181 pasted, 1 référence cassée (Avatar.jsx)
+- vigilance : avatars = personnages sous droits (GTA, Naruto, Suits, Solo Leveling…), 87 fichiers personal-data?, Lucide via CDN
+
+## 2026-11-21 12:46 — Session préproduction — claude-code — Étape 2 : Sous-agents
+- fait : 6 sous-agents (uploads, assets/scraps, code+components, docs-tooling, architecte+intent+stack, écrans+data-contract)
+- résultat : intention dashboard + backend (confiance 0.95), React gardé et porté, ~45 écrans réutilisables, 14 écrans manquants, contrat ~90 endpoints, avatars sous droits, PII dans 13 captures + side.png + data.js
+
+## 2026-11-21 12:48 — Session préproduction — claude-code — Étape 3 : Plan de nettoyage
+- fait : plan.json fusionné, plan-check 0 erreur
+- résultat : 223 gardés/déplacés, 322 supprimés (avatars, PII, uploads, cloud), 0 review
+
+## 2026-11-21 12:51 — Session préproduction — design-to-dev — Étape 4 : Application — installation de la mémoire
+- Objectif : rendre le projet reprenable par n'importe quel agent
+- Fait : mémoire `.agents/memory/`, graphe `.agents/graph/`, hooks et fichiers d'instructions installés
+- Commandes importantes lancées : scaffold_memory.py
+- Problèmes : voir problemes.md
+- Décisions : voir decisions.md
+
+## 2026-11-21 12:51 — Session préproduction — claude-code — Étape 4 : Application
+- fait : apply (234 copiés, 311 supprimés, 297 chemins réécrits), chemins dynamiques corrigés, sections Licence + Plan/factures retirées de Paramètres (Pages2.jsx), SSO sans mention de plan, Efferd → Ciphera (namespace CipheraDesignSystem, CIPHERA_PAGES/NAV, préfixe cph_), identité de l'auteur du template anonymisée (Alex Martin / AM)
+- résultat : verify = 1 seul signalement, faux positif (+bg.img+ dans Avatar.jsx) ; galerie d'avatars sans images (supprimées volontairement) ; bundle vendor contient encore une copie compilée périmée des écrans (écrasée par Babel au chargement)
+
+## 2026-11-21 12:51 — Session préproduction — claude-code — Étape 4 : 4b Traces d'IA
+- fait : ai_traces clean (dry-run puis réel)
+- résultat : 183 fichiers analysés, 0 trace retirable, 0 à vérifier
+
+## 2026-11-21 12:55 — Session préproduction — claude-code — Étape 5 : Fichiers racine
+- fait : README.md, .gitignore complété, .env.example (noms seuls), docs/design/screens.md (contrat ~45 écrans + 14 manquants), docs/architecture/stack.md, ADR 0001 structure / 0002 terminal / 0003 installation curl, docs/research/analyse-paas (copie), README DS + oxlint + skill ciphera-design aux nouveaux chemins
+- résultat : LICENSE non créé — choix de licence à demander
+
+## 2026-11-21 12:57 — Session préproduction — claude-code — Étape 6 : Fondations et sécurité
+- fait : foundations (9 ✅, 15 ⚠️, 0 ❌), scan (4 candidats + 2 à valider au déploiement), requirements dashboard+backend, baseline.md trié, exigences Ciphera ajoutées
+- résultat : aucun ❌ ; ⚠️ = bundle maquette, manifestes C2PA dans les SVG de marque (sans danger), commandes curl|sh voulues ; 38 dépendances non vérifiées en ligne
+
+## 2026-11-21 12:59 — Session préproduction — claude-code — Étape 6 : Fondations et sécurité
+- fait : fondations relancées après retrait C2PA (10 ✅, 12 ⚠️, 0 ❌), deps --online 0 faille, kit sécurité 9 skills installé, LICENSE AGPL-3.0, baseline.md + exigences.md
+- résultat : base saine, aucun ❌ — tâches backend autorisées
+
+## 2026-11-21 13:13 — Session préproduction — claude-code — Étape 7 : Plan superpowers
+- fait : plan v0.1 en 35 tâches et 10 phases (Phase 0 fondations : aucun ❌), Review Focus en 5 points, feuille de route v0.2/v0.3
+- résultat : docs/superpowers/plans/2026-11-21-ciphera-v0.1.md
+
+## 2026-11-21 13:15 — Session préproduction — claude-code — Étape 8 : Audit Cloudflare
+- fait : guidance security-audit sur stack.md, exigences.md et le plan
+- résultat : 7 manques de conception confirmés, reportés avec leurs tests (Tasks 12, 19, 24, 25, 30, 31-32, 33) ; lignes génériques sans objet signalées
+
+## 2026-11-21 13:19 — Session préproduction — claude-code — Étape 9 : Clôture
+- fait : git init, .gitattributes, commit 71cb2ec, push vers le dépôt privé
+- résultat : projet agent-ready, plan prêt, exécution par sous-agents
+
+## 2026-11-21 13:30 — Session v0.1-sdd — claude-code (orchestrateur) — Task 1 : Workspace Cargo et CI
+- fait : 8 crates (bins ciphera, ciphera-agent, ciphera-proxy, ciphera-cli), rust-toolchain, deny.toml, justfile, ci.yml (actions épinglées par SHA, actionlint vérifié par SHA-256) ; Task 0 vérifiée (foundations --strict exit 0)
+- résultat : commits 8d3ee41, c65e009 ; relecture OK après 1 correction
+
+## 2026-11-21 13:41 — Session v0.1-sdd — claude-code (orchestrateur) — Task 2 : Initialisation de web/
+- fait : Vite + React 19 + TS, Tailwind v4 (@theme sur tokens), fontsource Geist (plus de Google Fonts), Vitest, MSW (dev seulement, worker hors dist + contrôle postbuild), Playwright config, components.json shadcn ; versions dans decisions.md
+- résultat : commits 464e488, 4a9acca ; relecture OK après 1 correction
+
+## 2026-11-21 13:55 — Session v0.1-sdd — claude-code (orchestrateur) — Task 3 : Composants core, forms, overlay en TSX
+- fait : 12 composants portés en TSX (.jsx/.d.ts retirés), Menu, Toast, CopyButton, Avatar, index.ts ; primitives Radix (shadcn) restylées ; Icon via lucide-react (aucune requête) ; web/.oxlintrc.json dérivé + npm run lint
+- résultat : commits 348acbd, f90b9e4, 2561350 ; relecture OK après 2 corrections
+
+## 2026-11-21 14:03 — Session v0.1-sdd — claude-code (orchestrateur) — Task 4 : Composants data, navigation, cards en TSX
+- fait : 20 composants portés (data, navigation, cards), Tile/Spark/Bar créés, DataTable loading (5 lignes skeleton) et empty ; Tabs natif avec tabindex mobile
+- résultat : commits 19d32f1, 0f1a329 ; relecture OK après 1 correction
+
+## 2026-11-21 14:12 — Session v0.1-sdd — claude-code (orchestrateur) — Task 5 : Contrat d'API et génération des clients
+- fait : shared (ids Uuid, ApiError + IntoResponse derrière feature axum, sqlx derrière feature sqlx, Config CIPHERA_* avec Debug masqué), api-types (utoipa, /api/health), gen-openapi, openapi.json + schema.d.ts générés, client openapi-fetch à la racine de l'origine, justfile windows-shell, job CI gen-is-fresh. Phase 0 terminée.
+- résultat : commits 8b6b9c3, 1e2d753 ; relecture approuvée
+
+## 2026-11-21 14:31 — Session v0.1-sdd — claude-code (orchestrateur) — Task 6 : Plan de contrôle HTTPS, SPA embarquée, santé, en-têtes
+- fait : axum + rustls (ring, TLS 1.2/1.3) sur 8443, redirection 301 vers HTTPS (Host validé), SPA rust-embed (503 sans interface), /api/* inconnu en 404 JSON, CSP/HSTS/nosniff/no-referrer partout, migration 0001 (instance, users, sessions, audit_events), harnais de test PG17 (CIPHERA_TEST_DATABASE_URL local, testcontainers en CI)
+- résultat : commits 6da1105, 5ebdc4f ; relecture approuvée
+
+## 2026-11-21 14:51 — Session v0.1-sdd — claude-code (orchestrateur) — Task 7 : ciphera init — PKI, secrets d'instance, jeton de setup
+- fait : crate pki (CA P-256, certs serveur/agent, séries aléatoires, clés Zeroizing), SecretBox age 0.11 (0.12 écarté : RUSTSEC-2026-0387), ciphera init (fichiers 0600 atomiques sans écrasement, dossiers vérifiés, chown ciphera si root, URL de setup + empreinte SHA-256), AppState.secrets, arrêt SIGTERM
+- résultat : commits fd98934, 5f71a3c, e644b95 ; relecture OK après 1 correction
+
+## 2026-11-21 15:22 — Session v0.1-sdd — claude-code (orchestrateur) — Task 8 : install.sh signé, unités systemd, release de test
+- fait : install.sh POSIX (minisign + SHA-256 avant toute installation, surcharges de test verrouillées par CIPHERA_INSTALL_TEST=1), unités systemd durcies (test automatique), digests postgres:17 / buildkit, Config DB par champs (CIPHERA_DB_* + fichier de mot de passe), package.sh, release.yml (musl x86_64/aarch64, artefacts seulement), tests e2e Podman systemd Debian/Ubuntu/Fedora 48/48 en local ; redirection HTTP du panneau sur 8080, le port 80 ira au proxy (Task 20)
+- résultat : commit f4c6512 ; relecture approuvée
+
+## 2026-11-21 15:37 — Session v0.1-sdd — claude-code (orchestrateur) — Task 9 : Shell de l'application et écrans d'erreur
+- fait : routes TanStack (fichiers), AppSidebar/DashboardHeader/404 portés, NAV typée (v0.2/v0.3 désactivées « Bientôt » : Serveurs, Clés API, Domaines globaux en v0.2), écrans 500/hors ligne/session expirée/403, politique d'erreurs (requêtes plein écran, mutations en toast, 401 → /login?expired=1 sauf /api/auth/*, cache vidé), e2e Playwright
+- résultat : commits ecc0bc3, 6384575 ; relecture OK après 1 correction
+
+## 2026-11-21 16:01 — Session v0.1-sdd — claude-code (orchestrateur) — Task 11 : Assistant d'installation branché
+- fait : GET /api/setup/status, POST /api/setup/checks, POST /api/setup/complete (SERIALIZABLE + INSERT WHERE NOT EXISTS, 410 au rejeu, jeton à temps constant, mort dès qu'un utilisateur existe, fichier supprimé), auth::password argon2id + auth::session (cookie __Host-), migration 0002_setup, audit setup.completed, écran /setup porté (Tailscale masqué)
+- résultat : commit 9e328d0 ; relecture approuvée (Review Focus 5 tenu)
+
+## 2026-11-21 16:38 — Session v0.1-sdd — claude-code (orchestrateur) — Task 12 : Connexion, sessions, CSRF, limitation de débit
+- fait : POST /api/auth/login (lower(email), hachage leurre, 401 générique), sessions tournantes (cookie __Host-, 12 h / 30 j), CSRF lié à la session (exemptions exactes), limitation atomique 5/15 min par (IP, e-mail) + 50/IP, X-Forwarded-For seulement depuis loopback, /api/me, logout, audit, migration 0003_auth ; LoginFlow porté, shell branché sur /api/me
+- résultat : commits 9ff9802, 941d02f ; relecture OK après 1 correction
+
+## 2026-11-21 17:16 — Session v0.1-sdd — claude-code (orchestrateur) — Task 13 : TOTP, codes de secours, enrôlement
+- fait : TOTP (totp-rs), 10 codes de secours argon2id, enrôlement forcé /2fa-setup, rotation de session après 2FA, verrou de session contre les validations concurrentes
+- résultat : commit d101ce1 ; relecture OK après 1 correction ; commit fait par l'orchestrateur avec accord utilisateur (commit refusé au sous-agent)
+
+## 2026-11-21 19:54 — Session v0.1-sdd — claude-code (orchestrateur) — Task 14 : Passkeys WebAuthn
+- fait : webauthn-rs 0.6.2 : enregistrement, suppression avec ré-auth, assertion en 2FA et connexion sans mot de passe (UV requise), cérémonies côté serveur à usage unique, indisponible sur IP ; codes de secours au premier facteur passkey ; verrou par compte sur les facteurs ; exception RUSTSEC-2023-0071 validée par l'utilisateur
+- résultat : commits 9c985a4, 0353875 ; relecture OK après 1 correction
+
+## 2026-11-21 20:20 — Session v0.1-sdd — claude-code (orchestrateur) — Task 15 : Rôles fixes, autorisation, invitations
+- fait : matrice par défaut de Team.jsx (authz), extracteur Require<R, L> (403 forbidden), invitations à usage unique 72 h (jeton haché), écran d'acceptation /invite/$token, inscription publique fermée par défaut
+- résultat : commits cad4cb1, ff3ef0b, a41b1f0 ; relecture OK après 2 corrections
+
+## 2026-11-21 21:01 — Session v0.1-sdd — claude-code (orchestrateur) — Task 16 : SMTP, mot de passe oublié, réinitialisation
+- fait : lettre (rustls), réglages SMTP admin avec mot de passe scellé en écriture seule, mot de passe oublié sans énumération (traitement en tâche de fond, délai 60 s), lien 30 min à usage unique qui révoque toutes les sessions, lien admin et CLI ciphera admin reset-password, CIPHERA_PUBLIC_URL, e-mail d'invitation
+- résultat : commits a5838f9, d8b7978 ; relecture OK après 1 correction
+
+## 2026-11-21 21:59 — Session v0.1-sdd — claude-code (orchestrateur) — Task 17 : Profil
+- fait : GET/PATCH /api/me (langue, fuseau via jiff, e-mail avec ré-auth), avatar ré-encodé PNG 256 avec limites de décodage, changement de mot de passe gardé contre les courses, sessions listées et révocables, préférences e-mail, écrans ProfilePage/ProfileSecurity/ProfileNotif portés ; fin de la phase 2
+- résultat : commits 287a2c4, 40796b6 ; relecture OK après 1 correction
+
+## 2026-11-21 22:44 — Session v0.1-sdd — claude-code (orchestrateur) — Task 18 : Protocole v1 et transport QUIC + mTLS
+- fait : crates/proto (messages, codec postcard 4 Mo), lien QUIC mTLS plan de contrôle ↔ agent (CA de l'instance seule, empreinte en base, limites de flux et de connexions), registre des agents, enrôlement de l'agent local par ciphera init, purge de /etc/ciphera-agent
+- résultat : commits f5d8bfd, 26dc48f ; relecture OK après 1 correction ; e2e d'installation à confirmer en CI
+
+## 2026-11-22 00:16 — Session v0.1-sdd — claude-code (orchestrateur) — Task 19 : Agent : Docker, état local, métriques, conteneurs d'infrastructure
+- fait : bollard (étiquettes de propriété), état SQLite, métriques en dernière valeur toutes les 30 s, ciphera-postgres par socket Unix sans TCP, buildkitd rootless sur ciphera-build avec bac à sable, réseaux de projet, attente de la base avec causes ; registre des agents dans AppState ; jobs CI agent-docker et install-docker
+- résultat : commits 3b49e68, 004f7e7, 2e8358e ; relecture OK après 2 corrections ; BLOQUANT avant Task 24 : uid dédié pour buildkitd
+
+## 2026-11-22 03:23 — Session v0.1-sdd — claude-code (orchestrateur) — Task 20 : Proxy : table de routes pilotée par l'agent
+- fait : ciphera-proxy Pingora (rustls) sur 80/443, table de routes atomique (ArcSwap) appliquée par l'agent via socket Unix (activation systemd), redirection 301 vers :8443 pour les hôtes IP, 404 sobre, en-têtes et chemins validés, plafonds de connexions (global, par IP, attentes TLS à part), journaux sans jetons ; côté plan de contrôle : IPv6 /64 et espace de débit séparé pour mot de passe oublié ; fin de la phase 3
+- résultat : commits d8c524a, 78ce6db, 4e35de3 ; relecture OK après 2 corrections
+
+## 2026-11-22 04:49 — Session v0.1-sdd — claude-code (orchestrateur) — Task 21 : File de tâches PostgreSQL
+- fait : File SKIP LOCKED (migration 0010), bail de 5 min + heartbeat, dédup par index unique partiel, travailleur à concurrence bornée lancé par serve (commit 4229a9a)
+- résultat : Relecture OK sans correction ; 11/11 tests jobs ; suite complète à confirmer en CI. Report Task 25 : arrêter le handler si le bail est perdu
+
+## 2026-11-22 05:18 — Session v0.1-sdd — claude-code (orchestrateur) — Task 22 : Projets, environnements, services
+- fait : Migration 0011, API /api/projects (CRUD, authz Read/Write/Admin, validation stricte), écrans liste/détail/nouveau projet portés (commit 98e9d4d)
+- résultat : Relecture OK sans correction ; 8/8 tests projects + 176 tests web. Éléments de maquette sans backend reportés (sélecteur de dépôt T23, auto-deploy/animation T25, variables T29, colonne Domaine T30/31)
+
+## 2026-11-22 06:07 — Session v0.1-sdd — claude-code (orchestrateur) — Task 23 : GitHub App par instance et webhooks entrants
+- fait : Flux manifest (state lié à la session, usage unique), clé et secret scellés en écriture seule, JWT RS256 par ring, jeton d'installation en mémoire, webhook HMAC + anti-rejeu 24 h + refus des push périmés, carte GitHub et sélecteur de dépôt portés (commits 9f8824c, 6fe4997)
+- résultat : Relecture : 1 Important corrigé (rejeu après purge) ; 19 tests github, 266 Rust, 182 web. rsa en dev-dependency pour clés de test (exception élargie aux tests, à signaler)
+
+## 2026-11-22 08:15 — Session v0.1-sdd — claude-code (orchestrateur) — Task 24a : buildkitd sous un compte système dédié (prérequis Task 24)
+- fait : Compte système ciphera-build + plage de sous-uids/gids dédiée sans collision, buildkitd lancé sous cet uid avec SETUID/SETGID seulement, état dans /var/lib/ciphera-buildkit, agent dégradé sans buildkitd (commits c2c6654, e4fe2eb, 790c387)
+- résultat : CI réelle : uid de buildkitd = ciphera-build (ni 1000 ni root), build OK, install-e2e OK sur 3 distributions. BLOQUANT levé
+
+## 2026-11-22 10:41 — Session v0.1-sdd — claude-code (orchestrateur) — Task 24 : Pipeline de build (clone, Railpack, Dockerfile, Compose)
+- fait : Build sans shell : ValidatedArg, git durci (askpass, https seul), compose_policy, railpack prepare dans un conteneur isolé (réseau ciphera-prepare, mise épinglé), buildctl -> Docker, nettoyage du répertoire ; railpack/buildctl/mise épinglés par SHA-256 dans install.sh (commits 787ec52, b44cd1a, 2d91a4a)
+- résultat : CI réelle : builds des 3 fixtures et prepare isolé OK ; install-e2e OK sur 3 distributions. Reports : réseau compose et promotion d'image (T25), filtrage de sortie (T34), outils dans l'archive signée (T35)
+
+## 2026-11-22 12:37 — Session v0.1-sdd — claude-code (orchestrateur) — Task 25a : Agent : déploiement sans interruption et annulation
+- fait : Démarrage sur ciphera-p-<projet>, healthcheck 5×5 s, bascule ApplyRoutes puis drainage 10 s, échec sans toucher l'ancien, Compose sur le réseau du projet, annulation durable, issues persistées (state.db v3), balayage au démarrage par étiquettes, protocole v2 (commits 5261e02, 8f40b2d, 937c547)
+- résultat : CI réelle : v2 en échec garde v1, v3 saine bascule et arrête v1 ; Compose forcé sur le réseau du projet ; mise épinglé prouvé
+
+## 2026-11-22 14:05 — Session v0.1-sdd — claude-code (orchestrateur) — Task 25b : Plan de contrôle des déploiements
+- fait : Migration 0013, orchestrateur (job Deploy) avec verrou par environnement, jeton GitHub au moment de l'envoi, annulation, rollback sans rebuild, rétention 5 + Cleanup, chien de garde 10 min (échec présumé), réconciliation depuis les issues de l'agent, API /api/deployments (commits 3ab597a, a640c89)
+- résultat : Relecture : 1 Important corrigé ; 18 tests deployments, 262 au total ; CI verte
+
+## 2026-11-22 14:28 — Session v0.1-sdd — claude-code (orchestrateur) — Task 25c : Écrans des déploiements
+- fait : Liste globale, onglet Déploiements du projet (timeline 6 étapes), détail partageable /deployments/:id, Redéployer avec garde serveur et verrou au clic, annulation/rollback selon statut et rôle (commits 5cb2e86, 2016f5a, 0db2736)
+- résultat : Relecture : 2 tours de corrections ; 219 tests web
+
+## 2026-11-22 16:36 — Session v0.1-sdd — claude-code (orchestrateur) — Task 26 : Logs en direct (build et exécution)
+- fait : WS /api/ws/logs (session + Origin exacte, Logs Read), StopLogs dans proto, compteur d'abonnés, tampon 1024 lignes par client, masquage des secrets (multi-lignes, cache 10 s invalidable), canal dédié aux logs, migration 0014 (10 000 dernières lignes), logs.txt 4 Mio, LogViewer porté depuis ProjectLogs.jsx avec reconnexion ; dépôt déplacé vers ciphera-dev/deploy-hub
+- résultat : TERMINÉ (relecture : 1 tour de corrections ; 445+ tests cargo, 234 tests web)
+
+## 2026-11-22 18:10 — Session v0.1-sdd — claude-code (orchestrateur) — Task 27 : Git du projet, deploy hooks, redémarrage
+- fait : GET/PATCH /api/projects/:id/git (branche, répertoire racine, chemins surveillés, déclencheurs, auto_deploy), deploy hooks dh_ (haché, affiché une fois, 404 identique à temps constant, débit limité) via le chemin de redéploiement de la Task 25, chemins surveillés appliqués au webhook push, redémarrage (nouvelle variante proto), répertoire racine appliqué au build (BuildSpec.root_directory), ProjectGit.jsx porté, TokenCreatedModal ; CI : espace disque libéré sur les runners
+- résultat : TERMINÉ (relecture : 1 tour de corrections ; 473 tests cargo, 239 tests web)
+
+## 2026-11-22 19:30 — Session v0.1-sdd — claude-code (orchestrateur) — Task 28 : Aperçu et services du projet
+- fait : GET /api/projects/:id/overview et /services, redémarrage et arrêt par service (variante proto StopContainers, DeploySpec.service_name), alias réseau <service>.internal, statut du projet (servi → en ligne), ProjectOverview.jsx porté (aperçu + services), terminal et réplicas désactivés (v0.2), sparklines vides jusqu'à la Task 31
+- résultat : TERMINÉ (relecture propre ; 483 tests cargo, 247 tests web)
+
+## 2026-11-22 21:34 — Session v0.1-sdd — claude-code (orchestrateur) — Task 29 : Variables du projet et globales (age, écriture seule)
+- fait : Variables chiffrées (age, clé de l'instance), secrets jamais renvoyés, export sans secrets, priorité projet > global, bannière « non appliquées » (suppressions incluses, verrou de résolution), injection dans DeploySpec.env (Compose compris, valeurs jamais sur disque via CIPHERA_VAR_*), masquage des logs branché et fermé en cas d'erreur, ProjectVariables.jsx et GlobalVariables.jsx portés
+- résultat : TERMINÉ (relecture : 2 tours de corrections ; 461+ tests cargo, 260 tests web)
+
+## 2026-11-23 00:29 — Session v0.1-sdd — claude-code (orchestrateur) — Task 30 : ACME et domaines
+- fait : Certificats ACME HTTP-01 émis et gardés chiffrés par le proxy (instant-acme, Pebble en CI), domaines par projet (hôte unique dans l'instance, panneau réservé, sslip.io/nip.io refusés), vérification DNS A/AAAA stricte, émission limitée (un job par domaine, pas de réémission d'un certificat valide, DNS revérifié, reprise 5 min → 24 h), redirection 308 et 80→443 hors défi ACME, internal_port requis, clés supprimées seulement avec le domaine, ProjectDomains.jsx porté ; profil de dev allégé (target 244 Gio → 5,5 Gio)
+- résultat : TERMINÉ (relecture : 2 tours de corrections)
+
+## 2026-11-23 02:11 — Session v0.1-sdd — claude-code (orchestrateur) — Task 31 : Domaine du panneau, métriques agrégées, Vue d'ensemble
+- fait : Métriques de l'agent (CPU/RAM par conteneur, santé) brutes 24 h et agrégats horaires 30 j (MetricsRollup), sparklines du projet et barre latérale des logs alimentées, statut du projet tenant compte de la santé, Vue d'ensemble (OverviewV2 porté), domaine du panneau (owner, DNS + ACME, route panel servie seulement avec certificat, 8443 gardé jusqu'à confirmation depuis le domaine, échéance 24 h, webhook GitHub migré, Setup URL à mettre à jour à la main)
+- résultat : TERMINÉ (relecture : 1 tour de corrections ; 563 tests cargo, 273 tests web)
+
+## 2026-11-23 09:42 — Session v0.1-sdd — claude-code (orchestrateur) — Task 32 : Paramètres (sections v0.1)
+- fait : Sections Général, Domaine du panneau (bascule, confirmation, retrait avec retour du webhook GitHub vers 8443), Déploiements, Sécurité de l'organisation (mfa_required à la prochaine connexion, liste d'IP autorisées avec garde-fou anti-blocage et commande clear-ip-allowlist, routes de webhooks et ACME exemptées), Notifications montée, export JSON sans secrets, suppression de l'organisation selon la décision utilisateur du 2026-11-23 (contenu effacé, propriétaire et configuration gardés, projets restants listés), flux de logs coupés à la révocation
+- résultat : TERMINÉ (relecture : 1 petit tour ; 583 tests cargo, 280 tests web)
+
+## 2026-11-23 11:28 — Session v0.1-sdd — claude-code (orchestrateur) — Task 33 : Mises à jour de Ciphera
+- fait : Mises à jour signées (minisign + SHA-256, version strictement supérieure, --allow-downgrade root avec --restore-db vérifié), demande HMAC écrite par le panneau (owner + ré-auth), sauvegarde pg_dump vérifiée avec métadonnées, remplacement par renommage, retour arrière binaires + base, reprise au démarrage non bloquante, configuration root isolée (/etc/ciphera-updater), programmes lancés par chemin absolu sans environnement, outils tiers mis à jour depuis le manifeste signé, PROTO_VERSION 3 avec refus clair à la poignée de main
+- résultat : TERMINÉ sous réserve de la CI (relecture : 3 tours de corrections ; update.sh 42/42 en local)
+
+## 2026-11-23 13:15 — Session v0.1-sdd — claude-code (orchestrateur) — Task 34a : Matrice d'autorisation, fuzzing du codec, threat model
+- fait : authz_matrix.rs (tous les endpoints x 5 rôles + sans session), cible cargo-fuzz decode + job CI fuzz-proto, docs/security/threat-model.md
+- résultat : relecture propre ; aucune incohérence d'autorisation ; 6 M exécutions de fuzzing sans plantage
+
+## 2026-11-23 14:49 — Session v0.1-sdd — claude-code (orchestrateur) — Task 34b : Parcours complet e2e en CI
+- fait : web/e2e/golden-path.spec.ts + job CI e2e-golden-path (installation réelle, faux GitHub, Pebble) ; correction : repli de CIPHERA_PUBLIC_IP sur l'IP du certificat du panneau (jamais implémenté)
+- résultat : CI verte, parcours complet setup → TOTP → GitHub → déploiement → HTTPS → rollback
+
+## 2026-11-23 16:56 — Session v0.1-sdd — claude-code (orchestrateur) — Task 34c-1 : Filtrage réseau des builds et durcissement du proxy
+- fait : table nftables inet ciphera_egress (builds et prepare sans accès aux métadonnées cloud, à l'hôte ni aux réseaux privés), délai total de lecture des en-têtes, éviction de la plus ancienne poignée TLS en attente, contrôle SNI/Host (421), vérification clé/SAN des certificats, contrôle du dossier d'état, prérequis nft vérifié par le updater
+- résultat : relecture propre après 2 tours ; CI et Release (test) vertes ; résiduels notés dans problemes.md (DNS 53 ouvert, réponses certificat appariées par hôte)
+
+## 2026-11-23 19:53 — Session v0.1-sdd — claude-code (orchestrateur) — Task 34c-2 : Durcissement du plan de contrôle, de l'agent et des mises à jour
+- fait : chiffrement age lié à la ligne (migration), logs et métriques liés au serveur, limites de débit par catégorie avec éviction, resynchronisation d'état avec anti-rebond à front descendant, AppShell robuste, updater (corps borné, verrou 0600, restauration atomique), PROTO_VERSION 4, foundations 0 ❌
+- résultat : relecture propre après 2 tours ; CI et Release (test) vertes ; résiduels R8 (secrets GitHub/TOTP/SMTP non liés), ordre des lignes rejouées, compteurs remis à zéro au redémarrage
+
+## 2026-11-24 01:18 — Session v0.1-sdd — claude-code (orchestrateur) — Task N : E-mails de notification et sources Git hors GitHub en v0.2 (décisions utilisateur)
+- fait : Relecture finale (4 zones) et une vague de corrections : cycle systemd au démarrage, renouvellement des certificats, updater piloté par l'archive avec registre des unités, santé réelle avant succès, réinstallation sûre, commandes admin, limites du panneau, rotation des logs, routes persistées, 2FA après rechargement ; e-mails de déploiement et de certificats (file de tâches, idempotence, 2 budgets de 10/h, récapitulatif) ; sources Git hors GitHub déplacées en v0.2 dans le spec
+- résultat : relectures propres ; CI et Release (test) vertes jusqu'à 77fd3ca ; résiduels dans problemes.md
+
+## 2026-11-24 03:26 — Session v0.1-sdd — claude-code (orchestrateur) — Task 35 : Préparation de la publication (signature de production, cosign, SLSA, site get.ciphera.dev)
+- fait : release.yml signé et approuvé (environnements release et github-pages), script de clé scripts/release/new-signing-key.ps1, docs/operations/release.md et docs/security/release-signing.md ; relecture propre après 2 tours
+- résultat : CI, CodeQL et Release (test) verts sur 38b4e2b ; mineurs reportés dans le registre SDD
+
+## 2026-11-24 12:22 — Session v0.1-sdd — claude-code (orchestrateur) — Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md
+- fait : domaine passé à get.ciphera.ch ; clé publique de production poussée ; 62 alertes CodeQL fermées, #63 corrigée ; signalement privé activé ; SECURITY.md, CONTRIBUTING.md
+- résultat : relectures propres ; CI à confirmer sur le dernier commit

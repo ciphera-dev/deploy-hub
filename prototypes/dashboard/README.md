@@ -1,0 +1,27 @@
+# Ciphera — app UI kit
+PaaS (plan de contrôle Rust, agents nœuds) built on the Ciphera visual system. 1440px, interactive.
+- `index.html` — app shell: sidebar (Pilotage / Ressources / Plateforme, collapsible ⌘B), header, pages, modals.
+- `Overview.jsx` — Vue d'ensemble: deployments KPIs + chart, insights, cluster storage, CPU gauge, containers, last deployment.
+- `Projects.jsx` — list → detail (Services / Déploiements + build logs / Variables write-only / Domaines) + Nouveau projet modal (Railpack / Dockerfile / Compose).
+- `Servers.jsx` — list → detail (Métriques / Conteneurs / Agent QUIC·mTLS) + Ajouter un serveur modal (install command).
+- `ResourcePage.jsx` — Monitoring, Connecteurs (+ modal), Paramètres (passkeys, TOTP, secrets + modal), and generic list pages.
+- `data.js`, `pages.js` — sample data.
+- `Security.jsx` — Sécurité: carte 2D des attaques en direct (d3-geo, Natural Earth), flux d'événements (pause/reprise, bannir/bloquer au survol), règles IP (bannies / bloquées / liste blanche) avec débannir, débloquer, modale d'ajout.
+- `ProjectLogs.jsx` — onglet Logs d'un projet : par conteneur, filtres de niveau, recherche, direct/pause, retour à la ligne, copie, téléchargement .txt.
+- `GlobalVariables.jsx` — Variables globales (Plateforme) : portée par environnement et par projet, secrets, import/export .env ; héritées visibles dans l'onglet Variables d'un projet.
+- `ProjectDomains.jsx` — onglet Domaines : statut HTTPS/DNS, détail DNS dépliable, vérifier, principal, redirection, renouveler, supprimer ; modale d'ajout en 2 étapes avec vérification DNS.
+- `ProjectDeployments.jsx` — onglet Déploiements : timeline, pipeline par étape, logs en direct, redéployer, annuler, rollback, téléchargement des logs.
+- `ProjectVariables.jsx` — onglet Variables : par environnement, édition en ligne, mode .env brut, bannière « non appliquées », héritage des globales.
+- `ProjectGit.jsx` — onglet Git : dépôt, branches/motifs, chemins surveillés, déclencheurs, webhook (secret, livraisons), deploy hooks, barre d'enregistrement.
+- `ProjectOverview.jsx` — onglets Aperçu (déploiement de production, KPI avec sparklines, santé des services, activité) et Services (cartes avec CPU/RAM, réplicas ajustables, réseau interne, ajout de service).
+- `Monitoring.jsx` — consommation des ressources : CPU, mémoire, stockage, réseau par nœud, graphique multi-séries, conteneurs gourmands, répartition du stockage, alertes.
+- `ServersPage.jsx` — liste des serveurs en cartes (CPU/RAM/disque, agent, actions) + onglet Clés SSH (import/génération, serveurs autorisés, révocation).
+- `ProjectCloudflare.jsx` — connexion Cloudflare requise pour l'onglet Domaines : écran de connexion (OAuth ou token), choix des zones, barre de statut (proxy, synchro, déconnexion).
+- `Team.jsx` — Équipe : création de comptes (invitation ou mot de passe temporaire), rôles et périmètre projets, 2FA, suspension, matrice de permissions par rôle, journal d'accès.
+- `DomainsPage.jsx` — page Domaines globale : connexion Cloudflare requise, liste des domaines (proxy, certificat, expiration), zones DNS et enregistrements.
+- `Databases.jsx` — Bases de données : logos moteurs (assets/db/), filtres par moteur, stockage/connexions/sauvegardes, détail (connexion, réplicas, restauration), création.
+- `ServerManage.jsx` — page « Gérer » d'un serveur : en-tête + redémarrer/console, accès SSH, 6 métriques, raccourcis, informations serveur et offre.
+- `Connectors.jsx` — Connecteurs : connectés (cartes, activité 24 h, menu), catalogue par catégorie, connexion OAuth avec permissions, panneau de configuration. Cloudflare partagé avec la page Domaines.
+- `Tickets.jsx` — Tickets d'équipe : bugs, suggestions (votes), questions, incidents ; liste filtrable, fil de discussion, statut/assignation/priorité, création.
+- `Docker.jsx` — Conteneurs : gestionnaire Docker par serveur (stacks compose, CPU/RAM, ports, logs, start/stop), images, volumes, état vide.
+- `TicketAI.jsx` — création de ticket assistée par IA : description libre + pièces jointes, 5 échanges max., brouillon (titre, type, priorité, projet, description), choix fournisseur/modèle parmi les connecteurs IA connectés.

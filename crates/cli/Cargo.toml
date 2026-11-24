@@ -1,0 +1,35 @@
+[package]
+name = "ciphera-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "ciphera_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ciphera-cli"
+path = "src/main.rs"
+
+[dependencies]
+# Updater (`ciphera-cli updater`) : demande signee (HMAC, cle d'instance),
+# verification minisign + SHA-256, archives tar.gz lues sans `unpack`,
+# sauvegarde pg_dump compressee zstd.
+shared = { path = "../shared", features = ["update"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11.1"
+minisign-verify = "0.3.0"
+flate2 = "1.1.11"
+tar = { version = "0.4.46", default-features = false }
+zstd = "0.14.4"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.6", default-features = false, features = ["fs", "process", "std"] }
+
+[dev-dependencies]
+# Tests seulement : signe les releases de test (cles jetables).
+minisign = "0.10.0"

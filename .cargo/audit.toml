@@ -1,0 +1,6 @@
+# Exceptions de cargo audit ; garder alignées avec deny.toml.
+[advisories]
+# rsa (attaque Marvin, aucune version corrigée), tiré par webauthn-rs via crypto-glue.
+# Seule la vérification de signatures par clé publique est utilisée.
+# Décision du 2026-11-21 (.agents/memory/decisions.md), à réexaminer à chaque montée de webauthn-rs.
+ignore = ["RUSTSEC-2023-0071"]

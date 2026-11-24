@@ -1,0 +1,37 @@
+<!-- @dsCard group="Dashboard" viewport="1440x900" name="404 · version serveur" subtitle="Page introuvable du dashboard auto-hébergé" -->
+<!doctype html><html lang="fr"><head>
+<link rel="icon" type="image/svg+xml" href="../../web/public/favicon.svg"><meta charset="utf-8"><title>Page introuvable · Ciphera</title><link rel="stylesheet" href="../../web/src/styles/index.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../vendor/ds-bundle.js"></script>
+<style>html,body{height:100%;margin:0}body{background:#070708;font-family:var(--font-sans)}#root{height:100%}a{color:#a78bfa;text-decoration:none}a:hover{color:#c4b5fd}input::placeholder{color:var(--text-faint)}@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const {Icon}=window.CipheraDesignSystem;
+const PAGES=[['gauge',"Vue d'ensemble"],['layers','Projets'],['server','Serveurs'],['rocket','Déploiements'],['chart-line','Monitoring'],['ticket','Tickets']];
+function NotFound(){
+  const [q,setQ]=React.useState('');const path=location.hash.slice(1)||'/projets/ciphera-api/parametres';
+  const go=n=>{try{localStorage.setItem('ciphera-nav',n)}catch(e){}location.href='index.html'};
+  const res=PAGES.filter(p=>p[1].toLowerCase().includes(q.toLowerCase()));
+  return <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
+    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'24px 28px'}}><img src="../../web/src/assets/brand/logo.svg" alt="Ciphera" style={{height:18,width:'auto'}}/><a href="index.html" style={{display:'flex',alignItems:'center',gap:7,height:36,padding:'0 14px',borderRadius:9,border:'1px solid var(--border-default)',font:'500 13px/1 var(--font-sans)',color:'var(--text-strong)'}}><Icon name="arrow-left" size={14}/>Retour au dashboard</a></div>
+    <div style={{flex:1,minHeight:0,position:'relative',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'20px 20px 60px',overflowY:'auto'}}>
+      <span style={{position:'fixed',inset:0,pointerEvents:'none',backgroundImage:'radial-gradient(rgba(255,255,255,.08) 1px,transparent 1px)',backgroundSize:'18px 18px',maskImage:'radial-gradient(45% 50% at 50% 45%,#000,transparent)',WebkitMaskImage:'radial-gradient(45% 50% at 50% 45%,#000,transparent)'}}></span>
+      <div style={{position:'relative',margin:'auto 0',width:'100%',maxWidth:460,display:'flex',flexDirection:'column',alignItems:'center',textAlign:'center',gap:18,animation:'fadeUp .3s ease-out'}}>
+        <span style={{font:'600 96px/1 var(--font-sans)',letterSpacing:'-0.06em',color:'transparent',WebkitTextStroke:'1px rgba(255,255,255,.22)',userSelect:'none'}}>404</span>
+        <span style={{font:'600 24px/1.2 var(--font-sans)',color:'var(--text-strong)',letterSpacing:'-0.01em'}}>Page introuvable</span>
+        <span style={{font:'400 14px/1.55 var(--font-sans)',color:'var(--text-muted)',maxWidth:380}}>Cette page n'existe pas ou a été déplacée. Vérifiez l'adresse, ou rejoignez une autre section du dashboard.</span>
+        <span style={{display:'flex',alignItems:'center',gap:8,height:30,padding:'0 12px',borderRadius:8,background:'var(--surface-raised)',border:'1px solid var(--border-subtle)',font:'400 12px/1 var(--font-mono)',color:'var(--text-subtle)',maxWidth:'100%',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}><Icon name="link-2" size={12}/>{path}</span>
+        <div style={{width:'100%',marginTop:10,borderRadius:16,border:'1px solid var(--border-default)',background:'var(--surface-app)',overflow:'hidden',textAlign:'left'}}>
+          <div style={{display:'flex',alignItems:'center',gap:10,padding:'0 14px',height:46,borderBottom:'1px solid var(--border-subtle)'}}><Icon name="search" size={15} color="var(--text-subtle)"/><input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Aller à une page…" style={{flex:1,minWidth:0,background:'transparent',border:0,outline:'none',color:'var(--text-strong)',font:'400 14px/1 var(--font-sans)'}}/></div>
+          {res.map(([ic,n])=><button key={n} onClick={()=>go(n)} onMouseEnter={e=>e.currentTarget.style.background='var(--surface-raised)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'} style={{display:'flex',alignItems:'center',gap:12,width:'100%',padding:'11px 14px',border:0,background:'transparent',cursor:'pointer',textAlign:'left'}}><span style={{width:30,height:30,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',background:'var(--surface-selected)'}}><Icon name={ic} size={14} color="var(--text-strong)"/></span><span style={{flex:1,font:'400 13px/1 var(--font-sans)',color:'var(--text-strong)'}}>{n}</span><Icon name="arrow-right" size={13} color="var(--text-subtle)"/></button>)}
+          {!res.length&&<div style={{padding:'18px 14px',font:'400 13px/1 var(--font-sans)',color:'var(--text-subtle)'}}>Aucune page ne correspond.</div>}
+        </div>
+        <span style={{font:'400 12px/1 var(--font-sans)',color:'var(--text-subtle)'}}>Le problème persiste ? <a href="index.html" onClick={e=>{e.preventDefault();go('Tickets')}}>Ouvrir un ticket</a></span>
+      </div>
+    </div>
+  </div>;
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<NotFound/>);
+</script></body></html>

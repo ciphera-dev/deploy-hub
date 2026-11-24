@@ -1,0 +1,72 @@
+{
+  "root": "C:\\Users\\Lenovo\\Documents\\Projets\\ciphera-deploy",
+  "findings": [
+    {
+      "rule": "supabase-service-key",
+      "title": "Clé service_role Supabase côté client",
+      "path": "prototypes/dashboard/Connectors.jsx",
+      "line": 167,
+      "status": "candidate",
+      "cwe": "CWE-798",
+      "asvs": "V2.10.4",
+      "fix": "Ne jamais exposer service_role au navigateur ; anon key + RLS.",
+      "evidence": "{[['URL du projet','globe',url,setUrl,'https://abcdefghijkl.supabase.co','text',url&&!urlOk?'Format attendu : https://<projet>.supabase.co':'Supabase › Project "
+    },
+    {
+      "rule": "cleartext-http",
+      "title": "URL en http:// (trafic en clair)",
+      "path": "prototypes/dashboard/GlobalVariables.jsx",
+      "line": 16,
+      "status": "candidate",
+      "cwe": "CWE-319",
+      "asvs": "V9.1.1",
+      "fix": "Passer en https:// ; HSTS côté serveur.",
+      "evidence": "{k:'OTEL_EXPORTER_OTLP_ENDPOINT',v:'http://otel.internal:4317',secret:false,envs:['Production','Preview','Staging'],proj:'all',upd:'il y a 3 sem.',by:'Alex Mart"
+    },
+    {
+      "rule": "weak-random",
+      "title": "Math.random pour un secret",
+      "path": "prototypes/dashboard/ProjectLogs.jsx",
+      "line": 22,
+      "status": "candidate",
+      "cwe": "CWE-338",
+      "asvs": "V6.3.1",
+      "fix": "crypto.getRandomValues / crypto.randomUUID / rand::rngs::OsRng.",
+      "evidence": "function seed(){const out=[];const now=Date.now();for(let i=220;i>0;i--){const c=CONTAINERS[Math.floor(Math.random()*4)].id;out.push(mk(c,new Date(now-i*2300)))"
+    },
+    {
+      "rule": "cleartext-http",
+      "title": "URL en http:// (trafic en clair)",
+      "path": "prototypes/dashboard/install.html",
+      "line": 101,
+      "status": "candidate",
+      "cwe": "CWE-319",
+      "asvs": "V9.1.1",
+      "fix": "Passer en https:// ; HSTS côté serveur.",
+      "evidence": "{fin>=4&&<div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',borderRadius:12,background:'var(--surface-raised)',font:'400 13px/1 var(--fo"
+    },
+    {
+      "rule": "csp-unknown",
+      "title": "Aucune CSP visible dans le code",
+      "path": ".",
+      "line": 0,
+      "status": "needs_validation",
+      "cwe": "CWE-1021",
+      "asvs": "V14.4.3",
+      "fix": "Définir une CSP stricte (en-tête serveur ou meta) ; vérifier sur le déploiement réel.",
+      "evidence": ""
+    },
+    {
+      "rule": "deploy-headers",
+      "title": "HTTPS, HSTS et en-têtes de sécurité non vérifiables depuis le code",
+      "path": ".",
+      "line": 0,
+      "status": "needs_validation",
+      "cwe": "CWE-693",
+      "asvs": "V14.4",
+      "fix": "Contrôler sur l'environnement déployé (curl -I) : HSTS, CSP, X-Content-Type-Options, frame-ancestors, Referrer-Policy.",
+      "evidence": ""
+    }
+  ],
+  "note": "candidate = motif à vérifier ; needs_validation = dépend du déploiement. Aucune sévérité ici."
+}

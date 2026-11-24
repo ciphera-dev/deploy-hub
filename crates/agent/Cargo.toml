@@ -1,0 +1,47 @@
+[package]
+name = "ciphera-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "ciphera_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ciphera-agent"
+path = "src/main.rs"
+
+[dependencies]
+# API Docker (socket Unix /var/run/docker.sock) : ni TLS, ni SSH, ni HTTP distant.
+bollard = { version = "0.20.2", default-features = false, features = ["pipe"] }
+# Archive d'image de buildctl envoyee a Docker par morceaux (meme version que proto).
+bytes = "1.12.2"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+pki = { path = "../pki" }
+proto = { path = "../proto" }
+# QUIC avec rustls + ring (ni aws-lc, ni OpenSSL, ni verificateur du systeme).
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# Etat local : SQLite compile avec la crate (builds musl et Windows sans libsqlite3).
+rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
+# Fichiers Compose : lecture du YAML du depot (fork maintenu de serde_yaml)
+# et de la sortie JSON de `docker compose config`.
+serde_json = { workspace = true }
+serde_norway = "0.9.42"
+# Empreinte des specs de conteneurs (meme version que pki et control-plane).
+sha2 = "0.11.1"
+shared = { path = "../shared" }
+# Metriques du noeud (CPU, memoire, disques, reseau) seulement.
+sysinfo = { version = "0.40.4", default-features = false, features = ["system", "disk", "network"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal", "sync", "time", "process", "io-util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+tempfile = "3.27.0"

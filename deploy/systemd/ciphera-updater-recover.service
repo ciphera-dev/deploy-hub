@@ -1,0 +1,64 @@
+# Reprise d'une mise a jour interrompue (arret brutal, coupure de courant)
+# au demarrage de la machine, avant les services de Ciphera : fichiers
+# precedents remis en place d'apres le journal de l'updater, et base
+# restauree depuis la sauvegarde prise juste avant si la nouvelle version a
+# pu tourner (ciphera-cli updater --recover). Ne fait rien sans journal.
+# Les services ne sont ni arretes ni relances : systemd les demarre ensuite.
+# Tiree aussi par chaque demarrage des services (RequiredBy=), y compris le
+# `systemctl restart` d'une mise a jour en cours : le verrou de l'updater
+# est alors tenu, la reprise s'arrete aussitot avec succes (jamais
+# d'attente du verrou), l'updater actif garde la charge du journal.
+[Unit]
+Description=Ciphera - reprise d'une mise a jour interrompue
+ConditionPathExists=/var/lib/ciphera-updater/journal.json
+ConditionPathExists=/usr/local/bin/ciphera-cli
+After=docker.service
+# Jamais avant un .socket/.path : cycle avec basic.target (le service est
+# After=basic.target, lui-meme apres sockets.target et paths.target).
+# L'updater declenche par le .path prend le verrou et rejoue le journal.
+Before=ciphera.service ciphera-agent.service ciphera-proxy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ciphera-cli updater --recover
+# Aucun EnvironmentFile (voir ciphera-updater.service).
+# Attente de PostgreSQL (relance par Docker) avant une restauration.
+TimeoutStartSec=15min
+
+StateDirectory=ciphera-updater
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/usr/local/bin /usr/local/lib/ciphera /usr/local/share/ciphera
+ReadWritePaths=/etc/systemd/system /etc/tmpfiles.d
+ReadWritePaths=-/var/lib/ciphera -/var/backups/ciphera -/run/ciphera
+# Dossiers recrees par systemd-tmpfiles (ciphera.tmpfiles.conf).
+ReadWritePaths=-/run/ciphera-agent -/var/lib/ciphera-buildkit
+# Profil AppArmor de buildkitd, remplace s'il est installe.
+ReadWritePaths=-/etc/apparmor.d
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN CAP_FSETID
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target
+# Une reprise en echec retient les services (binaires melanges, base
+# migree) ; sans journal, la condition est fausse et ne retient rien.
+RequiredBy=ciphera.service ciphera-agent.service ciphera-proxy.service

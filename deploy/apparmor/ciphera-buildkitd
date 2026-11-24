@@ -1,0 +1,13 @@
+# Profil AppArmor du conteneur ciphera-buildkitd (BuildKit rootless).
+#
+# Ubuntu >= 23.10 interdit les espaces de noms utilisateur aux processus non
+# confines (kernel.apparmor_restrict_unprivileged_userns=1) ; rootlesskit en
+# a besoin. Ce profil n'autorise que cela, pour ce seul conteneur
+# (security_opt apparmor=ciphera-buildkitd), sans toucher au reglage global
+# de la machine. Installe par install.sh dans /etc/apparmor.d/ la ou ce
+# reglage existe ; ailleurs l'agent utilise apparmor=unconfined.
+abi <abi/4.0>,
+
+profile ciphera-buildkitd flags=(unconfined) {
+  userns,
+}

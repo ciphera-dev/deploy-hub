@@ -1,0 +1,287 @@
+# Registre des changements
+
+Une ligne par fichier touché, la plus récente en bas.
+
+- [2026-11-21 12:51] DÉPLACÉ `SKILL.md` → `.agents/skills/ciphera-design/SKILL.md` — skill de marque de l'outil de design (chemins à corriger)
+- [2026-11-21 12:51] DÉPLACÉ `_adherence.oxlintrc.json` → `config/oxlintrc.adherence.json` — règles oxlint d'adhérence au DS (globs à mettre à jour) — gardé (décision utilisateur)
+- [2026-11-21 12:51] DÉPLACÉ `_ds_bundle.js` → `prototypes/vendor/ds-bundle.js` — bundle généré, chargé par les 8 pages du prototype et les specimens
+- [2026-11-21 12:51] DÉPLACÉ `assets/ciphera-icon.svg` → `web/src/assets/brand/ciphera-icon.svg` — logo / icône Ciphera
+- [2026-11-21 12:51] DÉPLACÉ `assets/cloudflare-logo-light.png` → `web/src/assets/images/cloudflare/cloudflare-logo-light.png` — logo Cloudflare utilisé par Connecteurs/Domaines
+- [2026-11-21 12:51] DÉPLACÉ `assets/cloudflare-logo.webp` → `web/src/assets/images/cloudflare/cloudflare-logo.webp` — logo Cloudflare utilisé par Connecteurs/Domaines
+- [2026-11-21 12:51] DÉPLACÉ `assets/cloudflare-mark.png` → `web/src/assets/images/cloudflare/cloudflare-mark.png` — logo Cloudflare utilisé par Connecteurs/Domaines
+- [2026-11-21 12:51] DÉPLACÉ `assets/connectors/anthropic.png` → `web/src/assets/images/connectors/anthropic.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/connectors/chatgpt-mark.png` → `web/src/assets/images/connectors/chatgpt-mark.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/connectors/claude-mark.png` → `web/src/assets/images/connectors/claude-mark.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/connectors/crowdsec-mark.png` → `web/src/assets/images/connectors/crowdsec-mark.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/connectors/github-mark.png` → `web/src/assets/images/connectors/github-mark.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/connectors/groq-mark.png` → `web/src/assets/images/connectors/groq-mark.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/connectors/groq.png` → `web/src/assets/images/connectors/groq.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/connectors/openai.png` → `web/src/assets/images/connectors/openai.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/connectors/openrouter-mark.png` → `web/src/assets/images/connectors/openrouter-mark.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/connectors/supabase-mark.png` → `web/src/assets/images/connectors/supabase-mark.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/db/couchdb.png` → `web/src/assets/images/db/couchdb.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/db/mariadb.png` → `web/src/assets/images/db/mariadb.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/db/mongodb.png` → `web/src/assets/images/db/mongodb.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/db/mysql.png` → `web/src/assets/images/db/mysql.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/db/postgresql.png` → `web/src/assets/images/db/postgresql.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/favicon.svg` → `web/public/favicon.svg` — favicon Ciphera
+- [2026-11-21 12:51] DÉPLACÉ `assets/logo-dark.svg` → `web/src/assets/brand/logo-dark.svg` — logo / icône Ciphera
+- [2026-11-21 12:51] DÉPLACÉ `assets/logo.svg` → `web/src/assets/brand/logo.svg` — logo / icône Ciphera
+- [2026-11-21 12:51] DÉPLACÉ `assets/os/debian.png` → `web/src/assets/images/os/debian.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/os/fedora.png` → `web/src/assets/images/os/fedora.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/os/linux.png` → `web/src/assets/images/os/linux.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/os/ubuntu.png` → `web/src/assets/images/os/ubuntu.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/smtp/brevo.png` → `web/src/assets/images/smtp/brevo.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/smtp/gmail.png` → `web/src/assets/images/smtp/gmail.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/smtp/hostinger.png` → `web/src/assets/images/smtp/hostinger.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/smtp/infomaniak.png` → `web/src/assets/images/smtp/infomaniak.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/smtp/outlook.png` → `web/src/assets/images/smtp/outlook.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/smtp/ovh.png` → `web/src/assets/images/smtp/ovh.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/ssh-icons/claude.png` → `web/src/assets/images/ssh-icons/claude.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/ssh-icons/codex.png` → `web/src/assets/images/ssh-icons/codex.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/ssh-icons/grok.png` → `web/src/assets/images/ssh-icons/grok.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/ssh-icons/kimi.png` → `web/src/assets/images/ssh-icons/kimi.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `assets/ssh-icons/user.png` → `web/src/assets/images/ssh-icons/user.png` — logo d'intégration utilisé par les écrans (chemins dynamiques)
+- [2026-11-21 12:51] DÉPLACÉ `components/cards/InsightText.d.ts` → `web/src/design-system/components/cards/InsightText.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/cards/InsightText.jsx` → `web/src/design-system/components/cards/InsightText.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/cards/InsightText.prompt.md` → `web/src/design-system/components/cards/InsightText.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/cards/Panel.d.ts` → `web/src/design-system/components/cards/Panel.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/cards/Panel.jsx` → `web/src/design-system/components/cards/Panel.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/cards/Panel.prompt.md` → `web/src/design-system/components/cards/Panel.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/cards/UpdateCard.d.ts` → `web/src/design-system/components/cards/UpdateCard.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/cards/UpdateCard.jsx` → `web/src/design-system/components/cards/UpdateCard.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/cards/UpdateCard.prompt.md` → `web/src/design-system/components/cards/UpdateCard.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/cards/cards.card.html` → `docs/design-system/specimens/components/cards.card.html` — carte specimen du DS
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Badge.d.ts` → `web/src/design-system/components/core/Badge.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Badge.jsx` → `web/src/design-system/components/core/Badge.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Badge.prompt.md` → `web/src/design-system/components/core/Badge.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Button.d.ts` → `web/src/design-system/components/core/Button.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Button.jsx` → `web/src/design-system/components/core/Button.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Button.prompt.md` → `web/src/design-system/components/core/Button.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/ButtonGroup.d.ts` → `web/src/design-system/components/core/ButtonGroup.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/ButtonGroup.jsx` → `web/src/design-system/components/core/ButtonGroup.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/ButtonGroup.prompt.md` → `web/src/design-system/components/core/ButtonGroup.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Delta.d.ts` → `web/src/design-system/components/core/Delta.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Delta.jsx` → `web/src/design-system/components/core/Delta.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Delta.prompt.md` → `web/src/design-system/components/core/Delta.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/GroupButton.d.ts` → `web/src/design-system/components/core/GroupButton.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/GroupButton.jsx` → `web/src/design-system/components/core/GroupButton.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/GroupButton.prompt.md` → `web/src/design-system/components/core/GroupButton.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Icon.d.ts` → `web/src/design-system/components/core/Icon.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Icon.jsx` → `web/src/design-system/components/core/Icon.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Icon.prompt.md` → `web/src/design-system/components/core/Icon.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/IconButton.d.ts` → `web/src/design-system/components/core/IconButton.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/IconButton.jsx` → `web/src/design-system/components/core/IconButton.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/IconButton.prompt.md` → `web/src/design-system/components/core/IconButton.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/LegendItem.d.ts` → `web/src/design-system/components/core/LegendItem.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/LegendItem.jsx` → `web/src/design-system/components/core/LegendItem.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/LegendItem.prompt.md` → `web/src/design-system/components/core/LegendItem.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Select.d.ts` → `web/src/design-system/components/core/Select.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Select.jsx` → `web/src/design-system/components/core/Select.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/Select.prompt.md` → `web/src/design-system/components/core/Select.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/core/core.card.html` → `docs/design-system/specimens/components/core.card.html` — carte specimen du DS
+- [2026-11-21 12:51] DÉPLACÉ `components/data/AreaChart.d.ts` → `web/src/design-system/components/data/AreaChart.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/AreaChart.jsx` → `web/src/design-system/components/data/AreaChart.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/AreaChart.prompt.md` → `web/src/design-system/components/data/AreaChart.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/CodeBlock.d.ts` → `web/src/design-system/components/data/CodeBlock.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/CodeBlock.jsx` → `web/src/design-system/components/data/CodeBlock.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/CodeBlock.prompt.md` → `web/src/design-system/components/data/CodeBlock.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/DataTable.d.ts` → `web/src/design-system/components/data/DataTable.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/DataTable.jsx` → `web/src/design-system/components/data/DataTable.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/DataTable.prompt.md` → `web/src/design-system/components/data/DataTable.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/KeyValueList.d.ts` → `web/src/design-system/components/data/KeyValueList.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/KeyValueList.jsx` → `web/src/design-system/components/data/KeyValueList.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/KeyValueList.prompt.md` → `web/src/design-system/components/data/KeyValueList.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/RadialGauge.d.ts` → `web/src/design-system/components/data/RadialGauge.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/RadialGauge.jsx` → `web/src/design-system/components/data/RadialGauge.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/RadialGauge.prompt.md` → `web/src/design-system/components/data/RadialGauge.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/SegmentedBar.d.ts` → `web/src/design-system/components/data/SegmentedBar.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/SegmentedBar.jsx` → `web/src/design-system/components/data/SegmentedBar.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/SegmentedBar.prompt.md` → `web/src/design-system/components/data/SegmentedBar.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/Stat.d.ts` → `web/src/design-system/components/data/Stat.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/Stat.jsx` → `web/src/design-system/components/data/Stat.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/Stat.prompt.md` → `web/src/design-system/components/data/Stat.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/StatGroup.d.ts` → `web/src/design-system/components/data/StatGroup.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/StatGroup.jsx` → `web/src/design-system/components/data/StatGroup.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/StatGroup.prompt.md` → `web/src/design-system/components/data/StatGroup.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/StatusDot.d.ts` → `web/src/design-system/components/data/StatusDot.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/StatusDot.jsx` → `web/src/design-system/components/data/StatusDot.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/StatusDot.prompt.md` → `web/src/design-system/components/data/StatusDot.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/TickBar.d.ts` → `web/src/design-system/components/data/TickBar.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/TickBar.jsx` → `web/src/design-system/components/data/TickBar.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/TickBar.prompt.md` → `web/src/design-system/components/data/TickBar.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/data/data.card.html` → `docs/design-system/specimens/components/data.card.html` — carte specimen du DS
+- [2026-11-21 12:51] DÉPLACÉ `components/forms/RadioCard.d.ts` → `web/src/design-system/components/forms/RadioCard.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/forms/RadioCard.jsx` → `web/src/design-system/components/forms/RadioCard.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/forms/RadioCard.prompt.md` → `web/src/design-system/components/forms/RadioCard.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/forms/Switch.d.ts` → `web/src/design-system/components/forms/Switch.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/forms/Switch.jsx` → `web/src/design-system/components/forms/Switch.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/forms/Switch.prompt.md` → `web/src/design-system/components/forms/Switch.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/forms/TextField.d.ts` → `web/src/design-system/components/forms/TextField.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/forms/TextField.jsx` → `web/src/design-system/components/forms/TextField.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/forms/TextField.prompt.md` → `web/src/design-system/components/forms/TextField.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/forms/forms.card.html` → `docs/design-system/specimens/components/forms.card.html` — carte specimen du DS
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/BrandMark.d.ts` → `web/src/design-system/components/navigation/BrandMark.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/BrandMark.jsx` → `web/src/design-system/components/navigation/BrandMark.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/BrandMark.prompt.md` → `web/src/design-system/components/navigation/BrandMark.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/NavItem.d.ts` → `web/src/design-system/components/navigation/NavItem.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/NavItem.jsx` → `web/src/design-system/components/navigation/NavItem.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/NavItem.prompt.md` → `web/src/design-system/components/navigation/NavItem.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/NavSection.d.ts` → `web/src/design-system/components/navigation/NavSection.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/NavSection.jsx` → `web/src/design-system/components/navigation/NavSection.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/NavSection.prompt.md` → `web/src/design-system/components/navigation/NavSection.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/Sidebar.d.ts` → `web/src/design-system/components/navigation/Sidebar.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/Sidebar.jsx` → `web/src/design-system/components/navigation/Sidebar.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/Sidebar.prompt.md` → `web/src/design-system/components/navigation/Sidebar.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/Tabs.d.ts` → `web/src/design-system/components/navigation/Tabs.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/Tabs.jsx` → `web/src/design-system/components/navigation/Tabs.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/Tabs.prompt.md` → `web/src/design-system/components/navigation/Tabs.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/UserMenu.d.ts` → `web/src/design-system/components/navigation/UserMenu.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/UserMenu.jsx` → `web/src/design-system/components/navigation/UserMenu.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/UserMenu.prompt.md` → `web/src/design-system/components/navigation/UserMenu.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/WorkspaceSwitcher.d.ts` → `web/src/design-system/components/navigation/WorkspaceSwitcher.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/WorkspaceSwitcher.jsx` → `web/src/design-system/components/navigation/WorkspaceSwitcher.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/WorkspaceSwitcher.prompt.md` → `web/src/design-system/components/navigation/WorkspaceSwitcher.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/navigation/navigation.card.html` → `docs/design-system/specimens/components/navigation.card.html` — carte specimen du DS
+- [2026-11-21 12:51] DÉPLACÉ `components/overlay/Modal.d.ts` → `web/src/design-system/components/overlay/Modal.d.ts` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/overlay/Modal.jsx` → `web/src/design-system/components/overlay/Modal.jsx` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/overlay/Modal.prompt.md` → `web/src/design-system/components/overlay/Modal.prompt.md` — primitive du design system (module ESM, à porter en TSX)
+- [2026-11-21 12:51] DÉPLACÉ `components/overlay/overlay.card.html` → `docs/design-system/specimens/components/overlay.card.html` — carte specimen du DS
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/brand-motifs.html` → `docs/design-system/specimens/guidelines/brand-motifs.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/brand-name.html` → `docs/design-system/specimens/guidelines/brand-name.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/colors-borders.html` → `docs/design-system/specimens/guidelines/colors-borders.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/colors-neutral.html` → `docs/design-system/specimens/guidelines/colors-neutral.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/colors-semantic.html` → `docs/design-system/specimens/guidelines/colors-semantic.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/colors-surfaces.html` → `docs/design-system/specimens/guidelines/colors-surfaces.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/colors-text.html` → `docs/design-system/specimens/guidelines/colors-text.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/colors-viz.html` → `docs/design-system/specimens/guidelines/colors-viz.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/radii.html` → `docs/design-system/specimens/guidelines/radii.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/shadows.html` → `docs/design-system/specimens/guidelines/shadows.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/spacing.html` → `docs/design-system/specimens/guidelines/spacing.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/type-display.html` → `docs/design-system/specimens/guidelines/type-display.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/type-mono.html` → `docs/design-system/specimens/guidelines/type-mono.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `guidelines/type-ui.html` → `docs/design-system/specimens/guidelines/type-ui.html` — specimen de fondation
+- [2026-11-21 12:51] DÉPLACÉ `readme.md` → `docs/design-system/README.md` — fondations du design system
+- [2026-11-21 12:51] DÉPLACÉ `scraps/bottom.png` → `docs/design-system/references/efferd-dashboard-bottom-01.png` — découpe de la référence visuelle
+- [2026-11-21 12:51] DÉPLACÉ `scraps/main.png` → `docs/design-system/references/efferd-dashboard-main-01.png` — découpe de la référence visuelle
+- [2026-11-21 12:51] DÉPLACÉ `scraps/right.png` → `docs/design-system/references/efferd-dashboard-right-panel-01.png` — découpe de la référence visuelle
+- [2026-11-21 12:51] DÉPLACÉ `styles.css` → `web/src/styles/index.css` — point d'entrée CSS (imports des tokens)
+- [2026-11-21 12:51] DÉPLACÉ `tokens/base.css` → `web/src/styles/tokens/base.css` — token CSS / reset global
+- [2026-11-21 12:51] DÉPLACÉ `tokens/colors.css` → `web/src/styles/tokens/colors.css` — token CSS / reset global
+- [2026-11-21 12:51] DÉPLACÉ `tokens/effects.css` → `web/src/styles/tokens/effects.css` — token CSS / reset global
+- [2026-11-21 12:51] DÉPLACÉ `tokens/fonts.css` → `web/src/styles/tokens/fonts.css` — token CSS / reset global
+- [2026-11-21 12:51] DÉPLACÉ `tokens/spacing.css` → `web/src/styles/tokens/spacing.css` — token CSS / reset global
+- [2026-11-21 12:51] DÉPLACÉ `tokens/typography.css` → `web/src/styles/tokens/typography.css` — token CSS / reset global
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/2fa.html` → `prototypes/dashboard/2fa.html` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/404.html` → `prototypes/dashboard/404.html` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ApiPage.jsx` → `prototypes/dashboard/ApiPage.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/AppSidebar.jsx` → `prototypes/dashboard/AppSidebar.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Avatar.jsx` → `prototypes/dashboard/Avatar.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Backups.jsx` → `prototypes/dashboard/Backups.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Connectors.jsx` → `prototypes/dashboard/Connectors.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/DashTweaks.jsx` → `prototypes/dashboard/DashTweaks.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/DashboardHeader.jsx` → `prototypes/dashboard/DashboardHeader.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Databases.jsx` → `prototypes/dashboard/Databases.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Docker.jsx` → `prototypes/dashboard/Docker.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/DomainsPage.jsx` → `prototypes/dashboard/DomainsPage.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/GlobalVariables.jsx` → `prototypes/dashboard/GlobalVariables.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Monitoring.jsx` → `prototypes/dashboard/Monitoring.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Notifications.jsx` → `prototypes/dashboard/Notifications.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Overview.jsx` → `prototypes/dashboard/Overview.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Pages2.jsx` → `prototypes/dashboard/Pages2.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Pages3.jsx` → `prototypes/dashboard/Pages3.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ProfileNotif.jsx` → `prototypes/dashboard/ProfileNotif.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ProfilePage.jsx` → `prototypes/dashboard/ProfilePage.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ProfileSecurity.jsx` → `prototypes/dashboard/ProfileSecurity.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ProjectCloudflare.jsx` → `prototypes/dashboard/ProjectCloudflare.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ProjectDeployments.jsx` → `prototypes/dashboard/ProjectDeployments.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ProjectDomains.jsx` → `prototypes/dashboard/ProjectDomains.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ProjectGit.jsx` → `prototypes/dashboard/ProjectGit.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ProjectLogs.jsx` → `prototypes/dashboard/ProjectLogs.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ProjectOverview.jsx` → `prototypes/dashboard/ProjectOverview.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ProjectVariables.jsx` → `prototypes/dashboard/ProjectVariables.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Projects.jsx` → `prototypes/dashboard/Projects.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/README.md` → `prototypes/dashboard/README.md` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ResourcePage.jsx` → `prototypes/dashboard/ResourcePage.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Security.jsx` → `prototypes/dashboard/Security.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ServerManage.jsx` → `prototypes/dashboard/ServerManage.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ServerSecurity.jsx` → `prototypes/dashboard/ServerSecurity.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Servers.jsx` → `prototypes/dashboard/Servers.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/ServersPage.jsx` → `prototypes/dashboard/ServersPage.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Team.jsx` → `prototypes/dashboard/Team.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Terminal.jsx` → `prototypes/dashboard/Terminal.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/TicketAI.jsx` → `prototypes/dashboard/TicketAI.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Tickets.jsx` → `prototypes/dashboard/Tickets.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/Workspace.jsx` → `prototypes/dashboard/Workspace.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/data.js` → `prototypes/dashboard/data.js` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/index.html` → `prototypes/dashboard/index.html` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/install.html` → `prototypes/dashboard/install.html` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/login.html` → `prototypes/dashboard/login.html` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/pages.js` → `prototypes/dashboard/pages.js` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/register.html` → `prototypes/dashboard/register.html` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `ui_kits/dashboard/tweaks-panel.jsx` → `prototypes/dashboard/tweaks-panel.jsx` — écran/maquette du dashboard, réutilisé (porté vers web/)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/05fe058f546e093142f75de8676f347a.jpg` → `docs/design-system/references/reference-dashboard.jpg` — Capture de référence citée par readme.md
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795042665073-0.png` → `docs/design-system/references/overview-stats-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795043657734-0.png` → `docs/design-system/references/logs-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795044318992-0.png` → `docs/design-system/references/project-git-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795044744960-0.png` → `docs/design-system/references/monitoring-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795176264334-0.png` → `docs/design-system/references/domains-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795177064464-0.png` → `docs/design-system/references/domains-ssl-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795178325030-0.png` → `docs/design-system/references/projects-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795180563818-0.png` → `docs/design-system/references/api-keys-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795182098180-0.png` → `docs/design-system/references/settings-notifications-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795191084917-0.png` → `docs/design-system/references/servers-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795191104421-0.png` → `docs/design-system/references/connectors-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795193978867-0.png` → `docs/design-system/references/server-detail-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795195016822-0.png` → `docs/design-system/references/tickets-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795196017911-0.png` → `docs/design-system/references/login-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] DÉPLACÉ `uploads/pasted-1795197528372-0.png` → `docs/design-system/references/onboarding-checks-01.png` — Capture représentative d'un écran Ciphera (référence visuelle)
+- [2026-11-21 12:51] SUPPRIMÉ 148 fichiers (ex. `uploads/pasted-1795041458003-0.png`) — Captures d'inspiration non référencées ; écrans déjà présents en prototypes (liste complète : `docs/cleanup/file-map.json`)
+- [2026-11-21 12:51] SUPPRIMÉ 47 fichiers (ex. `assets/avatars/billions/logo.png`) — personnage/acteur sous droits — supprimé (décision utilisateur : dépôt open source) (liste complète : `docs/cleanup/file-map.json`)
+- [2026-11-21 12:51] SUPPRIMÉ 41 fichiers (ex. `uploads/3c184dcd417be3257ecc68d4c195b463.png`) — Original non référencé ; version retravaillée déjà dans assets/ (liste complète : `docs/cleanup/file-map.json`)
+- [2026-11-21 12:51] SUPPRIMÉ 31 fichiers (ex. `uploads/3c184dcd417be3257ecc68d4c195b463 (1).png`) — Doublon exact (sha1) de la copie rangée dans assets/ (liste complète : `docs/cleanup/file-map.json`)
+- [2026-11-21 12:51] SUPPRIMÉ 8 fichiers (ex. `uploads/Louis.webp`) — Doublon exact ; photo d'acteur réel (Suits), droit à l'image — supprimé (décision utilisateur) (liste complète : `docs/cleanup/file-map.json`)
+- [2026-11-21 12:51] SUPPRIMÉ `.thumbnail` — vignette / métadonnées d'export, lues par aucun fichier conservé
+- [2026-11-21 12:51] SUPPRIMÉ `_ds_manifest.json` — vignette / métadonnées d'export, lues par aucun fichier conservé
+- [2026-11-21 12:51] SUPPRIMÉ `thumbnail.html` — vignette / métadonnées d'export, lues par aucun fichier conservé
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795188644408-0.png` — doublon exact d'une autre capture, elle aussi supprimée
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795192583114-0.png` — doublon exact d'une autre capture, elle aussi supprimée
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795197323230-0.png` — doublon exact d'une autre capture, elle aussi supprimée
+- [2026-11-21 12:51] SUPPRIMÉ `scraps/av.png` — découpe inutile (avatar d'une vraie personne / logo tiers)
+- [2026-11-21 12:51] SUPPRIMÉ `scraps/logo.png` — découpe inutile (avatar d'une vraie personne / logo tiers)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/13559-0ff3c10a.png` — Doublon exact de assets/avatars/gta-6/bg-vice-city.png
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/13559.png` — Doublon exact de assets/avatars/gta-6/bg-vice-city.png
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/OpenAI-Logo-8f871820.png` — Doublon exact interne ; version optimisée dans assets/ — remplacé par `assets/connectors/openai.png`
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/OpenAI-Logo.png` — Doublon exact interne ; version optimisée dans assets/ — remplacé par `assets/connectors/openai.png`
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795181995808-0.png` — Profil : nom, adresse, téléphone, email visibles ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795182173046-0.png` — Profil : nom, adresse, téléphone, email visibles ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795189359495-0.png` — Panneau Hostinger avec liste de conversations ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795189389072-0.png` — Panneau Hostinger avec liste de conversations ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795196028422-0.png` — Écran de connexion avec adresses email nominatives ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795196151413-0.png` — Écran de connexion avec adresses email nominatives ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `assets/bg-sunset.png` — doublon exact de avatars/gta-6/bg-vice-city.png, non utilisé
+- [2026-11-21 12:51] SUPPRIMÉ `scraps/side.png` — contient nom/e-mail/photo d'une personne réelle (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `ui_kits/dashboard/cloud-admin.html` — version Ciphera Cloud supprimée : projet 100 % open source, self-hosted uniquement (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `ui_kits/dashboard/cloud-billing.html` — version Ciphera Cloud supprimée : projet 100 % open source, self-hosted uniquement (décision utilisateur) ; le seul lien (Paramètres › Licence) est retiré avec la section Licence — remplacé par `ui_kits/dashboard/index.html`
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/Grand_Theft_Auto_VI_logo.svg` — Logo SVG tiers (marque Rockstar) ; PNG dans assets/, garder si vectoriel voulu — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/Harvey_Specter_(Gabriel_Macht)_in_Suits.jpg` — Photo d'acteur réel (Gabriel Macht) ; version déjà dans assets/ — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/glyph-grape@2x.png` — Logo violet non identifié, sans équivalent ni référence — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/mysql-logo.svg` — Logo SVG non référencé ; PNG dans assets/db/, garder si vectoriel voulu — supprimé (décision utilisateur) — remplacé par `assets/db/mysql.png`
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795181553092-0.png` — Contient photo de l'acteur jouant Harvey Specter (Suits) ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795181833127-0.png` — Profil : nom, adresse postale, téléphone visibles ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795182268925-0.png` — Sessions actives : appareils, villes, adresses IP ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795186756770-0.png` — Contient photo d'un acteur réel (Suits) ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795189333834-0.png` — Panneau Hostinger avec prénom et historique de conversations ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795192475518-0.png` — Facture tierce avec noms de personnes ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795192671824-0.png` — Accueil avec prénom utilisateur et barre des tâches ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795195823839-0.png` — Connexion Cloudflare avec adresses email ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/pasted-1795195837080-0.png` — Connexion Cloudflare tierce, emails possibles ; ne pas recopier — supprimé (décision utilisateur)
+- [2026-11-21 12:51] SUPPRIMÉ `uploads/photo.avif` — Doublon exact de « la casa de papel.avif » ; logo déjà dans assets/
+- [2026-11-21 12:55] CRÉÉ `README.md` — préproduction (claude-code)
+- [2026-11-21 12:55] CRÉÉ `.env.example` — préproduction (claude-code)
+- [2026-11-21 12:55] CRÉÉ `docs/design/screens.md` — préproduction (claude-code)
+- [2026-11-21 12:55] CRÉÉ `docs/architecture/stack.md` — préproduction (claude-code)
+- [2026-11-21 12:55] CRÉÉ `docs/adr/0001-structure-du-projet.md` — préproduction (claude-code)
+- [2026-11-21 12:55] CRÉÉ `docs/adr/0002-terminal-et-actions-serveur.md` — préproduction (claude-code)
+- [2026-11-21 12:55] CRÉÉ `docs/adr/0003-installation-et-verification-des-releases.md` — préproduction (claude-code)
+- [2026-11-21 12:55] CRÉÉ `docs/research/analyse-paas` — préproduction (claude-code)

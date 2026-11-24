@@ -1,0 +1,13 @@
+# Declenche ciphera-updater.service quand le plan de controle depose une
+# demande de mise a jour signee (POST /api/system/update) : fichier ecrit de
+# facon atomique (renommage) dans son dossier d'etat, 0600, compte ciphera.
+# Active par install.sh.
+[Unit]
+Description=Ciphera - surveillance des demandes de mise a jour
+
+[Path]
+PathChanged=/var/lib/ciphera/update-request.json
+Unit=ciphera-updater.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/shared",
+    "crates/api-types",
+    "crates/proto",
+    "crates/pki",
+    "crates/control-plane",
+    "crates/agent",
+    "crates/proxy",
+    "crates/cli",
+]
+# Fuzzing (cargo-fuzz, nightly) : hors du workspace, compile a part.
+exclude = ["crates/proto/fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+rust-version = "1.99"
+publish = false
+[workspace.dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sqlx = { version = "0.9.1", default-features = false, features = ["derive", "postgres", "uuid"] }
+tokio = { version = "1", features = ["macros", "rt"] }
+utoipa = "6.0.0"
+uuid = { version = "1.29.3", features = ["serde", "v4"] }
+
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+# Argon2 non optimise est des dizaines de fois plus lent : les tests
+# depasseraient l'attente bornee de `password::offload` (10 s) sans refleter
+# le cout reel des routes.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

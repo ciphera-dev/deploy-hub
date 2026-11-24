@@ -1,0 +1,63 @@
+# Plan de controle Ciphera (panneau HTTPS + API).
+# Aucun secret ici : le mot de passe de la base est lu dans un fichier 0600.
+# PostgreSQL tourne dans le conteneur ciphera-postgres lance par
+# ciphera-agent ; le plan de controle le joint par son socket Unix
+# (/run/ciphera/postgres, jamais en TCP) et attend qu'il soit pret.
+[Unit]
+Description=Ciphera - plan de controle
+After=network-online.target ciphera-agent.service
+Wants=network-online.target ciphera-agent.service
+
+[Service]
+Type=simple
+User=ciphera
+Group=ciphera
+ExecStart=/usr/local/bin/ciphera serve
+Restart=on-failure
+RestartSec=5s
+# Plafonds de connexions des ecouteurs du panneau (http::listener) tenables.
+LimitNOFILE=65536
+
+Environment=CIPHERA_CONFIG_DIR=/etc/ciphera
+Environment=CIPHERA_DATA_DIR=/var/lib/ciphera
+Environment=CIPHERA_PANEL_PORT=8443
+# Le port 80 appartient a ciphera-proxy (qui redirige deja vers le panneau) :
+# aucune ecoute HTTP ici, et aucune capacite.
+Environment=CIPHERA_DB_SOCKET_DIR=/run/ciphera/postgres
+Environment=CIPHERA_DB_PORT=5432
+Environment=CIPHERA_DB_USER=ciphera
+Environment=CIPHERA_DB_NAME=ciphera
+Environment=CIPHERA_DB_PASSWORD_FILE=/etc/ciphera/db_password
+# Surcharges locales facultatives (fichier 0600 sous /etc/ciphera).
+EnvironmentFile=-/etc/ciphera/ciphera.env
+
+StateDirectory=ciphera
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+# Certificats du lien et du panneau renouveles par le service (agents::certs).
+ReadWritePaths=-/etc/ciphera/tls
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target

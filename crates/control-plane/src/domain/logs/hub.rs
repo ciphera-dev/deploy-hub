@@ -1,0 +1,623 @@
+//! Diffusion des lignes des agents aux clients du panneau.
+//!
+//! Une entree par cible (`LogTarget`) tant qu'elle a un lecteur : canal de
+//! diffusion, lignes recentes (pour un lecteur arrive en cours de route),
+//! masquage du projet et serveur suivi. Le premier lecteur d'une cible de
+//! service demande le suivi a l'agent (`Logs`), le dernier parti l'arrete
+//! (`StopLogs`) : un seul suivi par cible quel que soit le nombre de
+//! lecteurs.
+//!
+//! Clients lents : chaque lecteur a son propre tampon de `CLIENT_BUFFER`
+//! lignes (canal `broadcast`). La diffusion n'attend jamais un lecteur ; en
+//! cas de debordement, les plus anciennes lignes du lecteur sont perdues et
+//! il recoit un seul marqueur « N lignes perdues ».
+//!
+//! Masquage : relu au plus tard toutes les `REDACTOR_TTL` pour chaque
+//! projet, et aussitot apres `invalidate` (secrets du projet modifies) ;
+//! partage avec l'enregistrement des lignes (`store`). Echec ferme : si les
+//! secrets du projet sont illisibles, ses lignes sont retenues (au plus
+//! `RECENT_LINES` par cible) derriere un seul marqueur `MASKING_DOWN`, rien
+//! n'est garde en cache.
+//!
+//! Sans blocage : la lecture des secrets d'un projet se fait dans une tache a
+//! part (`LOAD_TIMEOUT` au plus par essai, un essai par `BACKOFF` tant que la
+//! lecture echoue et que des lignes attendent). La diffusion l'attend au plus
+//! `INLINE_WAIT`, puis retient les lignes du projet ; la tache les libere,
+//! masquees et dans l'ordre, des que les secrets sont lus. Une source lente ou
+//! en panne ne retarde donc pas les lignes des autres projets.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+use proto::{AgentToControl, ControlToAgent, LogTarget};
+use shared::ids::ServerId;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast, oneshot, watch};
+use uuid::Uuid;
+
+use super::LogEvent;
+use super::redact::{Redactor, SecretValues, SecretsUnavailable};
+use crate::agents::registry::AgentRegistry;
+
+/// Tampon de chaque lecteur (lignes).
+pub const CLIENT_BUFFER: usize = 1024;
+/// Lignes recentes gardees par cible pour un nouveau lecteur.
+pub const RECENT_LINES: usize = 1000;
+/// Nombre maximal de lignes demandees a l'ouverture (`tail`).
+pub const MAX_TAIL: u32 = 1000;
+/// Flux ouverts au plus sur l'instance.
+pub const MAX_STREAMS: usize = 256;
+/// Duree de vie du masquage garde par projet (filet si `invalidate` manque).
+pub const REDACTOR_TTL: Duration = Duration::from_secs(10);
+/// Marqueur envoye une fois quand les lignes d'un projet sont retenues.
+pub const MASKING_DOWN: &str = "masquage indisponible, lignes retenues";
+/// Duree maximale d'une lecture des secrets d'un projet.
+pub const LOAD_TIMEOUT: Duration = Duration::from_secs(2);
+/// Apres un echec, pas de nouvelle lecture des secrets du projet avant ce
+/// delai (lignes retenues sans requete).
+pub const BACKOFF: Duration = Duration::from_secs(1);
+/// Telechargements de `logs.txt` en cours au plus sur l'instance (chacun
+/// lit jusqu'a 4 Mio en base).
+pub const MAX_DOWNLOADS: usize = 4;
+/// Attente maximale d'une lecture par la diffusion avant de retenir la ligne.
+pub const INLINE_WAIT: Duration = Duration::from_millis(250);
+
+/// Cible demandee par un lecteur.
+#[derive(Clone, Debug)]
+pub struct Source {
+    pub target: LogTarget,
+    /// Projet de la cible (valeurs secretes a masquer).
+    pub project: Uuid,
+    /// Nom affiche des lignes (`build` ou nom du service).
+    pub container: String,
+    /// Serveur a qui demander le suivi et nombre de lignes passees (aucun :
+    /// les lignes arrivent sans demande, comme celles d'un build).
+    pub follow: Option<(ServerId, u32)>,
+    /// Seul serveur dont les lignes sont acceptees pour cette cible (celui
+    /// du deploiement). Inconnu (deploiement pas encore demarre) : le
+    /// premier serveur qui envoie une ligne, ou le serveur suivi.
+    pub origin: Option<ServerId>,
+}
+
+struct Entry {
+    tx: broadcast::Sender<LogEvent>,
+    subscribers: usize,
+    /// Serveur qui suit la cible a notre demande.
+    follow: Option<ServerId>,
+    /// Seul serveur dont les lignes sont acceptees (`Source::origin`).
+    origin: Option<ServerId>,
+    container: String,
+    project: Uuid,
+    recent: VecDeque<LogEvent>,
+    /// Lignes brutes retenues faute de masquage (jamais envoyees telles quelles).
+    held: VecDeque<proto::LogLine>,
+    /// Lignes retenues perdues (au-dela de `RECENT_LINES`).
+    held_lost: u64,
+    /// Marqueur `MASKING_DOWN` deja envoye pour les lignes retenues.
+    down_notified: bool,
+}
+
+impl Entry {
+    /// Ligne deja masquee : gardee pour un nouveau lecteur et diffusee.
+    fn emit(&mut self, event: LogEvent) {
+        if self.recent.len() == RECENT_LINES {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(event.clone());
+        // Sans lecteur pret, la ligne reste dans les tampons.
+        let _ = self.tx.send(event);
+    }
+
+    fn holds(&self) -> bool {
+        !self.held.is_empty() || self.held_lost > 0
+    }
+
+    /// Masquage indisponible : un seul marqueur tant que des lignes attendent.
+    fn notify_down(&mut self) {
+        if self.holds() && !self.down_notified {
+            self.down_notified = true;
+            self.emit(LogEvent::notice(MASKING_DOWN));
+        }
+    }
+
+    fn hold(&mut self, line: &proto::LogLine) {
+        if self.held.len() == RECENT_LINES {
+            self.held.pop_front();
+            self.held_lost += 1;
+        }
+        self.held.push_back(line.clone());
+    }
+
+    fn redacted(&self, line: &proto::LogLine, redactor: &Redactor) -> LogEvent {
+        LogEvent::line(
+            line.timestamp_ms,
+            line.stream,
+            &self.container,
+            redactor.redact(line.line.clone()),
+        )
+    }
+
+    /// Masquage revenu : lignes retenues envoyees masquees, dans l'ordre.
+    fn release(&mut self, redactor: &Redactor) {
+        self.down_notified = false;
+        if self.held_lost > 0 {
+            self.emit(LogEvent::lost(self.held_lost));
+            self.held_lost = 0;
+        }
+        while let Some(line) = self.held.pop_front() {
+            let event = self.redacted(&line, redactor);
+            self.emit(event);
+        }
+    }
+}
+
+#[derive(Default)]
+struct Targets {
+    entries: HashMap<LogTarget, Entry>,
+    /// Cibles dont l'arret a deja ete demande (lignes encore en vol).
+    stopped: HashSet<LogTarget>,
+}
+
+struct Cached {
+    at: Instant,
+    redactor: Arc<Redactor>,
+}
+
+/// Masquage d'un projet pour la diffusion.
+enum Live {
+    Ready(Arc<Redactor>),
+    /// Lecture en cours : ligne retenue sans marqueur.
+    Pending,
+    /// Derniere lecture en echec : ligne retenue, marqueur.
+    Down,
+}
+
+#[derive(Default)]
+struct Redactors {
+    projects: HashMap<Uuid, Cached>,
+    /// Projets dont une tache lit les secrets.
+    loading: HashSet<Uuid>,
+    /// Derniere lecture en echec, par projet (`BACKOFF`).
+    down: HashMap<Uuid, Instant>,
+    /// Augmente a chaque `invalidate` : un masquage lu avant n'est pas
+    /// garde.
+    version: u64,
+}
+
+struct Inner {
+    agents: AgentRegistry,
+    secrets: Arc<dyn SecretValues>,
+    targets: Mutex<Targets>,
+    redactors: Mutex<Redactors>,
+    downloads: Arc<Semaphore>,
+}
+
+#[derive(Clone)]
+pub struct LogHub {
+    inner: Arc<Inner>,
+}
+
+impl std::fmt::Debug for LogHub {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogHub").finish_non_exhaustive()
+    }
+}
+
+impl LogHub {
+    pub fn new(agents: AgentRegistry, secrets: Arc<dyn SecretValues>) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                agents,
+                secrets,
+                targets: Mutex::new(Targets::default()),
+                redactors: Mutex::new(Redactors::default()),
+                downloads: Arc::new(Semaphore::new(MAX_DOWNLOADS)),
+            }),
+        }
+    }
+
+    /// Place pour un telechargement de `logs.txt` (`MAX_DOWNLOADS` en
+    /// cours au plus), rendue a la liberation ; `None` : toutes prises.
+    pub fn try_download(&self) -> Option<OwnedSemaphorePermit> {
+        self.inner.downloads.clone().try_acquire_owned().ok()
+    }
+
+    fn targets(&self) -> MutexGuard<'_, Targets> {
+        // Aucune operation ne panique sous ce verrou.
+        self.inner
+            .targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn redactors(&self) -> MutexGuard<'_, Redactors> {
+        // Aucune operation ne panique sous ce verrou.
+        self.inner
+            .redactors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Masquage des valeurs secretes actuelles du projet (relues, au plus
+    /// `LOAD_TIMEOUT`).
+    pub async fn redactor(&self, project: Uuid) -> Result<Redactor, SecretsUnavailable> {
+        let values = tokio::time::timeout(LOAD_TIMEOUT, self.inner.secrets.values(project))
+            .await
+            .map_err(|_| SecretsUnavailable)??;
+        Ok(Redactor::new(values))
+    }
+
+    /// Masquage du projet pour les lignes en direct : garde au plus
+    /// `REDACTOR_TTL`, relu apres `invalidate`. Une erreur n'est jamais
+    /// gardee : l'appel suivant relit.
+    pub async fn project_redactor(
+        &self,
+        project: Uuid,
+    ) -> Result<Arc<Redactor>, SecretsUnavailable> {
+        let version = {
+            let cache = self.redactors();
+            if let Some(c) = cache.projects.get(&project)
+                && c.at.elapsed() < REDACTOR_TTL
+            {
+                return Ok(c.redactor.clone());
+            }
+            // Echec recent : pas de nouvelle requete avant `BACKOFF`.
+            if cache
+                .down
+                .get(&project)
+                .is_some_and(|at| at.elapsed() < BACKOFF)
+            {
+                return Err(SecretsUnavailable);
+            }
+            cache.version
+        };
+        let redactor = match self.redactor(project).await {
+            Ok(r) => Arc::new(r),
+            Err(e) => {
+                self.redactors().down.insert(project, Instant::now());
+                return Err(e);
+            }
+        };
+        let mut cache = self.redactors();
+        cache.down.remove(&project);
+        // Lu avant une invalidation : servi cette fois, pas garde.
+        if cache.version == version {
+            cache.projects.retain(|_, c| c.at.elapsed() < REDACTOR_TTL);
+            cache.projects.insert(
+                project,
+                Cached {
+                    at: Instant::now(),
+                    redactor: redactor.clone(),
+                },
+            );
+        }
+        Ok(redactor)
+    }
+
+    /// Masquage pour la diffusion, sans attendre plus de `INLINE_WAIT` : une
+    /// lecture est lancee en tache si besoin.
+    async fn live_redactor(&self, project: Uuid) -> Live {
+        let wait = {
+            let mut cache = self.redactors();
+            if let Some(c) = cache.projects.get(&project)
+                && c.at.elapsed() < REDACTOR_TTL
+            {
+                return Live::Ready(c.redactor.clone());
+            }
+            if cache.loading.contains(&project) {
+                return if cache.down.contains_key(&project) {
+                    Live::Down
+                } else {
+                    Live::Pending
+                };
+            }
+            cache.loading.insert(project);
+            drop(cache);
+            self.spawn_load(project)
+        };
+        let _ = tokio::time::timeout(INLINE_WAIT, wait).await;
+        let cache = self.redactors();
+        match cache.projects.get(&project) {
+            Some(c) if c.at.elapsed() < REDACTOR_TTL => Live::Ready(c.redactor.clone()),
+            _ if cache.down.contains_key(&project) => Live::Down,
+            _ => Live::Pending,
+        }
+    }
+
+    /// Lignes retenues pour le projet, sur l'une de ses cibles.
+    fn holds(&self, project: Uuid) -> bool {
+        self.targets()
+            .entries
+            .values()
+            .any(|e| e.project == project && e.holds())
+    }
+
+    /// Une tache lit les secrets du projet si des lignes attendent.
+    fn ensure_loading(&self, project: Uuid) {
+        if self.redactors().loading.insert(project) {
+            drop(self.spawn_load(project));
+        }
+    }
+
+    /// Fin de la tache de lecture ; `false` si elle doit continuer (des
+    /// lignes attendent et aucune autre tache ne lit).
+    fn finish_load(&self, project: Uuid) -> bool {
+        self.redactors().loading.remove(&project);
+        if self.holds(project) {
+            return !self.redactors().loading.insert(project);
+        }
+        true
+    }
+
+    /// Tache de lecture (`loading` deja pose) : libere les lignes retenues
+    /// une fois les secrets lus, reessaie toutes les `BACKOFF` tant que des
+    /// lignes attendent. Signale `wait` apres le premier essai.
+    fn spawn_load(&self, project: Uuid) -> oneshot::Receiver<()> {
+        let hub = self.clone();
+        let (done, wait) = oneshot::channel();
+        tokio::spawn(async move {
+            let mut done = Some(done);
+            loop {
+                let result = hub.project_redactor(project).await;
+                let ok = result.is_ok();
+                {
+                    let mut targets = hub.targets();
+                    for entry in targets.entries.values_mut() {
+                        if entry.project != project {
+                            continue;
+                        }
+                        match &result {
+                            Ok(redactor) => entry.release(redactor),
+                            Err(SecretsUnavailable) => entry.notify_down(),
+                        }
+                    }
+                }
+                if let Some(d) = done.take() {
+                    let _ = d.send(());
+                }
+                if !ok && hub.holds(project) {
+                    tokio::time::sleep(BACKOFF).await;
+                    continue;
+                }
+                if hub.finish_load(project) {
+                    break;
+                }
+            }
+        });
+        wait
+    }
+
+    /// Secrets du projet modifies : le masquage est relu a la ligne
+    /// suivante (flux en direct et enregistrement).
+    pub fn invalidate(&self, project: Uuid) {
+        let mut cache = self.redactors();
+        cache.version += 1;
+        cache.projects.remove(&project);
+    }
+
+    /// Lecteurs en cours, toutes cibles confondues.
+    pub fn streams(&self) -> usize {
+        self.targets().entries.values().map(|e| e.subscribers).sum()
+    }
+
+    fn order(&self, server: ServerId, msg: ControlToAgent) -> bool {
+        match self.inner.agents.send(server, msg) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(%server, "ordre de journaux non envoye : {e}");
+                false
+            }
+        }
+    }
+
+    /// Nouveau lecteur de `source.target`, avec au plus `backlog` lignes
+    /// recentes.
+    pub fn subscribe(&self, source: Source, backlog: usize) -> Subscription {
+        let target = source.target;
+        let mut targets = self.targets();
+        let Targets { entries, stopped } = &mut *targets;
+        let entry = entries.entry(target).or_insert_with(|| {
+            stopped.remove(&target);
+            Entry {
+                tx: broadcast::channel(CLIENT_BUFFER).0,
+                subscribers: 0,
+                follow: None,
+                origin: None,
+                container: source.container,
+                project: source.project,
+                recent: VecDeque::new(),
+                held: VecDeque::new(),
+                held_lost: 0,
+                down_notified: false,
+            }
+        });
+        entry.subscribers += 1;
+        if entry.origin.is_none() {
+            entry.origin = source.origin.or(source.follow.map(|(server, _)| server));
+        }
+        if entry.follow.is_none()
+            && let Some((server, tail)) = source.follow
+        {
+            // Retenu meme si l'agent est absent : redemande a sa reconnexion
+            // (`State`).
+            entry.follow = Some(server);
+            self.order(
+                server,
+                ControlToAgent::Logs {
+                    target,
+                    tail: tail.min(MAX_TAIL),
+                    follow: true,
+                },
+            );
+        }
+        let rx = entry.tx.subscribe();
+        let skip = entry.recent.len().saturating_sub(backlog);
+        let backlog = entry.recent.iter().skip(skip).cloned().collect();
+        Subscription {
+            hub: self.clone(),
+            target,
+            rx,
+            backlog,
+        }
+    }
+
+    fn release(&self, target: LogTarget) {
+        let mut targets = self.targets();
+        let Some(entry) = targets.entries.get_mut(&target) else {
+            return;
+        };
+        entry.subscribers -= 1;
+        if entry.subscribers > 0 {
+            return;
+        }
+        let follow = entry.follow;
+        targets.entries.remove(&target);
+        if let Some(server) = follow {
+            targets.stopped.insert(target);
+            self.order(server, ControlToAgent::StopLogs { target });
+        }
+    }
+
+    /// Message d'un agent : ligne diffusee (masquee) a ses lecteurs ; a la
+    /// (re)connexion de l'agent (`State`), les suivis en cours lui sont
+    /// redemandes. N'attend jamais un lecteur.
+    pub async fn dispatch(&self, server: ServerId, msg: &AgentToControl) {
+        match msg {
+            AgentToControl::LogLine(line) => {
+                let project = match self.targets().entries.get(&line.target) {
+                    // Ligne d'un autre agent que celui de la cible : ignoree,
+                    // sans meme lire les secrets du projet.
+                    Some(e) if e.origin.is_some_and(|origin| origin != server) => {
+                        tracing::debug!(%server, "ligne de journal d'une cible d'un autre serveur : ignoree");
+                        return;
+                    }
+                    Some(e) => Some(e.project),
+                    None => None,
+                };
+                let redactor = match project {
+                    Some(project) => Some(self.live_redactor(project).await),
+                    None => None,
+                };
+                let mut targets = self.targets();
+                if let Some(entry) = targets.entries.get(&line.target)
+                    && entry.origin.is_some_and(|origin| origin != server)
+                {
+                    // Cible recreee entre-temps pour un autre serveur.
+                    return;
+                }
+                if let Some(entry) = targets.entries.get_mut(&line.target)
+                    && let Some(redactor) = redactor.filter(|_| Some(entry.project) == project)
+                {
+                    // Serveur encore inconnu : le premier qui envoie une ligne.
+                    entry.origin.get_or_insert(server);
+                    match redactor {
+                        Live::Ready(redactor) => {
+                            entry.release(&redactor);
+                            let event = entry.redacted(line, &redactor);
+                            entry.emit(event);
+                        }
+                        // Echec ferme : rien ne part sans masquage ; une
+                        // tache libere les lignes retenues.
+                        Live::Pending => entry.hold(line),
+                        Live::Down => {
+                            entry.hold(line);
+                            entry.notify_down();
+                        }
+                    }
+                    let waiting = entry.holds().then_some(entry.project);
+                    drop(targets);
+                    if let Some(project) = waiting {
+                        self.ensure_loading(project);
+                    }
+                } else if !targets.entries.contains_key(&line.target)
+                    && matches!(line.target, LogTarget::Service(_))
+                    && targets.stopped.insert(line.target)
+                {
+                    // Suivi que personne n'ecoute ici (plan de controle
+                    // redemarre) : l'agent est prie d'arreter, une fois.
+                    self.order(
+                        server,
+                        ControlToAgent::StopLogs {
+                            target: line.target,
+                        },
+                    );
+                }
+            }
+            AgentToControl::State(_) => {
+                let targets = self.targets();
+                for (target, entry) in &targets.entries {
+                    if entry.follow == Some(server) {
+                        self.order(
+                            server,
+                            ControlToAgent::Logs {
+                                target: *target,
+                                tail: 0,
+                                follow: true,
+                            },
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Lecteur d'une cible ; son depart est compte a sa liberation.
+pub struct Subscription {
+    hub: LogHub,
+    target: LogTarget,
+    rx: broadcast::Receiver<LogEvent>,
+    backlog: VecDeque<LogEvent>,
+}
+
+impl Subscription {
+    /// Ligne suivante (lignes recentes d'abord), ou le marqueur des lignes
+    /// perdues si ce lecteur a deborde.
+    pub async fn next(&mut self) -> Option<LogEvent> {
+        if let Some(event) = self.backlog.pop_front() {
+            return Some(event);
+        }
+        match self.rx.recv().await {
+            Ok(event) => Some(event),
+            Err(broadcast::error::RecvError::Lagged(n)) => Some(LogEvent::lost(n)),
+            Err(broadcast::error::RecvError::Closed) => None,
+        }
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.hub.release(self.target);
+    }
+}
+
+/// Suit les messages des agents jusqu'a l'arret : `events`
+/// (`AgentRegistry::subscribe`, pour `State`) et `logs` (`subscribe_logs`)
+/// doivent etre abonnes avant le demarrage du lien agents.
+pub async fn run(
+    hub: LogHub,
+    mut events: broadcast::Receiver<(ServerId, AgentToControl)>,
+    mut logs: broadcast::Receiver<(ServerId, AgentToControl)>,
+    mut stop: watch::Receiver<bool>,
+) {
+    loop {
+        let event = tokio::select! {
+            changed = stop.changed() => {
+                if changed.is_err() || *stop.borrow() {
+                    break;
+                }
+                continue;
+            }
+            event = events.recv() => event,
+            line = logs.recv() => line,
+        };
+        match event {
+            Ok((server, msg)) => hub.dispatch(server, &msg).await,
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                tracing::warn!("{n} messages d'agents perdus (diffusion des journaux en retard)");
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}

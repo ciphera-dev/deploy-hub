@@ -1,0 +1,28 @@
+@keyframes setup-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes setup-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.setup-spin {
+  animation: setup-spin 1s linear infinite;
+}
+
+.setup-step {
+  animation: setup-fade-up 0.25s ease-out;
+}
+
+.setup-field::placeholder {
+  color: var(--text-faint);
+}

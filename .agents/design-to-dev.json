@@ -1,0 +1,19 @@
+{
+  "version": "2.7.0",
+  "agents": [
+    "claude",
+    "codex"
+  ],
+  "installed": "2026-11-21 12:51",
+  "updated": "2026-11-21 12:51",
+  "blocks": [
+    "AGENTS.md",
+    "CLAUDE.md"
+  ],
+  "files": {
+    ".agents/hooks/memory_hook.py": "f15ed29b142a6449c4eaee80e40941cdf74e12da5e3c69182eb8e2d7bdbd4e23",
+    ".agents/memory/PROTOCOLE.md": "052f3160a4931decbd44cc1d0443ff45a0e902b074e7c5168c5576579800aff7",
+    ".agents/memory/GRAPHE.md": "2659cf65c7fe354577850a8b18e488dd3bef872e7f6860381973080488e31e04"
+  },
+  "pipeline": true
+}

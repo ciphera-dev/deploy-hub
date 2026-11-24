@@ -1,0 +1,17 @@
+# Projet Compose de test : `web` est construit par BuildKit, `cache` vient
+# d'une image (lancee seulement au deploiement).
+services:
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    environment:
+      CACHE_HOST: cache
+    depends_on: [cache]
+    volumes:
+      - uploads:/srv/uploads
+    security_opt: [no-new-privileges:true]
+  cache:
+    image: docker.io/library/redis:7-alpine
+volumes:
+  uploads:

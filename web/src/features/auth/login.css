@@ -1,0 +1,68 @@
+@keyframes login-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes login-shake {
+  0%,
+  100% {
+    transform: none;
+  }
+  25% {
+    transform: translateX(-5px);
+  }
+  75% {
+    transform: translateX(5px);
+  }
+}
+
+@keyframes login-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.login-spin {
+  animation: login-spin 1s linear infinite;
+}
+
+.login-step {
+  animation: login-fade-up 0.25s ease-out;
+}
+
+.login-shake {
+  animation: login-shake 0.3s;
+}
+
+.login-field::placeholder {
+  color: var(--text-faint);
+}
+
+.login-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  color: #a78bfa;
+  text-decoration: none;
+}
+
+.login-link:hover {
+  color: #c4b5fd;
+}
+
+.login-alt {
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.login-alt:hover {
+  background: var(--surface-raised);
+}

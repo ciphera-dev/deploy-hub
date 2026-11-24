@@ -1,0 +1,45 @@
+# Mémoire des agents (design-to-dev)
+.agents/graph/events.jsonl
+.agents/graph/graph.*.tmp
+.agents/graph/graph.json.bad-*
+.claude/settings.local.json
+
+# Rust
+target/
+**/*.rs.bk
+
+# Node / web
+node_modules/
+web/dist/
+dist/
+build/
+# Module Rust du pipeline de build de l'agent (pas une sortie de build).
+!crates/agent/src/build/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Environnement et secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.age
+minisign.key
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
+
+# Playwright / MSW
+web/test-results/
+web/playwright-report/
+web/blob-report/
+web/playwright/.cache/
+
+# Fichiers temporaires du generateur de routes TanStack
+web/.tanstack/

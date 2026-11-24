@@ -1,0 +1,54 @@
+[package]
+name = "ciphera-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "ciphera_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ciphera-proxy"
+path = "src/main.rs"
+
+[dependencies]
+# Table de routes echangee atomiquement (lecteurs sans verrou).
+arc-swap = "1.9.5"
+# Client ACME (HTTP-01) : rustls + ring, CSR par rcgen ; ni aws-lc, ni OpenSSL.
+instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "ring", "rcgen"] }
+proto = { path = "../proto" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = { workspace = true }
+# Coffre age partage avec le plan de controle : certificats chiffres au repos.
+shared = { path = "../shared", features = ["age"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = "0.1.44"
+# Fin de validite et emetteur des certificats emis.
+x509-parser = "0.18.1"
+zeroize = "1.9.2"
+
+# Pingora et les sockets Unix n'existent que sous Unix : sous Windows, la
+# crate se reduit a la table de routes (testee) et le binaire refuse de
+# demarrer.
+[target.'cfg(unix)'.dependencies]
+async-trait = "0.1.92"
+bytes = "1.12.2"
+http = "1.5.0"
+# rustls seulement (ni OpenSSL ni BoringSSL) ; connection_filter : plafonds
+# de connexions avant TLS.
+pingora = { version = "0.9.1", default-features = false, features = ["proxy", "rustls", "connection_filter"] }
+# Uid effectif (controle du proprietaire du dossier d'etat) ; deja utilise
+# par le plan de controle et la CLI (meme version).
+rustix = { version = "1.1.6", default-features = false, features = ["process", "std"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi", "tracing-log"] }
+
+[dev-dependencies]
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

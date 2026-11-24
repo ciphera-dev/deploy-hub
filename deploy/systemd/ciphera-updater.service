@@ -1,0 +1,63 @@
+# Applique une mise a jour signee de Ciphera (ciphera-cli updater) : HMAC de
+# la demande (cle d'instance), version strictement superieure a
+# l'installee, verrou flock (/run/ciphera/update.lock), minisign + SHA-256
+# de la release et des outils tiers, pg_dump vers /var/backups/ciphera,
+# remplacement des binaires, des unites de l'archive (activees ou
+# desactivees) et du profil AppArmor, post-installation, redemarrage,
+# retour arriere si /api/health (base comprise) ne repond pas en 60 s ou si
+# un service relance ne reste pas stable 15 s. Sans demande : reprise d'une mise a
+# jour interrompue seulement (`systemctl start ciphera-updater.service`) ;
+# au demarrage de la machine, ciphera-updater-recover.service s'en charge.
+# Le retour arriere restaure aussi la base (sauvegarde prise juste avant) :
+# les ecritures faites pendant la mise a jour sont perdues.
+#
+# Root, car il remplace les binaires et les unites, relance les services
+# et lit la cle d'instance (/etc/ciphera, compte ciphera). Ecritures
+# limitees aux dossiers de Ciphera ; capacites limitees a la lecture et a
+# l'ecriture de fichiers d'autres comptes (systemd-tmpfiles compris).
+[Unit]
+Description=Ciphera - application d'une mise a jour signee
+ConditionPathExists=/usr/local/bin/ciphera-cli
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ciphera-cli updater
+# Aucun EnvironmentFile : /etc/ciphera/ciphera.env est modifiable par le
+# compte ciphera. Configuration lue par l'updater lui-meme dans
+# /etc/ciphera-updater/updater.env (root 0600, cles connues seulement).
+# Telechargements, pg_dump et deux attentes de 60 s du healthcheck.
+TimeoutStartSec=30min
+
+StateDirectory=ciphera-updater
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/usr/local/bin /usr/local/lib/ciphera /usr/local/share/ciphera
+ReadWritePaths=/etc/systemd/system /etc/tmpfiles.d
+ReadWritePaths=-/var/lib/ciphera -/var/backups/ciphera -/run/ciphera
+# Dossiers recrees par systemd-tmpfiles (ciphera.tmpfiles.conf).
+ReadWritePaths=-/run/ciphera-agent -/var/lib/ciphera-buildkit
+# Profil AppArmor de buildkitd, remplace s'il est installe.
+ReadWritePaths=-/etc/apparmor.d
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN CAP_FSETID
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

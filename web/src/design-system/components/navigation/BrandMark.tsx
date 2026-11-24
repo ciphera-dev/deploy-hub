@@ -1,0 +1,44 @@
+import type { CSSProperties } from "react";
+
+const P = [
+  "M228.38,163.19c-16.89,25.88-41.74,36.92-74.18,36.92-49.66,0-82.8-25.18-82.8-71.43s33.14-71.4,82.8-71.4c32.44,0,56.93,11.71,72.82,36.56l60.71-31.05C266,28.3,217.69,0,155.23,0,61.41,0,0,47.27,0,128.69s61.41,128.72,152.47,128.72c65.22,0,113.86-27.6,136.28-63.16l-60.38-31.05Z",
+  "M311.18,7.93v241.51h70.4V7.93h-70.4Z",
+  "M593.77,7.93h-167.7v241.51h70.4v-72.45h97.3c65.89,0,109.71-28.27,109.71-84.53S659.65,7.93,593.77,7.93ZM587.89,125.93h-91.43V61.41h91.43c26.21,0,44.16,7.96,44.16,32.44s-17.95,32.08-44.16,32.08Z",
+  "M943.26,7.93v90.07h-144.91V7.93h-70.4v241.51h70.4v-93.49h144.91v93.49h70.37V7.93h-70.37Z",
+  "M1127.13,195.62V61.77h184.62V7.91h-253.95v241.53h257.71v-53.82h-188.38ZM1279.3,101.45h-112.39l-39.78,51.39h152.17v-51.39Z",
+  "M1561.18,167.33c37.95-11.05,63.5-36.56,63.5-76.93,0-55.2-47.97-82.47-109.74-82.47h-169.39v241.51h70.03v-76.24h71.09l63.83,76.24h81.75l-71.06-82.11ZM1509.76,122.15h-94.52v-60.74h94.52c25.21,0,43.49,6.9,43.49,30.39s-18.28,30.36-43.49,30.36Z",
+  "M1962.46,249.44h-72.97l-82.36-169.4c-2.4-4.91-9.4-4.91-11.81,0l-83.28,169.41h-73.85l95.27-183.62h56.33c4.83,0,8.01-5.03,5.94-9.4l-23.05-48.5h67.34l122.42,241.51Z",
+];
+
+export interface CipheraLogoProps {
+  /** hauteur en px, 14 par defaut */
+  height?: number;
+  /** currentColor par defaut */
+  color?: string;
+  style?: CSSProperties;
+}
+
+export function CipheraLogo({ height = 14, color = "currentColor", style }: CipheraLogoProps) {
+  return (
+    <svg role="img" aria-label="Ciphera" viewBox="0 0 1962.46 257.4" height={height} width={(height * 1962.46) / 257.4} fill={color} style={{ display: "block", flex: "none", ...style }}>
+      {P.map((d, i) => (
+        <path key={i} d={d} />
+      ))}
+    </svg>
+  );
+}
+
+export interface BrandMarkProps {
+  /** hauteur du logo en px, 14 par defaut */
+  height?: number;
+  color?: string;
+  style?: CSSProperties;
+}
+
+export function BrandMark({ height = 14, color = "var(--text-strong)", style }: BrandMarkProps) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", padding: "0 6px", height: 24, color, ...style }}>
+      <CipheraLogo height={height} />
+    </div>
+  );
+}

@@ -1,0 +1,59 @@
+# Reverse proxy Ciphera (Pingora) : seul service autorise a ecouter sur
+# 80/443, sous son propre compte avec la seule capacite CAP_NET_BIND_SERVICE.
+# Sa table de routes arrive de l'agent par le socket de pilotage
+# /run/ciphera/proxy.sock (ciphera-proxy.socket, transmis au demarrage).
+[Unit]
+Description=Ciphera - reverse proxy
+After=network-online.target ciphera-proxy.socket
+Wants=network-online.target
+Requires=ciphera-proxy.socket
+
+[Service]
+Type=simple
+User=ciphera-proxy
+Group=ciphera-proxy
+ExecStart=/usr/local/bin/ciphera-proxy
+Restart=on-failure
+RestartSec=5s
+
+# Port HTTPS du panneau (redirection 301 des hotes IP sans route).
+Environment=CIPHERA_PANEL_PORT=8443
+
+# Une connexion transferee occupe deux descripteurs : de quoi tenir le
+# plafond de 16 384 connexions clientes du proxy (conn_limit.rs).
+LimitNOFILE=65536
+
+# Certificats ACME et compte ACME chiffres (age) dans /var/lib/ciphera-proxy,
+# avec l'identite age.key (0600) du seul compte ciphera-proxy. Annuaire :
+# Let's Encrypt (production) par defaut ; CIPHERA_PROXY_ACME_DIRECTORY=staging
+# pour les essais.
+StateDirectory=ciphera-proxy
+StateDirectoryMode=0700
+UMask=0077
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target
