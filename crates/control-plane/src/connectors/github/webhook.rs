@@ -15,7 +15,8 @@
 //! 4. anti-rejeu par `X-GitHub-Delivery` OU par empreinte SHA-256 du corps
 //!    (table, entrees de plus de 24 h 5 min purgees) : une livraison deja vue,
 //!    meme sous un autre identifiant, repond 200 sans rien mettre en file ;
-//! 5. depot inconnu : 404 ; autre branche (ou projet sans environnement
+//! 5. depot inconnu : 404 ; projet lie a l'id d'un autre depot (meme nom,
+//!    autre `repository.id`) : 200 ignore ; autre branche (ou projet sans environnement
 //!    `production`, journalise) : 200 ignore ; puis les reglages Git de
 //!    chaque projet (`domain::projects::git::skip_reason`) : deploiement
 //!    automatique coupe, `[skip ci]`, compte bot, ou aucun fichier modifie
@@ -173,6 +174,10 @@ fn push_facts(event: &PushEvent) -> PushFacts<'_> {
 
 #[derive(Deserialize)]
 struct Repository {
+    /// Identifiant numerique du depot : il designe le depot suivi, le nom
+    /// pouvant etre repris par un autre compte.
+    #[serde(default)]
+    id: Option<i64>,
     full_name: String,
     /// Secondes Unix dans les evenements `push`, parfois RFC 3339.
     #[serde(default)]
@@ -303,12 +308,13 @@ async fn receive(
     struct Target {
         project_id: Uuid,
         branch: String,
+        github_repo_id: Option<i64>,
         environment_id: Option<Uuid>,
         #[sqlx(flatten)]
         settings: PushSettings,
     }
-    let rows: Vec<Target> = sqlx::query_as(
-        "SELECT g.project_id, g.branch, e.id AS environment_id, g.auto_deploy, g.skip_ci, \
+    let named: Vec<Target> = sqlx::query_as(
+        "SELECT g.project_id, g.branch, g.github_repo_id, e.id AS environment_id, g.auto_deploy, g.skip_ci, \
                 g.ignore_bots, g.watch_paths \
          FROM git_sources g \
          LEFT JOIN environments e ON e.project_id = g.project_id AND e.name = 'production' \
@@ -318,7 +324,7 @@ async fn receive(
     .fetch_all(&mut *tx)
     .await
     .map_err(|e| internal("recherche des projets du depot", e))?;
-    if rows.is_empty() {
+    if named.is_empty() {
         // Rien n'est enregistre : la livraison n'est pas la notre.
         drop(tx);
         return Err(ApiError::new(
@@ -326,6 +332,21 @@ async fn receive(
             "unknown_repository",
             "Aucun projet ne suit ce dépôt.",
         ));
+    }
+    // Un projet lie a l'id d'un depot ne suit que ce depot, pas un autre qui
+    // aurait repris le meme nom.
+    let rows: Vec<Target> = named
+        .into_iter()
+        .filter(|t| {
+            t.github_repo_id
+                .is_none_or(|id| event.repository.id == Some(id))
+        })
+        .collect();
+    if rows.is_empty() {
+        tx.commit()
+            .await
+            .map_err(|e| internal("transaction du webhook GitHub", e))?;
+        return Ok(ignored("repository"));
     }
 
     let branch = event.git_ref.strip_prefix("refs/heads/");

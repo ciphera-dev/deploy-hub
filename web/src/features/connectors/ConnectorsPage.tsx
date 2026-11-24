@@ -216,6 +216,7 @@ export function ConnectorsPage({ search, clearSearch }: ConnectorsPageProps) {
   const [config, setConfig] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [callbackError, setCallbackError] = useState<string | null>(null);
+  const [leftover, setLeftover] = useState<{ name: string; url: string } | null>(null);
   const handled = useRef(false);
 
   // Retour du flux manifest : le code n'est converti qu'une fois.
@@ -243,10 +244,13 @@ export function ConnectorsPage({ search, clearSearch }: ConnectorsPageProps) {
   const showConnected = !!status?.connected && match(github);
 
   const disconnect = async () => {
+    const app = status?.app;
     setConfirm(false);
     setConfig(false);
     if (await disconnectGithub()) {
       await queryClient.invalidateQueries({ queryKey: GITHUB_STATUS_QUERY_KEY });
+      // GitHub n'offre pas d'API de suppression d'une App : on renvoie vers ses reglages.
+      if (app) setLeftover({ name: app.name, url: app.html_url });
       flash("GitHub déconnecté");
     } else flash("Déconnexion impossible. Réessayez.");
   };
@@ -332,6 +336,14 @@ export function ConnectorsPage({ search, clearSearch }: ConnectorsPageProps) {
           </span>
         </div>
       </div>
+      {leftover && (
+        <div role="status" style={{ padding: "10px 14px", borderRadius: "var(--radius-lg)", background: "rgba(139,92,246,.08)", border: "1px solid rgba(139,92,246,.18)", font: "400 12px/1.5 var(--font-sans)", color: "var(--text-body)" }}>
+          L'App « {leftover.name} » a été retirée de Ciphera mais existe encore sur GitHub : supprimez-la aussi sur GitHub.{" "}
+          <a href={leftover.url} target="_blank" rel="noreferrer noopener" style={{ color: "var(--text-strong)" }}>
+            Ouvrir les réglages de l'App
+          </a>
+        </div>
+      )}
       {callbackError && (
         <div role="alert" style={{ padding: "10px 14px", borderRadius: "var(--radius-lg)", background: "rgba(239,68,68,.05)", border: "1px solid rgba(239,68,68,.18)", font: "400 12px/1.4 var(--font-sans)", color: "var(--text-body)" }}>
           {callbackError}
@@ -386,7 +398,7 @@ export function ConnectorsPage({ search, clearSearch }: ConnectorsPageProps) {
       {confirm && (
         <Modal
           title="Déconnecter GitHub ?"
-          description="Ciphera oublie la GitHub App et ses clés ; les déploiements par push s'arrêtent. Supprimez aussi l'App dans les réglages GitHub. Vos projets restent en ligne."
+          description="Ciphera oublie la GitHub App et ses clés ; les déploiements par push s'arrêtent. Supprimez-la aussi sur GitHub : elle y reste tant que vous ne l'avez pas supprimée. Vos projets restent en ligne."
           onClose={() => setConfirm(false)}
           width={440}
           footer={

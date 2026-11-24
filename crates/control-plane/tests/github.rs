@@ -511,6 +511,47 @@ async fn webhook_push_other_branch_ignored() {
 }
 
 #[tokio::test]
+async fn webhook_other_repo_id_ignored() {
+    let (state, _pg) = common::state().await;
+    install_app(&state).await;
+    let (project_id, _) = project(&state, "web", "ciphera/web", "main").await;
+    sqlx::query("UPDATE git_sources SET github_repo_id = 555 WHERE project_id = $1")
+        .bind(project_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    // Meme nom de depot, autre identifiant : ignore, rien en file.
+    let mut other = push_value("ciphera/web", "main", json!(unix_now()));
+    other["repository"]["id"] = json!(556);
+    let body = other.to_string().into_bytes();
+    let r = webhook(
+        &state,
+        body.clone(),
+        Some(sign(WEBHOOK_SECRET, &body)),
+        "d-other",
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["status"], "ignored");
+    assert_eq!(job_count(&state).await, 0);
+
+    // Identifiant du projet : deploiement mis en file.
+    let mut same = push_value("ciphera/web", "main", json!(unix_now() + 1));
+    same["repository"]["id"] = json!(555);
+    let body = same.to_string().into_bytes();
+    let r = webhook(
+        &state,
+        body.clone(),
+        Some(sign(WEBHOOK_SECRET, &body)),
+        "d-same",
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    assert_eq!(job_count(&state).await, 1);
+}
+
+#[tokio::test]
 async fn webhook_body_over_5_mib_rejected() {
     let (state, _pg) = common::state().await;
     install_app(&state).await;
@@ -1013,6 +1054,57 @@ async fn installation_token_not_persisted() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn oversized_github_response_rejected() {
+    let (mut state, _pg) = common::state().await;
+    let server = MockServer::start().await;
+    use_github(&mut state, &server);
+    install_app(&state).await;
+    let dev = login(&state, "developer").await;
+    let expires = jiff::Timestamp::now()
+        .checked_add(jiff::SignedDuration::from_hours(1))
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/app/installations/42/access_tokens"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "token": INSTALLATION_TOKEN,
+            "expires_at": expires.to_string(),
+        })))
+        .mount(&server)
+        .await;
+
+    // Liste d'installations au-dela de 10 Mio.
+    let huge = format!("[{}]", " ".repeat(11 * 1024 * 1024));
+    Mock::given(method("GET"))
+        .and(path("/app/installations"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(huge, "application/json"))
+        .mount(&server)
+        .await;
+    let r = send(&state, &dev, "GET", "/api/git/providers/github/repos", None).await;
+    assert_eq!(r.status, 502, "{}", r.raw);
+    assert_eq!(r.code(), "github_unavailable");
+
+    // Metadonnees (jeton) au-dela de 1 Mio.
+    server.reset().await;
+    let big = format!(
+        "{{\"token\":\"{INSTALLATION_TOKEN}\",\"expires_at\":\"{}\",\"pad\":\"{}\"}}",
+        expires,
+        "x".repeat(2 * 1024 * 1024)
+    );
+    Mock::given(method("GET"))
+        .and(path("/app/installations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{ "id": 42 }])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/42/access_tokens"))
+        .respond_with(ResponseTemplate::new(201).set_body_raw(big, "application/json"))
+        .mount(&server)
+        .await;
+    let r = send(&state, &dev, "GET", "/api/git/providers/github/repos", None).await;
+    assert_eq!(r.status, 502, "{}", r.raw);
 }
 
 #[tokio::test]

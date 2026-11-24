@@ -743,6 +743,8 @@ struct Info {
     build_path: Option<String>,
     build_service: Option<String>,
     repository: Option<String>,
+    github_repo_id: Option<i64>,
+    via_app: bool,
     git_branch: Option<String>,
     root_directory: Option<String>,
     environment: String,
@@ -773,7 +775,7 @@ async fn info(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Info>> {
                 d.build_sent_at IS NOT NULL AS build_sent, d.deploy_sent_at IS NOT NULL AS deploy_sent, \
                 d.commit_sha, d.branch, d.compose_service, p.name AS project_name, p.source_kind, \
                 p.image_ref, p.build_kind, p.build_path, p.build_service, g.repository, \
-                g.branch AS git_branch, g.root_directory, e.name AS environment, s.id AS service_id, \
+                g.github_repo_id, coalesce(g.via_app, false) AS via_app, g.branch AS git_branch, g.root_directory, e.name AS environment, s.id AS service_id, \
                 s.name AS service_name, s.internal_port, s.healthcheck_path, s.run_as, s.read_only_rootfs \
          FROM deployments d \
          JOIN projects p ON p.id = d.project_id \
@@ -845,10 +847,23 @@ async fn info_locked_running(
         .filter(Info::running))
 }
 
+/// Lien d'un projet avec son depot GitHub (colonnes de `git_sources`).
+struct GitLink {
+    project_id: Uuid,
+    /// Identifiant GitHub du depot, pose a la creation via l'App.
+    repo_id: Option<i64>,
+    /// Projet cree via l'App : jamais de clone anonyme.
+    via_app: bool,
+}
+
 /// Source Git : jeton d'installation (si l'App est installee sur le depot)
 /// et commit a construire (celui du push, sinon la tete de la branche).
+/// Un projet `via_app` exige l'installation et l'identite du depot : le depot
+/// resolu doit porter l'id enregistre (premier build : l'id est retenu et le
+/// projet est lie a l'App).
 async fn git_access(
     state: &AppState,
+    link: &GitLink,
     repository: &str,
     branch: &str,
     commit: Option<&str>,
@@ -856,6 +871,11 @@ async fn git_access(
     let app = github::load(&state.db)
         .await
         .map_err(|e| GitAccessError::Retry(db_error("lecture de la GitHub App", e)))?;
+    if app.is_none() && link.via_app {
+        return Err(GitAccessError::Fail(
+            "La GitHub App n'est plus connectée : reconnectez-la.".into(),
+        ));
+    }
     let base = &state.cfg.github_api_url;
     let now = state.clock.unix_secs() as i64;
     let token = match app {
@@ -875,6 +895,17 @@ async fn git_access(
         }
         None => None,
     };
+    // Un jeton d'installation obtenu lie le projet a l'App (projet anterieur
+    // ou GitHub injoignable a la creation) : l'identite du depot est verifiee.
+    match token.as_deref() {
+        Some(token) => check_repo_identity(state, link, repository, token).await?,
+        None if link.via_app => {
+            return Err(GitAccessError::Fail(
+                "La GitHub App n'est plus installée sur ce dépôt.".into(),
+            ));
+        }
+        None => {}
+    }
     let commit = match commit {
         Some(c) => c.to_string(),
         None => state
@@ -894,6 +925,57 @@ async fn git_access(
             })?,
     };
     Ok((token.map(|t| GitToken::new(t.to_string())), commit))
+}
+
+/// Compare l'id du depot resolu a celui du projet. Sans id enregistre
+/// (projet anterieur), le premier build le retient : premiere confiance,
+/// journalisee.
+async fn check_repo_identity(
+    state: &AppState,
+    link: &GitLink,
+    repository: &str,
+    token: &str,
+) -> Result<(), GitAccessError> {
+    let resolved = state
+        .github
+        .repository_id(&state.cfg.github_api_url, repository, Some(token))
+        .await
+        .map_err(|e| match e {
+            github::app::GithubError::Status(404) => {
+                GitAccessError::Fail("Dépôt introuvable sur GitHub.".into())
+            }
+            other => GitAccessError::from_github(other),
+        })?;
+    match link.repo_id {
+        Some(stored) if stored == resolved => {
+            if !link.via_app {
+                sqlx::query("UPDATE git_sources SET via_app = true WHERE project_id = $1")
+                    .bind(link.project_id)
+                    .execute(&state.db)
+                    .await
+                    .map_err(|e| GitAccessError::Retry(db_error("lien du projet a l'App", e)))?;
+            }
+            Ok(())
+        }
+        Some(_) => Err(GitAccessError::Fail("Le dépôt a changé d'identité.".into())),
+        None => {
+            sqlx::query(
+                "UPDATE git_sources SET github_repo_id = $2, via_app = true \
+                 WHERE project_id = $1 AND github_repo_id IS NULL",
+            )
+            .bind(link.project_id)
+            .bind(resolved)
+            .execute(&state.db)
+            .await
+            .map_err(|e| GitAccessError::Retry(db_error("enregistrement de l'id du depot", e)))?;
+            tracing::info!(
+                project_id = %link.project_id,
+                repo_id = resolved,
+                "id du depot GitHub retenu au premier build (premiere confiance)"
+            );
+            Ok(())
+        }
+    }
 }
 
 enum GitAccessError {
@@ -949,7 +1031,20 @@ async fn send_build(state: &AppState, info: Info) -> Result<(), HandlerError> {
             ) else {
                 return fail_running(state, id, "Source Git du projet incomplète.").await;
             };
-            match git_access(state, &repository, &branch, info.commit_sha.as_deref()).await {
+            let link = GitLink {
+                project_id: info.project_id,
+                repo_id: info.github_repo_id,
+                via_app: info.via_app,
+            };
+            match git_access(
+                state,
+                &link,
+                &repository,
+                &branch,
+                info.commit_sha.as_deref(),
+            )
+            .await
+            {
                 Ok((token, commit)) => (
                     BuildSource::Git {
                         url: format!("https://github.com/{repository}"),

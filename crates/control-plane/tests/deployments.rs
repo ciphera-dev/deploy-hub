@@ -1129,9 +1129,9 @@ fn test_key() -> &'static String {
     })
 }
 
-#[tokio::test]
-async fn push_deploys_are_deduplicated_and_token_is_minted_at_dispatch() {
-    let mut env = Env::new().await;
+/// GitHub simule : App enregistree, installation 42 sur `acme/web`, jeton
+/// d'installation, depot d'id 777 et tete de `main`.
+async fn github_mock(env: &mut Env) -> MockServer {
     let server = MockServer::start().await;
     let uri = server.uri();
     env.state.cfg = Arc::new(
@@ -1186,10 +1186,152 @@ async fn push_deploys_are_deduplicated_and_token_is_minted_at_dispatch() {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
+        .and(path("/repos/acme/web"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 777 })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
         .and(path("/repos/acme/web/commits/main"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "sha": HEAD })))
         .mount(&server)
         .await;
+    server
+}
+
+async fn git_columns(env: &Env, project: Uuid) -> (Option<i64>, bool) {
+    sqlx::query_as("SELECT github_repo_id, via_app FROM git_sources WHERE project_id = $1")
+        .bind(project)
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap()
+}
+
+async fn acme_web(env: &Env) -> (Uuid, Uuid) {
+    project(
+        &env.state,
+        json!({
+            "name": "web",
+            "source": { "type": "git", "repository": "acme/web", "branch": "main" },
+            "build": { "kind": "railpack" }
+        }),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn install_token_scoped_to_repo() {
+    let mut env = Env::new().await;
+    let server = github_mock(&mut env).await;
+    let (p, _) = acme_web(&env).await;
+    // Cree via l'App : id du depot et lien enregistres.
+    assert_eq!(git_columns(&env, p).await, (Some(777), true));
+    deploy(&env.state, p).await;
+    env.run_jobs().await;
+    let requests = server.received_requests().await.unwrap();
+    let minted: Vec<Value> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/app/installations/42/access_tokens")
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    assert!(!minted.is_empty());
+    for body in minted {
+        assert_eq!(
+            body,
+            json!({ "repositories": ["web"], "permissions": { "contents": "read" } })
+        );
+    }
+}
+
+#[tokio::test]
+async fn repo_id_mismatch_fails_build() {
+    let mut env = Env::new().await;
+    let _server = github_mock(&mut env).await;
+    let (p, _) = acme_web(&env).await;
+    // Le nom `acme/web` designe maintenant un autre depot que celui du projet.
+    sqlx::query("UPDATE git_sources SET github_repo_id = 1 WHERE project_id = $1")
+        .bind(p)
+        .execute(&env.state.db)
+        .await
+        .unwrap();
+    let id = deploy(&env.state, p).await;
+    env.run_jobs().await;
+    assert!(builds(&env.orders()).is_empty());
+    let d = env.get(id).await;
+    assert_eq!(d["status"], "failed");
+    assert!(
+        d["error"]
+            .as_str()
+            .unwrap()
+            .contains("Le dépôt a changé d'identité"),
+        "{d}"
+    );
+}
+
+#[tokio::test]
+async fn first_build_keeps_the_repo_id_of_an_existing_project() {
+    let mut env = Env::new().await;
+    let _server = github_mock(&mut env).await;
+    let (p, _) = acme_web(&env).await;
+    sqlx::query(
+        "UPDATE git_sources SET github_repo_id = NULL, via_app = false WHERE project_id = $1",
+    )
+    .bind(p)
+    .execute(&env.state.db)
+    .await
+    .unwrap();
+    deploy(&env.state, p).await;
+    env.run_jobs().await;
+    assert_eq!(builds(&env.orders()).len(), 1);
+    assert_eq!(git_columns(&env, p).await, (Some(777), true));
+}
+
+#[tokio::test]
+async fn installation_404_fails_for_app_project() {
+    let mut env = Env::new().await;
+    let server = github_mock(&mut env).await;
+    let (p, _) = acme_web(&env).await;
+    assert!(git_columns(&env, p).await.1);
+    // L'App n'est plus installee sur le depot.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/web/installation"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/web/commits/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "sha": HEAD })))
+        .mount(&server)
+        .await;
+    let id = deploy(&env.state, p).await;
+    env.run_jobs().await;
+    assert!(builds(&env.orders()).is_empty(), "pas de clone anonyme");
+    let d = env.get(id).await;
+    assert_eq!(d["status"], "failed");
+    assert!(
+        d["error"].as_str().unwrap().contains("plus installée"),
+        "{d}"
+    );
+
+    // Projet public ordinaire (non lie a l'App) : clone anonyme.
+    sqlx::query("UPDATE git_sources SET via_app = false WHERE project_id = $1")
+        .bind(p)
+        .execute(&env.state.db)
+        .await
+        .unwrap();
+    deploy(&env.state, p).await;
+    env.run_jobs().await;
+    let orders = env.orders();
+    let ControlToAgent::Build(spec) = &orders[0] else {
+        panic!("Build attendu : {orders:?}");
+    };
+    assert!(spec.git_token.is_none());
+}
+
+#[tokio::test]
+async fn push_deploys_are_deduplicated_and_token_is_minted_at_dispatch() {
+    let mut env = Env::new().await;
+    let _server = github_mock(&mut env).await;
 
     let (p, environment) = project(
         &env.state,

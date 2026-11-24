@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use crate::auth::internal;
 use crate::authz::{Require, lvl, res};
+use crate::connectors::github::app::{RepoLink, resolve_link};
 use crate::domain::deployments::orchestrator;
 use crate::domain::projects::store::{self, Draft, StoreError};
 use crate::domain::projects::validate;
@@ -125,8 +126,12 @@ async fn create(
 ) -> Result<Response, ApiError> {
     let Json(input) = body.map_err(|_| invalid("Requête invalide."))?;
     let draft = valid_draft(input.name, input.source, input.build)?;
+    let link = match &draft.source {
+        Source::Git(git) => resolve_link(&state, &git.repository).await?,
+        Source::Image(_) => RepoLink::default(),
+    };
     let mut tx = begin(&state).await?;
-    let id = store::create(&mut tx, &draft, auth.user.id)
+    let id = store::create(&mut tx, &draft, auth.user.id, link)
         .await
         .map_err(|e| store_error("creation du projet", e))?;
     audit(&mut tx, auth.user.id, "project.create", id, &draft.name).await?;

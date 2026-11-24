@@ -135,8 +135,11 @@ pub async fn database() -> (PgPool, TestDb) {
 }
 pub fn test_config() -> Arc<Config> {
     Arc::new(
-        Config::from_lookup(|name| {
-            (name == "CIPHERA_DATABASE_URL").then(|| "postgres://u:p@127.0.0.1/c".to_string())
+        Config::from_lookup(|name| match name {
+            "CIPHERA_DATABASE_URL" => Some("postgres://u:p@127.0.0.1/c".to_string()),
+            // Port ferme : aucun test n'atteint le vrai GitHub.
+            "CIPHERA_GITHUB_API_URL" => Some("http://127.0.0.1:9".to_string()),
+            _ => None,
         })
         .unwrap(),
     )
@@ -168,6 +171,7 @@ pub fn test_config_in(config_dir: &std::path::Path, data_dir: &std::path::Path) 
             "CIPHERA_DATABASE_URL" => Some("postgres://u:p@127.0.0.1/c".to_string()),
             "CIPHERA_CONFIG_DIR" => Some(config.clone()),
             "CIPHERA_DATA_DIR" => Some(data.clone()),
+            "CIPHERA_GITHUB_API_URL" => Some("http://127.0.0.1:9".to_string()),
             _ => None,
         })
         .unwrap(),

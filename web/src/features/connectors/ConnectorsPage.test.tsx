@@ -105,3 +105,20 @@ it("App connectée : ligne « Connectés » avec le lien d'installation", async 
   expect(await screen.findByText("Connectés")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Installer" })).toHaveAttribute("href", "https://github.com/apps/ciphera-ab12cd/installations/new");
 });
+
+it("déconnexion : le lien vers les réglages de l'App sur GitHub et « supprimez-la aussi sur GitHub » s'affichent", async () => {
+  status = GITHUB_CONNECTED;
+  server.use(
+    http.delete("*/api/connectors/github", () => {
+      status = GITHUB_DISCONNECTED;
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "Déconnecter" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/supprimez-la aussi sur GitHub/i)).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Déconnecter" }));
+  expect(await screen.findByText(/supprimez-la aussi sur GitHub\./)).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Ouvrir les réglages de l'App" })).toHaveAttribute("href", GITHUB_CONNECTED.app!.html_url);
+});

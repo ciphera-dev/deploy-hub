@@ -7,7 +7,7 @@ Deux ecoutes :
   controle, et cible du detournement de https://github.com/ par le navigateur
   du test) : flux « manifest » (formulaire /settings/apps/new, conversion du
   code), installation de l'App, jetons d'installation, depots de
-  l'installation, commit en tete de branche ; plus POST /_e2e/advance (le test
+  l'installation, depot (id), commit en tete de branche ; plus POST /_e2e/advance (le test
   avance main sur le commit suivant) et GET /_e2e/health ;
 - depot Git (HTTPS, nom github.com via /etc/hosts) : `git http-backend` en
   lecture seule (git-upload-pack), authentification Basic
@@ -232,6 +232,10 @@ class ApiHandler(Base):
             with self.state.lock:
                 installed = self.state.installed
             return self.json(200, {"id": INSTALLATION_ID}) if installed else self.not_found()
+        if path == f"/repos/{FULL_NAME}":
+            if not self.installation_token_ok():
+                return self.not_found()
+            return self.json(200, self.repo_json())
         m = re.match(rf"^/repos/{FULL_NAME}/commits/(.+)$", path)
         if m:
             if not self.installation_token_ok():
@@ -262,6 +266,15 @@ class ApiHandler(Base):
         if m:
             if not self.jwt_ok():
                 return self.json(401, {"message": "Bad credentials"})
+            # Corps vide : jeton de toute l'installation (liste des depots).
+            # Sinon il doit se limiter au depot, en lecture du contenu.
+            if body:
+                try:
+                    wanted = json.loads(body)
+                except ValueError:
+                    return self.json(422, {"message": "Invalid request"})
+                if wanted != {"repositories": [REPO], "permissions": {"contents": "read"}}:
+                    return self.json(422, {"message": "Invalid request"})
             with self.state.lock:
                 if int(m.group(1)) != INSTALLATION_ID or not self.state.installed:
                     return self.not_found()

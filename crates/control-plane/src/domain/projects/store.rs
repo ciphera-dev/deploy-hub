@@ -9,6 +9,7 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::agents::registry::AgentRegistry;
+use crate::connectors::github::app::RepoLink;
 
 /// Environnement cree avec chaque projet (le seul de la v0.1).
 pub const PRODUCTION: &str = "production";
@@ -62,6 +63,7 @@ pub async fn create(
     conn: &mut PgConnection,
     draft: &Draft,
     created_by: Uuid,
+    link: RepoLink,
 ) -> Result<Uuid, StoreError> {
     let id = Uuid::new_v4();
     let (kind, path, service) = build_columns(draft.build.as_ref());
@@ -94,12 +96,15 @@ pub async fn create(
         // Deploiement automatique : valeur par defaut de l'organisation
         // (Parametres > Deploiements).
         sqlx::query(
-            "INSERT INTO git_sources (project_id, repository, branch, auto_deploy) \
-             VALUES ($1, $2, $3, coalesce((SELECT deploy_auto FROM instance LIMIT 1), true))",
+            "INSERT INTO git_sources (project_id, repository, branch, auto_deploy, \
+                                      github_repo_id, via_app) \
+             VALUES ($1, $2, $3, coalesce((SELECT deploy_auto FROM instance LIMIT 1), true), $4, $5)",
         )
         .bind(id)
         .bind(&git.repository)
         .bind(&git.branch)
+        .bind(link.repo_id)
+        .bind(link.via_app)
         .execute(&mut *conn)
         .await?;
     }
