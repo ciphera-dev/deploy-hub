@@ -82,7 +82,7 @@
 //!   projet (`build::dockerfile`). Son empreinte est une etiquette du
 //!   conteneur : la changer recree buildkitd. Les caches restent dans un
 //!   seul etat BuildKit pour tous les projets, cloisonnes par espace de noms
-//!   (UUID du projet), pas par des etats separes.
+//!   (UUID du projet et de l'environnement), pas par des etats separes.
 //!
 //! Les montages de l'hote sont etiquetes pour SELinux (`z`) : sous Fedora,
 //! le conteneur lit le secret et cree ses sockets.

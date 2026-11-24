@@ -408,14 +408,14 @@ pub(crate) struct Targets {
     environment_id: Option<ValidatedArg>,
 }
 
-/// Cloisonnement des caches de BuildKit d'un build : `namespace` (UUID du
-/// projet) prefixe chaque cache de montage d'un Dockerfile
-/// (`BUILDKIT_CACHE_MOUNT_NS`) ; `key` (`<UUID du projet>-<UUID de
-/// l'environnement>`, longueur fixe donc sans ambiguite) prefixe les caches
-/// du frontend Railpack.
+/// Cloisonnement des caches de BuildKit d'un build, par environnement :
+/// `key` (`<UUID du projet>-<UUID de l'environnement>`, longueur fixe donc
+/// sans ambiguite) prefixe chaque cache de montage d'un Dockerfile
+/// (`BUILDKIT_CACHE_MOUNT_NS`) et chaque cache du frontend Railpack. Une
+/// branche de preproduction ne remplit donc pas les caches de la production
+/// du meme projet.
 #[derive(Clone, Debug)]
 pub struct CacheScope {
-    pub namespace: ValidatedArg,
     pub key: ValidatedArg,
 }
 
@@ -484,7 +484,6 @@ impl Targets {
             }));
         };
         Ok(CacheScope {
-            namespace: project.clone(),
             key: ValidatedArg::concat(&[project, &DASH, env]),
         })
     }

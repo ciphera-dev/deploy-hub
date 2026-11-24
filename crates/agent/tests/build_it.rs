@@ -484,14 +484,25 @@ async fn railpack_prepare_runs_only_the_pinned_mise() {
     let _ = api.remove_network(PREPARE_NETWORK).await;
 }
 
-/// Caches de montage cloisonnes par projet : le projet A ecrit un marqueur
-/// dans `--mount=type=cache,id=x` et dans un cache sans id (chemin cible
-/// `/root/.npm`) ; le projet B (memes noms de projet et d'environnement,
-/// autres UUID) ne le voit pas, meme en visant le cache de A par un id qui
-/// remonte. Temoin : un autre build de A le voit.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
-async fn cache_mount_not_shared_between_projects() {
+/// Copie du depot `repo` dans un nouveau dossier de `tmp`, son Dockerfile
+/// precede de `prefix` (directive `syntax`, par exemple).
+fn with_prefix(tmp: &TempDir, repo: &Path, prefix: &str) -> PathBuf {
+    let dir = tmp.0.join(format!("repo-{}", DeploymentId::new()));
+    copy_dir(repo, &dir);
+    let dockerfile = dir.join("Dockerfile");
+    let text = std::fs::read_to_string(&dockerfile).unwrap();
+    std::fs::write(&dockerfile, format!("{prefix}{text}")).unwrap();
+    dir
+}
+
+/// Cloisonnement des caches de montage, Dockerfile precede de `prefix` :
+/// le projet A (environnement de production) ecrit un marqueur dans
+/// `--mount=type=cache,id=x` et dans un cache sans id (chemin cible
+/// `/root/.npm`). Ne le voient pas : le projet B (memes noms de projet et
+/// d'environnement, autres UUID), y compris en visant le cache de A par un
+/// id qui remonte, ni un autre environnement du meme projet. Temoin : un
+/// autre build du meme environnement le voit.
+async fn assert_cache_isolation(prefix: &str) {
     let tmp = TempDir::new();
     let mut cleanup = Cleanup { images: Vec::new() };
     cleanup.run().await;
@@ -499,54 +510,78 @@ async fn cache_mount_not_shared_between_projects() {
     let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
     let a = (ProjectId::new(), EnvironmentId::new());
     let b = (ProjectId::new(), EnvironmentId::new());
+    let a_staging = (a.0, EnvironmentId::new());
+    let writer = with_prefix(&tmp, &fixture("cache-writer"), prefix);
+    let reader = with_prefix(&tmp, &fixture("cache-reader"), prefix);
 
-    let mut build = async |ids: (ProjectId, EnvironmentId), repo: &Path| {
+    let mut build = async |ids: (ProjectId, EnvironmentId), repo: &Path, what: &str| {
         let s = dockerfile_spec(&project, ids);
         let tag = format!("ciphera/{project}-production:{}", s.deployment_id);
         cleanup.images.push(tag.clone());
         let (result, stages) = build_local(&build_cfg, &backend, &s, repo).await;
-        (result.map(|_| tag), stages)
+        result.unwrap_or_else(|e| panic!("{what} ({prefix:?}) : {e} ({stages:?})"));
+        run_image(&tag)
     };
 
-    let (result, stages) = build(a, &fixture("cache-writer")).await;
-    result.unwrap_or_else(|e| panic!("cache-writer (A) : {e} ({stages:?})"));
-
-    let (result, stages) = build(b, &fixture("cache-reader")).await;
-    let tag = result.unwrap_or_else(|e| panic!("cache-reader (B) : {e} ({stages:?})"));
+    build(a, &writer, "cache-writer (A)").await;
     assert_eq!(
-        run_image(&tag),
+        build(b, &reader, "cache-reader (B)").await,
         "absent\nabsent\n",
         "le projet B voit le cache du projet A"
     );
+    assert_eq!(
+        build(a_staging, &reader, "cache-reader (A, autre environnement)").await,
+        "absent\nabsent\n",
+        "un autre environnement de A voit le cache de sa production"
+    );
 
     // B vise le cache de A par un id qui sort de son espace de noms :
-    // refuse par BuildKit ou cache vide, jamais celui de A.
-    for id in [format!("../{}/x", a.0), format!("/{}/x", a.0)] {
-        let repo = tmp.subdir(&format!("escape-{}", DeploymentId::new()), 0o755);
+    // BuildKit garde l'id tel quel (chaine opaque, sous l'espace de noms de
+    // B), donc un cache vide.
+    for id in [
+        format!("../{}-{}/x", a.0, a.1),
+        format!("/{}-{}/x", a.0, a.1),
+    ] {
+        let repo = tmp.0.join(format!("escape-{}", DeploymentId::new()));
+        std::fs::create_dir(&repo).unwrap();
         std::fs::write(
             repo.join("Dockerfile"),
             format!(
-                "FROM docker.io/library/busybox:1.37\n\
+                "{prefix}FROM docker.io/library/busybox:1.37\n\
                  RUN --mount=type=cache,id={id},target=/c \\\n    \
                  mkdir -p /srv && if [ -e /c/marker ]; then echo vu; else echo absent; fi > /srv/r.txt\n\
                  CMD [\"cat\", \"/srv/r.txt\"]\n"
             ),
         )
         .unwrap();
-        let (result, _) = build(b, &repo).await;
-        if let Ok(tag) = result {
-            assert_eq!(run_image(&tag), "absent\n", "id {id}");
-        }
+        assert_eq!(
+            build(b, &repo, &format!("evasion {id}")).await,
+            "absent\n",
+            "id {id}"
+        );
     }
 
-    // Temoin : le meme projet (meme UUID) retrouve ses caches.
-    let (result, stages) = build(a, &fixture("cache-reader")).await;
-    let tag = result.unwrap_or_else(|e| panic!("cache-reader (A) : {e} ({stages:?})"));
+    // Temoin : le meme environnement (memes UUID) retrouve ses caches.
     assert_eq!(
-        run_image(&tag),
+        build(a, &reader, "cache-reader (A)").await,
         "vu\nvu\n",
         "temoin : cache de A introuvable"
     );
+}
+
+/// Frontend `dockerfile.v0` integre a BuildKit.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn cache_mount_not_shared_between_projects() {
+    assert_cache_isolation("").await;
+}
+
+/// Frontend telecharge `docker/dockerfile:1` (image flottante) : l'espace
+/// de noms des caches lui est transmis et il l'applique.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn cache_mount_not_shared_through_docker_dockerfile_frontend() {
+    assert_cache_isolation("# syntax=docker/dockerfile:1\n").await;
 }
 
 /// Un frontend arbitraire est refuse : par le pipeline (directive `syntax`

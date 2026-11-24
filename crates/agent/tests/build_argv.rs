@@ -1285,7 +1285,7 @@ const TWO_SERVICES_JSON: &str = r#"{"name":"web-production","services":{"web":{"
 const ONE_SERVICE_JSON: &str = r#"{"name":"web-production","services":{"web":{"build":{"context":".","dockerfile":"Dockerfile"},"networks":{"default":null}}},"networks":{"default":{"name":"web-production_default"}}}"#;
 
 /// Chaque build Dockerfile ou Compose porte l'espace de noms des caches de
-/// montage (UUID du projet) ; chaque build, la cle des caches Railpack
+/// montage, et chaque build la cle des caches Railpack : tous deux
 /// `<UUID du projet>-<UUID de l'environnement>`, jamais les noms.
 #[tokio::test]
 async fn buildctl_namespaces_caches_with_the_project_uuids() {
@@ -1341,7 +1341,9 @@ async fn buildctl_namespaces_caches_with_the_project_uuids() {
             } else {
                 assert_eq!(
                     ns,
-                    [&format!("build-arg:BUILDKIT_CACHE_MOUNT_NS={project}")],
+                    [&format!(
+                        "build-arg:BUILDKIT_CACHE_MOUNT_NS={project}-{env}"
+                    )],
                     "{opts:?}"
                 );
             }
@@ -1430,6 +1432,7 @@ fn dockerfile_syntax_directive_allows_only_docker_dockerfile() {
         // (qui l'emporte sur l'etiquette), variantes.
         "# syntax=docker/dockerfile:1.0.0-experimental\nFROM busybox\n",
         "# syntax=docker/dockerfile:1.2\nFROM busybox\n",
+        "# syntax=docker/dockerfile:1.7-labs\nFROM busybox\n",
         "# syntax=docker/dockerfile:1@sha256:0000000000000000000000000000000000000000000000000000000000000000\nFROM busybox\n",
         "# syntax=docker/dockerfile-upstream:master\nFROM busybox\n",
         "# syntax=docker/dockerfile:0.9\nFROM busybox\n",

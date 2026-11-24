@@ -6,14 +6,14 @@
 //! `buildctl ... build --frontend dockerfile.v0 --local context=<contexte>
 //!  --local dockerfile=<dossier du Dockerfile> --opt filename=<nom>
 //!  [--opt target=<etape>]
-//!  --opt build-arg:BUILDKIT_CACHE_MOUNT_NS=<UUID du projet>
-//!  --opt build-arg:cache-key=<UUID du projet>-<UUID de l'environnement>
+//!  --opt build-arg:BUILDKIT_CACHE_MOUNT_NS=<UUID projet>-<UUID environnement>
+//!  --opt build-arg:cache-key=<UUID projet>-<UUID environnement>
 //!  --output type=docker,name=...`
 //!
 //! Cloisonnement des caches : chaque `RUN --mount=type=cache` (avec ou sans
-//! `id`) est range sous l'UUID du projet. `cache-key` suit le Dockerfile
-//! s'il est confie au frontend Railpack : ses caches restent alors sous les
-//! UUID du projet. La directive `syntax` ne peut demander que
+//! `id`) est range sous les UUID du projet et de l'environnement.
+//! `cache-key` suit le Dockerfile s'il est confie au frontend Railpack : ses
+//! caches restent alors sous ces memes UUID. La directive `syntax` ne peut demander que
 //! `docker/dockerfile` 1.4 ou plus, sans empreinte (`check_syntax`) ;
 //! buildkitd n'accepte de son cote que ce depot et le frontend Railpack
 //! epingle (`infra::buildkitd_config`).
@@ -230,7 +230,7 @@ pub fn frontend_args(t: &DockerfileTarget, cache: &CacheScope) -> Vec<ValidatedA
         ValidatedArg::lit("--opt"),
         ValidatedArg::concat(&[
             &ValidatedArg::lit("build-arg:BUILDKIT_CACHE_MOUNT_NS="),
-            &cache.namespace,
+            &cache.key,
         ]),
         ValidatedArg::lit("--opt"),
         ValidatedArg::concat(&[&ValidatedArg::lit("build-arg:cache-key="), &cache.key]),

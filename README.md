@@ -41,6 +41,8 @@ Le détail est dans [docs/adr/0003-installation-et-verification-des-releases.md]
 
 Les raisons de ces choix sont dans [docs/architecture/stack.md](docs/architecture/stack.md) et [docs/adr/](docs/adr/).
 
+Builds par Dockerfile (ou Compose) : la directive `# syntax=` n'accepte que `docker/dockerfile` en version `1`, `latest` ou `1.4` et plus (`1.N`, `1.N.M`), sans empreinte (`@sha256:…`) ni variante `-labs`. Un autre frontend, ou une version ancienne, pourrait ignorer le cloisonnement des caches de build par projet et par environnement. Le build échoue alors avec un message clair : retirer la ligne (frontend intégré à BuildKit) ou écrire `# syntax=docker/dockerfile:1`.
+
 ## Arborescence
 
 ```
