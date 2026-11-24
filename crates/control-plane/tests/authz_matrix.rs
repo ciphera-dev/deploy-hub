@@ -104,7 +104,12 @@ const MATRIX: &[(&str, &str, Guard)] = &[
     ("POST", "/api/me/webauthn/register/verify", Session),
     ("DELETE", "/api/me/webauthn/{id}", Session),
     // Equipe.
+    ("GET", "/api/team/members", R(Team, A)),
+    ("PATCH", "/api/team/members/{id}", R(Team, A)),
+    ("DELETE", "/api/team/members/{id}", R(Team, A)),
+    ("GET", "/api/team/invitations", R(Team, A)),
     ("POST", "/api/team/invitations", R(Team, A)),
+    ("DELETE", "/api/team/invitations/{id}", R(Team, A)),
     ("POST", "/api/team/members/{id}/reset-link", R(Team, A)),
     // Projets.
     ("GET", "/api/overview", R(Projects, Rd)),

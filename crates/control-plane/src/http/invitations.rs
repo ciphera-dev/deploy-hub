@@ -53,7 +53,10 @@ const REGISTER_KEY: &str = "ciphera:register";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/team/invitations", post(create))
+        .route(
+            "/api/team/invitations",
+            post(create).get(super::team::list_invitations),
+        )
         .route("/api/auth/invitations/{token}", get(info))
         .route("/api/auth/invitations/{token}/accept", post(accept))
         .route("/api/auth/register", get(signup_status).post(register))
@@ -116,7 +119,7 @@ fn unique_violation(error: &sqlx::Error) -> bool {
         .is_some_and(|code| code == "23505")
 }
 
-async fn audit(
+pub(crate) async fn audit(
     conn: &mut PgConnection,
     actor: Uuid,
     action: &str,

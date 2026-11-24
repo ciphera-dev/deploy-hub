@@ -63,6 +63,53 @@ impl Role {
             Role::Viewer => other == Role::Viewer,
         }
     }
+
+    /// `true` si `self` peut modifier ou retirer un membre de role `target` :
+    /// le proprietaire gere tout autre membre (proprietaires compris), l'admin
+    /// seulement ops, developer et viewer, les autres roles personne. Ne
+    /// couvre pas « jamais soi-meme » ni « jamais le dernier proprietaire »,
+    /// que l'appelant verifie.
+    pub fn can_manage(self, target: Role) -> bool {
+        match self {
+            Role::Owner => true,
+            Role::Admin => matches!(target, Role::Ops | Role::Developer | Role::Viewer),
+            Role::Ops | Role::Developer | Role::Viewer => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Role::{self, *};
+
+    const ALL: [Role; 5] = [Owner, Admin, Ops, Developer, Viewer];
+
+    #[test]
+    fn owner_manages_every_role() {
+        assert!(ALL.iter().all(|t| Owner.can_manage(*t)));
+    }
+
+    #[test]
+    fn admin_manages_only_ops_developer_viewer() {
+        assert!(!Admin.can_manage(Owner));
+        assert!(!Admin.can_manage(Admin));
+        for target in [Ops, Developer, Viewer] {
+            assert!(Admin.can_manage(target), "{target:?}");
+        }
+    }
+
+    #[test]
+    fn other_roles_manage_nobody() {
+        for actor in [Ops, Developer, Viewer] {
+            assert!(ALL.iter().all(|t| !actor.can_manage(*t)), "{actor:?}");
+        }
+    }
+
+    #[test]
+    fn can_grant_rules_are_unchanged() {
+        assert!(Admin.can_grant(Admin) && !Admin.can_grant(Owner));
+        assert!(Ops.can_grant(Viewer) && !Ops.can_grant(Developer));
+    }
 }
 
 /// Ressources de la matrice.

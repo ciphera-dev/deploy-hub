@@ -22,6 +22,7 @@ pub mod redirect;
 pub mod security_headers;
 pub mod settings;
 pub mod setup;
+pub mod team;
 pub mod update;
 pub mod variables;
 pub mod webauthn;

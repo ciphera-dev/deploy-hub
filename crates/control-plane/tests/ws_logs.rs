@@ -1473,3 +1473,57 @@ async fn foreign_lines_held_during_an_outage_are_rechecked() {
     assert_eq!(stored, vec!["vraie ligne".to_string()]);
     assert_eq!(stored_after, stored, "ligne d'un autre agent enregistree");
 }
+
+/// Retrait d'un membre (API Equipe) : son flux de logs ouvert se ferme
+/// (1008), celui des autres reste ouvert, et son cookie ne sert plus.
+#[tokio::test]
+async fn removed_member_sessions_and_ws_closed() {
+    let env = Env::new().await;
+    let origin = env.origin();
+    let q = format!("deployment={}", env.deployment);
+    let member = login(&env.state, "viewer").await;
+    let owner = login(&env.state, "owner").await;
+    let mut member_ws = env.ws(&q, Some(&member), Some(&origin)).await.unwrap();
+    let mut owner_ws = env.ws(&q, Some(&owner), Some(&origin)).await.unwrap();
+
+    let member_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE role = 'viewer'")
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+    let me = call(
+        &env.state,
+        "GET",
+        "/api/me",
+        Req {
+            cookie: Some(&owner),
+            ..Req::default()
+        },
+    )
+    .await;
+    let csrf = me.json()["csrf_token"].as_str().unwrap().to_string();
+    let r = call(
+        &env.state,
+        "DELETE",
+        &format!("/api/team/members/{member_id}"),
+        Req {
+            cookie: Some(&owner),
+            csrf: Some(&csrf),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(closed_with(&mut member_ws).await, Some(1008));
+
+    // Le flux du proprietaire reste ouvert ; le cookie du membre est mort.
+    env.line(
+        LogTarget::Deployment(DeploymentId(env.deployment)),
+        LogStream::Stdout,
+        "encore ouvert",
+    );
+    assert_eq!(owner_ws.next_json().await["message"], "encore ouvert");
+    assert_eq!(
+        env.ws(&q, Some(&member), Some(&origin)).await.err(),
+        Some(401)
+    );
+}

@@ -1350,7 +1350,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Liste les invitations non utilisees et non expirees, la plus recente
+         *     d'abord.
+         */
+        get: operations["list_invitations"];
         put?: never;
         /** Invite un membre : renvoie un lien a usage unique valable 72 heures. */
         post: operations["create_invitation"];
@@ -1358,6 +1362,68 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/team/invitations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Annule une invitation en attente ; le role invite ne doit pas depasser
+         *     celui de l'annulateur.
+         */
+        delete: operations["cancel_invitation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/team/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Liste les membres, du plus ancien au plus recent. */
+        get: operations["list_members"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/team/members/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Retire un membre : compte, sessions, facteurs et jetons supprimes, flux de
+         *     logs ouverts fermes, deploy hooks qu'il a crees supprimes.
+         */
+        delete: operations["remove_member"];
+        options?: never;
+        head?: never;
+        /**
+         * Change le role d'un membre. Il faut pouvoir gerer le membre et accorder
+         *     le nouveau role ; les sessions du membre sont gardees, son role est relu
+         *     a chaque requete.
+         */
+        patch: operations["update_member"];
         trace?: never;
     };
     "/api/team/members/{id}/reset-link": {
@@ -2230,6 +2296,23 @@ export interface components {
              */
             email_available: boolean;
         };
+        /**
+         * @description Invitation en attente (non utilisee, non expiree). Le lien n'est jamais
+         *     redonne : seul le hachage du jeton est stocke.
+         */
+        PendingInvitation: {
+            /** Format: int64 */
+            created_at: number;
+            email: string;
+            /** Format: int64 */
+            expires_at: number;
+            id: string;
+            /** @description Nom de l'invitant ; absent si son compte a ete supprime. */
+            invited_by?: string | null;
+            /** @description Nom propose a l'invite (vide sinon). */
+            name: string;
+            role: string;
+        };
         /** @description Reponse de `GET|POST|PATCH /api/projects[/{id}]`. */
         Project: {
             build?: components["schemas"]["Build"] | null;
@@ -2377,6 +2460,14 @@ export interface components {
         RemainingProject: {
             id: string;
             name: string;
+        };
+        /** @description Reponse de `DELETE /api/team/members/{id}`. */
+        RemovedMember: {
+            /**
+             * Format: int64
+             * @description Deploy hooks crees par le membre, supprimes avec lui.
+             */
+            deleted_hooks: number;
         };
         /** @description Replicas en marche et voulus (un seul en v0.1 ; mise a l'echelle en v0.2). */
         Replicas: {
@@ -2588,6 +2679,27 @@ export interface components {
              */
             latest?: string | null;
         };
+        /** @description Membre de l'organisation. */
+        TeamMember: {
+            /**
+             * Format: int64
+             * @description Creation du compte, en secondes depuis l'epoque Unix.
+             */
+            created_at: number;
+            email: string;
+            id: string;
+            /**
+             * Format: int64
+             * @description Derniere activite d'une session, en secondes depuis l'epoque Unix ;
+             *     absente si le membre ne s'est jamais connecte.
+             */
+            last_active_at?: number | null;
+            name: string;
+            /** @description `owner`, `admin`, `ops`, `developer` ou `viewer`. */
+            role: string;
+            /** @description Une TOTP confirmee ou au moins une passkey. */
+            two_factor: boolean;
+        };
         /**
          * @description Reponse de `POST /api/me/mfa/totp/confirm`. La session a tourne : nouveau
          *     cookie et nouveau jeton CSRF.
@@ -2665,6 +2777,11 @@ export interface components {
             name?: string | null;
             /** @description Fuseau horaire IANA (ex. `Europe/Zurich`). */
             timezone?: string | null;
+        };
+        /** @description Corps de `PATCH /api/team/members/{id}`. */
+        UpdateMemberRole: {
+            /** @description Nouveau role : `owner`, `admin`, `ops`, `developer` ou `viewer`. */
+            role: string;
         };
         /** @description Corps de `PUT /api/settings/notifications`. */
         UpdateNotificationSettings: {
@@ -6784,6 +6901,40 @@ export interface operations {
             };
         };
     };
+    list_invitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invitations en attente */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingInvitation"][];
+                };
+            };
+            /** @description Pas de session complete */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden` : Equipe : Admin requis */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     create_invitation: {
         parameters: {
             query?: never;
@@ -6831,6 +6982,202 @@ export interface operations {
                 content?: never;
             };
             /** @description E-mail, nom ou role invalide */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_invitation: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Jeton CSRF de la session (obligatoire) */
+                "X-CSRF-Token"?: string | null;
+            };
+            path: {
+                /** @description Identifiant de l'invitation */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invitation annulee */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Pas de session complete */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden` (role invite au-dessus du sien) ou jeton CSRF invalide */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invitation introuvable, deja utilisee ou expiree */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Membres */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamMember"][];
+                };
+            };
+            /** @description Pas de session complete */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden` : Equipe : Admin requis */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove_member: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Jeton CSRF de la session (obligatoire) */
+                "X-CSRF-Token"?: string | null;
+            };
+            path: {
+                /** @description Identifiant du membre */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Membre retire */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovedMember"];
+                };
+            };
+            /** @description Pas de session complete */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden` (rang insuffisant), `self_forbidden` (soi-meme) ou jeton CSRF invalide */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Membre introuvable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `last_owner` : il doit rester un proprietaire */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_member: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Jeton CSRF de la session (obligatoire) */
+                "X-CSRF-Token"?: string | null;
+            };
+            path: {
+                /** @description Identifiant du membre */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMemberRole"];
+            };
+        };
+        responses: {
+            /** @description Role change */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Pas de session complete */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden` (rang insuffisant), `self_forbidden` (soi-meme) ou jeton CSRF invalide */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Membre introuvable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `last_owner` : il doit rester un proprietaire */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Role invalide */
             422: {
                 headers: {
                     [name: string]: unknown;

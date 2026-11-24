@@ -19,6 +19,7 @@ pub mod projects;
 pub mod settings;
 pub mod setup;
 pub mod system;
+pub mod team;
 pub mod variables;
 pub mod webauthn;
 
@@ -53,6 +54,11 @@ use utoipa::OpenApi;
         invitations::accept_invitation,
         invitations::signup_status,
         invitations::register,
+        team::list_members,
+        team::update_member,
+        team::remove_member,
+        team::list_invitations,
+        team::cancel_invitation,
         password::password_reset_status,
         password::forgot_password,
         password::reset_token_info,
@@ -167,6 +173,10 @@ use utoipa::OpenApi;
         invitations::AcceptInvitation,
         invitations::SignupStatus,
         invitations::RegisterRequest,
+        team::TeamMember,
+        team::UpdateMemberRole,
+        team::RemovedMember,
+        team::PendingInvitation,
         password::PasswordResetStatus,
         password::ForgotPassword,
         password::ResetTokenInfo,
@@ -376,6 +386,23 @@ mod tests {
             link: "/invite/SECRETTESTTOKEN".into(),
         };
         assert!(!format!("{link:?}").contains("SECRETTESTTOKEN"));
+    }
+
+    #[test]
+    fn openapi_has_team_endpoints() {
+        let doc = openapi();
+        for path in [
+            "/api/team/members",
+            "/api/team/members/{id}",
+            "/api/team/invitations",
+            "/api/team/invitations/{id}",
+        ] {
+            assert!(doc.paths.paths.contains_key(path), "{path}");
+        }
+        let item = &doc.paths.paths["/api/team/invitations"];
+        assert!(item.get.is_some() && item.post.is_some());
+        let item = &doc.paths.paths["/api/team/members/{id}"];
+        assert!(item.patch.is_some() && item.delete.is_some());
     }
 
     #[test]

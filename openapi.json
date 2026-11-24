@@ -4107,6 +4107,34 @@
       }
     },
     "/api/team/invitations": {
+      "get": {
+        "tags": [
+          "team"
+        ],
+        "summary": "Liste les invitations non utilisees et non expirees, la plus recente\nd'abord.",
+        "operationId": "list_invitations",
+        "responses": {
+          "200": {
+            "description": "Invitations en attente",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PendingInvitation"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Pas de session complete"
+          },
+          "403": {
+            "description": "`forbidden` : Equipe : Admin requis"
+          }
+        }
+      },
       "post": {
         "tags": [
           "team"
@@ -4159,6 +4187,198 @@
           },
           "422": {
             "description": "E-mail, nom ou role invalide"
+          }
+        }
+      }
+    },
+    "/api/team/invitations/{id}": {
+      "delete": {
+        "tags": [
+          "team"
+        ],
+        "summary": "Annule une invitation en attente ; le role invite ne doit pas depasser\ncelui de l'annulateur.",
+        "operationId": "cancel_invitation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Identifiant de l'invitation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "Jeton CSRF de la session (obligatoire)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Invitation annulee"
+          },
+          "401": {
+            "description": "Pas de session complete"
+          },
+          "403": {
+            "description": "`forbidden` (role invite au-dessus du sien) ou jeton CSRF invalide"
+          },
+          "404": {
+            "description": "Invitation introuvable, deja utilisee ou expiree"
+          }
+        }
+      }
+    },
+    "/api/team/members": {
+      "get": {
+        "tags": [
+          "team"
+        ],
+        "summary": "Liste les membres, du plus ancien au plus recent.",
+        "operationId": "list_members",
+        "responses": {
+          "200": {
+            "description": "Membres",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TeamMember"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Pas de session complete"
+          },
+          "403": {
+            "description": "`forbidden` : Equipe : Admin requis"
+          }
+        }
+      }
+    },
+    "/api/team/members/{id}": {
+      "delete": {
+        "tags": [
+          "team"
+        ],
+        "summary": "Retire un membre : compte, sessions, facteurs et jetons supprimes, flux de\nlogs ouverts fermes, deploy hooks qu'il a crees supprimes.",
+        "operationId": "remove_member",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Identifiant du membre",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "Jeton CSRF de la session (obligatoire)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Membre retire",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovedMember"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Pas de session complete"
+          },
+          "403": {
+            "description": "`forbidden` (rang insuffisant), `self_forbidden` (soi-meme) ou jeton CSRF invalide"
+          },
+          "404": {
+            "description": "Membre introuvable"
+          },
+          "409": {
+            "description": "`last_owner` : il doit rester un proprietaire"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "team"
+        ],
+        "summary": "Change le role d'un membre. Il faut pouvoir gerer le membre et accorder\nle nouveau role ; les sessions du membre sont gardees, son role est relu\na chaque requete.",
+        "operationId": "update_member",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Identifiant du membre",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "Jeton CSRF de la session (obligatoire)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMemberRole"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Role change"
+          },
+          "401": {
+            "description": "Pas de session complete"
+          },
+          "403": {
+            "description": "`forbidden` (rang insuffisant), `self_forbidden` (soi-meme) ou jeton CSRF invalide"
+          },
+          "404": {
+            "description": "Membre introuvable"
+          },
+          "409": {
+            "description": "`last_owner` : il doit rester un proprietaire"
+          },
+          "422": {
+            "description": "Role invalide"
           }
         }
       }
@@ -6393,6 +6613,48 @@
           }
         }
       },
+      "PendingInvitation": {
+        "type": "object",
+        "description": "Invitation en attente (non utilisee, non expiree). Le lien n'est jamais\nredonne : seul le hachage du jeton est stocke.",
+        "required": [
+          "id",
+          "email",
+          "name",
+          "role",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "email": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "invited_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Nom de l'invitant ; absent si son compte a ete supprime."
+          },
+          "name": {
+            "type": "string",
+            "description": "Nom propose a l'invite (vide sinon)."
+          },
+          "role": {
+            "type": "string"
+          }
+        }
+      },
       "Project": {
         "type": "object",
         "description": "Reponse de `GET|POST|PATCH /api/projects[/{id}]`.",
@@ -6792,6 +7054,21 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "RemovedMember": {
+        "type": "object",
+        "description": "Reponse de `DELETE /api/team/members/{id}`.",
+        "required": [
+          "deleted_hooks"
+        ],
+        "properties": {
+          "deleted_hooks": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Deploy hooks crees par le membre, supprimes avec lui.",
+            "minimum": 0
           }
         }
       },
@@ -7343,6 +7620,50 @@
           }
         }
       },
+      "TeamMember": {
+        "type": "object",
+        "description": "Membre de l'organisation.",
+        "required": [
+          "id",
+          "name",
+          "email",
+          "role",
+          "two_factor",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Creation du compte, en secondes depuis l'epoque Unix."
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_active_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Derniere activite d'une session, en secondes depuis l'epoque Unix ;\nabsente si le membre ne s'est jamais connecte."
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "`owner`, `admin`, `ops`, `developer` ou `viewer`."
+          },
+          "two_factor": {
+            "type": "boolean",
+            "description": "Une TOTP confirmee ou au moins une passkey."
+          }
+        }
+      },
       "TotpConfirmed": {
         "type": "object",
         "description": "Reponse de `POST /api/me/mfa/totp/confirm`. La session a tourne : nouveau\ncookie et nouveau jeton CSRF.",
@@ -7602,6 +7923,19 @@
           }
         },
         "additionalProperties": false
+      },
+      "UpdateMemberRole": {
+        "type": "object",
+        "description": "Corps de `PATCH /api/team/members/{id}`.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "description": "Nouveau role : `owner`, `admin`, `ops`, `developer` ou `viewer`."
+          }
+        }
       },
       "UpdateNotificationSettings": {
         "type": "object",
