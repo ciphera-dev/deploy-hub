@@ -55,18 +55,18 @@ pub struct DeploySpec {
     pub compose: Option<ComposeDeploy>,
     /// Nom du service : le conteneur est joignable sous l'alias
     /// `<nom>.internal` sur le reseau du projet (valide par l'agent ; sans
-    /// valeur, aucun alias). Ajoute apres la v1 : dernier champ (une trame
+    /// valeur, aucun alias). Ajoute apres la v1 : champ de fin (une trame
     /// plus ancienne, sans lui, se lit avec `None`).
     #[serde(default)]
     pub service_name: Option<String>,
     /// Variables d'environnement du conteneur (projet puis globales, deja
     /// resolues), secrets dechiffres par le plan de controle juste avant
     /// l'envoi. L'agent ne les ecrit jamais (etat local, journaux, issues).
-    /// Ajoute apres `service_name` : dernier champ (une trame plus ancienne,
+    /// Ajoute apres `service_name` : champ de fin (une trame plus ancienne,
     /// sans lui, se lit avec un environnement vide).
     #[serde(default)]
     pub env: Vec<EnvVar>,
-    /// Environnement du deploiement. Ajoute apres `env` (v6) : dernier champ
+    /// Environnement du deploiement. Ajoute apres `env` (v6) : champ de fin
     /// (une trame plus ancienne, sans lui, se lit avec `None`).
     #[serde(default)]
     pub environment_id: Option<EnvironmentId>,
@@ -348,7 +348,7 @@ pub struct BuildSpec {
     /// Jeton d'acces au depot (depot prive), s'il y en a un.
     pub git_token: Option<GitToken>,
     /// Dossier du depot ou se fait le build (monorepo), relatif ; `None` ou
-    /// vide : racine du depot. Ajoute apres la v1 : dernier champ (une trame
+    /// vide : racine du depot. Ajoute apres la v1 : champ de fin (une trame
     /// plus ancienne, sans lui, se lit avec `None`). Valide par l'agent.
     #[serde(default)]
     pub root_directory: Option<String>,
@@ -541,6 +541,10 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for TailOption<T> {
     }
 }
 
+/// Champ de fin `Vec<T>`. La longueur (varint postcard) est lue octet par
+/// octet : une fin de charge sur le premier octet est la frontiere du champ
+/// (absent), sur un octet suivant ou dans un element c'est une charge coupee
+/// (erreur). Format sur le fil inchange.
 struct TailVec<T>(Vec<T>);
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for TailVec<T> {
@@ -556,21 +560,47 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for TailVec<T> {
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                // Premier octet : son erreur de fin de charge est renvoyee
+                // telle quelle (`tail_field` la lit « absent »).
+                let mut b = seq
+                    .next_element::<u8>()?
+                    .ok_or_else(|| A::Error::custom(MID_FIELD))?;
+                let mut len = u64::from(b & 0x7F);
+                let mut shift = 7u32;
+                while b & 0x80 != 0 {
+                    b = match seq.next_element::<u8>() {
+                        Ok(Some(b)) => b,
+                        Ok(None) => return Err(A::Error::custom(MID_FIELD)),
+                        Err(e) if is_end_of_payload(&e) => {
+                            return Err(A::Error::custom(MID_FIELD));
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    // 10 octets au plus, le dernier ne portant qu'un bit.
+                    if shift >= 64 || (shift == 63 && b > 1) {
+                        return Err(A::Error::custom("longueur invalide"));
+                    }
+                    len |= u64::from(b & 0x7F) << shift;
+                    shift += 7;
+                }
+                let len =
+                    usize::try_from(len).map_err(|_| A::Error::custom("longueur invalide"))?;
                 // Reservation bornee : la longueur annoncee n'est pas fiable.
-                let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(1024));
-                loop {
+                let mut out = Vec::with_capacity(len.min(1024));
+                for _ in 0..len {
                     match seq.next_element::<T>() {
                         Ok(Some(v)) => out.push(v),
-                        Ok(None) => return Ok(TailVec(out)),
+                        Ok(None) => return Err(A::Error::custom(MID_FIELD)),
                         Err(e) if is_end_of_payload(&e) => {
                             return Err(A::Error::custom(MID_FIELD));
                         }
                         Err(e) => return Err(e),
                     }
                 }
+                Ok(TailVec(out))
             }
         }
-        deserializer.deserialize_seq(V(std::marker::PhantomData))
+        deserializer.deserialize_tuple(usize::MAX, V(std::marker::PhantomData))
     }
 }
 
@@ -797,7 +827,9 @@ pub struct RunningDeployment {
 }
 
 /// Lecture de `RunningDeployment`, comme `BuildSpec` : `runs_as_root` absent
-/// (fin de la charge exactement a sa frontiere) se lit `false`.
+/// (fin de la charge exactement a sa frontiere) se lit `false`. Valable
+/// seulement si l'element termine la charge : un ancien element au milieu
+/// d'une liste ne se relit pas (le `Hello` refuse toute autre version).
 impl<'de> Deserialize<'de> for RunningDeployment {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::{Error, SeqAccess, Visitor};

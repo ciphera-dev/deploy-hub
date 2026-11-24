@@ -842,3 +842,62 @@ fn running_deployment_runs_as_root_roundtrips_and_defaults_to_false() {
     assert!(!read.runs_as_root);
     assert_eq!(read.deployment_id, d.deployment_id);
 }
+
+#[test]
+fn deploy_cut_is_read_only_at_a_field_boundary() {
+    // 200 variables : la longueur de `env` tient sur deux octets (0xC8 0x01).
+    let env: Vec<EnvVar> = (0..200)
+        .map(|i| EnvVar {
+            key: format!("K{i}"),
+            value: EnvValue::new("v".into()),
+        })
+        .collect();
+    let full_spec = DeploySpec {
+        env,
+        ..deploy_spec()
+    };
+    let payload_len = |spec: &DeploySpec| {
+        codec::encode(&ControlToAgent::Deploy(spec.clone()))
+            .unwrap()
+            .len()
+            - 4
+    };
+    let empty = DeploySpec {
+        service_name: None,
+        env: Vec::new(),
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
+        ..full_spec.clone()
+    };
+    // Debut de `service_name` : les cinq champs de fin valent un octet chacun.
+    let service_name = payload_len(&empty) - 5;
+    let env_start = service_name + 1 + 1 + "web".len();
+    let full = payload_len(&full_spec);
+    // environment_id (1 + 17), run_as (1 + 1 + 9), read_only_rootfs (1).
+    let env_id = full - 1 - 11 - 18;
+    let run_as = full - 1 - 11;
+    let rootfs = full - 1;
+    assert!(env_id > env_start + 2);
+    let boundaries = [service_name, env_start, env_id, run_as, rootfs];
+    let msg = ControlToAgent::Deploy(full_spec);
+    for n in 1..=full {
+        let cut = full - n;
+        let result = codec::decode::<ControlToAgent>(&cut_tail(&msg, n));
+        let ok = result.is_ok();
+        assert_eq!(
+            ok,
+            boundaries.contains(&cut),
+            "coupe a l'octet {cut} sur {full}"
+        );
+    }
+    // Defauts a la frontiere de `env` : variables absentes, champs suivants
+    // par defaut ; a l'octet suivant (milieu de la longueur) : erreur.
+    let Ok(ControlToAgent::Deploy(d)) =
+        codec::decode::<ControlToAgent>(&cut_tail(&msg, full - env_start))
+    else {
+        panic!("trame d'un pair plus ancien refusee");
+    };
+    assert!(d.env.is_empty() && d.environment_id.is_none() && d.run_as.is_none());
+    assert!(codec::decode::<ControlToAgent>(&cut_tail(&msg, full - env_start - 1)).is_err());
+}

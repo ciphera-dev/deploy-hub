@@ -14,7 +14,9 @@ pub use messages::*;
 /// `RequestState` (resynchronisation apres des messages perdus). 5 :
 /// `RenewedCertificate` (renouvellement du certificat de l'agent). 6 :
 /// `RemoveProject`, `DeploymentRemoved`, `ProjectRemoved`, identifiants de
-/// projet et d'environnement dans `BuildSpec` et `DeploySpec`.
+/// projet et d'environnement dans `BuildSpec` et `DeploySpec`, `run_as` et
+/// `read_only_rootfs` dans `DeploySpec`, `runs_as_root` dans
+/// `RunningDeployment`.
 ///
 /// Regle : tout changement de `messages` (meme un ajout) incremente cette
 /// version. Plan de controle, agent et proxy sont livres et mis a jour
