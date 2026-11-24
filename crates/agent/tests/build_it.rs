@@ -21,7 +21,7 @@ use ciphera_agent::deploy::compose::ComposePlan;
 use ciphera_agent::docker::{BUILD_NETWORK, BollardDocker, INFRA_NETWORK};
 use ciphera_agent::infra::{self, BuildkitAccount, InfraConfig, SubIds};
 use proto::{AgentToControl, BuildMethod, BuildSource, BuildSpec, ImageRef, Stage, StageStatus};
-use shared::ids::{DeploymentId, ProjectId};
+use shared::ids::{DeploymentId, EnvironmentId, ProjectId};
 use tokio::sync::mpsc;
 
 const WAIT: Duration = Duration::from_secs(180);
@@ -133,9 +133,103 @@ fn spec(project: &str, source: BuildSource, build: BuildMethod) -> BuildSpec {
         build,
         git_token: None,
         root_directory: None,
-        project_id: None,
-        environment_id: None,
+        project_id: Some(ProjectId::new()),
+        environment_id: Some(EnvironmentId::new()),
     }
+}
+
+/// Build Dockerfile du depot local `repo` pour le projet `ids` (memes noms
+/// de projet et d'environnement pour tous : seuls les UUID different).
+fn dockerfile_spec(project: &str, ids: (ProjectId, EnvironmentId)) -> BuildSpec {
+    BuildSpec {
+        project_id: Some(ids.0),
+        environment_id: Some(ids.1),
+        ..spec(
+            project,
+            local_source(),
+            BuildMethod::Dockerfile {
+                path: "Dockerfile".into(),
+            },
+        )
+    }
+}
+
+/// buildkitd de production (`infra::ensure_infra`) dans `tmp`, pret a
+/// construire : reglages du pipeline, backend et socket.
+async fn start_buildkit(tmp: &TempDir) -> (BuildConfig, LocalBackend, PathBuf) {
+    let docker = BollardDocker::connect().unwrap();
+    let secret_dir = tmp.subdir("secret", 0o777);
+    let password_file = secret_dir.join("db_password");
+    std::fs::write(&password_file, format!("pw-{}", DeploymentId::new())).unwrap();
+    std::fs::set_permissions(&password_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    // Socket de buildkitd : dossier setgid au groupe du test (comme
+    // /run/ciphera-agent/buildkit au groupe ciphera-agent) pour que le
+    // socket 0660 soit joignable par ce processus.
+    let socket_dir = tmp.subdir("buildkit", 0o2777);
+    let cfg = InfraConfig {
+        postgres_secret_dir: secret_dir,
+        postgres_socket_dir: tmp.subdir("pg", 0o777),
+        postgres_user: (10001, 10001),
+        buildkit_socket_dir: socket_dir.clone(),
+        buildkit_apparmor_profile: infra::buildkit_apparmor_profile(),
+        buildkit_account: Some(BuildkitAccount {
+            user: (BUILD_UID, BUILD_UID),
+            subuids: BUILD_SUBIDS,
+            subgids: BUILD_SUBIDS,
+        }),
+        buildkit_state_dir: tmp.subdir("buildkit-state", 0o777),
+        buildkit_identity_dir: tmp.0.join("buildkit-identity"),
+    };
+    infra::ensure_infra(&docker, &cfg).await.unwrap();
+    let socket = socket_dir.join("buildkitd.sock");
+    let start = Instant::now();
+    while !socket.exists() {
+        assert!(start.elapsed() < WAIT, "socket de buildkitd jamais cree");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let builds = tmp.subdir("builds", 0o700);
+    let build_cfg = BuildConfig {
+        builds_dir: builds.to_str().unwrap().to_string(),
+        buildkit_socket: socket.to_str().unwrap().to_string(),
+        askpass: std::env::current_exe().unwrap(),
+        prepare: Some(prepare_config()),
+    };
+    let backend = LocalBackend::connect(&socket).unwrap();
+    (build_cfg, backend, socket)
+}
+
+/// Sortie standard de l'image `tag` lancee sans reseau.
+fn run_image(tag: &str) -> String {
+    let out = std::process::Command::new("docker")
+        .args(["run", "--rm", "--network", "none", tag])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{tag} : {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// `buildctl build` lance directement (hors du pipeline et de ses
+/// controles) vers buildkitd : succes et sortie d'erreur.
+fn raw_buildctl(socket: &Path, home: &Path, args: &[&str]) -> (bool, String) {
+    let out = std::process::Command::new(format!(
+        "{}/buildctl",
+        ciphera_agent::build::argv::TOOLS_DIR
+    ))
+    .arg("--addr")
+    .arg(format!("unix://{}", socket.display()))
+    .args(["build", "--progress", "plain"])
+    .args(args)
+    .env("HOME", home)
+    .output()
+    .unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
 }
 
 fn local_source() -> BuildSource {
@@ -183,49 +277,11 @@ async fn image_exists(api: &Docker, image: &str) -> bool {
 #[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
 async fn fixtures_build_with_buildkit_and_load_into_docker() {
     let api = Docker::connect_with_socket_defaults().unwrap();
-    let docker = BollardDocker::connect().unwrap();
     let tmp = TempDir::new();
     let mut cleanup = Cleanup { images: Vec::new() };
     cleanup.run().await;
-
-    let secret_dir = tmp.subdir("secret", 0o777);
-    let password_file = secret_dir.join("db_password");
-    std::fs::write(&password_file, format!("pw-{}", DeploymentId::new())).unwrap();
-    std::fs::set_permissions(&password_file, std::fs::Permissions::from_mode(0o644)).unwrap();
-    // Socket de buildkitd : dossier setgid au groupe du test (comme
-    // /run/ciphera-agent/buildkit au groupe ciphera-agent) pour que le
-    // socket 0660 soit joignable par ce processus.
-    let socket_dir = tmp.subdir("buildkit", 0o2777);
-    let cfg = InfraConfig {
-        postgres_secret_dir: secret_dir,
-        postgres_socket_dir: tmp.subdir("pg", 0o777),
-        postgres_user: (10001, 10001),
-        buildkit_socket_dir: socket_dir.clone(),
-        buildkit_apparmor_profile: infra::buildkit_apparmor_profile(),
-        buildkit_account: Some(BuildkitAccount {
-            user: (BUILD_UID, BUILD_UID),
-            subuids: BUILD_SUBIDS,
-            subgids: BUILD_SUBIDS,
-        }),
-        buildkit_state_dir: tmp.subdir("buildkit-state", 0o777),
-        buildkit_identity_dir: tmp.0.join("buildkit-identity"),
-    };
-    infra::ensure_infra(&docker, &cfg).await.unwrap();
-    let socket = socket_dir.join("buildkitd.sock");
-    let start = Instant::now();
-    while !socket.exists() {
-        assert!(start.elapsed() < WAIT, "socket de buildkitd jamais cree");
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-
-    let builds = tmp.subdir("builds", 0o700);
-    let build_cfg = BuildConfig {
-        builds_dir: builds.to_str().unwrap().to_string(),
-        buildkit_socket: socket.to_str().unwrap().to_string(),
-        askpass: std::env::current_exe().unwrap(),
-        prepare: Some(prepare_config()),
-    };
-    let backend = LocalBackend::connect(&socket).unwrap();
+    let (build_cfg, backend, _socket) = start_buildkit(&tmp).await;
+    let builds = PathBuf::from(&build_cfg.builds_dir);
     let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
 
     // Dockerfile : image chargee et etiquetee, nom provisoire retire.
@@ -426,4 +482,171 @@ async fn railpack_prepare_runs_only_the_pinned_mise() {
     assert!(api.inspect_container(&name, None).await.is_err());
     workdir.remove().unwrap();
     let _ = api.remove_network(PREPARE_NETWORK).await;
+}
+
+/// Caches de montage cloisonnes par projet : le projet A ecrit un marqueur
+/// dans `--mount=type=cache,id=x` et dans un cache sans id (chemin cible
+/// `/root/.npm`) ; le projet B (memes noms de projet et d'environnement,
+/// autres UUID) ne le voit pas, meme en visant le cache de A par un id qui
+/// remonte. Temoin : un autre build de A le voit.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn cache_mount_not_shared_between_projects() {
+    let tmp = TempDir::new();
+    let mut cleanup = Cleanup { images: Vec::new() };
+    cleanup.run().await;
+    let (build_cfg, backend, _socket) = start_buildkit(&tmp).await;
+    let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
+    let a = (ProjectId::new(), EnvironmentId::new());
+    let b = (ProjectId::new(), EnvironmentId::new());
+
+    let mut build = async |ids: (ProjectId, EnvironmentId), repo: &Path| {
+        let s = dockerfile_spec(&project, ids);
+        let tag = format!("ciphera/{project}-production:{}", s.deployment_id);
+        cleanup.images.push(tag.clone());
+        let (result, stages) = build_local(&build_cfg, &backend, &s, repo).await;
+        (result.map(|_| tag), stages)
+    };
+
+    let (result, stages) = build(a, &fixture("cache-writer")).await;
+    result.unwrap_or_else(|e| panic!("cache-writer (A) : {e} ({stages:?})"));
+
+    let (result, stages) = build(b, &fixture("cache-reader")).await;
+    let tag = result.unwrap_or_else(|e| panic!("cache-reader (B) : {e} ({stages:?})"));
+    assert_eq!(
+        run_image(&tag),
+        "absent\nabsent\n",
+        "le projet B voit le cache du projet A"
+    );
+
+    // B vise le cache de A par un id qui sort de son espace de noms :
+    // refuse par BuildKit ou cache vide, jamais celui de A.
+    for id in [format!("../{}/x", a.0), format!("/{}/x", a.0)] {
+        let repo = tmp.subdir(&format!("escape-{}", DeploymentId::new()), 0o755);
+        std::fs::write(
+            repo.join("Dockerfile"),
+            format!(
+                "FROM docker.io/library/busybox:1.37\n\
+                 RUN --mount=type=cache,id={id},target=/c \\\n    \
+                 mkdir -p /srv && if [ -e /c/marker ]; then echo vu; else echo absent; fi > /srv/r.txt\n\
+                 CMD [\"cat\", \"/srv/r.txt\"]\n"
+            ),
+        )
+        .unwrap();
+        let (result, _) = build(b, &repo).await;
+        if let Ok(tag) = result {
+            assert_eq!(run_image(&tag), "absent\n", "id {id}");
+        }
+    }
+
+    // Temoin : le meme projet (meme UUID) retrouve ses caches.
+    let (result, stages) = build(a, &fixture("cache-reader")).await;
+    let tag = result.unwrap_or_else(|e| panic!("cache-reader (A) : {e} ({stages:?})"));
+    assert_eq!(
+        run_image(&tag),
+        "vu\nvu\n",
+        "temoin : cache de A introuvable"
+    );
+}
+
+/// Un frontend arbitraire est refuse : par le pipeline (directive `syntax`
+/// d'un Dockerfile, message clair, sans appel a BuildKit) et par buildkitd
+/// lui-meme (`allowedRepositories` de sa configuration), en direct par
+/// `gateway.v0` comme par la directive `syntax` d'un Dockerfile.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn foreign_frontend_refused() {
+    let tmp = TempDir::new();
+    let mut cleanup = Cleanup { images: Vec::new() };
+    cleanup.run().await;
+    let (build_cfg, backend, socket) = start_buildkit(&tmp).await;
+    let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
+
+    let repo = tmp.subdir("foreign", 0o755);
+    std::fs::write(
+        repo.join("Dockerfile"),
+        "# syntax=docker.io/someone/frontend\nFROM docker.io/library/busybox:1.37\n",
+    )
+    .unwrap();
+    let s = dockerfile_spec(&project, (ProjectId::new(), EnvironmentId::new()));
+    let tag = format!("ciphera/{project}-production:{}", s.deployment_id);
+    cleanup.images.push(tag.clone());
+    let (result, stages) = build_local(&build_cfg, &backend, &s, &repo).await;
+    assert!(matches!(result, Err(BuildError::Frontend(_))), "{result:?}");
+    assert!(
+        matches!(
+            stages.last(),
+            Some((Stage::Build, StageStatus::Failed { message })) if message.contains("frontend")
+        ),
+        "{stages:?}"
+    );
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    assert!(!image_exists(&api, &tag).await);
+
+    // buildkitd refuse de lui-meme une image existante qui n'est pas dans
+    // sa liste (hors du pipeline, donc sans le controle de l'agent).
+    let home = tmp.subdir("raw-home", 0o700);
+    let (ok, stderr) = raw_buildctl(
+        &socket,
+        &home,
+        &[
+            "--frontend",
+            "gateway.v0",
+            "--opt",
+            "source=docker.io/library/busybox:1.37",
+        ],
+    );
+    assert!(
+        !ok && stderr.contains("not an allowed gateway source"),
+        "{stderr}"
+    );
+    let raw = tmp.subdir("raw-dockerfile", 0o755);
+    std::fs::write(
+        raw.join("Dockerfile"),
+        "# syntax=docker.io/library/busybox:1.37\nFROM docker.io/library/busybox:1.37\n",
+    )
+    .unwrap();
+    let dir = raw.to_str().unwrap();
+    let (ok, stderr) = raw_buildctl(
+        &socket,
+        &home,
+        &[
+            "--frontend",
+            "dockerfile.v0",
+            "--local",
+            &format!("context={dir}"),
+            "--local",
+            &format!("dockerfile={dir}"),
+        ],
+    );
+    assert!(
+        !ok && stderr.contains("not an allowed gateway source"),
+        "{stderr}"
+    );
+}
+
+/// `docker/dockerfile:1` reste utilisable (directive `syntax`), cache de
+/// montage compris.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn docker_dockerfile_frontend_allowed() {
+    let tmp = TempDir::new();
+    let mut cleanup = Cleanup { images: Vec::new() };
+    cleanup.run().await;
+    let (build_cfg, backend, _socket) = start_buildkit(&tmp).await;
+    let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
+    let repo = tmp.subdir("syntax", 0o755);
+    std::fs::write(
+        repo.join("Dockerfile"),
+        "# syntax=docker/dockerfile:1\n\
+         FROM docker.io/library/busybox:1.37\n\
+         RUN --mount=type=cache,target=/root/.npm echo ok > /root/.npm/ok\n",
+    )
+    .unwrap();
+    let s = dockerfile_spec(&project, (ProjectId::new(), EnvironmentId::new()));
+    let tag = format!("ciphera/{project}-production:{}", s.deployment_id);
+    cleanup.images.push(tag.clone());
+    let (result, stages) = build_local(&build_cfg, &backend, &s, &repo).await;
+    let built = result.unwrap_or_else(|e| panic!("docker/dockerfile:1 : {e} ({stages:?})"));
+    assert_eq!(built.images, [ImageRef(tag)]);
 }

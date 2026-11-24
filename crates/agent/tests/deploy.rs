@@ -35,7 +35,7 @@ use proto::{
     DeploymentOutcome, EnvValue, EnvVar, Healthcheck, ImageRef, Route, Stage, StageStatus, TlsMode,
 };
 use serde_json::{Value, json};
-use shared::ids::{DeploymentId, ProjectId, ServiceId};
+use shared::ids::{DeploymentId, EnvironmentId, ProjectId, ServiceId};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -848,8 +848,8 @@ async fn cancel_during_build_cleans_up() {
         build: BuildMethod::Railpack,
         git_token: None,
         root_directory: None,
-        project_id: None,
-        environment_id: None,
+        project_id: Some(ProjectId::new()),
+        environment_id: Some(EnvironmentId::new()),
     };
     let cfg = BuildConfig {
         builds_dir: bench.builds_dir(),

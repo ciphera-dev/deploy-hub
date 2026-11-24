@@ -228,7 +228,8 @@ pub(crate) async fn build<B: BuildBackend>(
     compose_policy::check(&raw)?;
     check_read_files(&raw, src)?;
 
-    let project = targets.cache_key();
+    let project = targets.compose_project();
+    let cache = targets.cache_scope()?;
     let json = backend
         .exec(
             AllowedBin::DockerCompose,
@@ -248,7 +249,8 @@ pub(crate) async fn build<B: BuildBackend>(
     for s in service_builds(&normalized, src)? {
         let staging = targets.staging(Some(&s.name));
         let staging =
-            dockerfile::build_target(backend, sink, workdir, socket, &s.target, &staging).await?;
+            dockerfile::build_target(backend, sink, workdir, socket, &s.target, &cache, &staging)
+                .await?;
         let target = targets.service_tag(&s.name);
         built.push((s.name.as_str().to_string(), target.clone()));
         staged.push(Staged { staging, target });

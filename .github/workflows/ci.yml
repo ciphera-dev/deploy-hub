@@ -127,7 +127,8 @@ jobs:
       # Infrastructure (PostgreSQL, buildkitd rootless : build par son
       # socket), isolation des reseaux, etiquettes, cycle de vie d'une app ;
       # pipeline de build (fixtures node-app, dockerfile-app, compose-app,
-      # mise epingle seul) ; deploiements (bascule, healthcheck en echec,
+      # mise epingle seul ; caches cloisonnes par projet : cache-writer,
+      # cache-reader ; frontends limites par buildkitd.toml) ; deploiements (bascule, healthcheck en echec,
       # Compose sur le reseau du projet : crates/agent/tests/deploy_it.rs).
       - run: cargo test -p ciphera-agent -- --ignored --test-threads=1
 

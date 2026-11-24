@@ -106,6 +106,8 @@ pub enum BuildError {
     AlreadyRunning,
     /// Build annule par `Stop` avant d'avoir conclu (rien n'est rapporte).
     Cancelled,
+    /// Dockerfile qui demande un frontend non autorise (directive `syntax`).
+    Frontend(String),
 }
 
 impl fmt::Display for BuildError {
@@ -121,6 +123,7 @@ impl fmt::Display for BuildError {
             Self::Image(m) => write!(f, "image : {m}"),
             Self::AlreadyRunning => write!(f, "un build de ce deploiement est deja en cours"),
             Self::Cancelled => write!(f, "build annule"),
+            Self::Frontend(m) => write!(f, "frontend de build refuse : {m}"),
         }
     }
 }
@@ -395,11 +398,25 @@ impl Drop for Workdir {
     }
 }
 
-/// Noms valides d'un build : projet, environnement, deploiement.
+/// Noms valides d'un build : projet, environnement, deploiement, et UUID du
+/// projet et de l'environnement (cloisonnement des caches).
 pub(crate) struct Targets {
     project: ValidatedArg,
     env: ValidatedArg,
     deployment: ValidatedArg,
+    project_id: Option<ValidatedArg>,
+    environment_id: Option<ValidatedArg>,
+}
+
+/// Cloisonnement des caches de BuildKit d'un build : `namespace` (UUID du
+/// projet) prefixe chaque cache de montage d'un Dockerfile
+/// (`BUILDKIT_CACHE_MOUNT_NS`) ; `key` (`<UUID du projet>-<UUID de
+/// l'environnement>`, longueur fixe donc sans ambiguite) prefixe les caches
+/// du frontend Railpack.
+#[derive(Clone, Debug)]
+pub struct CacheScope {
+    pub namespace: ValidatedArg,
+    pub key: ValidatedArg,
 }
 
 impl Targets {
@@ -408,6 +425,14 @@ impl Targets {
             project: ValidatedArg::name(&spec.project)?,
             env: ValidatedArg::name(&spec.environment)?,
             deployment: ValidatedArg::name(&spec.deployment_id.to_string())?,
+            project_id: spec
+                .project_id
+                .map(|id| ValidatedArg::name(&id.to_string()))
+                .transpose()?,
+            environment_id: spec
+                .environment_id
+                .map(|id| ValidatedArg::name(&id.to_string()))
+                .transpose()?,
         })
     }
 
@@ -442,10 +467,26 @@ impl Targets {
         ValidatedArg::concat(&parts)
     }
 
-    /// Cle des caches de montage de BuildKit (`<projet>-<env>`) : pas de
-    /// cache partage entre projets.
-    pub(crate) fn cache_key(&self) -> ValidatedArg {
+    /// Nom du projet Compose a la normalisation (`<projet>-<env>`). Jamais
+    /// une cle de cache : `a` + `b-c` et `a-b` + `c` donnent le meme nom.
+    pub(crate) fn compose_project(&self) -> ValidatedArg {
         ValidatedArg::concat(&[&self.project, &DASH, &self.env])
+    }
+
+    /// Caches du build, a partir des UUID du projet et de l'environnement.
+    /// Ordre sans l'un d'eux (plan de controle anterieur au protocole v6) :
+    /// refuse, plutot qu'un build dont les caches seraient partages.
+    pub(crate) fn cache_scope(&self) -> Result<CacheScope, BuildError> {
+        let (Some(project), Some(env)) = (&self.project_id, &self.environment_id) else {
+            return Err(BuildError::Invalid(InvalidArg {
+                kind: "identifiant de projet ou d'environnement",
+                reason: "absent de l'ordre de build (plan de controle a mettre a jour)",
+            }));
+        };
+        Ok(CacheScope {
+            namespace: project.clone(),
+            key: ValidatedArg::concat(&[project, &DASH, env]),
+        })
     }
 }
 
@@ -783,6 +824,7 @@ async fn run_stages<B: BuildBackend>(
             stages.start(Stage::Clone).await;
             let checkout = clone::Checkout::new(url, branch, commit_sha)?;
             let targets = Targets::new(spec)?;
+            targets.cache_scope()?;
             let method = method(&spec.build)?;
             let root = root_directory(spec)?;
             let workdir = Workdir::create(&cfg.builds_dir, spec.deployment_id)?;
@@ -843,6 +885,7 @@ pub async fn build_checkout<B: BuildBackend>(
     stages.start(Stage::Build).await;
     let result = async {
         let targets = Targets::new(spec)?;
+        targets.cache_scope()?;
         let method = method(&spec.build)?;
         let root = root_directory(spec)?;
         if !backend.buildkit_available() {

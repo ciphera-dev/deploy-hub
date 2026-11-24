@@ -360,7 +360,7 @@ fn buildkitd_runs_under_the_dedicated_build_account() {
         binds.contains(&"/var/lib/ciphera-buildkit:/home/ciphera-build:rw,z".to_string()),
         "{binds:?}"
     );
-    assert_eq!(binds.len(), 6, "{binds:?}");
+    assert_eq!(binds.len(), 7, "{binds:?}");
     // Plus de volume nomme (il appartiendrait a l'uid 1000 de l'image).
     assert!(
         hc.mounts.as_ref().is_none_or(|m| m.is_empty()),
@@ -580,7 +580,7 @@ async fn ensure_infra_writes_the_identity_files_readable_by_the_container() {
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(names.len(), 4, "{names:?}");
+    assert_eq!(names.len(), 5, "{names:?}");
 }
 
 #[test]
@@ -907,4 +907,78 @@ fn every_container_gets_rotated_logs() {
             Some(docker::LOG_MAX_FILE)
         );
     }
+}
+
+/// buildkitd lit une configuration ecrite par l'agent, montee en lecture
+/// seule et passee par `--config` : frontends limites au frontend Railpack
+/// epingle et a `docker/dockerfile`, `dockerfile.v0` actif, ramasse-miettes.
+/// Son empreinte est une etiquette : la modifier recree le conteneur.
+#[test]
+fn buildkitd_reads_its_frontend_allowlist_read_only() {
+    let body = docker::create_body(&spec_named("ciphera-buildkitd"));
+    let args = body.cmd.clone().unwrap_or_default();
+    let config = args
+        .iter()
+        .position(|a| a == "--config")
+        .map(|i| args[i + 1].clone())
+        .expect("--config");
+    assert_eq!(config, "/etc/buildkit/buildkitd.toml");
+    let id = PathBuf::from("/var/lib/ciphera-agent/buildkit-identity");
+    let bind = format!(
+        "{}:/etc/buildkit/buildkitd.toml:ro,z",
+        id.join("buildkitd.toml").to_string_lossy()
+    );
+    assert!(binds(&body).contains(&bind), "{:?}", binds(&body));
+
+    let toml = infra::buildkitd_config();
+    let repo = ciphera_agent::build::railpack::FRONTEND_REPOSITORY;
+    assert!(
+        ciphera_agent::build::railpack::FRONTEND.starts_with(&format!("{repo}:")),
+        "{repo}"
+    );
+    assert!(
+        toml.contains(&format!(
+            "[frontend.\"gateway.v0\"]\n  enabled = true\n  allowedRepositories = [\"{repo}\", \"docker/dockerfile\"]\n"
+        )),
+        "{toml}"
+    );
+    assert!(
+        toml.contains("[frontend.\"dockerfile.v0\"]\n  enabled = true\n"),
+        "{toml}"
+    );
+    assert!(toml.contains("[worker.oci]\n  gc = true\n"), "{toml}");
+    let labels = body.labels.clone().unwrap_or_default();
+    let digest = labels
+        .get(infra::CONFIG_LABEL)
+        .cloned()
+        .expect("etiquette de configuration");
+    assert_eq!(digest.len(), 64, "{digest}");
+    assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()), "{digest}");
+}
+
+#[tokio::test]
+async fn ensure_infra_writes_the_buildkitd_config() {
+    let scratch = Scratch::new("bkconfig");
+    let mut c = cfg();
+    c.buildkit_identity_dir = scratch.0.join("identity");
+    let docker = FakeDocker::default();
+    infra::ensure_infra(&docker, &c).await.unwrap();
+    let path = c.buildkit_identity_dir.join("buildkitd.toml");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        infra::buildkitd_config()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644);
+    }
+    // Fichier modifie a la main : reecrit au prochain demarrage.
+    std::fs::write(&path, "[frontend.\"gateway.v0\"]\n").unwrap();
+    infra::ensure_infra(&docker, &c).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        infra::buildkitd_config()
+    );
 }

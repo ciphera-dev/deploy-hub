@@ -72,7 +72,17 @@
 //!   peuvent atteindre le socket par `/proc/<pid>/root` ou entrer dans
 //!   l'espace de noms de rootlesskit.
 //!   Les entitlements `security.insecure` et `network.host` restent refuses
-//!   (aucun `--allow-insecure-entitlement`).
+//!   (aucun `--allow-insecure-entitlement`) ;
+//! - configuration `buildkitd.toml` ecrite par l'agent dans le dossier
+//!   d'identite, montee en lecture seule et passee par `--config` (le
+//!   fichier par defaut de HOME n'est pas lu) : frontends `gateway.v0`
+//!   limites au frontend Railpack epingle et a `docker/dockerfile`. Un
+//!   Dockerfile ne peut donc pas charger un frontend arbitraire, qui
+//!   choisirait ses identifiants de cache hors de l'espace de noms du
+//!   projet (`build::dockerfile`). Son empreinte est une etiquette du
+//!   conteneur : la changer recree buildkitd. Les caches restent dans un
+//!   seul etat BuildKit pour tous les projets, cloisonnes par espace de noms
+//!   (UUID du projet), pas par des etats separes.
 //!
 //! Les montages de l'hote sont etiquetes pour SELinux (`z`) : sous Fedora,
 //! le conteneur lit le secret et cree ses sockets.
@@ -89,6 +99,10 @@ pub const BUILDKIT_CONTAINER: &str = "ciphera-buildkitd";
 pub const POSTGRES_VOLUME: &str = "ciphera-postgres-data";
 /// Plages de sous-uids/sous-gids de buildkitd (comprises dans l'empreinte).
 pub const SUBIDS_LABEL: &str = "dev.ciphera.buildkit.subids";
+/// SHA-256 de `buildkitd_config()` (comprise dans l'empreinte).
+pub const CONFIG_LABEL: &str = "dev.ciphera.buildkit.config";
+/// Configuration de buildkitd dans le dossier d'identite.
+pub const BUILDKIT_CONFIG_FILE: &str = "buildkitd.toml";
 
 /// Images epinglees (`depot:tag@sha256:…`), fichiers de `deploy/containers/`.
 pub const POSTGRES_IMAGE_FILE: &str = include_str!("../../../deploy/containers/postgres.digest");
@@ -128,6 +142,8 @@ const BUILDKIT_SOCKET_DIR: &str = "/run/buildkit";
 const BUILDKIT_HOME: &str = "/home/ciphera-build";
 /// Fichiers d'identite montes sur ceux de l'image.
 const BUILDKIT_IDENTITY_FILES: [&str; 4] = ["passwd", "group", "subuid", "subgid"];
+/// Configuration de buildkitd dans le conteneur (`--config`).
+const BUILDKIT_CONFIG: &str = "/etc/buildkit/buildkitd.toml";
 
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
@@ -338,12 +354,40 @@ pub fn buildkit_identity(account: &BuildkitAccount) -> [(&'static str, String); 
     ]
 }
 
-/// Ecrit les fichiers d'identite (0644 : lus par `ciphera-build` dans le
-/// conteneur) s'ils manquent ou different ; remplacement atomique (un
-/// conteneur en marche garde l'ancien fichier monte).
+/// Configuration de buildkitd (`buildkitd.toml`) :
+/// - `gateway.v0` n'accepte que le frontend Railpack epingle et
+///   `docker/dockerfile` (une directive `syntax` vers un autre depot fait
+///   echouer le build) ;
+/// - `dockerfile.v0` (frontend integre) actif ;
+/// - ramasse-miettes du worker OCI actif (seuils : voir les limites de
+///   ressources des builds).
+pub fn buildkitd_config() -> String {
+    let railpack = crate::build::railpack::FRONTEND_REPOSITORY;
+    format!(
+        "# Ecrit par ciphera-agent a chaque demarrage : ne pas modifier.\n\
+         [worker.oci]\n  gc = true\n\n\
+         [frontend.\"dockerfile.v0\"]\n  enabled = true\n\n\
+         [frontend.\"gateway.v0\"]\n  enabled = true\n  \
+         allowedRepositories = [\"{railpack}\", \"docker/dockerfile\"]\n"
+    )
+}
+
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Ecrit les fichiers d'identite et la configuration de buildkitd (0644 :
+/// lus par `ciphera-build` dans le conteneur) s'ils manquent ou different ;
+/// remplacement atomique (un conteneur en marche garde l'ancien fichier
+/// monte ; l'empreinte de la configuration le fait recreer).
 pub fn write_buildkit_identity(dir: &Path, account: &BuildkitAccount) -> Result<(), InfraError> {
     std::fs::create_dir_all(dir).map_err(InfraError::Identity)?;
-    for (name, content) in buildkit_identity(account) {
+    let config = (BUILDKIT_CONFIG_FILE, buildkitd_config());
+    for (name, content) in buildkit_identity(account).into_iter().chain([config]) {
         let path = dir.join(name);
         if std::fs::read_to_string(&path).is_ok_and(|c| c == content) {
             continue;
@@ -453,6 +497,11 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
         target: format!("/etc/{file}"),
         read_only: true,
     }));
+    mounts.push(MountSpec::Bind {
+        source: cfg.buildkit_identity_dir.join(BUILDKIT_CONFIG_FILE),
+        target: BUILDKIT_CONFIG.to_string(),
+        read_only: true,
+    });
     let buildkit = ContainerSpec {
         name: BUILDKIT_CONTAINER.to_string(),
         image: pinned_image(BUILDKIT_IMAGE_FILE, "buildkit")?,
@@ -464,6 +513,10 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
             // chown(uid, -1) : le groupe herite du dossier setgid
             // (ciphera-agent) est conserve.
             "--group=-1".into(),
+            // Fichier absent ou invalide : buildkitd ne demarre pas (aucun
+            // repli sur une configuration sans liste de frontends).
+            "--config".into(),
+            BUILDKIT_CONFIG.into(),
         ],
         // L'image fixe HOME, USER, XDG_RUNTIME_DIR et TMPDIR pour son uid
         // 1000 : remplaces par des chemins accessibles a ciphera-build (/tmp
@@ -489,16 +542,19 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
         ],
         unmask_system_paths: true,
         pids_limit: None,
-        labels: vec![(
-            SUBIDS_LABEL.to_string(),
-            format!(
-                "subuid={}:{} subgid={}:{}",
-                account.subuids.start,
-                account.subuids.count,
-                account.subgids.start,
-                account.subgids.count
+        labels: vec![
+            (
+                SUBIDS_LABEL.to_string(),
+                format!(
+                    "subuid={}:{} subgid={}:{}",
+                    account.subuids.start,
+                    account.subuids.count,
+                    account.subgids.start,
+                    account.subgids.count
+                ),
             ),
-        )],
+            (CONFIG_LABEL.to_string(), sha256_hex(&buildkitd_config())),
+        ],
         aliases: Vec::new(),
     };
     Ok(vec![postgres, buildkit])

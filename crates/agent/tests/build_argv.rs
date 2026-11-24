@@ -11,13 +11,13 @@ use ciphera_agent::build::argv::{self, AllowedBin, ValidatedArg};
 use ciphera_agent::build::compose::ComposeFile;
 use ciphera_agent::build::sandbox::{MISE_VERSION, PrepareConfig, PrepareContainer};
 use ciphera_agent::build::{
-    self, BuildBackend, BuildConfig, BuildError, ProgressSink, clone, compose_policy,
+    self, BuildBackend, BuildConfig, BuildError, ProgressSink, clone, compose_policy, dockerfile,
 };
 use proto::{
     AgentToControl, BuildMethod, BuildSource, BuildSpec, GitToken, ImageRef, LogStream, Stage,
     StageStatus,
 };
-use shared::ids::DeploymentId;
+use shared::ids::{DeploymentId, EnvironmentId, ProjectId};
 use tokio::sync::mpsc;
 
 const TOKEN: &str = "ghs_TopSecretInstallationToken123";
@@ -218,8 +218,8 @@ fn spec(build: BuildMethod) -> BuildSpec {
         build,
         git_token: Some(GitToken::new(TOKEN.into())),
         root_directory: None,
-        project_id: None,
-        environment_id: None,
+        project_id: Some(ProjectId::new()),
+        environment_id: Some(EnvironmentId::new()),
     }
 }
 
@@ -1256,4 +1256,228 @@ async fn root_directory_symlink_outside_the_clone_is_refused() {
             .iter()
             .any(|c| c.program == AllowedBin::Buildctl.program())
     );
+}
+
+// --- cloisonnement des caches de build par projet --------------------------
+
+/// Appels buildctl d'un faux backend.
+fn buildctl_calls(backend: &FakeBackend) -> Vec<Call> {
+    backend
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| c.program == AllowedBin::Buildctl.program())
+        .cloned()
+        .collect()
+}
+
+/// Valeurs des `--opt` d'un appel buildctl.
+fn opts(call: &Call) -> Vec<String> {
+    call.args
+        .windows(2)
+        .filter(|w| w[0] == "--opt")
+        .map(|w| w[1].clone())
+        .collect()
+}
+
+const TWO_SERVICES_JSON: &str = r#"{"name":"web-production","services":{"web":{"build":{"context":".","dockerfile":"Dockerfile"},"networks":{"default":null}},"worker":{"build":{"context":".","dockerfile":"Dockerfile"},"networks":{"default":null}}},"networks":{"default":{"name":"web-production_default"}}}"#;
+const ONE_SERVICE_JSON: &str = r#"{"name":"web-production","services":{"web":{"build":{"context":".","dockerfile":"Dockerfile"},"networks":{"default":null}}},"networks":{"default":{"name":"web-production_default"}}}"#;
+
+/// Chaque build Dockerfile ou Compose porte l'espace de noms des caches de
+/// montage (UUID du projet) ; chaque build, la cle des caches Railpack
+/// `<UUID du projet>-<UUID de l'environnement>`, jamais les noms.
+#[tokio::test]
+async fn buildctl_namespaces_caches_with_the_project_uuids() {
+    for (method, repo, compose, builds) in [
+        (
+            BuildMethod::Dockerfile {
+                path: "Dockerfile".into(),
+            },
+            dockerfile_repo(),
+            None,
+            1,
+        ),
+        (
+            BuildMethod::Compose {
+                path: "compose.yaml".into(),
+                service: "web".into(),
+            },
+            vec![
+                (
+                    "compose.yaml",
+                    "services:\n  web:\n    build: .\n  worker:\n    build: .\n",
+                ),
+                ("Dockerfile", "FROM busybox\n"),
+            ],
+            Some(TWO_SERVICES_JSON.to_string()),
+            2,
+        ),
+        (BuildMethod::Railpack, vec![("package.json", "{}")], None, 1),
+    ] {
+        let dir = BuildsDir::new();
+        let backend = FakeBackend {
+            repo,
+            compose_json: compose,
+            ..Default::default()
+        };
+        let railpack = matches!(method, BuildMethod::Railpack);
+        let spec = spec(method);
+        run(&spec, &backend, &dir).await.0.unwrap();
+        let project = spec.project_id.unwrap().to_string();
+        let env = spec.environment_id.unwrap().to_string();
+        let calls = buildctl_calls(&backend);
+        assert_eq!(calls.len(), builds, "{calls:?}");
+        for call in &calls {
+            let opts = opts(call);
+            let key = format!("build-arg:cache-key={project}-{env}");
+            assert_eq!(opts.iter().filter(|o| **o == key).count(), 1, "{opts:?}");
+            let ns: Vec<_> = opts
+                .iter()
+                .filter(|o| o.starts_with("build-arg:BUILDKIT_CACHE_MOUNT_NS="))
+                .collect();
+            if railpack {
+                assert!(ns.is_empty(), "{opts:?}");
+            } else {
+                assert_eq!(
+                    ns,
+                    [&format!("build-arg:BUILDKIT_CACHE_MOUNT_NS={project}")],
+                    "{opts:?}"
+                );
+            }
+            // Ni le nom du projet ni celui de l'environnement en cle.
+            assert!(
+                !opts.iter().any(|o| o.contains("web-production")),
+                "{opts:?}"
+            );
+        }
+    }
+}
+
+/// Ordre sans identifiant de projet ou d'environnement : build refuse avant
+/// le clone (le plan de controle v6 les envoie toujours).
+#[tokio::test]
+async fn build_without_project_or_environment_uuid_is_refused() {
+    for method in [
+        BuildMethod::Dockerfile {
+            path: "Dockerfile".into(),
+        },
+        BuildMethod::Railpack,
+        BuildMethod::Compose {
+            path: "compose.yaml".into(),
+            service: "web".into(),
+        },
+    ] {
+        for (project, env) in [
+            (None, Some(EnvironmentId::new())),
+            (Some(ProjectId::new()), None),
+        ] {
+            let dir = BuildsDir::new();
+            let backend = FakeBackend {
+                repo: dockerfile_repo(),
+                ..Default::default()
+            };
+            let spec = BuildSpec {
+                project_id: project,
+                environment_id: env,
+                ..spec(method.clone())
+            };
+            let (result, messages) = run(&spec, &backend, &dir).await;
+            let err = result.unwrap_err();
+            assert!(matches!(err, BuildError::Invalid(_)), "{err:?}");
+            assert!(err.to_string().contains("identifiant"), "{err}");
+            assert!(backend.calls.lock().unwrap().is_empty(), "aucun clone");
+            assert!(matches!(
+                stages(&messages).last(),
+                Some((_, StageStatus::Failed { .. }))
+            ));
+        }
+    }
+}
+
+/// Directive `syntax` d'un Dockerfile : seul `docker/dockerfile` (version
+/// 1.4 ou plus, sans empreinte) est accepte ; tout autre frontend est
+/// refuse avant BuildKit, sous toutes les formes que BuildKit lit.
+#[test]
+fn dockerfile_syntax_directive_allows_only_docker_dockerfile() {
+    for ok in [
+        "FROM busybox\n",
+        "# syntax=docker/dockerfile:1\nFROM busybox\n",
+        "# syntax = docker/dockerfile:1.7\nFROM busybox\n",
+        "#syntax=docker.io/docker/dockerfile:1.4.3\r\nFROM busybox\n",
+        "# check=error=true\n# syntax=docker/dockerfile\nFROM busybox\n",
+        "# escape=`\n\nFROM busybox\n",
+        "# un commentaire\nFROM busybox\n",
+        "# syntax=docker/dockerfile:latest\nFROM busybox\n",
+        "FROM busybox\n# syntax=someone/frontend\n",
+    ] {
+        dockerfile::check_syntax(ok).unwrap_or_else(|e| panic!("{ok:?} : {e}"));
+    }
+    for bad in [
+        "# syntax=docker.io/someone/frontend\nFROM busybox\n",
+        "# syntax=someone/frontend:1\nFROM busybox\n",
+        "#SYNTAX=ghcr.io/someone/frontend\nFROM busybox\n",
+        "\u{feff}# syntax=someone/frontend\nFROM busybox\n",
+        "#!/usr/bin/env buildctl\n# syntax=someone/frontend\nFROM busybox\n",
+        "// syntax=someone/frontend\nFROM busybox\n",
+        "# check=skip=all\n#  syntax  =  someone/frontend  arg\nFROM busybox\n",
+        "{\"syntax\": \"someone/frontend\"}",
+        "# syntax=\nFROM busybox\n",
+        // Frontend Railpack (autorise par buildkitd pour les builds Railpack) :
+        // jamais depuis un Dockerfile.
+        "# syntax=ghcr.io/railwayapp/railpack-frontend:v0.43.0\nFROM busybox\n",
+        // Anciennes versions (sans espace de noms des caches), empreinte
+        // (qui l'emporte sur l'etiquette), variantes.
+        "# syntax=docker/dockerfile:1.0.0-experimental\nFROM busybox\n",
+        "# syntax=docker/dockerfile:1.2\nFROM busybox\n",
+        "# syntax=docker/dockerfile:1@sha256:0000000000000000000000000000000000000000000000000000000000000000\nFROM busybox\n",
+        "# syntax=docker/dockerfile-upstream:master\nFROM busybox\n",
+        "# syntax=docker/dockerfile:0.9\nFROM busybox\n",
+        "# syntax=evil.example/docker/dockerfile:1\nFROM busybox\n",
+    ] {
+        let err = dockerfile::check_syntax(bad).unwrap_err();
+        assert!(err.to_string().contains("frontend"), "{bad:?} : {err}");
+    }
+}
+
+/// Le pipeline refuse un Dockerfile (ou celui d'un service Compose) qui
+/// demande un autre frontend, avec un message clair et sans lancer buildctl.
+#[tokio::test]
+async fn foreign_frontend_in_a_dockerfile_fails_the_build_clearly() {
+    let foreign = "# syntax=docker.io/someone/frontend\nFROM busybox\n";
+    for (method, repo, compose) in [
+        (
+            BuildMethod::Dockerfile {
+                path: "Dockerfile".into(),
+            },
+            vec![("Dockerfile", foreign)],
+            None,
+        ),
+        (
+            BuildMethod::Compose {
+                path: "compose.yaml".into(),
+                service: "web".into(),
+            },
+            vec![
+                ("compose.yaml", "services:\n  web:\n    build: .\n"),
+                ("Dockerfile", foreign),
+            ],
+            Some(ONE_SERVICE_JSON.to_string()),
+        ),
+    ] {
+        let dir = BuildsDir::new();
+        let backend = FakeBackend {
+            repo,
+            compose_json: compose,
+            ..Default::default()
+        };
+        let (result, messages) = run(&spec(method), &backend, &dir).await;
+        let err = result.unwrap_err();
+        assert!(matches!(err, BuildError::Frontend(_)), "{err:?}");
+        assert!(buildctl_calls(&backend).is_empty());
+        assert!(matches!(
+            stages(&messages).last(),
+            Some((Stage::Build, StageStatus::Failed { message })) if message.contains("frontend")
+        ));
+    }
 }

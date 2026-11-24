@@ -9,7 +9,12 @@
 //!
 //! `buildctl ... build --frontend gateway.v0 --opt source=<frontend>
 //!  --local context=<src> --local dockerfile=<plan>
-//!  --opt build-arg:cache-key=<projet>-<env> --output type=docker,name=...`
+//!  --opt build-arg:cache-key=<UUID du projet>-<UUID de l'environnement>
+//!  --output type=docker,name=...`
+//!
+//! Le frontend prefixe chaque cache du plan par `cache-key` : les UUID ont
+//! une longueur fixe, donc deux projets ne peuvent pas obtenir le meme
+//! prefixe (au contraire des noms : `a` + `b-c` et `a-b` + `c`).
 //!
 //! `prepare` sort sur Internet : il resout les versions des paquets que le
 //! depot demande (`mise latest`, `mise ls-remote`). Meme posture que les
@@ -25,6 +30,10 @@ pub const RAILPACK_VERSION: &str = "v0.43.0";
 /// Frontend BuildKit de la meme version, epingle par digest (index
 /// multi-architecture de ghcr.io).
 pub const FRONTEND: &str = "ghcr.io/railwayapp/railpack-frontend:v0.43.0@sha256:355ef61fae6f2551103cd8b10c710cb07167dd353d561f15c69b8d7ac1c676cc";
+/// Depot de `FRONTEND`, sans etiquette ni empreinte : seul frontend
+/// `gateway.v0` autorise par buildkitd avec `docker/dockerfile`
+/// (`infra::buildkitd_config`).
+pub const FRONTEND_REPOSITORY: &str = "ghcr.io/railwayapp/railpack-frontend";
 /// Message d'un build Railpack sans bac a sable.
 pub const NO_SANDBOX: &str =
     "bac a sable de railpack indisponible (compte ciphera-build absent) : relancer install.sh";
@@ -80,11 +89,12 @@ pub(crate) async fn build<B: BuildBackend>(
 ) -> Result<(), BuildError> {
     let plan = ValidatedArg::path(&workdir.plan())?;
     let home = ValidatedArg::path(&workdir.home())?;
+    let cache = targets.cache_scope()?;
     prepare(backend, sink, prepare_cfg, workdir, src.as_str()).await?;
     let staging = targets.staging(None);
     let cmd = buildctl_command(
         socket,
-        frontend_args(src, &plan, &targets.cache_key()),
+        frontend_args(src, &plan, &cache.key),
         &staging,
         &home,
     );
@@ -110,5 +120,6 @@ mod tests {
             "RAILPACK_VERSION de install.sh differente de {RAILPACK_VERSION}"
         );
         assert!(FRONTEND.contains(&format!(":{RAILPACK_VERSION}@sha256:")));
+        assert!(FRONTEND.starts_with(&format!("{FRONTEND_REPOSITORY}:")));
     }
 }
