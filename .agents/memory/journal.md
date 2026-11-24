@@ -281,3 +281,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 20:48 — Session v0.1-sdd — claude-code (orchestrateur) — Task R3b : Profil AppArmor appliqué au buildkitd
 - fait : intégré (fc3f797, ffb435e, 68293ee)
 - résultat : relectures : 1 Important corrigé (variante AppArmor 3), rebase vérifié ; preuve d'exécution en CI
+
+## 2026-11-24 20:54 — Session v0.1-sdd — claude-code (orchestrateur) — Task R16 : Remédiation audit — secrets liés à leur ligne, contrôle d'age.key
+- fait : rebasé sur 4269329, intégré, compilation vérifiée après rebase
+- résultat : relecture : 1 Critique corrigé (clé lue par l'updater root), relecture ciblée approuvée

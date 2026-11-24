@@ -1516,7 +1516,7 @@
    "kind": "session",
    "created": "2026-11-21T13:21:26",
    "agent": "claude",
-   "updated": "2026-11-24T20:48:51",
+   "updated": "2026-11-24T20:55:59",
    "last_event": "SubagentStop",
    "transcript": "44bb7ee7-218a-4800-8b31-40b1d121dbdb.jsonl"
   },
@@ -4794,6 +4794,18 @@
    "created": "2026-11-24T20:48:24",
    "path": ".superpowers/sdd/audit-2026-11-24/task-R3b-rereview2.md",
    "updated": "2026-11-24T20:48:24"
+  },
+  "file:.superpowers/sdd/audit-2026-11-24/task-R16-rereview.md": {
+   "kind": "file",
+   "created": "2026-11-24T20:50:37",
+   "path": ".superpowers/sdd/audit-2026-11-24/task-R16-rereview.md",
+   "updated": "2026-11-24T20:50:37"
+  },
+  "file:.superpowers/sdd/audit-2026-11-24/task-R20-review.md": {
+   "kind": "file",
+   "created": "2026-11-24T20:51:25",
+   "path": ".superpowers/sdd/audit-2026-11-24/task-R20-review.md",
+   "updated": "2026-11-24T20:51:25"
   }
  },
  "edges": [
@@ -8951,6 +8963,16 @@
    "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
    "rel": "TOUCHED",
    "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R3b-rereview2.md"
+  },
+  {
+   "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
+   "rel": "TOUCHED",
+   "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R16-rereview.md"
+  },
+  {
+   "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
+   "rel": "TOUCHED",
+   "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R20-review.md"
   }
  ]
 }
