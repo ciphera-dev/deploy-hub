@@ -104,6 +104,14 @@ fn parse_bytes(v: &Value) -> Option<u64> {
     }
 }
 
+/// Taille bornee a `MAX_TMPFS_BYTES` ; absente, nulle ou illisible : le
+/// plafond (0 voudrait dire « sans limite » pour un `tmpfs`).
+fn bounded_size(v: Option<&Value>) -> u64 {
+    v.and_then(parse_bytes)
+        .filter(|b| *b > 0)
+        .map_or(MAX_TMPFS_BYTES, |b| b.min(MAX_TMPFS_BYTES))
+}
+
 /// Plus petite des valeurs strictement positives.
 fn min_positive<const N: usize>(values: [Option<f64>; N]) -> Option<f64> {
     values
@@ -130,8 +138,7 @@ fn bound_tmpfs_entry(entry: &str) -> String {
     for o in opts.split(',').filter(|o| !o.is_empty()) {
         match o.strip_prefix("size=") {
             Some(v) => {
-                size = parse_bytes(&Value::String(v.to_string()))
-                    .map_or(MAX_TMPFS_BYTES, |b| b.min(MAX_TMPFS_BYTES));
+                size = bounded_size(Some(&Value::String(v.to_string())));
             }
             None => kept.push(o.to_string()),
         }
@@ -191,6 +198,18 @@ fn bound_service(
     svc.insert("mem_limit".into(), json!(memory));
     // Sans swap en plus de la memoire.
     svc.insert("memswap_limit".into(), json!(memory));
+    // Une reservation au-dessus de la limite fait refuser la creation.
+    let over = |v: &Value| parse_bytes(v).is_some_and(|r| r > memory);
+    if svc.get("mem_reservation").is_some_and(over) {
+        svc.insert("mem_reservation".into(), json!(memory));
+    }
+    if let Some(Value::Object(deploy)) = svc.get_mut("deploy")
+        && let Some(Value::Object(resources)) = deploy.get_mut("resources")
+        && let Some(Value::Object(reserved)) = resources.get_mut("reservations")
+        && reserved.get("memory").is_some_and(over)
+    {
+        reserved.insert("memory".into(), json!(memory));
+    }
 
     let cap_cpus = limits.nano_cpus as f64 / 1e9;
     let cpus = min_positive([
@@ -239,7 +258,7 @@ fn bound_service(
     }
 
     if let Some(shm) = svc.get("shm_size") {
-        let bytes = parse_bytes(shm).map_or(MAX_TMPFS_BYTES, |b| b.min(MAX_TMPFS_BYTES));
+        let bytes = bounded_size(Some(shm));
         svc.insert("shm_size".into(), json!(bytes));
     }
     match svc.get("tmpfs") {
@@ -278,10 +297,7 @@ fn bound_service(
             let tmpfs = tmpfs
                 .as_object_mut()
                 .ok_or_else(|| format!("service {name} : tmpfs invalide"))?;
-            let size = tmpfs
-                .get("size")
-                .and_then(parse_bytes)
-                .map_or(MAX_TMPFS_BYTES, |b| b.min(MAX_TMPFS_BYTES));
+            let size = bounded_size(tmpfs.get("size"));
             tmpfs.insert("size".into(), json!(size));
         }
     }

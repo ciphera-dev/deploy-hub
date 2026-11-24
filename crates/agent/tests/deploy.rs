@@ -1959,12 +1959,20 @@ fn exposed_service_replicas_must_be_1() {
 #[test]
 fn tmpfs_shm_bounded() {
     let mut bundle = compose_bundle();
-    bundle["services"]["api"]["tmpfs"] = json!(["/run", "/tmp:size=10g,mode=1777", "/var:size=1m"]);
+    bundle["services"]["api"]["tmpfs"] = json!([
+        "/run",
+        "/tmp:size=10g,mode=1777",
+        "/var:size=1m",
+        "/a:size=0",
+        "/b:size=zz",
+    ]);
     bundle["services"]["api"]["shm_size"] = json!("4g");
     bundle["services"]["cache"]["shm_size"] = json!(1_048_576);
+    bundle["services"]["web"]["shm_size"] = json!(0);
     bundle["services"]["web"]["volumes"] = json!([
         {"type": "tmpfs", "target": "/scratch"},
         {"type": "tmpfs", "target": "/big", "tmpfs": {"size": 10_000_000_000u64}},
+        {"type": "tmpfs", "target": "/zero", "tmpfs": {"size": 0}},
     ]);
     let plan = limited_plan(&bundle).unwrap();
     let services = &plan.file["services"];
@@ -1975,12 +1983,33 @@ fn tmpfs_shm_bounded() {
             format!("/run:size={max}"),
             format!("/tmp:mode=1777,size={max}"),
             format!("/var:size={}", 1u64 << 20),
+            format!("/a:size={max}"),
+            format!("/b:size={max}"),
         ])
     );
     assert_eq!(services["api"]["shm_size"], json!(max));
     assert_eq!(services["cache"]["shm_size"], json!(1_048_576));
     assert_eq!(services["web"]["volumes"][0]["tmpfs"]["size"], json!(max));
     assert_eq!(services["web"]["volumes"][1]["tmpfs"]["size"], json!(max));
+    assert_eq!(services["web"]["volumes"][2]["tmpfs"]["size"], json!(max));
+    assert_eq!(services["web"]["shm_size"], json!(max));
+}
+
+#[test]
+fn memory_reservation_clamped_to_limit() {
+    let mut bundle = compose_bundle();
+    bundle["services"]["api"]["mem_reservation"] = json!("64g");
+    bundle["services"]["cache"]["mem_reservation"] = json!("1m");
+    bundle["services"]["web"]["deploy"] =
+        json!({"resources": {"reservations": {"memory": "100g", "cpus": "0.5"}}});
+    let plan = limited_plan(&bundle).unwrap();
+    let services = &plan.file["services"];
+    assert_eq!(services["api"]["mem_reservation"], json!(4 * GIB));
+    assert_eq!(services["cache"]["mem_reservation"], json!("1m"));
+    assert_eq!(
+        services["web"]["deploy"]["resources"]["reservations"]["memory"],
+        json!(4 * GIB)
+    );
 }
 
 #[test]

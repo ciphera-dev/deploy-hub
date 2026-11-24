@@ -682,6 +682,8 @@ pub fn create_body(spec: &ContainerSpec) -> ContainerCreateBody {
             cap_add: (!spec.cap_add.is_empty()).then(|| spec.cap_add.clone()),
             pids_limit: spec.pids_limit,
             memory: spec.memory,
+            // Pas de swap en plus de la memoire.
+            memory_swap: spec.memory,
             nano_cpus: spec.nano_cpus,
             // Equivalent API de `--security-opt systempaths=unconfined`
             // (option traduite par le client docker, pas par le demon).
@@ -1642,6 +1644,11 @@ mod tests {
         assert!(spec.memory.is_some_and(|m| m >= 256 << 20));
         assert!(spec.nano_cpus.is_some_and(|c| c >= 1_000_000_000));
         assert_eq!(spec.pids_limit, Some(APP_PIDS_LIMIT));
+        // Sans swap en plus de la memoire, comme les services Compose.
+        let body = create_body(&spec);
+        let host = body.host_config.unwrap();
+        assert_eq!(host.memory, spec.memory);
+        assert_eq!(host.memory_swap, spec.memory);
     }
 
     #[test]
