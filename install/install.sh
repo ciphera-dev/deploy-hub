@@ -42,10 +42,14 @@ UNITS='ciphera.service ciphera-proxy.socket ciphera-proxy.service ciphera-agent.
 # Dossiers des sockets Unix (PostgreSQL, buildkitd), recrees a chaque demarrage.
 TMPFILES=ciphera.tmpfiles.conf
 TMPFILES_DEST=/etc/tmpfiles.d/ciphera.conf
-# Profil AppArmor applique de buildkitd rootless (seulement si le noyau
-# restreint les espaces de noms utilisateur : Ubuntu >= 23.10, AppArmor 4).
+# Profil AppArmor applique de buildkitd rootless (la ou AppArmor est actif) :
+# variante AppArmor 4 (`apparmor/ciphera-buildkitd`) ou AppArmor 3
+# (`apparmor/ciphera-buildkitd.abi3`) selon la version d'apparmor_parser,
+# installee sous le meme nom.
 APPARMOR_PROFILE=ciphera-buildkitd
+APPARMOR_PROFILE_ABI3=ciphera-buildkitd.abi3
 APPARMOR_DEST=/etc/apparmor.d/ciphera-buildkitd
+APPARMOR_ENABLED=/sys/module/apparmor/parameters/enabled
 USERNS_RESTRICT=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
 # Comptes systeme : plan de controle, proxy, agent, conteneurs PostgreSQL
 # et BuildKit.
@@ -348,8 +352,9 @@ download_and_verify() {
 	for f in $UNITS $TMPFILES; do
 		regular_file "$pkg_dir/systemd/$f" || die "archive incomplete ($f) : rien n'est installe"
 	done
-	regular_file "$pkg_dir/apparmor/$APPARMOR_PROFILE" ||
-		die "archive incomplete ($APPARMOR_PROFILE) : rien n'est installe"
+	for f in $APPARMOR_PROFILE $APPARMOR_PROFILE_ABI3; do
+		regular_file "$pkg_dir/apparmor/$f" || die "archive incomplete ($f) : rien n'est installe"
+	done
 }
 
 # Code 0 si le SHA-256 de <fichier> vaut <empreinte>.
@@ -522,30 +527,49 @@ write_updater_config() {
 	chmod 0600 "$UPDATER_CONFIG_DIR/updater.env"
 }
 
-# buildkitd rootless cree des espaces de noms utilisateur. La ou le noyau les
-# refuse aux processus sans profil (Ubuntu >= 23.10), le profil AppArmor
-# applique de son conteneur est charge (espaces de noms utilisateur permis,
-# /proc et /sys sensibles refuses : deploy/apparmor/ciphera-buildkitd) ; le
-# reglage global de la machine n'est pas modifie. L'agent l'utilise s'il est
-# present ; s'il n'est pas charge, buildkitd ne demarre pas (aucun repli sans
-# profil).
+# Variante du profil de buildkitd pour l'apparmor_parser de la machine :
+# AppArmor 4 a partir de la version 4, AppArmor 3 sinon (version illisible
+# comprise : l'ABI 3.0 est aussi lue par les parsers 4).
+apparmor_variant() {
+	major=$(apparmor_parser --version 2>/dev/null |
+		sed -n 's/^AppArmor parser version \([0-9][0-9]*\)\..*/\1/p' | head -n 1)
+	if [ -n "$major" ] && [ "$major" -ge 4 ]; then
+		printf '%s\n' "$APPARMOR_PROFILE"
+	else
+		printf '%s\n' "$APPARMOR_PROFILE_ABI3"
+	fi
+}
+
+# Le conteneur de buildkitd rootless tourne sous un profil AppArmor applique
+# (deploy/apparmor/ : espaces de noms utilisateur permis, /proc et /sys
+# sensibles refuses), charge la ou AppArmor est actif ; le reglage global de
+# la machine n'est pas modifie. L'agent l'utilise s'il est present ; s'il
+# n'est pas charge, buildkitd ne demarre pas (aucun repli sans profil).
 install_apparmor_profile() {
-	if [ ! -r "$USERNS_RESTRICT" ]; then
+	if [ "$(cat "$APPARMOR_ENABLED" 2>/dev/null)" != Y ]; then
 		return 0
 	fi
+	restrict=$(cat "$USERNS_RESTRICT" 2>/dev/null || true)
 	if ! command -v apparmor_parser >/dev/null 2>&1; then
-		if [ "$(cat "$USERNS_RESTRICT" 2>/dev/null)" = 1 ]; then
-			warn "ATTENTION : le noyau restreint les espaces de noms utilisateur ($USERNS_RESTRICT = 1)"
-			warn "mais apparmor_parser est absent : le profil $APPARMOR_PROFILE n'est pas installe."
-			warn "BuildKit (conteneurs ciphera-buildkitd-<projet>) NE DEMARRERONT PAS : installer le paquet apparmor puis relancer install.sh."
+		warn "ATTENTION : AppArmor est actif mais apparmor_parser est absent : le profil $APPARMOR_PROFILE n'est pas installe."
+		if [ "$restrict" = 1 ]; then
+			warn "Le noyau restreint les espaces de noms utilisateur ($USERNS_RESTRICT = 1) : BuildKit (conteneurs ciphera-buildkitd-<projet>) NE DEMARRERA PAS."
+		else
+			warn "BuildKit (conteneurs ciphera-buildkitd-<projet>) tournera sans profil AppArmor."
 		fi
+		warn "Installer le paquet apparmor puis relancer install.sh."
 		return 0
+	fi
+	variant=$(apparmor_variant)
+	if [ "$variant" = "$APPARMOR_PROFILE_ABI3" ] && [ "$restrict" = 1 ]; then
+		warn "ATTENTION : le noyau restreint les espaces de noms utilisateur ($USERNS_RESTRICT = 1) mais apparmor_parser est en version 3 :"
+		warn "le profil AppArmor 3 ne peut pas les autoriser, BuildKit ne demarrera pas. Mettre AppArmor a jour (4 ou plus) ou remettre ce reglage a 0."
 	fi
 	install -d -m 0755 /etc/apparmor.d
-	install -m 0644 -o root -g root "$pkg_dir/apparmor/$APPARMOR_PROFILE" "$APPARMOR_DEST"
+	install -m 0644 -o root -g root "$pkg_dir/apparmor/$variant" "$APPARMOR_DEST"
 	apparmor_parser -r -W "$APPARMOR_DEST" ||
-		die "chargement du profil AppArmor $APPARMOR_PROFILE impossible"
-	say "profil AppArmor $APPARMOR_PROFILE charge (buildkitd rootless)"
+		die "chargement du profil AppArmor $APPARMOR_PROFILE ($variant) impossible"
+	say "profil AppArmor $APPARMOR_PROFILE charge ($variant, buildkitd rootless)"
 }
 
 # buildkitd rootless tourne sous ciphera-build : un compte local de meme uid

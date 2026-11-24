@@ -495,7 +495,7 @@ async fn a_stopped_container_fails_fast_with_a_short_user_message() {
         start.elapsed() < Duration::from_secs(10),
         "pas d'echec rapide"
     );
-    assert!(matches!(err, BuildkitError::SocketTimeout(_)), "{err}");
+    assert!(matches!(err, BuildkitError::SocketTimeout { .. }), "{err}");
     let message = err.to_string();
     assert!(message.len() < 120, "message trop long : {message}");
     for secret in ["SECRET-DU-JOURNAL", "xxxx", "/"] {
@@ -580,5 +580,27 @@ async fn other_start_errors_are_not_blamed_on_apparmor() {
             .expect("refus attendu");
         assert!(matches!(err, BuildkitError::Docker(_)), "{err}");
         assert!(err.to_string().contains(message), "{err}");
+    }
+}
+
+/// Socket jamais cree : sous un profil AppArmor, l'erreur indique ou chercher
+/// un refus (regle manquante) ; sans profil, rien de plus.
+#[tokio::test]
+async fn a_socket_timeout_points_to_apparmor_denials_under_the_profile() {
+    for (profile, hint) in [(Some("ciphera-buildkitd"), true), (None, false)] {
+        let scratch = Scratch::new();
+        let mut c = cfg(&scratch.0);
+        c.buildkit_apparmor_profile = profile.map(Into::into);
+        let manager = BuildkitManager::new(Arc::new(FakeDocker::default()), FakeFs::default(), c)
+            .with_readiness(Duration::from_millis(200), |_| false);
+        let err = manager
+            .ensure(ProjectId::new())
+            .await
+            .err()
+            .expect("delai attendu");
+        let text = err.to_string();
+        assert!(matches!(err, BuildkitError::SocketTimeout { .. }), "{text}");
+        assert_eq!(text.contains("apparmor=\"DENIED\""), hint, "{text}");
+        assert_eq!(text.contains("ciphera-buildkitd"), hint, "{text}");
     }
 }

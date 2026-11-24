@@ -542,21 +542,29 @@ async fn app_container_cannot_reach_infra_network() {
             output.contains(ENFORCED),
             "profil des etapes RUN :\n{output}"
         );
-        // /proc sensible refuse aux etapes RUN. Sans le profil, la lecture
-        // de /proc/kcore (masque par /dev/null) reussirait. `h` : aide de
-        // sysrq seulement, sans effet si l'ecriture passait.
-        for step in [
-            "head -c 1 /proc/kcore > /dev/null",
-            "echo h > /proc/sysrq-trigger",
-        ] {
-            let (code, output) = buildctl_build(
-                &api,
-                &bk_name,
-                &format!("FROM docker.io/library/busybox:1.37\nRUN {step}"),
-            )
-            .await;
-            assert_ne!(code, 0, "etape RUN acceptee : {step}\n{output}");
-        }
+        // /proc sensible refuse aux etapes RUN, par le profil. BuildKit
+        // masque /proc/kcore par /dev/null (peripherique caractere, 0666) :
+        // sans le profil, la lecture reussirait ; avec, AppArmor refuse le
+        // chemin /proc/kcore (EACCES, `Permission denied`). Le marqueur
+        // prouve le masque, donc que le refus vient d'AppArmor et non des
+        // droits du fichier (ecrit en deux morceaux : la ligne RUN affichee
+        // par buildctl ne le contient pas).
+        let (code, output) = buildctl_build(
+            &api,
+            &bk_name,
+            "FROM docker.io/library/busybox:1.37\n\
+             RUN if [ -c /proc/kcore ]; then echo kcore\"-masque\"; fi; head -c 1 /proc/kcore > /dev/null",
+        )
+        .await;
+        assert_ne!(code, 0, "lecture de /proc/kcore acceptee :\n{output}");
+        assert!(
+            output.contains("kcore-masque"),
+            "/proc/kcore non masque :\n{output}"
+        );
+        assert!(
+            output.contains("/proc/kcore: Permission denied"),
+            "refus attendu d'AppArmor :\n{output}"
+        );
     }
 
     // Vraie ecoute TCP sur ciphera-internal (busybox httpd).

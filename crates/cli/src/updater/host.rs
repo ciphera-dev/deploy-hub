@@ -532,6 +532,19 @@ impl System for Host {
         Ok(())
     }
 
+    fn apparmor_parser_major(&self) -> Option<u32> {
+        let out = clean_command("apparmor_parser")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        super::parse_apparmor_parser_major(&String::from_utf8_lossy(&out.stdout))
+    }
+
     fn post_install(&self, from: Version, to: Version) -> io::Result<()> {
         let mut cmd = Command::new(&self.cli);
         cmd.env_clear().env("PATH", CHILD_PATH);

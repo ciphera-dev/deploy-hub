@@ -1048,19 +1048,23 @@ fn project_config_is_written_atomically_and_restored() {
     assert_eq!(names.len(), 1, "{names:?}");
 }
 
-/// Profil AppArmor livre (`deploy/apparmor/ciphera-buildkitd`), regles sans
-/// les commentaires.
-fn apparmor_rules() -> Vec<String> {
-    include_str!("../../../deploy/apparmor/ciphera-buildkitd")
-        .lines()
+/// Profils AppArmor livres (`deploy/apparmor/`) : AppArmor 4 et AppArmor 3.
+const APPARMOR_ABI4: &str = include_str!("../../../deploy/apparmor/ciphera-buildkitd");
+const APPARMOR_ABI3: &str = include_str!("../../../deploy/apparmor/ciphera-buildkitd.abi3");
+/// Regles qui n'existent qu'en AppArmor 4 (non filtrees sous l'ABI 3.0).
+const ABI4_ONLY: [&str; 3] = ["userns,", "mqueue,", "io_uring,"];
+
+/// Regles d'un profil, sans les commentaires.
+fn apparmor_rules(text: &str) -> Vec<String> {
+    text.lines()
         .map(|l| l.split('#').next().unwrap_or("").trim().to_string())
         .filter(|l| !l.is_empty())
         .collect()
 }
 
-#[test]
-fn buildkitd_apparmor_profile_is_enforced() {
-    let rules = apparmor_rules();
+/// Profil applique, sans sortie, `ptrace` et signaux cloisonnes, `deny`
+/// attendus.
+fn assert_enforced(rules: &[String]) {
     let header = rules
         .iter()
         .find(|l| l.starts_with("profile "))
@@ -1096,20 +1100,47 @@ fn buildkitd_apparmor_profile_is_enforced() {
     {
         assert!(rule.contains(" peer="), "{rule}");
     }
-    assert!(rules.contains(&"userns,".to_string()), "{rules:#?}");
     for deny in [
         "deny @{PROC}/sysrq-trigger rwklx,",
         "deny @{PROC}/kcore rwklx,",
+        "deny @{PROC}/* w,",
+        "deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9/]*}/** w,",
         "deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,",
         "deny @{PROC}/sys/{abi,crypto,debug,dev,fs,user,vm}/** w,",
         "deny /sys/firmware/** rwklx,",
         "deny /sys/kernel/security/** rwklx,",
+        "deny /sys/devices/virtual/powercap/** rwklx,",
         "deny mount fstype=securityfs,",
         "deny mount fstype=debugfs,",
+        "deny mount fstype=configfs,",
     ] {
         assert!(
             rules.contains(&deny.to_string()),
             "{deny} absent : {rules:#?}"
         );
     }
+}
+
+#[test]
+fn buildkitd_apparmor_profile_is_enforced() {
+    let rules = apparmor_rules(APPARMOR_ABI4);
+    assert_enforced(&rules);
+    assert_eq!(rules[0], "abi <abi/4.0>,");
+    for rule in ABI4_ONLY {
+        assert!(rules.contains(&rule.to_string()), "{rule} : {rules:#?}");
+    }
+}
+
+/// Variante AppArmor 3 (Debian 12, Ubuntu 22.04) : memes regles que la
+/// variante AppArmor 4, moins celles qui n'existent qu'en AppArmor 4.
+#[test]
+fn buildkitd_apparmor3_profile_matches_the_apparmor4_one() {
+    let abi3 = apparmor_rules(APPARMOR_ABI3);
+    assert_enforced(&abi3);
+    assert_eq!(abi3[0], "abi <abi/3.0>,");
+    let abi4: Vec<String> = apparmor_rules(APPARMOR_ABI4)
+        .into_iter()
+        .filter(|r| !ABI4_ONLY.contains(&r.as_str()))
+        .collect();
+    assert_eq!(abi3[1..], abi4[1..]);
 }

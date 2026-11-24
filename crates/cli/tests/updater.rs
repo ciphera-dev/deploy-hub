@@ -222,6 +222,8 @@ struct Mock {
     unit_changes: Mutex<Vec<updater::UnitChange>>,
     /// Unites desactivees par l'administrateur (`systemctl is-enabled`).
     disabled: Vec<String>,
+    /// Version majeure d'`apparmor_parser` (4 par `Mock::new`).
+    apparmor_major: Option<u32>,
 }
 
 /// Base simulee : schema (numero de migration) et donnees.
@@ -336,6 +338,7 @@ impl Mock {
             healthy,
             bin_dir: env.paths.bin_dir.clone(),
             backup_dir: env.paths.backup_dir.clone(),
+            apparmor_major: Some(4),
             ..Mock::default()
         }
     }
@@ -524,6 +527,10 @@ impl System for Mock {
             return Err(std::io::Error::other("code 1"));
         }
         Ok(())
+    }
+
+    fn apparmor_parser_major(&self) -> Option<u32> {
+        self.apparmor_major
     }
 
     fn now(&self) -> u64 {
@@ -1586,6 +1593,7 @@ fn env_with_unit_changes() -> (Env, Keys) {
         &[
             ("systemd/ciphera-backup.timer", TIMER),
             ("apparmor/ciphera-buildkitd", "profil v0.2.0"),
+            ("apparmor/ciphera-buildkitd.abi3", "profil v0.2.0 abi3"),
         ],
         &[],
     );
@@ -1652,6 +1660,48 @@ fn apparmor_profile_is_not_installed_where_it_was_not() {
             .join(updater::APPARMOR_PROFILE)
             .exists()
     );
+}
+
+/// apparmor_parser 3 (Debian 12, Ubuntu 22.04), ou version illisible : la
+/// variante AppArmor 3 remplace le profil installe, sous le meme nom.
+#[test]
+fn apparmor_profile_variant_follows_the_parser_version() {
+    for major in [Some(3), None] {
+        let (env, _k) = env_with_unit_changes();
+        let mut sys = Mock::new(&env, true);
+        sys.apparmor_major = major;
+        let r = updater::run(manual("v0.2.0"), &sys, &env.paths, &env.sources);
+        assert!(matches!(r, Ok(Outcome::Updated { .. })), "{r:?}");
+        assert_eq!(
+            std::fs::read_to_string(env.paths.apparmor_dir.join(updater::APPARMOR_PROFILE))
+                .unwrap(),
+            "profil v0.2.0 abi3",
+            "{major:?}"
+        );
+        assert!(
+            !env.paths
+                .apparmor_dir
+                .join(updater::APPARMOR_PROFILE_ABI3)
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn apparmor_parser_version_is_parsed() {
+    assert_eq!(
+        updater::parse_apparmor_parser_major("AppArmor parser version 4.0.1\nCopyright\n"),
+        Some(4)
+    );
+    assert_eq!(
+        updater::parse_apparmor_parser_major("AppArmor parser version 3.0.8"),
+        Some(3)
+    );
+    assert_eq!(updater::parse_apparmor_parser_major("autre chose"), None);
+    assert_eq!(updater::apparmor_variant(Some(4)), "ciphera-buildkitd");
+    assert_eq!(updater::apparmor_variant(Some(5)), "ciphera-buildkitd");
+    assert_eq!(updater::apparmor_variant(Some(3)), "ciphera-buildkitd.abi3");
+    assert_eq!(updater::apparmor_variant(None), "ciphera-buildkitd.abi3");
 }
 
 /// Retour arriere : unite nouvelle desactivee et retiree, unite retiree

@@ -96,10 +96,13 @@ pub const REQUIRED_UNITS: [&str; 4] = [
 ];
 /// Dossiers des sockets (`systemd/` de l'archive, installe dans `tmpfiles`).
 pub const TMPFILES: &str = "ciphera.tmpfiles.conf";
-/// Profil AppArmor de buildkitd (`apparmor/` de l'archive), remplace s'il
-/// est installe (`install.sh` ne le pose que sur les noyaux qui
-/// restreignent les espaces de noms utilisateur).
+/// Profil AppArmor de buildkitd (`apparmor/` de l'archive, variante
+/// AppArmor 4), installe sous ce nom dans `/etc/apparmor.d` ; remplace s'il
+/// est installe (`install.sh` ne le pose que la ou AppArmor est actif).
 pub const APPARMOR_PROFILE: &str = "ciphera-buildkitd";
+/// Variante AppArmor 3 du meme profil (`apparmor/` de l'archive), installee
+/// sous le nom [`APPARMOR_PROFILE`] quand `apparmor_parser` est en version 3.
+pub const APPARMOR_PROFILE_ABI3: &str = "ciphera-buildkitd.abi3";
 /// Services de Ciphera surveilles apres le redemarrage.
 pub const SERVICES: [&str; 3] = [
     "ciphera.service",
@@ -426,8 +429,33 @@ pub trait System: Sync {
     /// redemarrage : ce que la nouvelle version doit ajuster sur la machine.
     /// Un echec ramene la version precedente.
     fn post_install(&self, from: Version, to: Version) -> io::Result<()>;
+    /// Version majeure d'`apparmor_parser` (`--version`) ; `None` si
+    /// illisible.
+    fn apparmor_parser_major(&self) -> Option<u32>;
     /// Secondes depuis l'epoque Unix.
     fn now(&self) -> u64;
+}
+
+/// Version majeure dans la sortie de `apparmor_parser --version`
+/// (`AppArmor parser version 4.0.1`).
+pub fn parse_apparmor_parser_major(text: &str) -> Option<u32> {
+    let version = text
+        .lines()
+        .next()?
+        .trim()
+        .strip_prefix("AppArmor parser version ")?;
+    version.split('.').next()?.parse().ok()
+}
+
+/// Variante du profil de buildkitd pour un `apparmor_parser` de version
+/// majeure `major`, comme `install.sh` : AppArmor 4 a partir de 4, AppArmor 3
+/// sinon (version illisible comprise : l'ABI 3.0 est aussi lue par les
+/// parsers 4).
+pub fn apparmor_variant(major: Option<u32>) -> &'static str {
+    match major {
+        Some(m) if m >= 4 => APPARMOR_PROFILE,
+        _ => APPARMOR_PROFILE_ABI3,
+    }
 }
 
 /// Origine de la version a installer.
@@ -818,7 +846,8 @@ fn install(
     let listed: String = staged.units.iter().map(|u| format!("{u}\n")).collect();
     fs::write(&units_file, listed).map_err(io_err("registre des unites"))?;
     let (units, change) = unit_changes(sys, paths, staged)?;
-    let plan = plan(paths, staged, &version_file, &units_file);
+    let apparmor = apparmor_source(sys, paths, staged);
+    let plan = plan(paths, staged, apparmor, &version_file, &units_file);
     if let Err(e) = replace(paths, &plan, from, to, &dump, &units) {
         if paths.state_dir.join(JOURNAL).exists()
             && let Err(r) = restore(sys, paths, true)
@@ -1290,9 +1319,28 @@ struct Planned {
     mode: u32,
 }
 
+/// Profil AppArmor de l'archive qui remplace le profil installe : la
+/// variante du `apparmor_parser` de la machine. Rien si le profil n'est pas
+/// installe (machine sans AppArmor) ou si l'archive n'a pas cette variante
+/// (le profil installe reste alors en place).
+fn apparmor_source(sys: &dyn System, paths: &Paths, staged: &release::Staged) -> Option<PathBuf> {
+    if !paths.apparmor_dir.join(APPARMOR_PROFILE).is_file() {
+        return None;
+    }
+    let variant = apparmor_variant(sys.apparmor_parser_major());
+    if !staged.apparmor.iter().any(|a| a == variant) {
+        eprintln!(
+            "attention : profil AppArmor {variant} absent de l'archive, profil installe garde"
+        );
+        return None;
+    }
+    Some(staged.pkg.join("apparmor").join(variant))
+}
+
 fn plan(
     paths: &Paths,
     staged: &release::Staged,
+    apparmor: Option<PathBuf>,
     version_file: &Path,
     units_file: &Path,
 ) -> Vec<Planned> {
@@ -1319,15 +1367,10 @@ fn plan(
         paths.tmpfiles.clone(),
         0o644,
     ));
-    // Profil AppArmor remplace seulement s'il est installe (noyaux qui
-    // restreignent les espaces de noms utilisateur, voir install.sh).
-    let profile = paths.apparmor_dir.join(APPARMOR_PROFILE);
-    if staged.apparmor && profile.is_file() {
-        plan.push(file(
-            staged.pkg.join("apparmor").join(APPARMOR_PROFILE),
-            profile,
-            0o644,
-        ));
+    // Profil AppArmor remplace seulement s'il est installe (AppArmor actif,
+    // voir install.sh), par la variante du parser de la machine.
+    if let Some(src) = apparmor {
+        plan.push(file(src, paths.apparmor_dir.join(APPARMOR_PROFILE), 0o644));
     }
     plan.extend(staged.containers.iter().map(|c| {
         file(

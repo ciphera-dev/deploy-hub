@@ -14,7 +14,10 @@ use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 use shared::update::Version;
 
-use super::{APPARMOR_PROFILE, BINARIES, REQUIRED_UNITS, Sources, System, TMPFILES, is_unit_name};
+use super::{
+    APPARMOR_PROFILE, APPARMOR_PROFILE_ABI3, BINARIES, REQUIRED_UNITS, Sources, System, TMPFILES,
+    is_unit_name,
+};
 
 /// Nombre maximal d'unites systemd dans une archive.
 const MAX_UNITS: usize = 32;
@@ -35,8 +38,9 @@ pub(super) struct Staged {
     pub pkg: PathBuf,
     /// Unites systemd de l'archive (`systemd/ciphera*.{service,…}`), triees.
     pub units: Vec<String>,
-    /// L'archive livre le profil AppArmor de buildkitd.
-    pub apparmor: bool,
+    /// Variantes du profil AppArmor de buildkitd livrees par l'archive
+    /// (`APPARMOR_PROFILE`, `APPARMOR_PROFILE_ABI3`).
+    pub apparmor: Vec<String>,
     /// Outils verifies : (fichier prepare, nom installe).
     pub tools: Vec<(PathBuf, String)>,
     /// Fichiers `containers/*.digest` de l'archive.
@@ -217,7 +221,7 @@ fn wanted_release_file(rel: &str) -> bool {
         None => rel == "tools.manifest" || rel == "migration",
         Some(("bin", b)) => BINARIES.contains(&b),
         Some(("systemd", u)) => is_unit_name(u) || u == TMPFILES,
-        Some(("apparmor", a)) => a == APPARMOR_PROFILE,
+        Some(("apparmor", a)) => a == APPARMOR_PROFILE || a == APPARMOR_PROFILE_ABI3,
         Some(("containers", c)) => is_name(c) && c.ends_with(".digest"),
         _ => false,
     }
@@ -227,7 +231,7 @@ fn wanted_release_file(rel: &str) -> bool {
 struct Extracted {
     containers: Vec<String>,
     units: Vec<String>,
-    apparmor: bool,
+    apparmor: Vec<String>,
 }
 
 /// Extrait les fichiers utiles de l'archive dans `out`. Toute entree hors de
@@ -299,7 +303,11 @@ fn extract_release(archive: &Path, name: &str, out: &Path) -> Result<Extracted, 
     Ok(Extracted {
         containers,
         units,
-        apparmor: seen.contains(&format!("apparmor/{APPARMOR_PROFILE}")),
+        apparmor: [APPARMOR_PROFILE, APPARMOR_PROFILE_ABI3]
+            .into_iter()
+            .filter(|a| seen.contains(&format!("apparmor/{a}")))
+            .map(str::to_string)
+            .collect(),
     })
 }
 
@@ -428,6 +436,7 @@ mod tests {
         assert!(!wanted_release_file("systemd/evil.service"));
         assert!(wanted_release_file("systemd/ciphera-backup.timer"));
         assert!(wanted_release_file("apparmor/ciphera-buildkitd"));
+        assert!(wanted_release_file("apparmor/ciphera-buildkitd.abi3"));
         assert!(!wanted_release_file("apparmor/other"));
         assert!(!wanted_release_file("systemd/ciphera.conf"));
         assert!(!wanted_release_file("systemd/ciphera-.service"));

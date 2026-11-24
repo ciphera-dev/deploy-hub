@@ -69,8 +69,13 @@ pub enum BuildkitError {
     /// Dossiers du projet (creation, suppression) ou fichier d'usage.
     Fs(String),
     /// Socket absent ou muet (etat et journal du conteneur : journal de
-    /// l'agent seulement, jamais dans ce message).
-    SocketTimeout(PathBuf),
+    /// l'agent seulement, jamais dans ce message) ; `apparmor` : profil
+    /// AppArmor de buildkitd, s'il y en a un (une regle manquante peut
+    /// l'avoir arrete).
+    SocketTimeout {
+        socket: PathBuf,
+        apparmor: Option<String>,
+    },
     /// Un autre projet a un build en cours sur son buildkitd (sans le
     /// nommer : le message finit dans le journal d'un autre projet).
     Busy,
@@ -89,11 +94,15 @@ impl fmt::Display for BuildkitError {
             Self::Infra(e) => write!(f, "{e}"),
             Self::Docker(e) => write!(f, "{e}"),
             Self::Fs(m) => write!(f, "etat de buildkitd : {m}"),
-            Self::SocketTimeout(_) => {
+            Self::SocketTimeout { apparmor, .. } => {
                 write!(
                     f,
                     "buildkitd du projet n'a pas demarre (voir le journal de l'agent)"
-                )
+                )?;
+                if let Some(profile) = apparmor {
+                    write!(f, " ; {}", apparmor_hint(profile))?;
+                }
+                Ok(())
             }
             Self::Busy => write!(f, "un autre build utilise deja buildkitd"),
             Self::AppArmor { profile, detail } => write!(
@@ -140,6 +149,12 @@ struct Usage {
     /// Projets dont le buildkitd a ete demarre par ce processus et pas encore
     /// arrete : seuls a arreter (les autres le sont deja, voir `startup`).
     running: HashSet<ProjectId>,
+}
+
+/// Indice court (sans chemin) quand buildkitd tourne sous un profil AppArmor :
+/// une regle manquante peut l'avoir arrete.
+fn apparmor_hint(profile: &str) -> String {
+    format!("profil AppArmor {profile} : chercher apparmor=\"DENIED\" dans journalctl -k")
 }
 
 fn locked(usage: &Mutex<Usage>) -> MutexGuard<'_, Usage> {
@@ -418,13 +433,23 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
             }
             if down >= 3 || start.elapsed() >= self.socket_wait {
                 // Le detail (journal de buildkitd compris) reste dans le
-                // journal de l'agent : le message du build est court.
+                // journal de l'agent : le message du build est court. Sous
+                // un profil AppArmor, une regle manquante peut avoir arrete
+                // rootlesskit ou buildkitd : indice dans les deux messages.
+                let apparmor = self.cfg.buildkit_apparmor_profile.clone();
+                let hint = apparmor
+                    .as_deref()
+                    .map(|p| format!(" ; {}", apparmor_hint(p)))
+                    .unwrap_or_default();
                 tracing::error!(
-                    "buildkitd du projet n'a pas demarre ({}) : {}",
+                    "buildkitd du projet n'a pas demarre ({}) : {}{hint}",
                     socket.display(),
                     self.diagnostic(socket, id).await
                 );
-                return Err(BuildkitError::SocketTimeout(socket.to_path_buf()));
+                return Err(BuildkitError::SocketTimeout {
+                    socket: socket.to_path_buf(),
+                    apparmor,
+                });
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

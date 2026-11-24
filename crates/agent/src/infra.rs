@@ -51,11 +51,12 @@
 //!   `ciphera-buildkitd` (`deploy/apparmor/ciphera-buildkitd` : espaces de
 //!   noms utilisateur, montages et fichiers permis, `/proc` et `/sys`
 //!   sensibles refuses, `ptrace` et signaux limites au conteneur), installe
-//!   par install.sh la ou le noyau restreint les espaces de noms
-//!   utilisateur (Ubuntu >= 23.10, AppArmor 4) ; ailleurs
-//!   `apparmor=unconfined` (risque residuel R13). Profil installe mais pas
-//!   charge : buildkitd n'est pas demarre (`BuildkitError::AppArmor`),
-//!   jamais de repli sans profil. `OCIConfig.apparmor-profile` de BuildKit (profil
+//!   par install.sh la ou AppArmor est actif (variante AppArmor 4 ou
+//!   AppArmor 3 `ciphera-buildkitd.abi3` selon `apparmor_parser`) ; sans
+//!   AppArmor (ou sans `apparmor_parser`, avertissement au demarrage)
+//!   `apparmor=unconfined`. Profil installe mais pas charge : buildkitd
+//!   n'est pas demarre (`BuildkitError::AppArmor`), jamais de repli sans
+//!   profil. `OCIConfig.apparmor-profile` de BuildKit (profil
 //!   propre aux etapes RUN) n'est pas utilisable : BuildKit le refuse quand
 //!   il ne voit pas AppArmor, ce qui est le cas dans le conteneur (ni
 //!   securityfs ni `apparmor_parser`) ; les etapes RUN restent sous le
@@ -466,8 +467,8 @@ impl InfraConfig {
         if buildkit_apparmor_profile.is_none() && host_apparmor_enabled() {
             tracing::warn!(
                 "AppArmor actif mais profil {BUILDKIT_APPARMOR_PROFILE} absent \
-                 ({BUILDKIT_APPARMOR_FILE}, installe par install.sh la ou le noyau \
-                 restreint les espaces de noms utilisateur) : buildkitd sans profil AppArmor"
+                 ({BUILDKIT_APPARMOR_FILE}) : buildkitd sans profil AppArmor ; \
+                 installer le paquet apparmor (apparmor_parser) puis relancer install.sh"
             );
         }
         Ok(Self {

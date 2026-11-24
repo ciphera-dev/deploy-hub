@@ -91,8 +91,10 @@ jobs:
           persist-credentials: false
       - run: rustup show
       - run: docker info
-      # Comme install.sh : profil AppArmor applique de buildkitd rootless la
-      # ou le noyau restreint les espaces de noms utilisateur (Ubuntu >= 23.10).
+      # Comme install.sh sur ce runner (Ubuntu 24.04, AppArmor 4, espaces de
+      # noms utilisateur restreints) : variante AppArmor 4 du profil applique
+      # de buildkitd rootless. Seule preuve a l'execution ; la variante
+      # AppArmor 3 n'est verifiee qu'en syntaxe (job apparmor-syntax).
       - run: |
           if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo install -m 0644 deploy/apparmor/ciphera-buildkitd /etc/apparmor.d/ciphera-buildkitd
@@ -378,6 +380,48 @@ jobs:
         with:
           persist-credentials: false
       - run: sudo bash install/tests/units-boot.sh debian ubuntu fedora
+
+  # Profil AppArmor de buildkitd : variante choisie par install.sh
+  # (`apparmor_variant`, d'apres la version d'apparmor_parser) et analyse sans
+  # chargement (`-Q`) par l'apparmor_parser de chaque distribution prise en
+  # charge. Images epinglees par digest (index multi-architecture).
+  apparmor-syntax:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: debian-12
+            image: docker.io/library/debian@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
+            variant: ciphera-buildkitd.abi3
+          - name: ubuntu-22.04
+            image: docker.io/library/ubuntu@sha256:b000e69a50ff940390233025e7a337fb8469b509e2334fa4d018ac30f3e18cdb
+            variant: ciphera-buildkitd.abi3
+          - name: ubuntu-24.04
+            image: docker.io/library/ubuntu@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289
+            variant: ciphera-buildkitd
+    name: apparmor-syntax (${{ matrix.name }})
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends apparmor
+      - name: Variante d'install.sh, analyse sans chargement
+        shell: sh
+        env:
+          EXPECTED: ${{ matrix.variant }}
+        run: |
+          set -eu
+          APPARMOR_PROFILE=ciphera-buildkitd
+          APPARMOR_PROFILE_ABI3=ciphera-buildkitd.abi3
+          eval "$(sed -n '/^apparmor_variant() {/,/^}/p' install/install.sh)"
+          variant=$(apparmor_variant)
+          echo "$(apparmor_parser --version | head -n 1) : $variant"
+          test "$variant" = "$EXPECTED"
+          apparmor_parser -Q -K "deploy/apparmor/$variant"
+          # La variante AppArmor 3 est aussi lue par les parsers 4.
+          apparmor_parser -Q -K "deploy/apparmor/$APPARMOR_PROFILE_ABI3"
 
   shellcheck:
     runs-on: ubuntu-latest
