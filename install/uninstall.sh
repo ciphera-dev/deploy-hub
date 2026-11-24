@@ -32,6 +32,37 @@ die() {
 	exit 1
 }
 
+# Conteneurs geres, services deja arretes (aucun n'est relance) : arret
+# propre d'abord (SIGTERM, STOP_TIMEOUT s au plus, puis SIGKILL par Docker),
+# puis suppression. Un `docker rm -f` d'emblee tue par SIGKILL, et Docker
+# echoue (« PID ... is zombie and can not be killed ») tant que les processus
+# du conteneur n'ont pas fini de sortir : nouvel essai, REMOVE_ATTEMPTS au
+# plus. Echec : code non nul, derniere erreur de Docker affichee.
+STOP_TIMEOUT=30
+REMOVE_ATTEMPTS=6
+REMOVE_DELAY=5
+remove_managed_containers() {
+	ids=$(docker ps -aq --filter "$MANAGED") || return 1
+	[ -n "$ids" ] || return 0
+	# shellcheck disable=SC2086 # un identifiant par argument
+	docker stop -t "$STOP_TIMEOUT" $ids >/dev/null 2>&1 || true
+	attempt=1
+	while :; do
+		ids=$(docker ps -aq --filter "$MANAGED") || return 1
+		[ -n "$ids" ] || return 0
+		if [ "$attempt" -ge "$REMOVE_ATTEMPTS" ]; then
+			# shellcheck disable=SC2086
+			docker rm -f $ids >/dev/null || true
+			[ -z "$(docker ps -aq --filter "$MANAGED")" ]
+			return
+		fi
+		# shellcheck disable=SC2086
+		docker rm -f $ids >/dev/null 2>&1 || true
+		attempt=$((attempt + 1))
+		sleep "$REMOVE_DELAY"
+	done
+}
+
 main() {
 	purge=no
 	while [ "$#" -gt 0 ]; do
@@ -69,8 +100,11 @@ main() {
 	have_docker=no
 	if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 		have_docker=yes
-		docker ps -aq --filter "$MANAGED" | xargs -r docker rm -f >/dev/null || true
-		say "conteneurs Ciphera supprimes"
+		if remove_managed_containers; then
+			say "conteneurs Ciphera supprimes"
+		else
+			say "attention : conteneurs Ciphera restants (docker ps -a --filter $MANAGED), relancer uninstall.sh"
+		fi
 	fi
 	# Filtrage de la sortie des builds (charge par ciphera-agent.service),
 	# Docker joignable ou non : l'agent, seul a lancer des builds, est arrete.

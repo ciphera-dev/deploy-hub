@@ -493,7 +493,16 @@ proxy_checks a
 # --- (b) desinstallation sans --purge ----------------------------------------------
 printf '== (b) desinstallation\n'
 check "(b) uninstall.sh" sh -c "sh '$root/install/uninstall.sh' >/dev/null"
-check "(b) conteneurs retires" 	sh -c '! docker inspect ciphera-postgres >/dev/null 2>&1 && test -z "$(docker ps -aq --filter name=ciphera-buildkitd)"'
+containers_removed() {
+	! docker inspect ciphera-postgres >/dev/null 2>&1 && test -z "$(docker ps -aq --filter name=ciphera-buildkitd)"
+}
+if containers_removed; then
+	check "(b) conteneurs retires" true
+else
+	check "(b) conteneurs retires" false
+	printf -- '--- conteneurs restants ---\n'
+	docker ps -a --filter label=dev.ciphera.managed=true --format '{{.ID}} {{.Names}} {{.Status}}' || true
+fi
 check "(b) volume de la base conserve" docker volume inspect ciphera-postgres-data
 check "(b) secrets conserves" test -s /etc/ciphera/db_password
 check "(b) proxy arrete, socket de pilotage retire" \
