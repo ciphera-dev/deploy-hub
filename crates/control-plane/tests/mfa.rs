@@ -1170,3 +1170,29 @@ async fn factor_added_mail_sent() {
         "aucun lien dans l'avis"
     );
 }
+
+#[tokio::test]
+async fn totp_start_is_rate_limited_after_five_wrong_passwords() {
+    let env = env().await;
+    let (token, csrf, _) = login(&env.state).await;
+    for _ in 0..5 {
+        let r = post(
+            &env.state,
+            "/api/me/mfa/totp/start",
+            &token,
+            Some(&csrf),
+            json!({ "current_password": "mauvais mot de passe" }),
+        )
+        .await;
+        assert_eq!(r.status, 401, "{}", r.raw);
+    }
+    let r = post(
+        &env.state,
+        "/api/me/mfa/totp/start",
+        &token,
+        Some(&csrf),
+        json!({ "current_password": PASSWORD }),
+    )
+    .await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+}

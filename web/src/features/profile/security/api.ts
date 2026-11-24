@@ -9,8 +9,10 @@ export type TotpStart = components["schemas"]["TotpStart"];
 export type FactorFailure = "password" | "rate_limited" | "unavailable";
 export type StartResult = { ok: true; setup: TotpStart } | { ok: false; reason: FactorFailure };
 
-function failure(status: number): FactorFailure {
-  return status === 401 ? "password" : status === 429 ? "rate_limited" : "unavailable";
+/** Seul un 401 `invalid_credentials` est un mot de passe faux ; les autres 401 (session expiree) restent generiques. */
+function failure(status: number, error?: unknown): FactorFailure {
+  const code = (error as { error?: { code?: unknown } } | undefined)?.error?.code;
+  return status === 401 && code === "invalid_credentials" ? "password" : status === 429 ? "rate_limited" : "unavailable";
 }
 
 /**
@@ -26,7 +28,7 @@ export async function startTotp(password?: string): Promise<StartResult> {
     return { ok: false, reason: "unavailable" };
   }
   if (result.data) return { ok: true, setup: result.data };
-  return { ok: false, reason: failure(result.response.status) };
+  return { ok: false, reason: failure(result.response.status, result.error) };
 }
 
 export type ConfirmResult = { ok: true; recoveryCodes: string[] } | { ok: false; reason: "invalid" | "unavailable" };
@@ -65,7 +67,7 @@ export type RegisterResult = { ok: true; recoveryCodes: string[] } | { ok: false
 export async function registerPasskey(name: string, password: string): Promise<RegisterResult> {
   try {
     const options = await api.POST("/api/me/webauthn/register/options", { body: { current_password: password } });
-    if (!options.data) return { ok: false, reason: failure(options.response.status) };
+    if (!options.data) return { ok: false, reason: failure(options.response.status, options.error) };
     const created = await navigator.credentials.create({ publicKey: creationOptions(options.data.options) });
     if (!created) return { ok: false, reason: "cancelled" };
     const result = await api.POST("/api/me/webauthn/register/verify", {

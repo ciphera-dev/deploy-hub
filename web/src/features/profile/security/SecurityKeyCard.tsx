@@ -53,7 +53,8 @@ function AddKey({ onClose, onAdded, onDone }: { onClose: () => void; onAdded: ()
     setError("");
     const result = await registerPasskey(name.trim(), password);
     setBusy(false);
-    setPassword("");
+    // Mot de passe garde si la verification a reussi (annulation du navigateur, cle deja enregistree).
+    if (result.ok || result.reason === "password" || result.reason === "rate_limited") setPassword("");
     if (!result.ok) return setError(registerMessage(result));
     onAdded();
     if (result.recoveryCodes.length > 0) setCodes(result.recoveryCodes);

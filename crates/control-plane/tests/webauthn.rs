@@ -4,12 +4,14 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use common::api::{Reply, Req, call};
 use control_plane::auth::password;
+use control_plane::mail::{Delivery, OutgoingMail};
 use control_plane::state::AppState;
 use serde_json::{Value, json};
 use shared::config::Config;
@@ -1297,4 +1299,151 @@ async fn enrollment_session_can_register_without_password() {
     )
     .await;
     assert_eq!(r.status, 200, "{}", r.raw);
+}
+
+async fn session_count(state: &AppState, enrollment: bool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM sessions WHERE enrollment_required = $1")
+        .bind(enrollment)
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn first_factor_ends_other_enrollment_sessions() {
+    let env = env().await;
+    let s = &env.state;
+    require_mfa(s).await;
+    let (a, a_csrf, _) = login(s).await;
+    let (b, _, _) = login(s).await;
+    assert_eq!(session_count(s, true).await, 2);
+    let mut auth = authenticator();
+    // Premiere passkey depuis une session d'enrolement (sans mot de passe).
+    let r = send(
+        s,
+        "POST",
+        "/api/me/webauthn/register/options",
+        Some(&a),
+        Some(&a_csrf),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let ccr: CreationChallengeResponse =
+        serde_json::from_value(r.json()["options"].clone()).unwrap();
+    let cred = serde_json::to_value(auth.do_registration(origin(ORIGIN), ccr).unwrap()).unwrap();
+    let v = send(
+        s,
+        "POST",
+        "/api/me/webauthn/register/verify",
+        Some(&a),
+        Some(&a_csrf),
+        Some(json!({ "ceremony_id": r.json()["ceremony_id"], "name": "Cle", "credential": cred })),
+    )
+    .await;
+    assert_eq!(v.status, 200, "{}", v.raw);
+    assert_eq!(
+        session_count(s, true).await,
+        0,
+        "plus de session restreinte"
+    );
+    assert_eq!(me(s, &b).await.status, 401, "l'autre session est fermee");
+    assert_eq!(me(s, &v.token()).await.status, 200);
+}
+
+#[tokio::test]
+async fn stale_enrollment_session_needs_password() {
+    let (env, _auth, reg) = registered_env().await;
+    let s = &env.state;
+    // Session restee restreinte alors que le compte a deja un facteur.
+    let (stale, stale_csrf, _) = login(s).await;
+    let flagged = sqlx::query(
+        "UPDATE sessions SET mfa_pending = false, enrollment_required = true WHERE mfa_pending",
+    )
+    .execute(&s.db)
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(flagged, 1);
+    let _ = reg;
+    let options = |body| {
+        send(
+            s,
+            "POST",
+            "/api/me/webauthn/register/options",
+            Some(&stale),
+            Some(&stale_csrf),
+            body,
+        )
+    };
+    let r = options(None).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_credentials");
+    let r = options(Some(json!({ "current_password": PASSWORD }))).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn factor_options_are_rate_limited_after_five_wrong_passwords() {
+    let env = env().await;
+    let s = &env.state;
+    let (token, csrf, _) = login(s).await;
+    for _ in 0..5 {
+        let r = send(
+            s,
+            "POST",
+            "/api/me/webauthn/register/options",
+            Some(&token),
+            Some(&csrf),
+            Some(json!({ "current_password": "mauvais mot de passe" })),
+        )
+        .await;
+        assert_eq!(r.status, 401, "{}", r.raw);
+    }
+    let r = send(
+        s,
+        "POST",
+        "/api/me/webauthn/register/options",
+        Some(&token),
+        Some(&csrf),
+        Some(json!({ "current_password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn factor_added_mail_sent_for_passkey() {
+    let mut env = env_with(&[
+        ("CIPHERA_WEBAUTHN_RP_ID", RP_ID),
+        ("CIPHERA_WEBAUTHN_RP_ORIGIN", ORIGIN),
+        ("CIPHERA_PUBLIC_URL", "https://panel.example.com"),
+    ])
+    .await;
+    let outbox: Arc<Mutex<Vec<OutgoingMail>>> = Arc::default();
+    let sink = outbox.clone();
+    env.state.mail = Delivery::from_fn(move |_mailer, mail| {
+        sink.lock().unwrap().push(mail);
+        Box::pin(async { Ok(()) })
+    });
+    let s = &env.state;
+    sqlx::query(
+        "INSERT INTO smtp_settings (enabled, host, port, tls, from_address, from_name) \
+         VALUES (true, 'smtp.example.com', 587, 'starttls', 'ciphera@example.com', 'Ciphera')",
+    )
+    .execute(&s.db)
+    .await
+    .unwrap();
+    let (token, csrf, _) = login(s).await;
+    register(s, &mut authenticator(), &token, &csrf).await;
+    for _ in 0..100 {
+        if !outbox.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mails = outbox.lock().unwrap().clone();
+    assert_eq!(mails.len(), 1);
+    assert_eq!(mails[0].to, EMAIL);
+    assert!(mails[0].subject.contains("Nouveau facteur ajouté"));
 }

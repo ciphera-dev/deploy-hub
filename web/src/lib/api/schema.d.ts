@@ -7255,7 +7255,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `forbidden` (Equipe : Admin requis, ou compte d'un role au-dessus du sien) ou jeton CSRF invalide */
+            /** @description `forbidden` (Equipe : Admin requis, ou compte de rang egal ou superieur au sien) ; `use_password_change` (son propre compte : utiliser `POST /api/me/password`) ; ou jeton CSRF invalide */
             403: {
                 headers: {
                     [name: string]: unknown;

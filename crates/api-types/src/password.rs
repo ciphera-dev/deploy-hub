@@ -145,7 +145,7 @@ pub fn reset_password() {}
     responses(
         (status = 201, description = "Lien cree (un lien encore inutilise est remplace)", body = ResetLink),
         (status = 401, description = "Pas de session complete"),
-        (status = 403, description = "`forbidden` (Equipe : Admin requis, ou compte d'un role au-dessus du sien) ou jeton CSRF invalide"),
+        (status = 403, description = "`forbidden` (Equipe : Admin requis, ou compte de rang egal ou superieur au sien) ; `use_password_change` (son propre compte : utiliser `POST /api/me/password`) ; ou jeton CSRF invalide"),
         (status = 404, description = "Compte introuvable"),
     )
 )]

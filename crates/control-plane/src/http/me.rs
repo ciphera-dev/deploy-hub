@@ -37,7 +37,7 @@ use zeroize::Zeroizing;
 use super::auth::audit;
 use super::mfa::{invalid_request, rate_limited};
 use super::setup::validate_email;
-use crate::auth::{CurrentUser, internal, password, rate_limit, totp, webauthn};
+use crate::auth::{CurrentUser, factors, internal, password, rate_limit, totp, webauthn};
 use crate::avatar::{self, AvatarError, UploadLimiter};
 use crate::http::client_ip::ClientIp;
 use crate::mail;
@@ -235,8 +235,20 @@ pub(crate) async fn require_password_for_factor(
     body: Result<Json<AddFactor>, JsonRejection>,
     failure_action: &str,
 ) -> Result<Option<Response>, ApiError> {
+    // Exemption seulement tant que le compte n'a aucun facteur (relu ici) :
+    // le drapeau de la session est fige a la connexion.
     if user.session.enrollment_required {
-        return Ok(None);
+        let mut conn = state
+            .db
+            .acquire()
+            .await
+            .map_err(|e| internal("connexion a la base", e))?;
+        let f = factors::read(&mut conn, user.id)
+            .await
+            .map_err(|e| internal("lecture des seconds facteurs", e))?;
+        if !f.totp && f.passkeys == 0 {
+            return Ok(None);
+        }
     }
     let missing = || {
         ApiError::new(

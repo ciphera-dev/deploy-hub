@@ -193,3 +193,17 @@ it("ajout : le bouton Continuer attend le mot de passe, un mot de passe faux est
   expect(await within(dialog).findByRole("alert")).toHaveTextContent("Mot de passe incorrect.");
   expect(create).not.toHaveBeenCalled();
 });
+
+it("ajout : un 401 de session expiree n'est pas presente comme un mot de passe faux ; l'annulation garde le mot de passe", async () => {
+  stubCreate(new DOMException("x", "NotAllowedError"));
+  renderCard();
+  fireEvent.click(await screen.findByRole("button", { name: "Ajouter" }));
+  typePassword();
+  fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Opération annulée");
+  expect(screen.getByLabelText("Mot de passe")).toHaveValue("mon mot de passe");
+  server.use(http.post("*/api/me/webauthn/register/options", () => HttpResponse.json({ error: { code: "unauthenticated", message: "x" } }, { status: 401 })));
+  fireEvent.click(screen.getByRole("button", { name: "Continuer" }));
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Enregistrement impossible"));
+  expect(screen.getByRole("alert")).not.toHaveTextContent("Mot de passe incorrect.");
+});

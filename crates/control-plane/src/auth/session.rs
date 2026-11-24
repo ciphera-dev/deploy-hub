@@ -175,6 +175,23 @@ pub async fn lookup(db: &PgPool, token: &str) -> Result<Option<Session>, sqlx::E
 /// duree recalculee), en une seule instruction. Sert apres la double
 /// authentification (`mfa_pending = false`) et apres l'enrolement TOTP. La
 /// nouvelle session n'est jamais restreinte a l'enrolement.
+/// Supprime les autres sessions du compte restees restreintes a l'enrolement :
+/// des qu'un facteur existe, elles n'ont plus lieu d'etre.
+pub async fn end_other_enrollment_sessions(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    keep: Uuid,
+) -> Result<u64, sqlx::Error> {
+    Ok(
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND enrollment_required AND id <> $2")
+            .bind(user_id)
+            .bind(keep)
+            .execute(conn)
+            .await?
+            .rows_affected(),
+    )
+}
+
 pub async fn rotate(
     conn: &mut PgConnection,
     current: &Session,

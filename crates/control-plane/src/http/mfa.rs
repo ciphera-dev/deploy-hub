@@ -201,6 +201,9 @@ async fn confirm(
     let token = session::rotate(&mut tx, &user.session, false)
         .await
         .map_err(|e| internal("rotation de la session", e))?;
+    session::end_other_enrollment_sessions(&mut tx, user.id, user.session.id)
+        .await
+        .map_err(|e| internal("fin des sessions d'enrolement", e))?;
     audit(
         &mut tx,
         Some(user.id),
