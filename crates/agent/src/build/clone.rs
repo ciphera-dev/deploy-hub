@@ -17,6 +17,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use proto::GitToken;
 
@@ -162,8 +163,88 @@ pub fn checkout_command(c: &Checkout, dir: &ValidatedArg, home: &ValidatedArg) -
     )
 }
 
+/// Plafond de la taille du dossier cloné (`.git` compris).
+pub const MAX_CLONE_BYTES: u64 = 2 << 30;
+/// Intervalle de mesure de la taille du dossier pendant une commande `git`.
+const SIZE_POLL: Duration = Duration::from_millis(250);
+
+/// Taille cumulee des fichiers sous `dir` (liens non suivis), comptee
+/// jusqu'a depasser `cap` au plus ; dossier absent ou illisible : 0.
+fn dir_size(dir: &Path, cap: u64) -> u64 {
+    let mut total = 0u64;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(d) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if meta.is_dir() {
+                pending.push(entry.path());
+            } else {
+                total = total.saturating_add(meta.len());
+                if total > cap {
+                    return total;
+                }
+            }
+        }
+    }
+    total
+}
+
+fn too_big(cap: u64) -> BuildError {
+    let limit = if cap >= 1 << 30 {
+        format!("{} Gio", cap >> 30)
+    } else {
+        format!("{} Mio", cap >> 20)
+    };
+    BuildError::Tool {
+        tool: AllowedBin::Git.label(),
+        message: format!("depot trop volumineux (plus de {limit}) : clone arrete"),
+    }
+}
+
+/// Lance la commande `git` `cmd` ; sa progression est surveillee : si le
+/// dossier `dest` depasse `cap` octets, la commande est arretee et l'etape
+/// echoue. Le dossier est aussi mesure une fois la commande finie.
+pub async fn exec_capped<B: BuildBackend>(
+    backend: &B,
+    cmd: Command,
+    sink: &ProgressSink,
+    dest: &Path,
+    cap: u64,
+) -> Result<(), BuildError> {
+    let run = backend.exec(AllowedBin::Git, cmd, sink, false);
+    let watch = async {
+        loop {
+            tokio::time::sleep(SIZE_POLL).await;
+            let dir = dest.to_path_buf();
+            let size = tokio::task::spawn_blocking(move || dir_size(&dir, cap))
+                .await
+                .unwrap_or(0);
+            if size > cap {
+                return;
+            }
+        }
+    };
+    tokio::select! {
+        done = run => { done?; }
+        () = watch => return Err(too_big(cap)),
+    }
+    let dir = dest.to_path_buf();
+    let size = tokio::task::spawn_blocking(move || dir_size(&dir, cap))
+        .await
+        .unwrap_or(0);
+    if size > cap {
+        return Err(too_big(cap));
+    }
+    Ok(())
+}
+
 /// Clone `c` dans `workdir.src()` et s'assure que le commit extrait est
-/// celui demande.
+/// celui demande. Le dossier ne depasse jamais `MAX_CLONE_BYTES`.
 pub async fn run<B: BuildBackend>(
     backend: &B,
     sink: &ProgressSink,
@@ -172,16 +253,31 @@ pub async fn run<B: BuildBackend>(
     askpass: &Path,
     token: Option<&GitToken>,
 ) -> Result<(), BuildError> {
-    let dest = ValidatedArg::path(&workdir.src())?;
+    run_capped(backend, sink, c, workdir, askpass, token, MAX_CLONE_BYTES).await
+}
+
+/// `run` avec un plafond de `cap` octets.
+pub async fn run_capped<B: BuildBackend>(
+    backend: &B,
+    sink: &ProgressSink,
+    c: &Checkout,
+    workdir: &Workdir,
+    askpass: &Path,
+    token: Option<&GitToken>,
+    cap: u64,
+) -> Result<(), BuildError> {
+    let src = workdir.src();
+    let dest = ValidatedArg::path(&src)?;
     let home = ValidatedArg::path(&workdir.home())?;
-    backend
-        .exec(
-            AllowedBin::Git,
-            clone_command(c, &dest, &home, askpass, token),
-            sink,
-            false,
-        )
-        .await?;
+    let dir = Path::new(&src);
+    exec_capped(
+        backend,
+        clone_command(c, &dest, &home, askpass, token),
+        sink,
+        dir,
+        cap,
+    )
+    .await?;
     let head = backend
         .exec(AllowedBin::Git, rev_parse_command(&dest, &home), sink, true)
         .await?;
@@ -189,23 +285,15 @@ pub async fn run<B: BuildBackend>(
         return Ok(());
     }
     // La branche a avance depuis l'ordre : le commit demande, seul.
-    backend
-        .exec(
-            AllowedBin::Git,
-            fetch_command(c, &dest, &home, askpass, token),
-            sink,
-            false,
-        )
-        .await?;
-    backend
-        .exec(
-            AllowedBin::Git,
-            checkout_command(c, &dest, &home),
-            sink,
-            false,
-        )
-        .await?;
-    Ok(())
+    exec_capped(
+        backend,
+        fetch_command(c, &dest, &home, askpass, token),
+        sink,
+        dir,
+        cap,
+    )
+    .await?;
+    exec_capped(backend, checkout_command(c, &dest, &home), sink, dir, cap).await
 }
 
 /// Reponse a une question de `git` (`GIT_ASKPASS <question>`) : l'utilisateur

@@ -322,6 +322,7 @@ async fn app_container_cannot_reach_infra_network() {
         }),
         buildkit_state_dir: tmp.open_subdir("buildkit-state"),
         buildkit_identity_dir: tmp.0.join("buildkit-identity"),
+        buildkit_resources: infra::BuildkitResources::detect(&tmp.0),
     };
 
     // Un ciphera-buildkitd cree a la main (sans etiquette) n'est ni remplace
@@ -423,6 +424,13 @@ async fn app_container_cannot_reach_infra_network() {
         ["SETUID", "SETGID"]
     );
     assert_eq!(bk_hc.cap_drop.clone().unwrap_or_default(), ["ALL"]);
+    // Plafonds de ressources vus par Docker.
+    assert_eq!(bk_hc.pids_limit, Some(infra::BUILDKIT_PIDS_LIMIT));
+    assert_eq!(bk_hc.memory, Some(cfg.buildkit_resources.memory as i64));
+    assert_eq!(
+        bk_hc.nano_cpus,
+        Some(cfg.buildkit_resources.nano_cpus as i64)
+    );
     let uids = buildkitd_process_uids(&api).await;
     assert!(
         uids.iter().any(|(_, comm)| comm == "buildkitd"),

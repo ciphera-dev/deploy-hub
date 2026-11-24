@@ -1484,3 +1484,33 @@ async fn foreign_frontend_in_a_dockerfile_fails_the_build_clearly() {
         ));
     }
 }
+
+/// Le clone d'un depot au-dela du plafond echoue ; en dessous, il passe. Le
+/// faux `git clone` ecrit seulement un fichier de 16 octets : la mesure du
+/// dossier fini est en cause ici (la surveillance pendant le clone est
+/// verifiee avec un vrai `git` par le job agent-docker).
+#[tokio::test]
+async fn clone_over_cap_is_refused() {
+    let dir = BuildsDir::new();
+    let backend = FakeBackend {
+        repo: vec![("gros.bin", "0123456789abcdef")],
+        ..Default::default()
+    };
+    let checkout = clone::Checkout::new("https://github.com/acme/web", "main", SHA).unwrap();
+    let askpass = Path::new("/usr/local/bin/ciphera-agent");
+    for (cap, ok) in [(8, false), (16, true), (1 << 20, true)] {
+        let id = DeploymentId::new();
+        let (tx, _rx) = mpsc::channel(1024);
+        let sink = ProgressSink::new(id, tx);
+        let workdir = build::Workdir::create(&dir.0, id).unwrap();
+        let result =
+            clone::run_capped(&backend, &sink, &checkout, &workdir, askpass, None, cap).await;
+        match (ok, result) {
+            (true, Ok(())) => {}
+            (false, Err(e)) => assert!(e.to_string().contains("trop volumineux"), "{e}"),
+            (ok, other) => panic!("plafond {cap} (accepte : {ok}) : {other:?}"),
+        }
+        workdir.remove().unwrap();
+    }
+    assert_eq!(clone::MAX_CLONE_BYTES, 2 << 30);
+}

@@ -6,6 +6,15 @@
 # (security_opt apparmor=ciphera-buildkitd), sans toucher au reglage global
 # de la machine. Installe par install.sh dans /etc/apparmor.d/ la ou ce
 # reglage existe ; ailleurs l'agent utilise apparmor=unconfined.
+#
+# `flags=(unconfined)` est volontaire et documente (risque residuel R13, voir
+# docs/security/threat-model.md) : un profil applique devrait autoriser tout
+# ce que rootlesskit, buildkitd et le runc imbrique font (montages, pivot_root,
+# ptrace et signal entre les etapes RUN, acces fichiers de chaque image) ;
+# il n'a pas pu etre valide contre un vrai buildkitd rootless, et un profil
+# trop strict casserait tous les builds. Les limites de ressources, le
+# bac a sable des processus de BuildKit et la separation par compte de
+# l'hote (voir agent/src/infra.rs) restent en place.
 abi <abi/4.0>,
 
 profile ciphera-buildkitd flags=(unconfined) {

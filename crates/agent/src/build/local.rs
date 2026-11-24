@@ -5,6 +5,8 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bollard::Docker;
@@ -14,7 +16,7 @@ use bollard::query_parameters::{
     RemoveContainerOptions, RemoveImageOptions, TagImageOptions,
 };
 use bytes::{Bytes, BytesMut};
-use futures_util::stream::{self, StreamExt};
+use futures_util::stream::{self, Stream, StreamExt};
 use proto::{ImageRef, LogStream};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 
@@ -31,6 +33,9 @@ const PREPARE_LOG_TAIL: &str = "2000";
 pub const SHORT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Delai d'un build (buildctl + chargement).
 pub const BUILD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Taille maximale de l'archive d'image que `buildctl` envoie a Docker : au
+/// dela, `buildctl` est arrete et le build echoue.
+pub const MAX_IMAGE_BYTES: u64 = 10 << 30;
 /// Sortie standard capturee au plus (sortie de `docker compose config`).
 pub const MAX_CAPTURE: usize = 16 << 20;
 
@@ -144,6 +149,96 @@ async fn capture<R: AsyncRead + Unpin>(reader: R) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Groupe de processus d'un outil (l'outil en est le chef). Tuer le groupe
+/// arrete aussi ses descendants (aides de `git`, processus de `buildctl`),
+/// que `kill_on_drop` laisserait vivre.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(unix), allow(dead_code))]
+struct ProcessGroup(Option<u32>);
+
+impl ProcessGroup {
+    fn of(child: &tokio::process::Child) -> Self {
+        Self(child.id())
+    }
+
+    /// SIGKILL au groupe ; groupe deja vide : sans effet.
+    fn kill(self) {
+        #[cfg(unix)]
+        if let Some(pid) = self
+            .0
+            .and_then(|p| i32::try_from(p).ok())
+            .and_then(rustix::process::Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+/// Tue le groupe de processus a la liberation, sauf si l'outil s'est
+/// termine normalement (`finished`) : delai depasse, tache annulee ou echec.
+struct GroupGuard {
+    group: ProcessGroup,
+    armed: bool,
+}
+
+impl GroupGuard {
+    fn new(child: &tokio::process::Child) -> Self {
+        Self {
+            group: ProcessGroup::of(child),
+            armed: true,
+        }
+    }
+
+    fn finished(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.group.kill();
+        }
+    }
+}
+
+/// Archive lue sur `reader`, coupee en erreur au-dela de `cap` octets :
+/// `exceeded` est alors positionne et `on_exceed` appele (arret de l'outil
+/// qui produit l'archive).
+fn capped_archive<R>(
+    reader: R,
+    cap: u64,
+    exceeded: Arc<AtomicBool>,
+    on_exceed: impl Fn() + Send + Sync + 'static,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let on_exceed = Arc::new(on_exceed);
+    stream::unfold(Some((reader, 0u64)), move |state| {
+        let exceeded = exceeded.clone();
+        let on_exceed = on_exceed.clone();
+        async move {
+            let (mut reader, total) = state?;
+            let mut buf = BytesMut::with_capacity(64 * 1024);
+            match reader.read_buf(&mut buf).await {
+                Ok(0) => None,
+                Ok(n) => {
+                    let total = total.saturating_add(n as u64);
+                    if total > cap {
+                        exceeded.store(true, Ordering::SeqCst);
+                        on_exceed();
+                        let e = std::io::Error::other("image trop volumineuse");
+                        return Some((Err(e), None));
+                    }
+                    Some((Ok(buf.freeze()), Some((reader, total))))
+                }
+                Err(e) => Some((Err(e), None)),
+            }
+        }
+    })
+}
+
 /// Processus et API Docker locaux.
 #[derive(Clone)]
 pub struct LocalBackend {
@@ -168,13 +263,25 @@ impl LocalBackend {
         })
     }
 
-    fn spawn(bin: AllowedBin, cmd: Command) -> Result<tokio::process::Child, BuildError> {
+    /// Lance l'outil comme chef de son propre groupe de processus.
+    fn spawn(
+        bin: AllowedBin,
+        #[cfg_attr(not(unix), allow(unused_mut))] mut cmd: Command,
+    ) -> Result<(tokio::process::Child, GroupGuard), BuildError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         let mut cmd = tokio::process::Command::from(cmd);
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        cmd.spawn()
-            .map_err(|e| tool(bin, format!("lancement impossible : {e}")))
+        let child = cmd
+            .spawn()
+            .map_err(|e| tool(bin, format!("lancement impossible : {e}")))?;
+        let guard = GroupGuard::new(&child);
+        Ok((child, guard))
     }
 
     async fn exec_inner(
@@ -183,7 +290,7 @@ impl LocalBackend {
         sink: &ProgressSink,
         want_stdout: bool,
     ) -> Result<Vec<u8>, BuildError> {
-        let mut child = Self::spawn(bin, cmd)?;
+        let (mut child, mut guard) = Self::spawn(bin, cmd)?;
         let stdout = child.stdout.take().expect("stdout pipe");
         let stderr = child.stderr.take().expect("stderr pipe");
         let out = async {
@@ -203,6 +310,7 @@ impl LocalBackend {
         if !status.success() {
             return Err(tool(bin, format!("echec ({status})")));
         }
+        guard.finished();
         out.map_err(|e| tool(bin, e))
     }
 
@@ -213,18 +321,15 @@ impl LocalBackend {
         sink: &ProgressSink,
     ) -> Result<(), BuildError> {
         let bin = AllowedBin::Buildctl;
-        let mut child = Self::spawn(bin, cmd)?;
+        let (mut child, mut guard) = Self::spawn(bin, cmd)?;
         let stdout = child.stdout.take().expect("stdout pipe");
         let stderr = child.stderr.take().expect("stderr pipe");
-        // Archive `type=docker` de buildctl, envoyee a Docker au fil de l'eau.
-        let archive = stream::unfold(Some(stdout), |reader| async move {
-            let mut reader = reader?;
-            let mut buf = BytesMut::with_capacity(64 * 1024);
-            match reader.read_buf(&mut buf).await {
-                Ok(0) => None,
-                Ok(_) => Some((Ok::<Bytes, std::io::Error>(buf.freeze()), Some(reader))),
-                Err(e) => Some((Err(e), None)),
-            }
+        // Archive `type=docker` de buildctl, envoyee a Docker au fil de l'eau,
+        // plafonnee : au dela, buildctl et ses descendants sont tues.
+        let exceeded = Arc::new(AtomicBool::new(false));
+        let group = guard.group;
+        let archive = capped_archive(stdout, MAX_IMAGE_BYTES, exceeded.clone(), move || {
+            group.kill()
         });
         let options = ImportImageOptions {
             quiet: true,
@@ -245,10 +350,17 @@ impl LocalBackend {
             forward_lines(stderr, LogStream::Stderr, sink),
             child.wait()
         );
+        if exceeded.load(Ordering::SeqCst) {
+            return Err(BuildError::Image(format!(
+                "image de plus de {} Gio : build arrete",
+                MAX_IMAGE_BYTES >> 30
+            )));
+        }
         let status = status.map_err(|e| tool(bin, e.to_string()))?;
         if !status.success() {
             return Err(tool(bin, format!("echec du build ({status})")));
         }
+        guard.finished();
         imported?;
         self.docker
             .inspect_image(&staging.0)
@@ -541,6 +653,39 @@ mod tests {
         assert_eq!(lines[1], "deux\u{fffd}");
         assert_eq!(lines[2].len(), MAX_LOG_LINE);
         assert_eq!(lines[3], "fin");
+    }
+
+    #[tokio::test]
+    async fn archive_is_cut_above_the_cap() {
+        let data = vec![7u8; 100_000];
+        let exceeded = Arc::new(AtomicBool::new(false));
+        let called = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = called.clone();
+        let archive = capped_archive(
+            std::io::Cursor::new(data.clone()),
+            64 * 1024,
+            exceeded.clone(),
+            move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        let items: Vec<_> = archive.collect().await;
+        assert!(items.last().is_some_and(Result::is_err));
+        assert!(exceeded.load(Ordering::SeqCst));
+        assert_eq!(called.load(Ordering::SeqCst), 1);
+
+        // Au plafond exactement : tout passe.
+        let exceeded = Arc::new(AtomicBool::new(false));
+        let archive = capped_archive(
+            std::io::Cursor::new(data.clone()),
+            data.len() as u64,
+            exceeded.clone(),
+            || panic!("sous le plafond"),
+        );
+        let items: Vec<_> = archive.collect().await;
+        let total: usize = items.iter().map(|i| i.as_ref().unwrap().len()).sum();
+        assert_eq!(total, data.len());
+        assert!(!exceeded.load(Ordering::SeqCst));
     }
 
     #[test]

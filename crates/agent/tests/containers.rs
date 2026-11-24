@@ -27,6 +27,7 @@ fn cfg() -> InfraConfig {
         buildkit_account: Some(account()),
         buildkit_state_dir: PathBuf::from("/var/lib/ciphera-buildkit"),
         buildkit_identity_dir: PathBuf::from("/var/lib/ciphera-agent/buildkit-identity"),
+        buildkit_resources: infra::BuildkitResources::compute(16 << 30, 8, 200 << 30),
     }
 }
 
@@ -930,7 +931,7 @@ fn buildkitd_reads_its_frontend_allowlist_read_only() {
     );
     assert!(binds(&body).contains(&bind), "{:?}", binds(&body));
 
-    let toml = infra::buildkitd_config();
+    let toml = infra::buildkitd_config(&cfg().buildkit_resources);
     let repo = ciphera_agent::build::railpack::FRONTEND_REPOSITORY;
     assert!(
         ciphera_agent::build::railpack::FRONTEND.starts_with(&format!("{repo}:")),
@@ -966,7 +967,7 @@ async fn ensure_infra_writes_the_buildkitd_config() {
     let path = c.buildkit_identity_dir.join("buildkitd.toml");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        infra::buildkitd_config()
+        infra::buildkitd_config(&cfg().buildkit_resources)
     );
     #[cfg(unix)]
     {
@@ -979,6 +980,6 @@ async fn ensure_infra_writes_the_buildkitd_config() {
     infra::ensure_infra(&docker, &c).await.unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        infra::buildkitd_config()
+        infra::buildkitd_config(&cfg().buildkit_resources)
     );
 }

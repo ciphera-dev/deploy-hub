@@ -338,6 +338,11 @@ pub struct ContainerSpec {
     /// seule dans /proc (buildkitd rootless seulement, voir `infra`).
     pub(crate) unmask_system_paths: bool,
     pub(crate) pids_limit: Option<i64>,
+    /// Plafond de memoire en octets (buildkitd seulement).
+    pub(crate) memory: Option<i64>,
+    /// Plafond de CPU en milliardiemes de CPU (`--cpus` x 1e9 ; buildkitd
+    /// seulement).
+    pub(crate) nano_cpus: Option<i64>,
     pub(crate) labels: Vec<(String, String)>,
     /// Alias DNS sur `network` (`<service>.internal` d'une application).
     pub(crate) aliases: Vec<String>,
@@ -421,6 +426,8 @@ impl ContainerSpec {
             security_opt: Vec::new(),
             unmask_system_paths: false,
             pids_limit: Some(APP_PIDS_LIMIT),
+            memory: None,
+            nano_cpus: None,
             labels: vec![(DEPLOYMENT_LABEL.to_string(), deployment.to_string())],
             aliases: Vec::new(),
         }
@@ -507,6 +514,13 @@ impl ContainerSpec {
         c.flag(self.unmask_system_paths);
         c.flag(self.pids_limit.is_some());
         c.0.extend_from_slice(&self.pids_limit.unwrap_or(0).to_be_bytes());
+        // Absents tant qu'aucun plafond n'est pose : l'empreinte des
+        // conteneurs sans plafond ne change pas.
+        if self.memory.is_some() || self.nano_cpus.is_some() {
+            c.str("resources");
+            c.0.extend_from_slice(&self.memory.unwrap_or(0).to_be_bytes());
+            c.0.extend_from_slice(&self.nano_cpus.unwrap_or(0).to_be_bytes());
+        }
         // Absent pour l'infrastructure : son empreinte ne change pas.
         if !self.aliases.is_empty() {
             c.list(&self.aliases);
@@ -594,6 +608,8 @@ pub fn create_body(spec: &ContainerSpec) -> ContainerCreateBody {
             cap_drop: (!spec.cap_drop.is_empty()).then(|| spec.cap_drop.clone()),
             cap_add: (!spec.cap_add.is_empty()).then(|| spec.cap_add.clone()),
             pids_limit: spec.pids_limit,
+            memory: spec.memory,
+            nano_cpus: spec.nano_cpus,
             // Equivalent API de `--security-opt systempaths=unconfined`
             // (option traduite par le client docker, pas par le demon).
             masked_paths: spec.unmask_system_paths.then(Vec::new),

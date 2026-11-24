@@ -13,10 +13,13 @@ use std::time::{Duration, Instant};
 
 use bollard::Docker;
 use bollard::query_parameters::{RemoveContainerOptions, RemoveImageOptions, RemoveVolumeOptions};
+use ciphera_agent::build::argv::AllowedBin;
 use ciphera_agent::build::local::LocalBackend;
 use ciphera_agent::build::railpack;
 use ciphera_agent::build::sandbox::{PREPARE_NETWORK, PrepareConfig};
-use ciphera_agent::build::{self, BuildConfig, BuildError, BuiltImages, ProgressSink, Workdir};
+use ciphera_agent::build::{
+    self, BuildBackend, BuildConfig, BuildError, BuiltImages, ProgressSink, Workdir, clone,
+};
 use ciphera_agent::deploy::compose::ComposePlan;
 use ciphera_agent::docker::{BUILD_NETWORK, BollardDocker, INFRA_NETWORK};
 use ciphera_agent::infra::{self, BuildkitAccount, InfraConfig, SubIds};
@@ -179,6 +182,7 @@ async fn start_buildkit(tmp: &TempDir) -> (BuildConfig, LocalBackend, PathBuf) {
         }),
         buildkit_state_dir: tmp.subdir("buildkit-state", 0o777),
         buildkit_identity_dir: tmp.0.join("buildkit-identity"),
+        buildkit_resources: infra::BuildkitResources::detect(&tmp.0),
     };
     infra::ensure_infra(&docker, &cfg).await.unwrap();
     let socket = socket_dir.join("buildkitd.sock");
@@ -684,4 +688,220 @@ async fn docker_dockerfile_frontend_allowed() {
     let (result, stages) = build_local(&build_cfg, &backend, &s, &repo).await;
     let built = result.unwrap_or_else(|e| panic!("docker/dockerfile:1 : {e} ({stages:?})"));
     assert_eq!(built.images, [ImageRef(tag)]);
+}
+
+/// Etapes rapportees avec l'instant de leur reception.
+async fn collect_timed(
+    mut rx: mpsc::Receiver<AgentToControl>,
+) -> Vec<(Stage, StageStatus, Instant)> {
+    let mut out = Vec::new();
+    while let Some(m) = rx.recv().await {
+        if let AgentToControl::DeployProgress { stage, status, .. } = m {
+            out.push((stage, status, Instant::now()));
+        }
+    }
+    out
+}
+
+/// `build_local` avec l'instant de chaque etape.
+async fn build_timed(
+    cfg: &BuildConfig,
+    backend: &LocalBackend,
+    spec: &BuildSpec,
+    repo: &Path,
+) -> (
+    Result<BuiltImages, BuildError>,
+    Vec<(Stage, StageStatus, Instant)>,
+) {
+    let workdir = Workdir::create(&cfg.builds_dir, spec.deployment_id).unwrap();
+    copy_dir(repo, Path::new(&workdir.src()));
+    let (tx, rx) = mpsc::channel(100_000);
+    let sink = ProgressSink::new(spec.deployment_id, tx);
+    let collector = tokio::spawn(collect_timed(rx));
+    let result = build::build_checkout(spec, cfg, backend, &sink, &workdir).await;
+    workdir.remove().unwrap();
+    drop(sink);
+    (result, collector.await.unwrap())
+}
+
+fn instant_of(stages: &[(Stage, StageStatus, Instant)], stage: Stage, started: bool) -> Instant {
+    stages
+        .iter()
+        .find(|(s, st, _)| {
+            *s == stage
+                && if started {
+                    matches!(st, StageStatus::Started)
+                } else {
+                    matches!(st, StageStatus::Succeeded)
+                }
+        })
+        .map(|(_, _, t)| *t)
+        .unwrap_or_else(|| panic!("etape {stage:?} absente : {stages:?}"))
+}
+
+/// Deux builds lances ensemble : un seul tourne a la fois par noeud. Le
+/// second n'ouvre son etape `Build` qu'apres la fin du `Build` du premier
+/// (chaque `RUN` dort 6 s : sans serie, ils se chevaucheraient).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel, buildkitd et outils de build : job agent-docker de la CI"]
+async fn builds_are_serialized() {
+    let tmp = TempDir::new();
+    let mut cleanup = Cleanup { images: Vec::new() };
+    cleanup.run().await;
+    let (build_cfg, backend, _socket) = start_buildkit(&tmp).await;
+    let project = format!("it{}", &DeploymentId::new().to_string()[..8]);
+
+    let mut specs = Vec::new();
+    let mut repos = Vec::new();
+    for n in 0..2 {
+        let repo = tmp.subdir(&format!("slow-{n}"), 0o755);
+        std::fs::write(
+            repo.join("Dockerfile"),
+            format!(
+                "FROM docker.io/library/busybox:1.37\nRUN echo {} && sleep 6\n",
+                DeploymentId::new()
+            ),
+        )
+        .unwrap();
+        let s = dockerfile_spec(&project, (ProjectId::new(), EnvironmentId::new()));
+        cleanup
+            .images
+            .push(format!("ciphera/{project}-production:{}", s.deployment_id));
+        specs.push(s);
+        repos.push(repo);
+    }
+    let (a, b) = tokio::join!(
+        build_timed(&build_cfg, &backend, &specs[0], &repos[0]),
+        build_timed(&build_cfg, &backend, &specs[1], &repos[1]),
+    );
+    for (result, stages) in [&a, &b] {
+        assert!(result.is_ok(), "{result:?} ({stages:?})");
+    }
+    let a_first = instant_of(&a.1, Stage::Build, true) <= instant_of(&b.1, Stage::Build, true);
+    let (first, second) = if a_first { (&a.1, &b.1) } else { (&b.1, &a.1) };
+    let first_done = instant_of(first, Stage::Build, false);
+    let second_start = instant_of(second, Stage::Build, true);
+    assert!(
+        second_start >= first_done,
+        "les deux builds se chevauchent : le second demarre {:?} avant la fin du premier",
+        first_done.duration_since(second_start)
+    );
+}
+
+/// Un outil annule (delai depasse) est tue avec ses descendants : le
+/// processus lance en arriere-plan par l'outil ne survit pas.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et outils de build : job agent-docker de la CI"]
+async fn build_timeout_kills_children() {
+    let tmp = TempDir::new();
+    let pid_file = tmp.0.join("child.pid");
+    let backend = LocalBackend::connect(tmp.0.join("absent.sock")).unwrap();
+    let (tx, _rx) = mpsc::channel(100);
+    let sink = ProgressSink::new(DeploymentId::new(), tx);
+    // L'outil lance un `sleep` en arriere-plan, note son pid, puis attend.
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg("-c").arg(format!(
+        "sleep 300 & echo $! > {} ; wait",
+        pid_file.display()
+    ));
+    let run = BuildBackend::exec(&backend, AllowedBin::Git, cmd, &sink, false);
+    let timed_out = tokio::time::timeout(Duration::from_secs(3), run).await;
+    assert!(timed_out.is_err(), "l'outil devait depasser son delai");
+    let pid: u32 = std::fs::read_to_string(&pid_file)
+        .expect("pid du processus enfant")
+        .trim()
+        .parse()
+        .unwrap();
+    // Mort (ou zombie en attente d'etre recolte) peu apres l'arret du groupe.
+    let start = Instant::now();
+    loop {
+        let alive = std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            !stat
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .trim_start()
+                .starts_with('Z')
+        });
+        if !alive {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "le processus enfant {pid} a survecu a l'arret de l'outil"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// `git` dans `dir` (identite explicite).
+fn git_in(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new(AllowedBin::Git.program())
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.org"])
+        .args(["-c", "commit.gpgsign=false", "-C"])
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} : {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Clone d'un depot plus gros que le plafond : arrete et refuse ; sous le
+/// plafond, le meme depot passe. Le depot (fichier de 24 Mio peu
+/// compressible) est genere localement et clone par `file://`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "git reel : job agent-docker de la CI"]
+async fn clone_over_cap_fails() {
+    let tmp = TempDir::new();
+    let source = tmp.subdir("source", 0o755);
+    git_in(&source, &["init", "-q", "-b", "main"]);
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let blob: Vec<u8> = (0..24usize << 20)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 24) as u8
+        })
+        .collect();
+    std::fs::write(source.join("gros.bin"), blob).unwrap();
+    git_in(&source, &["add", "gros.bin"]);
+    git_in(&source, &["commit", "-q", "-m", "gros"]);
+
+    let backend = LocalBackend::connect(tmp.0.join("absent.sock")).unwrap();
+    let (tx, _rx) = mpsc::channel(1000);
+    let sink = ProgressSink::new(DeploymentId::new(), tx);
+    let clone_cmd = |dest: &Path| {
+        let mut cmd = std::process::Command::new(AllowedBin::Git.program());
+        cmd.args([
+            "-c",
+            "protocol.file.allow=always",
+            "clone",
+            "-q",
+            "--no-local",
+        ])
+        .arg(format!("file://{}", source.display()))
+        .arg(dest)
+        .env_clear()
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("PATH", "/usr/bin:/bin");
+        cmd
+    };
+
+    let small = tmp.0.join("clone-small");
+    let err = clone::exec_capped(&backend, clone_cmd(&small), &sink, &small, 8 << 20)
+        .await
+        .expect_err("clone au-dela du plafond");
+    assert!(err.to_string().contains("trop volumineux"), "{err}");
+
+    let ok = tmp.0.join("clone-ok");
+    clone::exec_capped(&backend, clone_cmd(&ok), &sink, &ok, 256 << 20)
+        .await
+        .expect("clone sous le plafond");
+    assert!(ok.join("gros.bin").is_file());
 }

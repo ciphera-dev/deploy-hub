@@ -49,6 +49,33 @@ pub const UNAVAILABLE: &str = "BuildKit indisponible : ciphera-buildkitd n'est p
 /// Longueur maximale d'une ligne de journal de build transmise.
 pub const MAX_LOG_LINE: usize = crate::docker::MAX_LOG_LINE;
 
+/// Builds simultanes par noeud : un seul. Les etapes `RUN` de deux projets ne
+/// tournent jamais en meme temps sur le meme buildkitd (elles se
+/// disputeraient la memoire, le disque et les processus du noeud) ; le build
+/// suivant attend la fin du precedent.
+pub const MAX_CONCURRENT_BUILDS: usize = 1;
+/// Creneaux de build du noeud (voir `MAX_CONCURRENT_BUILDS`).
+pub static BUILD_SLOTS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(MAX_CONCURRENT_BUILDS);
+
+/// Attend un creneau de `slots` ; le build qui attend l'indique a son
+/// journal. Le creneau est rendu a la liberation du jeton.
+async fn acquire_slot<'a>(
+    slots: &'a tokio::sync::Semaphore,
+    sink: &ProgressSink,
+) -> tokio::sync::SemaphorePermit<'a> {
+    if let Ok(permit) = slots.try_acquire() {
+        return permit;
+    }
+    sink.log(
+        LogStream::Stdout,
+        "un autre build est en cours sur ce noeud : en attente",
+    )
+    .await;
+    // Le semaphore n'est jamais ferme.
+    slots.acquire().await.expect("semaphore de builds ferme")
+}
+
 /// Reglages du pipeline.
 #[derive(Clone, Debug)]
 pub struct BuildConfig {
@@ -937,6 +964,8 @@ async fn build_stages<B: BuildBackend>(
     method: &Method,
     root: Option<&ValidatedArg>,
 ) -> Result<BuiltImages, BuildError> {
+    // Tenu jusqu'a la fin des etapes `Build` et `Image` de ce build.
+    let _slot = acquire_slot(&BUILD_SLOTS, sink).await;
     if stages.current != Some(Stage::Build) {
         stages.start(Stage::Build).await;
     }
@@ -1022,6 +1051,29 @@ async fn build_stages<B: BuildBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn one_build_slot_per_node() {
+        assert_eq!(MAX_CONCURRENT_BUILDS, 1);
+        let slots = tokio::sync::Semaphore::new(MAX_CONCURRENT_BUILDS);
+        let (tx, mut rx) = mpsc::channel(8);
+        let sink = ProgressSink::new(DeploymentId::new(), tx);
+        let first = acquire_slot(&slots, &sink).await;
+        // Le second attend (et le dit) tant que le premier tient son creneau.
+        let mut second = Box::pin(acquire_slot(&slots, &sink));
+        let waiting = tokio::time::timeout(std::time::Duration::from_millis(50), &mut second).await;
+        assert!(
+            waiting.is_err(),
+            "le second build a demarre pendant le premier"
+        );
+        assert!(matches!(rx.recv().await, Some(AgentToControl::LogLine(_))));
+        drop(first);
+        let permit = tokio::time::timeout(std::time::Duration::from_secs(5), second)
+            .await
+            .expect("creneau rendu");
+        drop(permit);
+        assert_eq!(slots.available_permits(), 1);
+    }
 
     #[test]
     fn workdir_removal_failure_after_success_keeps_the_success() {

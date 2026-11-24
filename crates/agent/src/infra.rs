@@ -84,6 +84,13 @@
 //!   seul etat BuildKit pour tous les projets, cloisonnes par espace de noms
 //!   (UUID du projet et de l'environnement), pas par des etats separes.
 //!
+//! - ressources bornees (`BuildkitResources`) : au plus 4096 processus,
+//!   50 % de la memoire du noeud (1 Gio au moins) et tous les CPU sauf un
+//!   (un au moins), pour qu'un `RUN` hostile n'affame ni l'agent, ni le plan
+//!   de controle, ni les applications ; le ramasse-miettes garde au plus 10 %
+//!   du disque de l'etat (entre 5 et 50 Gio, `gckeepstorage`). Un seul build
+//!   a la fois par noeud (`build::BUILD_SLOTS`).
+//!
 //! Les montages de l'hote sont etiquetes pour SELinux (`z`) : sous Fedora,
 //! le conteneur lit le secret et cree ses sockets.
 
@@ -145,6 +152,14 @@ const BUILDKIT_IDENTITY_FILES: [&str; 4] = ["passwd", "group", "subuid", "subgid
 /// Configuration de buildkitd dans le conteneur (`--config`).
 const BUILDKIT_CONFIG: &str = "/etc/buildkit/buildkitd.toml";
 
+/// Nombre maximal de processus de buildkitd (et de ses etapes `RUN`).
+pub const BUILDKIT_PIDS_LIMIT: i64 = 4096;
+/// Memoire de buildkitd au moins (octets), quelle que soit la RAM du noeud.
+pub const BUILDKIT_MIN_MEMORY: u64 = 1 << 30;
+/// Bornes du stockage garde par le ramasse-miettes (Gio).
+pub const GC_KEEP_MIN_GIB: u64 = 5;
+pub const GC_KEEP_MAX_GIB: u64 = 50;
+
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 
@@ -169,6 +184,53 @@ pub struct InfraConfig {
     pub buildkit_state_dir: PathBuf,
     /// Dossier ou l'agent ecrit les fichiers d'identite de buildkitd.
     pub buildkit_identity_dir: PathBuf,
+    /// Plafonds de ressources de buildkitd.
+    pub buildkit_resources: BuildkitResources,
+}
+
+/// Plafonds de ressources de buildkitd, calcules sur le noeud.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuildkitResources {
+    /// Memoire du conteneur, en octets : la moitie de la RAM, 1 Gio au moins.
+    pub memory: u64,
+    /// CPU du conteneur, en milliardiemes de CPU : tous sauf un, un au moins.
+    pub nano_cpus: u64,
+    /// Stockage garde par le ramasse-miettes, en Gio : 10 % du disque de
+    /// l'etat, entre `GC_KEEP_MIN_GIB` et `GC_KEEP_MAX_GIB`.
+    pub gc_keep_gib: u64,
+}
+
+impl BuildkitResources {
+    /// Plafonds pour un noeud de `total_memory` octets de RAM, `cpus` CPU et
+    /// un disque d'etat de `disk_bytes` octets.
+    pub fn compute(total_memory: u64, cpus: usize, disk_bytes: u64) -> Self {
+        let cpus = u64::try_from(cpus.saturating_sub(1).max(1)).unwrap_or(1);
+        Self {
+            memory: (total_memory / 2).max(BUILDKIT_MIN_MEMORY),
+            nano_cpus: cpus.saturating_mul(1_000_000_000),
+            gc_keep_gib: ((disk_bytes / 10) >> 30).clamp(GC_KEEP_MIN_GIB, GC_KEEP_MAX_GIB),
+        }
+    }
+
+    /// Plafonds du noeud : RAM, CPU et disque portant `state_dir` (le plus
+    /// specifique des points de montage qui le contiennent ; introuvable :
+    /// seuil minimal).
+    pub fn detect(state_dir: &Path) -> Self {
+        // Lecture impossible : valeur nulle, donc les seuils minimaux.
+        let memory = sysinfo::System::new().map_or(0, |mut s| {
+            s.refresh_memory();
+            s.total_memory()
+        });
+        let cpus = std::thread::available_parallelism().map_or(1, usize::from);
+        let disk = sysinfo::Disks::new_with_refreshed_list().map_or(0, |disks| {
+            disks
+                .iter()
+                .filter(|d| state_dir.starts_with(d.mount_point()))
+                .max_by_key(|d| d.mount_point().as_os_str().len())
+                .map_or(0, sysinfo::Disk::total_space)
+        });
+        Self::compute(memory, cpus, disk)
+    }
 }
 
 /// Compte systeme de buildkitd et ses plages de sous-identifiants.
@@ -323,6 +385,7 @@ impl InfraConfig {
             buildkit_account,
             buildkit_state_dir: PathBuf::from(DEFAULT_BUILDKIT_STATE_DIR),
             buildkit_identity_dir: PathBuf::from(DEFAULT_BUILDKIT_IDENTITY_DIR),
+            buildkit_resources: BuildkitResources::detect(Path::new(DEFAULT_BUILDKIT_STATE_DIR)),
         })
     }
 
@@ -359,13 +422,14 @@ pub fn buildkit_identity(account: &BuildkitAccount) -> [(&'static str, String); 
 ///   `docker/dockerfile` (une directive `syntax` vers un autre depot fait
 ///   echouer le build) ;
 /// - `dockerfile.v0` (frontend integre) actif ;
-/// - ramasse-miettes du worker OCI actif (seuils : voir les limites de
-///   ressources des builds).
-pub fn buildkitd_config() -> String {
+/// - ramasse-miettes du worker OCI actif, avec `gckeepstorage` (le cache
+///   garde au plus ce volume, en Gio : `BuildkitResources::gc_keep_gib`).
+pub fn buildkitd_config(resources: &BuildkitResources) -> String {
     let railpack = crate::build::railpack::FRONTEND_REPOSITORY;
+    let keep = resources.gc_keep_gib;
     format!(
         "# Ecrit par ciphera-agent a chaque demarrage : ne pas modifier.\n\
-         [worker.oci]\n  gc = true\n\n\
+         [worker.oci]\n  gc = true\n  gckeepstorage = \"{keep}GB\"\n\n\
          [frontend.\"dockerfile.v0\"]\n  enabled = true\n\n\
          [frontend.\"gateway.v0\"]\n  enabled = true\n  \
          allowedRepositories = [\"{railpack}\", \"docker/dockerfile\"]\n"
@@ -384,9 +448,13 @@ fn sha256_hex(text: &str) -> String {
 /// lus par `ciphera-build` dans le conteneur) s'ils manquent ou different ;
 /// remplacement atomique (un conteneur en marche garde l'ancien fichier
 /// monte ; l'empreinte de la configuration le fait recreer).
-pub fn write_buildkit_identity(dir: &Path, account: &BuildkitAccount) -> Result<(), InfraError> {
+pub fn write_buildkit_identity(
+    dir: &Path,
+    account: &BuildkitAccount,
+    resources: &BuildkitResources,
+) -> Result<(), InfraError> {
     std::fs::create_dir_all(dir).map_err(InfraError::Identity)?;
-    let config = (BUILDKIT_CONFIG_FILE, buildkitd_config());
+    let config = (BUILDKIT_CONFIG_FILE, buildkitd_config(resources));
     for (name, content) in buildkit_identity(account).into_iter().chain([config]) {
         let path = dir.join(name);
         if std::fs::read_to_string(&path).is_ok_and(|c| c == content) {
@@ -469,6 +537,8 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
         security_opt: Vec::new(),
         unmask_system_paths: false,
         pids_limit: None,
+        memory: None,
+        nano_cpus: None,
         labels: Vec::new(),
         aliases: Vec::new(),
     };
@@ -541,7 +611,9 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
             format!("apparmor={apparmor}"),
         ],
         unmask_system_paths: true,
-        pids_limit: None,
+        pids_limit: Some(BUILDKIT_PIDS_LIMIT),
+        memory: i64::try_from(cfg.buildkit_resources.memory).ok(),
+        nano_cpus: i64::try_from(cfg.buildkit_resources.nano_cpus).ok(),
         labels: vec![
             (
                 SUBIDS_LABEL.to_string(),
@@ -553,7 +625,10 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
                     account.subgids.count
                 ),
             ),
-            (CONFIG_LABEL.to_string(), sha256_hex(&buildkitd_config())),
+            (
+                CONFIG_LABEL.to_string(),
+                sha256_hex(&buildkitd_config(&cfg.buildkit_resources)),
+            ),
         ],
         aliases: Vec::new(),
     };
@@ -567,7 +642,7 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
 pub async fn ensure_infra<D: DockerOps>(docker: &D, cfg: &InfraConfig) -> Result<(), InfraError> {
     let specs = infra_specs(cfg)?;
     if let Some(account) = &cfg.buildkit_account {
-        write_buildkit_identity(&cfg.buildkit_identity_dir, account)?;
+        write_buildkit_identity(&cfg.buildkit_identity_dir, account, &cfg.buildkit_resources)?;
     }
     docker.ensure_network(INFRA_NETWORK).await?;
     if cfg.builds_available() {
@@ -623,5 +698,88 @@ mod tests {
         ] {
             assert!(pinned_image(bad, "t").is_err(), "{bad}");
         }
+    }
+
+    const GIB: u64 = 1 << 30;
+
+    fn cfg(resources: BuildkitResources) -> InfraConfig {
+        InfraConfig {
+            postgres_secret_dir: PathBuf::from("/etc/ciphera/postgres"),
+            postgres_socket_dir: PathBuf::from("/run/ciphera/postgres"),
+            postgres_user: (991, 991),
+            buildkit_socket_dir: PathBuf::from("/run/ciphera-agent/buildkit"),
+            buildkit_apparmor_profile: None,
+            buildkit_account: Some(BuildkitAccount {
+                user: (995, 994),
+                subuids: SubIds {
+                    start: 165536,
+                    count: 65536,
+                },
+                subgids: SubIds {
+                    start: 231072,
+                    count: 65536,
+                },
+            }),
+            buildkit_state_dir: PathBuf::from("/var/lib/ciphera-buildkit"),
+            buildkit_identity_dir: PathBuf::from("/var/lib/ciphera-agent/buildkit-identity"),
+            buildkit_resources: resources,
+        }
+    }
+
+    #[test]
+    fn resources_follow_the_node() {
+        // 16 Gio, 8 CPU, disque de 200 Gio.
+        let r = BuildkitResources::compute(16 * GIB, 8, 200 * GIB);
+        assert_eq!(r.memory, 8 * GIB);
+        assert_eq!(r.nano_cpus, 7_000_000_000);
+        assert_eq!(r.gc_keep_gib, 20);
+        // Petit noeud : 1 Gio au moins, un CPU au moins, 5 Gio au moins.
+        let r = BuildkitResources::compute(GIB, 1, 20 * GIB);
+        assert_eq!(
+            (r.memory, r.nano_cpus, r.gc_keep_gib),
+            (GIB, 1_000_000_000, 5)
+        );
+        assert_eq!(BuildkitResources::compute(0, 0, 0).gc_keep_gib, 5);
+        // Gros disque : 50 Gio au plus.
+        assert_eq!(
+            BuildkitResources::compute(GIB, 2, 4000 * GIB).gc_keep_gib,
+            50
+        );
+    }
+
+    #[test]
+    fn buildkit_spec_has_limits() {
+        let r = BuildkitResources::compute(16 * GIB, 8, 200 * GIB);
+        let specs = infra_specs(&cfg(r)).unwrap();
+        let bk = specs
+            .iter()
+            .find(|s| s.name() == BUILDKIT_CONTAINER)
+            .unwrap();
+        assert_eq!(bk.pids_limit, Some(4096));
+        assert_eq!(bk.memory, Some((8 * GIB) as i64));
+        assert_eq!(bk.nano_cpus, Some(7_000_000_000));
+        // PostgreSQL : aucun plafond ajoute.
+        let pg = specs
+            .iter()
+            .find(|s| s.name() == POSTGRES_CONTAINER)
+            .unwrap();
+        assert_eq!((pg.memory, pg.nano_cpus), (None, None));
+        // Un autre plafond recree le conteneur (empreinte differente).
+        let other = BuildkitResources::compute(32 * GIB, 8, 200 * GIB);
+        let bk2 = &infra_specs(&cfg(other)).unwrap()[1];
+        assert_ne!(bk.fingerprint(), bk2.fingerprint());
+    }
+
+    #[test]
+    fn gc_config_rendered() {
+        let r = BuildkitResources::compute(16 * GIB, 8, 200 * GIB);
+        let toml = buildkitd_config(&r);
+        assert!(
+            toml.contains("[worker.oci]\n  gc = true\n  gckeepstorage = \"20GB\"\n"),
+            "{toml}"
+        );
+        // Le seuil change l'empreinte, donc recree buildkitd.
+        let other = BuildkitResources::compute(16 * GIB, 8, 400 * GIB);
+        assert_ne!(sha256_hex(&toml), sha256_hex(&buildkitd_config(&other)));
     }
 }
