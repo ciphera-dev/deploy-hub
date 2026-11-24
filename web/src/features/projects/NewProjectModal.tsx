@@ -134,6 +134,7 @@ export function NewProjectModal({ onClose, onOpen, onCreated }: NewProjectModalP
     setStep(2);
     // Sans root : réglé avant le premier déploiement ; un refus laisse le projet créé, sans le lancer en root.
     const serviceId = result.project.services[0]?.id;
+    if (isImage && nonRoot && !serviceId) return setLaunchError("Le réglage « sans root » n'a pas été enregistré : le projet n'a aucun service. Le projet est créé, aucun déploiement n'a démarré.");
     if (isImage && nonRoot && serviceId) {
       const security = await updateServiceSecurity(result.project.id, serviceId, { run_as: NON_ROOT, read_only_rootfs: false });
       if (!security.ok) return setLaunchError(`Le réglage « sans root » n'a pas été enregistré : ${security.message} Le projet est créé, aucun déploiement n'a démarré.`);

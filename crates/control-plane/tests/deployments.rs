@@ -1751,3 +1751,24 @@ async fn state_is_requested_after_a_successful_deploy() {
         .unwrap();
     assert!(root);
 }
+
+/// Un echec presume devenu reussite (verdict reel de l'agent) redemande aussi
+/// l'etat complet de l'agent.
+#[tokio::test]
+async fn state_is_requested_when_a_presumed_failure_turns_into_success() {
+    let mut env = Env::new().await;
+    let (project, _) = image_project(&env.state, "web").await;
+    let id = deploy(&env.state, project).await;
+    env.run_jobs().await;
+    env.orders();
+    env.advance_clock(Duration::from_secs(11 * 60));
+    assert_eq!(orchestrator::sweep_stale(&env.state).await.unwrap(), 1);
+    assert_eq!(env.status(id).await, "failed");
+    env.orders();
+    assert_eq!(env.take_state_requests(), 0);
+
+    env.progress(id, Stage::Switch, StageStatus::Succeeded)
+        .await;
+    assert_eq!(env.status(id).await, "success");
+    assert_eq!(env.take_state_requests(), 1);
+}

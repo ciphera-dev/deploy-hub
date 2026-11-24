@@ -1370,7 +1370,8 @@ async fn on_progress(
             }
         }
         "failed" if terminal => {
-            override_failure(&mut tx, state, &info, stage, status).await?;
+            // Echec presume devenu reussite : etat de l'agent relu aussi.
+            refresh_state = override_failure(&mut tx, state, &info, stage, status).await?;
         }
         _ => {}
     }
@@ -1395,7 +1396,7 @@ async fn override_failure(
     info: &Info,
     stage: Stage,
     status: &StageStatus,
-) -> sqlx::Result<()> {
+) -> sqlx::Result<bool> {
     let presumed: bool =
         sqlx::query_scalar("SELECT presumed_failed FROM deployments WHERE id = $1")
             .bind(info.id)
@@ -1421,7 +1422,7 @@ async fn override_failure(
         _ => None,
     };
     let Some((new_status, error)) = change else {
-        return Ok(());
+        return Ok(false);
     };
     let replace_error = error.is_some();
     let error = error.flatten();
@@ -1470,7 +1471,7 @@ async fn override_failure(
         )
         .await?;
     }
-    Ok(())
+    Ok(new_status == "success")
 }
 
 /// Etat complet envoye par l'agent `server` a sa (re)connexion. Pour chaque

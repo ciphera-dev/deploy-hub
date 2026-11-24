@@ -263,3 +263,14 @@ it("source Git : pas d'option sans root", () => {
   pickRepository();
   expect(screen.queryByRole("switch", { name: /sans root/ })).not.toBeInTheDocument();
 });
+
+it("Image Docker : sans root coché mais projet sans service, erreur affichée et aucun déploiement", async () => {
+  reply = () => HttpResponse.json({ ...projectDetail(PROJECT_SUMMARIES[0]), services: [] }, { status: 201 });
+  renderModal();
+  pickImage();
+  fireEvent.click(screen.getByRole("switch", { name: "Exécuter sans root (recommandé)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Créer le projet" }));
+  expect(await screen.findByText(/aucun service/)).toBeInTheDocument();
+  expect(securityPatches).toHaveLength(0);
+  expect(deployPosts).toHaveLength(0);
+});

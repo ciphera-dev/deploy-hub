@@ -538,16 +538,23 @@ async fn container_runs_as_requested_uid() {
             "{cap} : {dropped:?}"
         );
     }
-    // Le processus tourne bien sous l'uid demande : colonne `uid` numerique
-    // (jamais un nom resolu dans les comptes de l'hote).
+    // Le processus tourne bien sous l'uid demande : colonne `UID` numerique
+    // (`-o pid,uid` : Docker exige la colonne PID ; jamais un nom resolu dans
+    // les comptes de l'hote).
     let options = bollard::query_parameters::TopOptionsBuilder::default()
-        .ps_args("-o uid=")
+        .ps_args("-o pid,uid")
         .build();
     let top = api.top_processes(&name, Some(options)).await.unwrap();
+    let uid_column = top
+        .titles
+        .unwrap()
+        .iter()
+        .position(|t| t.eq_ignore_ascii_case("UID"))
+        .expect("colonne UID");
     let processes = top.processes.unwrap();
     assert!(!processes.is_empty());
     for process in processes {
-        assert_eq!(process[0].trim(), "1000", "{process:?}");
+        assert_eq!(process[uid_column].trim(), "1000", "{process:?}");
     }
 }
 
