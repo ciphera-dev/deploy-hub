@@ -563,7 +563,9 @@ install_apparmor_profile() {
 	variant=$(apparmor_variant)
 	if [ "$variant" = "$APPARMOR_PROFILE_ABI3" ] && [ "$restrict" = 1 ]; then
 		warn "ATTENTION : le noyau restreint les espaces de noms utilisateur ($USERNS_RESTRICT = 1) mais apparmor_parser est en version 3 :"
-		warn "le profil AppArmor 3 ne peut pas les autoriser, BuildKit ne demarrera pas. Mettre AppArmor a jour (4 ou plus) ou remettre ce reglage a 0."
+		warn "le profil AppArmor 3 ne sait pas les autoriser, BuildKit pourrait ne pas demarrer (selon le noyau, par exemple Ubuntu 22.04 avec noyau HWE)."
+		warn "Verifier apres un premier build : en cas d'echec, journalctl -k | grep 'apparmor=\"DENIED\"' montre les refus de ciphera-buildkitd."
+		warn "Si c'est le cas : mettre AppArmor a jour (4 ou plus) ou remettre $USERNS_RESTRICT a 0."
 	fi
 	install -d -m 0755 /etc/apparmor.d
 	install -m 0644 -o root -g root "$pkg_dir/apparmor/$variant" "$APPARMOR_DEST"

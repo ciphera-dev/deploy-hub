@@ -220,6 +220,10 @@ check "(a) buildkitd non privilegie" \
 if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && command -v apparmor_parser >/dev/null; then
 	check "(a) profil AppArmor de buildkitd" \
 		sh -c 'docker inspect -f "{{json .HostConfig.SecurityOpt}}" "$bk" | grep -q "apparmor=ciphera-buildkitd"'
+	check "(a) profil AppArmor de buildkitd charge en mode applique" \
+		grep -qxF 'ciphera-buildkitd (enforce)' /sys/kernel/security/apparmor/profiles
+	check "(a) buildkitd tourne sous le profil applique" \
+		sh -c 'pid=$(docker inspect -f "{{.State.Pid}}" "$bk") && test "$(cat "/proc/$pid/attr/current")" = "ciphera-buildkitd (enforce)"'
 fi
 check "(a) PostgreSQL sans port publie" no_published_ports ciphera-postgres
 check "(a) buildkitd sans port publie" no_published_ports "$bk"
