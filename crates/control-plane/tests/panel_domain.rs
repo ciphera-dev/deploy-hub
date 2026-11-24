@@ -497,11 +497,22 @@ async fn confirmed_panel(env: &mut Env, owner: &Session) {
 /// controle du certificat si le DNS est bon (`None` : verdict negatif, aucun
 /// ordre attendu).
 async fn run_check(env: &mut Env, at: SystemTime, reply: bool) {
-    let job = jobs::claim(&env.state.db, &Clock::from_fn(move || at), "test-worker")
-        .await
-        .unwrap()
-        .expect("tache acme_issue due");
-    assert_eq!(job.kind, JobKind::AcmeIssue);
+    let job = loop {
+        let job = jobs::claim(&env.state.db, &Clock::from_fn(move || at), "test-worker")
+            .await
+            .unwrap()
+            .expect("tache acme_issue due");
+        if job.kind == JobKind::AcmeIssue {
+            break job;
+        }
+        // Notification en file : mise de cote (envoi teste ailleurs).
+        assert_eq!(job.kind, JobKind::Notify);
+        assert!(
+            jobs::complete(&env.state.db, &Clock::system(), job.id, "test-worker")
+                .await
+                .unwrap()
+        );
+    };
     let job_id = job.id;
     let state = env.state.clone();
     let handler = tokio::spawn(async move { domains::acme::issue(&state, job).await });
@@ -541,12 +552,20 @@ async fn run_check(env: &mut Env, at: SystemTime, reply: bool) {
 async fn panel_confirmed_never_dns_error() {
     let mut env = Env::new().await;
     let owner = login(&env.state, "owner").await;
+    // Notifications actives (SMTP configure) : l'echec est mis en file.
+    sqlx::query(
+        "INSERT INTO smtp_settings (enabled, host, port, tls, from_address, from_name)          VALUES (true, 'smtp.example.com', 587, 'starttls', 'ciphera@example.com', 'Ciphera')",
+    )
+    .execute(&env.state.db)
+    .await
+    .unwrap();
     confirmed_panel(&mut env, &owner).await;
 
     env.dns.set(HOST, &["198.51.100.9"]);
     let day = |n: u64| SystemTime::now() + Duration::from_secs(n * 86_400);
     for n in 1..=4 {
-        run_check(&mut env, day(n * 2), false).await;
+        // Le renouvellement planifie est du a J-60 ; les reprises suivantes sont dues avant.
+        run_check(&mut env, day(61 + n), false).await;
         let dns_status: String = sqlx::query_scalar("SELECT dns_status FROM domains WHERE panel")
             .fetch_one(&env.state.db)
             .await
