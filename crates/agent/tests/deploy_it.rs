@@ -512,6 +512,12 @@ async fn container_runs_as_requested_uid() {
     let mut bench = Bench::new();
     let (project, service) = (ProjectId::new(), ServiceId::new());
     bench.networks.push(docker::project_network(project));
+    // Sans table de routes du plan de controle, `Switch` echoue.
+    bench
+        .deployer
+        .apply_routes(vec![route("uid.example.test", service)])
+        .await
+        .unwrap();
     let spec = DeploySpec {
         run_as: Some("1000:1000".into()),
         read_only_rootfs: true,
@@ -565,6 +571,12 @@ async fn root_reported_in_state() {
     let mut bench = Bench::new();
     let (project, service) = (ProjectId::new(), ServiceId::new());
     bench.networks.push(docker::project_network(project));
+    // Sans table de routes du plan de controle, `Switch` echoue.
+    bench
+        .deployer
+        .apply_routes(vec![route("root.example.test", service)])
+        .await
+        .unwrap();
     // Sans reglage : l'utilisateur de l'image (root pour redis), signale.
     let plain = cache_app(project, service);
     bench
