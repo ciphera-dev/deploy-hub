@@ -269,3 +269,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 18:58 — Session v0.1-sdd — claude-code (orchestrateur) — Task R45 : Remédiation audit — un état BuildKit par projet
 - fait : rebasé sur a3cfdd2, intégré (b37298e, ffe8491), tests de l'agent verts après rebase
 - résultat : relecture : 1 Important corrigé (outil d'installation sorti du binaire), relecture ciblée approuvée
+
+## 2026-11-24 20:04 — Session v0.1-sdd — claude-code (orchestrateur) — Task fixci : CI rouge après R45 et R6
+- fait : corrigé (a30be27, 714aa39) : socket de test trop long, shellcheck, clippy, test Linux, sélecteur e2e
+- résultat : reproduit sous Podman ; relectures approuvées

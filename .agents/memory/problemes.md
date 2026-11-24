@@ -146,3 +146,10 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 ## 2026-11-24 — Audit : ressources de buildkitd, builds concurrents, image et clone sans plafond, outils non tues (Task R3)
 - Resolu (sous reserve du job agent-docker) : buildkitd sans limite de processus, memoire ni CPU ; cache sans seuil de ramasse-miettes ; deux builds simultanes (RUN concurrents) ; image chargee dans Docker et clone sans plafond ; delai d'un outil sans arret de ses descendants.
 - Reste : profil AppArmor de buildkitd non applique (`flags=(unconfined)`), voir threat-model R13.
+
+## 2026-11-24 — CI rouge après l'état BuildKit par projet : socket de test trop long
+- Symptôme : job `agent-docker`, chaque build attend 120 s puis « buildkitd n'a pas créé …/buildkitd.sock ».
+- Cause : chemin de socket des tests (119 octets) au-delà de la limite `sun_path` (107 + NUL) ; buildkitd créait le socket mais `connect()` échouait. Production non touchée (~79 octets).
+- Solution : dossiers de test courts ; chemin > 107 octets refusé avant de lancer le conteneur ; diagnostic complet (état, dossier, journal) dans le journal de l'agent, message court dans le journal de build ; échec rapide si le conteneur s'arrête.
+- À ne pas refaire : un test « le fichier existe » ne prouve pas qu'un socket Unix est joignable ; garder les chemins de socket courts.
+- Écrit par : claude-code (orchestrateur)
