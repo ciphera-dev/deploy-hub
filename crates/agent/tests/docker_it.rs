@@ -615,6 +615,45 @@ async fn app_container_cannot_reach_infra_network() {
     );
 }
 
+/// Une ligne de 36 Ko (secret de 40 caracteres sur l'octet 16 384) est
+/// coupee par Docker en messages partiels horodates : l'agent la rend d'un
+/// seul tenant, le secret intact.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel : job Linux de la CI (cargo test -p ciphera-agent -- --ignored)"]
+async fn long_log_line_is_reassembled_with_the_secret_contiguous() {
+    const SECRET: &str = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+    let api = api();
+    let docker = BollardDocker::connect().unwrap();
+    pull(&api, PROBE_IMAGE).await;
+    let name = format!("ciphera-it-longline-{}", DeploymentId::new());
+    remove_container(&api, &name).await;
+    let script = format!(
+        "head -c 16364 /dev/zero | tr '\\000' a; printf %s {SECRET}; \
+         head -c 20000 /dev/zero | tr '\\000' b; echo"
+    );
+    foreign_container(&api, &name, None, &["sh", "-c", &script]).await;
+    let id = ContainerId(name.clone());
+    let start = Instant::now();
+    let found = loop {
+        let lines: Vec<_> = docker.logs(&id, 100, false).await.collect().await;
+        if let Some(l) = lines.iter().find(|l| l.line.len() > 30_000) {
+            break l.clone();
+        }
+        assert!(
+            start.elapsed() < WAIT,
+            "ligne attendue : {} lignes",
+            lines.len()
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    remove_container(&api, &name).await;
+    assert!(
+        found.line.contains(SECRET),
+        "secret coupe dans la ligne rassemblee"
+    );
+    assert_eq!(found.line.len(), 16_364 + SECRET.len() + 20_000);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "Docker reel : job Linux de la CI (cargo test -p ciphera-agent -- --ignored)"]
 async fn bollard_runs_reports_health_logs_and_stops_an_app() {

@@ -48,7 +48,7 @@ pub const DEFAULT_BUILDKIT_SOCKET: &str = "/run/ciphera-agent/buildkit/buildkitd
 pub const UNAVAILABLE: &str = "BuildKit indisponible : ciphera-buildkitd n'est pas lance (compte \
      ciphera-build absent ? relancer install.sh), builds impossibles";
 /// Longueur maximale d'une ligne de journal de build transmise.
-pub const MAX_LOG_LINE: usize = crate::docker::MAX_LOG_LINE;
+pub const MAX_LOG_LINE: usize = crate::docker::MAX_ASSEMBLED_LINE;
 
 /// Builds simultanes par noeud : un seul. Les etapes `RUN` de deux projets ne
 /// tournent jamais en meme temps sur le meme buildkitd (elles se
@@ -268,7 +268,7 @@ impl ProgressSink {
             .await;
     }
 
-    /// Envoie une ligne de journal du build (coupee a `MAX_LOG_LINE`).
+    /// Envoie une ligne de journal du build (bornee a `MAX_LOG_LINE`, 64 Kio ; le plan de controle masque la ligne puis la coupe).
     pub async fn log(&self, stream: LogStream, line: &str) {
         let line = self.scrub(line);
         let _ = self

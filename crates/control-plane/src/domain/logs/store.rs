@@ -39,6 +39,9 @@ const BATCH: usize = 500;
 const PROJECTS_TTL: Duration = Duration::from_secs(60);
 /// Lignes retenues au plus par deploiement quand le masquage est indisponible.
 const MAX_HELD: usize = 5_000;
+/// Octets bruts retenus au plus par deploiement (une ligne brute peut peser
+/// 64 Kio) : meme budget memoire qu'avec des lignes de 16 Kio.
+const MAX_HELD_BYTES: usize = MAX_HELD * 16 * 1024;
 /// Reessai des lignes retenues.
 const HELD_RETRY: Duration = Duration::from_secs(2);
 
@@ -178,7 +181,7 @@ pub async fn download(db: &PgPool, deployment: Uuid, redactor: &Redactor) -> sql
         };
         after = last.seq;
         for row in page {
-            let line = row.event(redactor).text_line();
+            let line = export_line(row, redactor);
             if out.len() + line.len() + TRUNCATED.len() > MAX_DOWNLOAD_BYTES {
                 out.push_str(TRUNCATED);
                 return Ok(out);
@@ -186,6 +189,13 @@ pub async fn download(db: &PgPool, deployment: Uuid, redactor: &Redactor) -> sql
             out.push_str(&line);
         }
     }
+}
+
+/// Ligne de `logs.txt` : sequences ANSI et caracteres de controle retires
+/// AVANT le masquage (un secret entrecoupe de codes ANSI doit etre reconnu).
+fn export_line(mut row: StoredLine, redactor: &Redactor) -> String {
+    row.line = super::neutralize(&row.line);
+    row.event(redactor).text_line()
 }
 
 /// Supprime les lignes d'un deploiement (nettoyage de la retention).
@@ -224,7 +234,7 @@ impl Held {
     /// perdues et comptees.
     fn keep(&mut self, mut lines: Vec<NewLine>) {
         self.lines.append(&mut lines);
-        let excess = self.lines.len().saturating_sub(MAX_HELD);
+        let excess = excess_held(&self.lines, |l| l.line.len());
         self.lines.drain(..excess);
         self.lost += excess as u64;
     }
@@ -232,10 +242,22 @@ impl Held {
     /// Retient une ligne a verifier ; meme borne que `keep`.
     fn keep_unchecked(&mut self, server: Uuid, line: NewLine) {
         self.unchecked.push((server, line));
-        let excess = self.unchecked.len().saturating_sub(MAX_HELD);
+        let excess = excess_held(&self.unchecked, |(_, l)| l.line.len());
         self.unchecked.drain(..excess);
         self.lost += excess as u64;
     }
+}
+
+/// Nombre de lignes les plus anciennes a perdre pour tenir dans `MAX_HELD`
+/// lignes et `MAX_HELD_BYTES` octets.
+fn excess_held<T>(items: &[T], size: impl Fn(&T) -> usize) -> usize {
+    let mut excess = items.len().saturating_sub(MAX_HELD);
+    let mut total: usize = items[excess..].iter().map(&size).sum();
+    while total > MAX_HELD_BYTES && excess < items.len() {
+        total -= size(&items[excess]);
+        excess += 1;
+    }
+    excess
 }
 
 /// Serveur d'une ligne de journal par rapport a son deploiement.
@@ -457,5 +479,56 @@ pub async fn run(
             }
         }
         save(&state, &mut projects, batch).await;
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    fn new_line(n: usize) -> NewLine {
+        NewLine {
+            timestamp_ms: 0,
+            stream: LogStream::Stdout,
+            line: "x".repeat(n),
+        }
+    }
+
+    #[test]
+    fn ansi_inside_a_secret_is_stripped_before_masking_in_the_export() {
+        let redactor = Redactor::new(vec![zeroize::Zeroizing::new("s3cr3t-value".to_string())]);
+        let row = StoredLine {
+            seq: 1,
+            ts_ms: 0,
+            stream: "stdout".into(),
+            line: "k=s3cr\x1b[31m3t-va\x1b[0mlue fin".into(),
+        };
+        let text = export_line(row, &redactor);
+        assert!(text.contains("k=•••• fin"), "{text}");
+        assert!(!text.contains("3t-va"), "{text}");
+    }
+
+    #[test]
+    fn held_lines_are_bounded_in_bytes_not_only_in_count() {
+        let mut held = Held::default();
+        let big = 64 * 1024;
+        let fit = MAX_HELD_BYTES / big;
+        held.keep((0..fit + 20).map(|_| new_line(big)).collect());
+        assert_eq!(held.lines.len(), fit);
+        assert_eq!(held.lost, 20);
+        let total: usize = held.lines.iter().map(|l| l.line.len()).sum();
+        assert!(total <= MAX_HELD_BYTES);
+        // Lignes a verifier : meme borne.
+        let mut held = Held::default();
+        for _ in 0..fit + 5 {
+            held.keep_unchecked(Uuid::nil(), new_line(big));
+        }
+        assert_eq!(held.unchecked.len(), fit);
+        assert_eq!(held.lost, 5);
+        // Petites lignes : plafond en nombre de lignes inchange.
+        let mut held = Held::default();
+        held.keep((0..MAX_HELD + 7).map(|_| new_line(10)).collect());
+        assert_eq!(held.lines.len(), MAX_HELD);
+        assert_eq!(held.lost, 7);
     }
 }

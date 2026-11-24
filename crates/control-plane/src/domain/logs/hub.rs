@@ -43,6 +43,9 @@ use crate::agents::registry::AgentRegistry;
 pub const CLIENT_BUFFER: usize = 1024;
 /// Lignes recentes gardees par cible pour un nouveau lecteur.
 pub const RECENT_LINES: usize = 1000;
+/// Octets bruts retenus au plus par cible quand le masquage est indisponible
+/// (en plus de `RECENT_LINES` lignes) : une ligne brute peut peser 64 Kio.
+pub const MAX_HELD_BYTES: usize = 16 * 1024 * 1024;
 /// Nombre maximal de lignes demandees a l'ouverture (`tail`).
 pub const MAX_TAIL: u32 = 1000;
 /// Flux ouverts au plus sur l'instance.
@@ -91,6 +94,8 @@ struct Entry {
     recent: VecDeque<LogEvent>,
     /// Lignes brutes retenues faute de masquage (jamais envoyees telles quelles).
     held: VecDeque<proto::LogLine>,
+    /// Octets des lignes de `held`.
+    held_bytes: usize,
     /// Lignes retenues perdues (au-dela de `RECENT_LINES`).
     held_lost: u64,
     /// Marqueur `MASKING_DOWN` deja envoye pour les lignes retenues.
@@ -121,11 +126,16 @@ impl Entry {
     }
 
     fn hold(&mut self, line: &proto::LogLine) {
-        if self.held.len() == RECENT_LINES {
-            self.held.pop_front();
+        self.held_bytes += line.line.len();
+        self.held.push_back(line.clone());
+        // Bornes en lignes et en octets ; les plus anciennes sont perdues.
+        while self.held.len() > RECENT_LINES || self.held_bytes > MAX_HELD_BYTES {
+            let Some(old) = self.held.pop_front() else {
+                break;
+            };
+            self.held_bytes = self.held_bytes.saturating_sub(old.line.len());
             self.held_lost += 1;
         }
-        self.held.push_back(line.clone());
     }
 
     fn redacted(&self, line: &proto::LogLine, redactor: &Redactor) -> LogEvent {
@@ -148,6 +158,7 @@ impl Entry {
             let event = self.redacted(&line, redactor);
             self.emit(event);
         }
+        self.held_bytes = 0;
     }
 }
 
@@ -427,6 +438,7 @@ impl LogHub {
                 project: source.project,
                 recent: VecDeque::new(),
                 held: VecDeque::new(),
+                held_bytes: 0,
                 held_lost: 0,
                 down_notified: false,
             }
@@ -619,5 +631,56 @@ pub async fn run(
             }
             Err(broadcast::error::RecvError::Closed) => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    fn entry() -> Entry {
+        Entry {
+            tx: broadcast::channel(4).0,
+            subscribers: 0,
+            follow: None,
+            origin: None,
+            container: "web".into(),
+            project: Uuid::nil(),
+            recent: VecDeque::new(),
+            held: VecDeque::new(),
+            held_bytes: 0,
+            held_lost: 0,
+            down_notified: false,
+        }
+    }
+
+    fn line(n: usize) -> proto::LogLine {
+        proto::LogLine {
+            target: LogTarget::Deployment(shared::ids::DeploymentId(Uuid::nil())),
+            stream: proto::LogStream::Stdout,
+            timestamp_ms: 0,
+            line: "x".repeat(n),
+        }
+    }
+
+    #[test]
+    fn held_lines_are_bounded_in_bytes_not_only_in_count() {
+        let mut e = entry();
+        // 64 Kio chacune : le plafond d'octets joue bien avant celui des lignes.
+        let big = 64 * 1024;
+        let fit = MAX_HELD_BYTES / big;
+        for _ in 0..fit + 50 {
+            e.hold(&line(big));
+        }
+        assert_eq!(e.held.len(), fit);
+        assert!(e.held_bytes <= MAX_HELD_BYTES);
+        assert_eq!(e.held_lost, 50);
+        // Petites lignes : plafond en nombre de lignes inchange.
+        let mut e = entry();
+        for _ in 0..RECENT_LINES + 3 {
+            e.hold(&line(10));
+        }
+        assert_eq!(e.held.len(), RECENT_LINES);
+        assert_eq!(e.held_lost, 3);
     }
 }

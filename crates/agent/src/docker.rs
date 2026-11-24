@@ -1417,15 +1417,23 @@ fn labels_match(labels: &HashMap<String, String>, wanted: &[(&str, &str)]) -> bo
         .all(|(k, v)| labels.get(*k).is_some_and(|x| x == v))
 }
 
-/// Une ligne de journal rassemblee depasse rarement `MAX_LOG_LINE` ; au-dela
+/// Une ligne de journal rassemblee depasse rarement 16 Kio ; au-dela
 /// de cette taille (horodatage non compte), la suite est ecartee. Le plan de
 /// controle masque la ligne entiere puis la coupe a une taille bien plus
 /// courte : aucun secret ne peut etre coupe en deux dans la partie visible.
 pub const MAX_ASSEMBLED_LINE: usize = 64 * 1024;
 
 /// Rassemble les morceaux d'une meme ligne : Docker coupe les longues lignes
-/// en plusieurs trames (seule la premiere porte l'horodatage, aucune sauf la
-/// derniere ne finit par `\n`). Un etat par flux (sortie standard et erreur).
+/// en plusieurs messages partiels de 16 Kio (aucun sauf le dernier ne finit
+/// par `\n`) et, avec `timestamps`, prefixe CHAQUE message de son propre
+/// horodatage : celui des morceaux suivants est retire avant la
+/// concatenation, sinon il couperait un secret en deux. Un etat par flux
+/// (sortie standard et erreur).
+///
+/// Une ligne sans `\n` est retenue jusqu'au `\n` ou a la fin du flux, sans
+/// vidage sur delai : echec ferme, car un vidage coupe pourrait separer un
+/// secret en deux morceaux jamais masques (une barre de progression sans
+/// retour a la ligne n'apparait donc qu'a la fin).
 #[derive(Default)]
 pub struct LogAssembler {
     pending: [Vec<u8>; 2],
@@ -1447,6 +1455,13 @@ impl LogAssembler {
         let mut out = Vec::new();
         for piece in bytes.split_inclusive(|b| *b == b'\n') {
             if !self.over[i] {
+                // Chaque message porte son horodatage : on ne garde que
+                // celui du debut de ligne.
+                let piece = if self.pending[i].is_empty() {
+                    piece
+                } else {
+                    strip_timestamp(piece)
+                };
                 // Marge pour l'horodatage place devant la ligne.
                 let room = (MAX_ASSEMBLED_LINE + 64).saturating_sub(self.pending[i].len());
                 let take = piece.len().min(room);
@@ -1474,6 +1489,17 @@ impl LogAssembler {
             out.extend(split_log_chunk(stream, &line));
         }
         out
+    }
+}
+
+/// `piece` sans son horodatage Docker de tete (`<RFC 3339> `), s'il en a un.
+fn strip_timestamp(piece: &[u8]) -> &[u8] {
+    let Some(space) = piece.iter().take(64).position(|b| *b == b' ') else {
+        return piece;
+    };
+    match std::str::from_utf8(&piece[..space]) {
+        Ok(ts) if parse_rfc3339_ms(ts).is_some() => &piece[space + 1..],
+        _ => piece,
     }
 }
 
@@ -1658,6 +1684,80 @@ mod tests {
         let rest = a.finish();
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0].line, "reste");
+    }
+
+    #[test]
+    fn every_partial_frame_carries_its_own_timestamp_and_the_secret_stays_whole() {
+        // Docker (timestamps=true) horodate chaque message partiel de 16 Kio.
+        let secret = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+        let line = format!("{}{secret}{}", "a".repeat(16_384 - 20), "b".repeat(20_000));
+        let mut a = LogAssembler::default();
+        let mut out = Vec::new();
+        let chunks: Vec<&[u8]> = line.as_bytes().chunks(16_384).collect();
+        for (n, chunk) in chunks.iter().enumerate() {
+            let mut frame = format!("2026-11-21T10:20:3{n}.123456789Z ").into_bytes();
+            frame.extend_from_slice(chunk);
+            if n + 1 == chunks.len() {
+                frame.push(b'\n');
+            }
+            out.extend(a.push(LogStream::Stdout, &frame));
+        }
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].line, line);
+        assert_eq!(out[0].timestamp_ms, 1_795_256_430_123);
+    }
+
+    /// Une ligne rassemblee, masquee en entier puis coupee a 16 Kio comme le
+    /// fait le plan de controle, ne laisse aucun fragment du secret ; l'ancien
+    /// comportement (coupe de chaque trame avant l'envoi) en laissait un.
+    #[test]
+    fn secret_across_16k_boundary_not_leaked() {
+        let secret = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+        let mask_then_cut = |line: &str| {
+            let mut s = line.replace(secret, "••••");
+            if s.len() > 16 * 1024 {
+                let mut end = 16 * 1024;
+                while !s.is_char_boundary(end) {
+                    end -= 1;
+                }
+                s.truncate(end);
+            }
+            s
+        };
+        let fragments = |s: &str| (0..=secret.len() - 4).any(|i| s.contains(&secret[i..i + 4]));
+        for shift in 0..40 {
+            let line = format!(
+                "{}{secret}{}",
+                "a".repeat(16_384 - shift),
+                "b".repeat(20_000)
+            );
+            let mut a = LogAssembler::default();
+            let mut out = Vec::new();
+            let chunks: Vec<&[u8]> = line.as_bytes().chunks(16_384).collect();
+            let mut old = Vec::new();
+            for (n, chunk) in chunks.iter().enumerate() {
+                let mut frame = format!("2026-11-21T10:20:30.00000000{n}Z ").into_bytes();
+                frame.extend_from_slice(chunk);
+                if n + 1 == chunks.len() {
+                    frame.push(b'\n');
+                }
+                // Ancien comportement : chaque trame coupee a 16 Kio, seule.
+                for l in split_log_chunk(LogStream::Stdout, &frame) {
+                    old.push(l.line.chars().take(16 * 1024).collect::<String>());
+                }
+                out.extend(a.push(LogStream::Stdout, &frame));
+            }
+            assert_eq!(out.len(), 1);
+            let shown = mask_then_cut(&out[0].line);
+            assert!(!fragments(&shown), "fragment visible (decalage {shift})");
+            // Sans rassemblement, un morceau seul ne peut pas etre masque.
+            if shift > 4 && shift < 36 {
+                assert!(
+                    old.iter().any(|l| fragments(&mask_then_cut(l))),
+                    "l'ancien comportement doit fuir (decalage {shift})"
+                );
+            }
+        }
     }
 
     #[test]
