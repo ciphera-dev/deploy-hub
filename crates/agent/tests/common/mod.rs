@@ -37,6 +37,8 @@ pub struct FakeDocker {
     pub health: Mutex<HashMap<String, Health>>,
     /// Docker ne repond plus (sante et metriques en attente infinie).
     pub hang: AtomicBool,
+    /// `stop` echoue (erreur d'API) tant que vrai.
+    pub fail_stop: AtomicBool,
     /// Conteneurs existants par identifiant.
     pub containers: Mutex<HashMap<String, FakeContainer>>,
     /// Duree de la suppression des images (nettoyage lent).
@@ -144,6 +146,9 @@ impl DockerOps for FakeDocker {
 
     async fn stop(&self, id: &ContainerId) -> Result<(), DockerError> {
         self.calls.lock().unwrap().push(format!("stop:{}", id.0));
+        if self.fail_stop.load(Ordering::SeqCst) {
+            return Err(DockerError::Api("arret refuse".into()));
+        }
         if let Some(c) = self.containers.lock().unwrap().get_mut(&id.0) {
             c.running = false;
             // Comme Docker : un conteneur arrete n'a plus d'adresse.

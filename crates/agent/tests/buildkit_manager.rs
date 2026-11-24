@@ -194,7 +194,7 @@ async fn only_one_buildkitd_runs_at_a_time_and_a_busy_one_is_kept() {
     // A sert un build : B ne le remplace pas.
     assert!(matches!(
         f.manager.ensure(b).await,
-        Err(BuildkitError::Busy(_))
+        Err(BuildkitError::Busy)
     ));
     assert_eq!(f.running(a), Some(true));
     assert_eq!(f.running(b), None);
@@ -213,6 +213,50 @@ async fn only_one_buildkitd_runs_at_a_time_and_a_busy_one_is_kept() {
         .position(|c| c == &format!("run:{}", infra::buildkit_container_name(b)))
         .expect("demarrage de B");
     assert!(stop_a < run_b, "{calls:?}");
+}
+
+#[tokio::test]
+async fn busy_error_does_not_name_any_project() {
+    let f = fixture();
+    let (a, b) = (ProjectId::new(), ProjectId::new());
+    let _lease = f.manager.ensure(a).await.unwrap();
+    let err = f.manager.ensure(b).await.err().expect("Busy");
+    let text = err.to_string();
+    assert!(matches!(err, BuildkitError::Busy), "{text}");
+    for p in [a, b] {
+        assert!(!text.contains(&p.to_string()), "{text}");
+    }
+}
+
+#[tokio::test]
+async fn a_failed_idle_stop_is_retried_and_stopped_containers_are_left_alone() {
+    use std::sync::atomic::Ordering;
+    let f = fixture();
+    let (a, b) = (ProjectId::new(), ProjectId::new());
+    let name_a = infra::buildkit_container_name(a);
+    let stops = |f: &Fixture| {
+        f.docker
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("stop:"))
+            .count()
+    };
+    drop(f.manager.ensure(a).await.unwrap());
+    // L'arret echoue : rien n'est compte, l'arret sera retente.
+    f.docker.fail_stop.store(true, Ordering::SeqCst);
+    assert_eq!(f.manager.stop_idle(Duration::ZERO).await, 0);
+    assert_eq!(f.running(a), Some(true));
+    f.docker.fail_stop.store(false, Ordering::SeqCst);
+    assert_eq!(f.manager.stop_idle(Duration::ZERO).await, 1, "retente");
+    assert_eq!(f.running(a), Some(false));
+    // Arrete : plus aucun appel d'arret, ni au balayage ni au build d'un autre.
+    let before = stops(&f);
+    assert_eq!(f.manager.stop_idle(Duration::ZERO).await, 0);
+    drop(f.manager.ensure(b).await.unwrap());
+    assert_eq!(stops(&f), before, "arret de {name_a} reemis");
+    // B tourne : le build de A l'arrete une fois.
+    drop(f.manager.ensure(a).await.unwrap());
+    assert_eq!(stops(&f), before + 1);
 }
 
 #[tokio::test]

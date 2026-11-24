@@ -44,41 +44,7 @@ fn main() {
             eprintln!("ciphera-agent : runtime tokio : {e}");
             std::process::exit(1);
         });
-    // `ciphera-agent buildkitd-up <uuid du projet>` : demarre le buildkitd du
-    // projet (a lancer sous le compte `ciphera-agent`, une fois l'agent
-    // installe), comme le ferait son premier build ; sert au test
-    // d'installation, qui n'a pas de projet a construire.
-    if std::env::args().nth(1).as_deref() == Some("buildkitd-up") {
-        let result = runtime.block_on(buildkitd_up(std::env::args().nth(2)));
-        if let Err(e) = result {
-            eprintln!("ciphera-agent : buildkitd-up : {e}");
-            std::process::exit(1);
-        }
-        return;
-    }
     runtime.block_on(agent_main());
-}
-
-/// Demarre le buildkitd du projet `project` et affiche son socket.
-async fn buildkitd_up(project: Option<String>) -> Result<(), String> {
-    let project: shared::ids::ProjectId = project
-        .ok_or("UUID du projet attendu")?
-        .parse()
-        .map_err(|e| format!("UUID du projet : {e}"))?;
-    let cfg = InfraConfig::resolve(Path::new("/etc")).map_err(|e| e.to_string())?;
-    let account = cfg
-        .buildkit_account
-        .ok_or("compte ciphera-build absent (relancer install.sh)")?;
-    let image =
-        infra::pinned_image(infra::BUILDKIT_IMAGE_FILE, "buildkit").map_err(|e| e.to_string())?;
-    let docker = Arc::new(BollardDocker::connect().map_err(|e| e.to_string())?);
-    let fs = DockerFs::connect(&cfg, image, account.user).map_err(|e| e.to_string())?;
-    let manager = BuildkitManager::new(docker, fs, cfg);
-    let lease = manager.ensure(project).await.map_err(|e| e.to_string())?;
-    if let Some(socket) = lease.socket() {
-        println!("{}", socket.display());
-    }
-    Ok(())
 }
 
 async fn agent_main() {

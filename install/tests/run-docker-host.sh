@@ -2,8 +2,9 @@
 # Test de bout en bout de install/install.sh sur la machine elle-meme
 # (runner CI Linux avec systemd et Docker) : chemin de production, ou
 # l'agent lance PostgreSQL en conteneur epingle par digest, buildkitd (un par
-# projet, a la demande ; ici `ciphera-agent buildkitd-up <projet>` tient lieu
-# de premier build) et le plan de controle joint la base par son socket Unix.
+# projet, a la demande ; ici l'exemple `buildkitd_up <projet>`, construit avec
+# --example buildkitd_up, tient lieu de premier build) et le plan de controle
+# joint la base par son socket Unix.
 #
 #   sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 install/tests/run-docker-host.sh
 #
@@ -12,11 +13,13 @@
 # install-docker) : refuse sans CIPHERA_DESTRUCTIVE_HOST_TEST=1.
 #
 # Exige : root, systemd, Docker, minisign, openssl, python3, curl, tar,
-# sha256sum. CIPHERA_TEST_BIN_DIR : binaires musl (defaut
+# sha256sum. CIPHERA_TEST_BIN_DIR : binaires musl, dont
+# examples/buildkitd_up (defaut
 # target/<cible musl>/release).
 #
 # Verifie : (a) installation, agent actif, ciphera-postgres et
-# ciphera-buildkitd en marche avec les images de deploy/containers, reseau
+# ciphera-buildkitd-<projet> (un par projet, a la demande, etat et socket
+# propres) en marche avec les images de deploy/containers, reseau
 # ciphera-internal interne, buildkitd rootless non privilegie seul sur
 # ciphera-build (profil AppArmor la ou le noyau l'exige), sous le compte
 # systeme ciphera-build (uid de chaque processus de buildkitd = id -u
@@ -192,8 +195,15 @@ check "(a) ciphera-postgres en marche" wait_for 300 "test \"\$(docker inspect -f
 check "(a) aucun buildkitd partage (ciphera-buildkitd)" sh -c '! docker inspect ciphera-buildkitd >/dev/null 2>&1'
 # Premier usage du projet : l'agent (compte ciphera-agent) cree l'etat et le
 # socket sous le compte ciphera-build, puis demarre le conteneur.
+# Outil du test : exemple `buildkitd_up` construit par le job (jamais dans le
+# binaire de production), copie lisible par ciphera-agent.
+bk_up_src=$bin_dir/examples/buildkitd_up
+[ -x "$bk_up_src" ] || die "exemple buildkitd_up absent ($bk_up_src) : cargo build --release --target $target -p ciphera-agent --example buildkitd_up"
+bk_up=$(mktemp /tmp/ciphera-buildkitd-up.XXXXXX)
+install -m 0755 "$bk_up_src" "$bk_up"
 check "(a) buildkitd du projet demarre a la demande" \
-	wait_for 300 "runuser -u ciphera-agent -- /usr/local/bin/ciphera-agent buildkitd-up '$bk_project' >/dev/null"
+	wait_for 300 "runuser -u ciphera-agent -- '$bk_up' '$bk_project' >/dev/null"
+rm -f "$bk_up"
 check "(a) $bk en marche" wait_for 300 "test \"\$(docker inspect -f '{{.State.Running}}' $bk 2>/dev/null)\" = true"
 check "(a) image epinglee de PostgreSQL" pinned_image ciphera-postgres postgres.digest
 check "(a) image epinglee de BuildKit" pinned_image $bk buildkit.digest

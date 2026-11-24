@@ -36,7 +36,7 @@ use bollard::query_parameters::{
 use futures_util::StreamExt;
 use shared::ids::ProjectId;
 
-use crate::docker::{BollardDocker, DockerError, DockerOps, Health, MANAGED_LABEL, ROLE_LABEL};
+use crate::docker::{BollardDocker, DockerError, DockerOps, MANAGED_LABEL, ROLE_LABEL};
 use crate::infra::{self, BUILDKIT_PROJECT_LABEL, BUILDKITD_ROLE, InfraConfig, InfraError};
 
 /// Un buildkitd sans build depuis ce delai est arrete.
@@ -64,8 +64,9 @@ pub enum BuildkitError {
     Fs(String),
     /// Le socket n'est pas apparu a temps.
     SocketTimeout(PathBuf),
-    /// Un autre projet a un build en cours sur son buildkitd.
-    Busy(ProjectId),
+    /// Un autre projet a un build en cours sur son buildkitd (sans le
+    /// nommer : le message finit dans le journal d'un autre projet).
+    Busy,
 }
 
 impl fmt::Display for BuildkitError {
@@ -75,7 +76,7 @@ impl fmt::Display for BuildkitError {
             Self::Docker(e) => write!(f, "{e}"),
             Self::Fs(m) => write!(f, "etat de buildkitd : {m}"),
             Self::SocketTimeout(p) => write!(f, "buildkitd n'a pas cree {}", p.display()),
-            Self::Busy(p) => write!(f, "un build du projet {p} utilise deja buildkitd"),
+            Self::Busy => write!(f, "un autre build utilise deja buildkitd"),
         }
     }
 }
@@ -110,6 +111,9 @@ struct Usage {
     in_use: HashMap<ProjectId, usize>,
     last_used: HashMap<ProjectId, Instant>,
     provisioned: HashSet<ProjectId>,
+    /// Projets dont le buildkitd a ete demarre par ce processus et pas encore
+    /// arrete : seuls a arreter (les autres le sont deja, voir `startup`).
+    running: HashSet<ProjectId>,
 }
 
 fn locked(usage: &Mutex<Usage>) -> MutexGuard<'_, Usage> {
@@ -283,7 +287,7 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
             .iter()
             .any(|(p, n)| *p != project && *n > 0)
         {
-            return Err(BuildkitError::Busy(project));
+            return Err(BuildkitError::Busy);
         }
         let provisioned = locked(&self.usage).provisioned.contains(&project);
         if !provisioned {
@@ -293,35 +297,21 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
         touch(&self.marker(project)).map_err(|e| BuildkitError::Fs(e.to_string()))?;
         let projects = self.known_projects(project).len();
         infra::write_project_config(&self.cfg, project, projects)?;
-        let wanted = project.to_string();
-        let mut ours = None;
-        for c in self
-            .docker
-            .list_managed(&[(ROLE_LABEL, BUILDKITD_ROLE)])
-            .await?
-        {
-            if c.labels.get(BUILDKIT_PROJECT_LABEL) == Some(&wanted) {
-                ours = Some(c.id);
-            } else {
-                tracing::info!("buildkitd {} arrete (un autre projet build)", c.name);
-                self.docker.stop(&c.id).await?;
-            }
+        // Un seul buildkitd a la fois : arret de ceux que ce processus a
+        // demarres pour un autre projet (jamais ceux deja arretes).
+        let others: Vec<ProjectId> = locked(&self.usage)
+            .running
+            .iter()
+            .copied()
+            .filter(|p| *p != project)
+            .collect();
+        for other in others {
+            self.stop_project(other).await?;
         }
         let socket = self.cfg.buildkit_project_socket(project);
-        let running = match &ours {
-            Some(id) => matches!(
-                self.docker.health(id).await?,
-                Health::Starting | Health::Healthy | Health::Unhealthy | Health::Running
-            ),
-            None => false,
-        };
-        if !running {
-            // Socket d'un buildkitd arrete : buildkitd le remplace, mais le
-            // test de disponibilite ne doit pas le prendre pour le nouveau.
-            let _ = std::fs::remove_file(&socket);
-        }
         let spec = infra::buildkit_spec(&self.cfg, project, projects)?;
         self.docker.run(&spec).await?;
+        locked(&self.usage).running.insert(project);
         self.wait_ready(&socket).await?;
         {
             let mut u = locked(&self.usage);
@@ -365,28 +355,31 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
         };
         let mut stopped = 0;
         for project in idle {
-            let label = project.to_string();
-            match self
-                .docker
-                .list_managed(&[(BUILDKIT_PROJECT_LABEL, label.as_str())])
-                .await
-            {
-                Ok(list) => {
-                    for c in list {
-                        match self.docker.stop(&c.id).await {
-                            Ok(()) => {
-                                tracing::info!("buildkitd {} inactif : arrete", c.name);
-                                stopped += 1;
-                            }
-                            Err(e) => tracing::warn!("{} : {e}", c.name),
-                        }
-                    }
-                    locked(&self.usage).last_used.remove(&project);
-                }
-                Err(e) => tracing::warn!("buildkitd inactif : {e}"),
+            // Un arret refuse garde le projet : retente au passage suivant.
+            match self.stop_project(project).await {
+                Ok(()) => stopped += 1,
+                Err(e) => tracing::warn!("buildkitd inactif du projet : {e}"),
             }
         }
         stopped
+    }
+
+    /// Arrete le buildkitd du projet (son etat reste) ; il n'est retire de
+    /// ceux a surveiller qu'une fois arrete.
+    async fn stop_project(&self, project: ProjectId) -> Result<(), BuildkitError> {
+        let label = project.to_string();
+        for c in self
+            .docker
+            .list_managed(&[(BUILDKIT_PROJECT_LABEL, label.as_str())])
+            .await?
+        {
+            self.docker.stop(&c.id).await?;
+            tracing::info!("buildkitd {} arrete", c.name);
+        }
+        let mut u = locked(&self.usage);
+        u.running.remove(&project);
+        u.last_used.remove(&project);
+        Ok(())
     }
 
     /// Supprime le buildkitd, l'etat et le socket du projet (`RemoveProject`).
@@ -410,6 +403,7 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
             u.in_use.remove(&project);
             u.last_used.remove(&project);
             u.provisioned.remove(&project);
+            u.running.remove(&project);
         }
         for file in [
             self.marker(project),
@@ -491,6 +485,35 @@ const REMOVE_SCRIPT: &str = "set -eu; rm -rf \"/state/p/$P\" \"/sock/$P\"";
 /// Script de suppression de l'etat du buildkitd partage d'avant.
 const LEGACY_SCRIPT: &str =
     "set -eu; for f in /state/* /state/.[!.]*; do [ \"$f\" = /state/p ] || rm -rf \"$f\"; done";
+
+/// Supprime le conteneur jetable meme si la tache est annulee en cours
+/// d'attente (le `Drop` lance la suppression sur le runtime).
+struct RemoveOnDrop {
+    docker: Docker,
+    id: Option<String>,
+}
+
+impl RemoveOnDrop {
+    fn disarm(&mut self) {
+        self.id = None;
+    }
+}
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let (Some(id), Ok(handle)) = (self.id.take(), tokio::runtime::Handle::try_current()) else {
+            return;
+        };
+        let docker = self.docker.clone();
+        handle.spawn(async move {
+            let options = RemoveContainerOptions {
+                force: true,
+                ..Default::default()
+            };
+            let _ = docker.remove_container(&id, Some(options)).await;
+        });
+    }
+}
 
 impl DockerFs {
     /// `image` : image epinglee de buildkitd ; `user` : `ciphera-build`.
@@ -584,6 +607,11 @@ impl DockerFs {
             .create_container(Some(CreateContainerOptions::default()), body)
             .await
             .map_err(Self::err)?;
+        // Annulation (build abandonne) : le conteneur est quand meme supprime.
+        let mut guard = RemoveOnDrop {
+            docker: self.docker.clone(),
+            id: Some(created.id.clone()),
+        };
         let outcome = tokio::time::timeout(HELPER_TIMEOUT, async {
             self.docker
                 .start_container(&created.id, None)
@@ -605,6 +633,7 @@ impl DockerFs {
             .docker
             .remove_container(&created.id, Some(options))
             .await;
+        guard.disarm();
         match outcome {
             Err(_) => Err(Self::err("delai depasse")),
             Ok(Err(e)) => Err(e),

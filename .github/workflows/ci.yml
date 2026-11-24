@@ -203,6 +203,11 @@ jobs:
       - run: >-
           cargo build --release --locked --target x86_64-unknown-linux-musl
           -p control-plane -p ciphera-agent -p ciphera-proxy -p ciphera-cli
+      # Outil du test (demarre le buildkitd d'un projet) : exemple, jamais
+      # livre ; target/x86_64-unknown-linux-musl/release/examples/buildkitd_up
+      - run: >-
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          -p ciphera-agent --example buildkitd_up
       - run: sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 bash install/tests/run-docker-host.sh
 
   # Parcours golden-path dans le navigateur (web/e2e/golden-path.spec.ts) sur
