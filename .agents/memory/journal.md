@@ -273,3 +273,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 20:04 — Session v0.1-sdd — claude-code (orchestrateur) — Task fixci : CI rouge après R45 et R6
 - fait : corrigé (a30be27, 714aa39) : socket de test trop long, shellcheck, clippy, test Linux, sélecteur e2e
 - résultat : reproduit sous Podman ; relectures approuvées
+
+## 2026-11-24 20:17 — Session v0.1-sdd — claude-code (orchestrateur) — Task R7 : Remédiation audit — ré-authentification avant un second facteur
+- fait : rebasé sur 97c89dc, intégré (bace1a6, 8812dc0)
+- résultat : relecture : 1 Important corrigé (session d'enrôlement périmée), relecture ciblée approuvée
