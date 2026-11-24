@@ -297,3 +297,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 21:27 — Session v0.1-sdd — claude-code (orchestrateur) — Task R18 : Remédiation audit — secrets masqués dans les journaux avant toute coupe
 - fait : Rassemblage des fragments Docker à 64 Kio, nettoyage puis masquage sur tous les chemins, coupe après masquage, lignes retenues bornées en octets
 - résultat : relecture : 2 tours de correctifs, relecture ciblée approuvée ; tests Docker et DB en CI
+
+## 2026-11-24 23:01 — Session v0.1-sdd — claude-code (orchestrateur) — Task fix-ci-zombie : CI : buildkitd zombie à la désinstallation
+- fait : Arrêt propre avant suppression, init en PID 1, essais bornés, uninstall sort en erreur si des conteneurs restent, avertissement docker-init
+- résultat : relecture approuvée après un tour

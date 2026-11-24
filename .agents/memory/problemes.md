@@ -153,3 +153,9 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 - Solution : dossiers de test courts ; chemin > 107 octets refusé avant de lancer le conteneur ; diagnostic complet (état, dossier, journal) dans le journal de l'agent, message court dans le journal de build ; échec rapide si le conteneur s'arrête.
 - À ne pas refaire : un test « le fichier existe » ne prouve pas qu'un socket Unix est joignable ; garder les chemins de socket courts.
 - Écrit par : claude-code (orchestrateur)
+
+## 2026-11-24 — CI : conteneur buildkitd « zombie » à la désinstallation, test de purge instable
+- Symptôme : `install-docker` échouait sur « (b) conteneurs retires » (`docker rm -f` : « PID is zombie and can not be killed ») ; `agent-docker` échouait par moments sur `project_state_removed_on_remove_project`.
+- Cause : un buildkitd encore en marche (rootlesskit en PID 1) était supprimé de force par SIGKILL ; Docker abandonnait parfois. Même défaut dans `BuildkitManager::remove_locked`, dont l'erreur n'était que journalisée.
+- Correctif : arrêt propre avant suppression (agent et uninstall.sh), init Docker en PID 1 pour buildkitd, essais bornés de suppression ; uninstall.sh sort en 1 et `--purge` ne supprime rien si des conteneurs restent ; install.sh avertit si docker-init manque (les builds échoueraient).
+- Reste : si le démon Docker est arrêté, uninstall.sh sort en 0 et `--purge` supprime quand même les répertoires (préexistant).
