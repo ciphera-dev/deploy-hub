@@ -238,3 +238,10 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 15:21 — Session v0.1-sdd — claude-code (orchestrateur) — Task R2 : Remédiation audit — cloisonnement des caches de build
 - fait : espace de cache par environnement, frontends limités, configuration buildkitd
 - résultat : relecture propre après 1 tour ; job agent-docker à confirmer
+
+## 2026-11-24 — Session remediation audit — claude-code (implementeur) — Task R3 : buildkitd, builds en serie, clone borne
+- fait : buildkitd 4096 processus / 50 % RAM / CPU-1 (ContainerSpec.memory, nano_cpus) ; gckeepstorage (10 % disque, 5-50 Gio) dans buildkitd.toml ; semaphore de builds (1 par noeud, build::BUILD_SLOTS) ; image chargee plafonnee a 10 Gio ; groupe de processus tue au delai ; clone plafonne a 2 Gio (clone::exec_capped) ; AppArmor inchange (repli documente, R13)
+- resultat : fmt, clippy, tests agent verts sous Windows ; tests Linux (agent-docker : builds_are_serialized, build_timeout_kills_children, clone_over_cap_fails, limites dans docker_it) a confirmer en CI
+## 2026-11-24 16:22 — Session v0.1-sdd — claude-code (orchestrateur) — Task R3 : Remédiation audit — ressources du build
+- fait : limites buildkitd, builds en série, plafonds d'image et de clone, groupe de processus
+- résultat : relecture propre après 1 tour ; agent-docker à confirmer

@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-24 15:21
+# État courant — mis à jour le 2026-11-24 16:22
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R2 : Remédiation audit — cloisonnement des caches de build — statut : TERMINÉ (relecture propre après 1 tour ; job agent-docker à confirmer)
+Task R3 : Remédiation audit — ressources du build — statut : TERMINÉ (relecture propre après 1 tour ; agent-docker à confirmer)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R3 : Remédiation audit — ressources du build
 - Task R2 : Remédiation audit — cloisonnement des caches de build
 - Task R1 : Remédiation audit — protocole v6
 - Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task N : E-mails de notification et sources Git hors GitHub en v0.2 (décisions utilisateur)
 - Task 34c-2 : Durcissement du plan de contrôle, de l'agent et des mises à jour
 - Task 34c-1 : Filtrage réseau des builds et durcissement du proxy
-- Task 34b : Parcours complet e2e en CI
 
 ## Prochaine étape exacte
-Attendre agent-docker vert sur R2, puis R3 : ressources de buildkitd, builds en série, AppArmor, clone borné
+Intégrer R5 (API Équipe) et R8 (proxy) depuis leurs worktrees après relecture ; puis R3b (AppArmor appliqué), R45, R4
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
