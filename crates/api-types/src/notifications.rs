@@ -78,7 +78,7 @@ impl fmt::Debug for UpdateNotificationSettings {
 #[allow(dead_code)]
 pub fn get_notifications() {}
 
-/// Enregistre le serveur SMTP (STARTTLS ou TLS obligatoire).
+/// Enregistre le serveur SMTP (STARTTLS ou TLS obligatoire) ; proprietaire seulement.
 #[utoipa::path(
     put,
     path = "/api/settings/notifications",
@@ -88,8 +88,8 @@ pub fn get_notifications() {}
     responses(
         (status = 200, description = "Reglages enregistres", body = NotificationSettings),
         (status = 401, description = "Pas de session complete"),
-        (status = 403, description = "`forbidden` (Parametres : Admin requis) ou jeton CSRF invalide"),
-        (status = 422, description = "Hote, port, mode TLS, identifiants ou expediteur invalide"),
+        (status = 403, description = "Proprietaire seulement, ou jeton CSRF absent ou invalide"),
+        (status = 422, description = "`validation_failed` (hote, port, mode TLS, identifiants, expediteur, mot de passe a ressaisir) ou `smtp_host_private` (hote local ou prive)"),
     )
 )]
 #[allow(dead_code)]

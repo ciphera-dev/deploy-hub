@@ -196,7 +196,7 @@ const MATRIX: &[(&str, &str, Guard)] = &[
     ("GET", "/api/settings/security", R(Settings, A)),
     ("PATCH", "/api/settings/security", R(Settings, A)),
     ("GET", "/api/settings/notifications", R(Settings, A)),
-    ("PUT", "/api/settings/notifications", R(Settings, A)),
+    ("PUT", "/api/settings/notifications", Owner),
     ("GET", "/api/connectors/github", R(Settings, A)),
     ("DELETE", "/api/connectors/github", R(Settings, A)),
     ("POST", "/api/connectors/github/manifest", R(Settings, A)),

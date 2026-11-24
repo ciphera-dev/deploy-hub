@@ -25,7 +25,8 @@ interface SectionDef {
   icon: IconName;
   /** Proprietaire seulement (l'administrateur ne voit pas l'entree). */
   owner?: boolean;
-  render: () => ReactNode;
+  /** `role` : role du compte (`null` tant que non charge). */
+  render: (role: string | null) => ReactNode;
 }
 
 // Navigation de Pages2.jsx#SettingsV2 (NAV) ; les URL nomment les sections.
@@ -33,7 +34,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "general", name: "Général", icon: "Settings", render: () => <GeneralSection /> },
   { key: "panel-domain", name: "Domaine du panel", icon: "Globe", owner: true, render: () => <PanelDomainSection /> },
   { key: "deployments", name: "Déploiements", icon: "Rocket", render: () => <DeploymentsSection /> },
-  { key: "notifications", name: "Notifications", icon: "Bell", render: () => <NotificationsSection /> },
+  { key: "notifications", name: "Notifications", icon: "Bell", render: (role) => <NotificationsSection readOnly={role !== null && role !== "owner"} /> },
   { key: "security", name: "Sécurité", icon: "Lock", render: () => <OrgSecuritySection /> },
   { key: "team", name: "Équipe", icon: "Users", render: () => <TeamSection /> },
   { key: "danger", name: "Zone de danger", icon: "TriangleExclamationPoint", owner: true, render: () => <DangerSection /> },
@@ -53,7 +54,7 @@ function useRole(): string | null {
 }
 
 /** En-tete de SettingsV2 : organisation, identifiant, membres, fuseau, 2FA ; « Enregistrer » soumet la section. */
-function Header({ section }: { section: SectionKey }) {
+function Header({ section, readOnly }: { section: SectionKey; readOnly: boolean }) {
   const general = useQuery({ queryKey: GENERAL_QUERY_KEY, queryFn: fetchGeneral });
   const g = general.data;
   return (
@@ -67,7 +68,7 @@ function Header({ section }: { section: SectionKey }) {
           <span style={lbl}>{g ? [g.slug, g.timezone].filter(Boolean).join(" · ") : " "}</span>
         </span>
         {section !== "danger" && section !== "team" && (
-          <Button type="submit" form={SECTION_FORM_ID} variant="inverse">
+          <Button type="submit" form={SECTION_FORM_ID} variant="inverse" disabled={readOnly}>
             Enregistrer
           </Button>
         )}
@@ -109,7 +110,7 @@ export function SettingsPage({ section }: { section: SectionKey }) {
   const current = SECTIONS.find((s) => s.key === section) ?? SECTIONS[0];
   return (
     <div style={{ padding: "20px 32px 40px 34px", display: "flex", flexDirection: "column", gap: 20 }}>
-      <Header section={current.key} />
+      <Header section={current.key} readOnly={current.key === "notifications" && role !== null && role !== "owner"} />
       <div style={{ display: "grid", gridTemplateColumns: "220px minmax(0,1fr)", gap: 24, alignItems: "start" }}>
         <nav aria-label="Sections des paramètres" style={{ position: "sticky", top: 12, display: "flex", flexDirection: "column", gap: 2 }}>
           {visible.map((s) => {
@@ -128,7 +129,7 @@ export function SettingsPage({ section }: { section: SectionKey }) {
             );
           })}
         </nav>
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 860, minWidth: 0 }}>{current.render()}</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 860, minWidth: 0 }}>{current.render(role)}</div>
       </div>
     </div>
   );

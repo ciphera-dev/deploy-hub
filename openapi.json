@@ -4308,7 +4308,7 @@
         "tags": [
           "settings"
         ],
-        "summary": "Enregistre le serveur SMTP (STARTTLS ou TLS obligatoire).",
+        "summary": "Enregistre le serveur SMTP (STARTTLS ou TLS obligatoire) ; proprietaire seulement.",
         "operationId": "put_notifications",
         "parameters": [
           {
@@ -4349,10 +4349,10 @@
             "description": "Pas de session complete"
           },
           "403": {
-            "description": "`forbidden` (Parametres : Admin requis) ou jeton CSRF invalide"
+            "description": "Proprietaire seulement, ou jeton CSRF absent ou invalide"
           },
           "422": {
-            "description": "Hote, port, mode TLS, identifiants ou expediteur invalide"
+            "description": "`validation_failed` (hote, port, mode TLS, identifiants, expediteur, mot de passe a ressaisir) ou `smtp_host_private` (hote local ou prive)"
           }
         },
         "security": [

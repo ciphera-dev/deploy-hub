@@ -116,3 +116,24 @@ it("panne du serveur : message d'erreur", async () => {
   mount();
   expect(await screen.findByRole("alert")).toHaveTextContent("Impossible de charger les paramètres");
 });
+
+it("role admin : section en lecture seule, rien n'est modifiable", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <ToastProvider>
+        <NotificationsSection readOnly />
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByLabelText("Serveur SMTP")).toBeDisabled();
+  expect(screen.getByLabelText("Serveur SMTP")).toHaveValue("smtp.example.com");
+  for (const label of ["Port", "Utilisateur SMTP", "Mot de passe SMTP", "Adresse d'expédition", "Nom affiché"]) {
+    expect(screen.getByLabelText(label)).toBeDisabled();
+  }
+  expect(screen.getByRole("radio", { name: "STARTTLS" })).toBeDisabled();
+  expect(screen.getByRole("switch", { name: "Envoi des e-mails" })).toBeDisabled();
+  expect(screen.getByText("Réservé au propriétaire")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Enregistrer" })).not.toBeInTheDocument();
+  expect(putBodies).toHaveLength(0);
+});

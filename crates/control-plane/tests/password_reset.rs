@@ -1157,3 +1157,231 @@ async fn cli_reset_mfa_clears_factors() {
     assert_eq!(audit.len(), 1);
     assert!(!audit[0].contains("nora"));
 }
+
+/// Resolveur de test : un nom fixe pointe vers une adresse donnee.
+struct FixedDns(&'static str, std::net::IpAddr);
+
+impl control_plane::domain::domains::DnsResolver for FixedDns {
+    fn resolve<'a>(
+        &'a self,
+        host: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send + 'a>,
+    > {
+        let found = if host == self.0 { vec![self.1] } else { vec![] };
+        Box::pin(async move { Ok(found) })
+    }
+}
+
+#[tokio::test]
+async fn admin_cannot_update_smtp() {
+    let (state, _pg) = common::state().await;
+    user(&state, "owner@example.com", "owner").await;
+    user(&state, "admin@example.com", "admin").await;
+    let owner = session(&state, "owner@example.com").await;
+    let admin = session(&state, "admin@example.com").await;
+
+    let r = as_user(
+        &state,
+        &admin,
+        "PUT",
+        "/api/settings/notifications",
+        Some(smtp_body()),
+    )
+    .await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(count(&state, "SELECT count(*) FROM smtp_settings").await, 0);
+    // La lecture reste ouverte a l'administrateur.
+    let r = as_user(&state, &admin, "GET", "/api/settings/notifications", None).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert!(!r.raw.contains(SMTP_PASSWORD));
+    // Le proprietaire, lui, peut ecrire.
+    configure_smtp(&state, &owner).await;
+}
+
+#[tokio::test]
+async fn owner_can_update_smtp() {
+    let (state, _pg) = common::state().await;
+    user(&state, "owner@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    let r = as_user(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        Some(smtp_body()),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["host"], "smtp.example.com");
+}
+
+#[tokio::test]
+async fn smtp_host_private_refused() {
+    let (mut state, _pg) = common::state().await;
+    state.dns = Arc::new(FixedDns("relais.example.com", "10.1.2.3".parse().unwrap()));
+    user(&state, "owner@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    for host in [
+        "127.0.0.1",
+        "10.0.0.1",
+        "::1",
+        "[::1]",
+        "localhost",
+        "LOCALHOST.",
+        "192.168.1.5",
+        "172.16.0.9",
+        "169.254.169.254",
+        "fd00::1",
+        "fe80::1",
+        "::ffff:127.0.0.1",
+        "0.0.0.0",
+        "relais.example.com",
+    ] {
+        let mut body = smtp_body();
+        body["host"] = json!(host);
+        let r = as_user(
+            &state,
+            &owner,
+            "PUT",
+            "/api/settings/notifications",
+            Some(body),
+        )
+        .await;
+        assert_eq!(r.status, 422, "{host} : {}", r.raw);
+        assert!(r.raw.contains("smtp_host_private"), "{host} : {}", r.raw);
+    }
+    assert_eq!(count(&state, "SELECT count(*) FROM smtp_settings").await, 0);
+    // Un nom public reste accepte.
+    configure_smtp(&state, &owner).await;
+}
+
+#[tokio::test]
+async fn port_change_requires_password() {
+    let (state, _pg) = common::state().await;
+    user(&state, "owner@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    configure_smtp(&state, &owner).await;
+
+    let mut body = smtp_body();
+    body.as_object_mut().unwrap().remove("password");
+    body["port"] = json!(2525);
+    let r = as_user(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    assert!(
+        r.raw.contains("Ressaisissez le mot de passe SMTP"),
+        "{}",
+        r.raw
+    );
+    let port: i32 = sqlx::query_scalar("SELECT port FROM smtp_settings")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(port, 587, "rien n'est enregistre");
+
+    body["password"] = json!(SMTP_PASSWORD);
+    let r = as_user(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        Some(body),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn owner_notified_on_host_change() {
+    let (mut state, _pg) = common::state().await;
+    let outbox = capture(&mut state);
+    user(&state, "owner@example.com", "owner").await;
+    user(&state, "owner2@example.com", "owner").await;
+    user(&state, "dev@example.com", "developer").await;
+    let owner = session(&state, "owner@example.com").await;
+
+    // Premiere configuration : aucun ancien transport, aucun e-mail.
+    configure_smtp(&state, &owner).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(outbox.lock().unwrap().is_empty());
+
+    // Changement de l'expediteur seul : avis.
+    let mut body = smtp_body();
+    body["from_address"] = json!("autre@example.com");
+    let r = as_user(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        Some(body),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let sent = wait_for_mail(&outbox, 2).await;
+    assert_eq!(sent.len(), 2, "un avis par proprietaire");
+    let mut to: Vec<&str> = sent.iter().map(|m| m.to.as_str()).collect();
+    to.sort();
+    assert_eq!(to, ["owner2@example.com", "owner@example.com"]);
+    for mail in &sent {
+        assert!(!mail.text.contains(SMTP_PASSWORD));
+        assert!(mail.text.contains("smtp.example.com"), "{}", mail.text);
+    }
+    outbox.lock().unwrap().clear();
+
+    // Changement de nom affiche seul : pas d'avis.
+    let mut body = smtp_body();
+    body["from_address"] = json!("autre@example.com");
+    body["from_name"] = json!("Autre");
+    let r = as_user(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        Some(body),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(outbox.lock().unwrap().is_empty());
+
+    // Changement d'hote : avis (ancien et nouvel hote).
+    let mut body = smtp_body();
+    body["from_address"] = json!("autre@example.com");
+    body["host"] = json!("smtp2.example.com");
+    let r = as_user(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        Some(body),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let sent = wait_for_mail(&outbox, 2).await;
+    assert_eq!(sent.len(), 2);
+    assert!(sent[0].text.contains("smtp.example.com"));
+    assert!(sent[0].text.contains("smtp2.example.com"));
+
+    // Refus (hote prive) : aucun avis.
+    outbox.lock().unwrap().clear();
+    let mut body = smtp_body();
+    body["host"] = json!("10.0.0.1");
+    let r = as_user(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        Some(body),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(outbox.lock().unwrap().is_empty());
+}

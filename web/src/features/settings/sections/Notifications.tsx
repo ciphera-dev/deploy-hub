@@ -14,13 +14,13 @@ const TLS_MODES: [NotificationUpdate["tls"], string, number][] = [
   ["tls", "SSL/TLS", 465],
 ];
 
-function TlsPicker({ value, onChange }: { value: string; onChange: (tls: string, port: number) => void }) {
+function TlsPicker({ value, onChange, disabled }: { value: string; onChange: (tls: string, port: number) => void; disabled?: boolean }) {
   return (
     <div role="radiogroup" aria-label="Chiffrement" style={{ width: "100%", maxWidth: 340, display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 3, padding: 3, height: 38, boxSizing: "border-box", borderRadius: 10, border: "1px solid rgba(255,255,255,.09)", background: "rgba(255,255,255,.045)" }}>
       {TLS_MODES.map(([mode, name, port]) => {
         const on = value === mode;
         return (
-          <button key={mode} type="button" role="radio" aria-checked={on} onClick={() => onChange(mode, port)} style={{ display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: 0, cursor: "pointer", font: "500 12px/1 var(--font-sans)", background: on ? "rgba(255,255,255,.12)" : "transparent", color: on ? "var(--text-strong)" : "var(--text-muted)", transition: "all .15s" }}>
+          <button key={mode} type="button" role="radio" aria-checked={on} disabled={disabled} onClick={() => onChange(mode, port)} style={{ display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, border: 0, cursor: disabled ? "default" : "pointer", font: "500 12px/1 var(--font-sans)", background: on ? "rgba(255,255,255,.12)" : "transparent", color: on ? "var(--text-strong)" : "var(--text-muted)", transition: "all .15s" }}>
             {name}
           </button>
         );
@@ -51,7 +51,7 @@ const draftOf = (s: NotificationSettings): Draft => ({
   from_name: s.from_name,
 });
 
-function SmtpForm({ initial }: { initial: NotificationSettings }) {
+function SmtpForm({ initial, readOnly }: { initial: NotificationSettings; readOnly: boolean }) {
   const queryClient = useQueryClient();
   const { flash } = useToast();
   const [saved, setSaved] = useState(initial);
@@ -68,7 +68,7 @@ function SmtpForm({ initial }: { initial: NotificationSettings }) {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!valid || busy) return;
+    if (readOnly || !valid || busy) return;
     setBusy(true);
     const body: NotificationUpdate = {
       enabled: s.enabled,
@@ -103,7 +103,7 @@ function SmtpForm({ initial }: { initial: NotificationSettings }) {
     <form id={SECTION_FORM_ID} onSubmit={(e) => void submit(e)} noValidate style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Card title="Notifications" desc="Où l'équipe est prévenue des événements importants.">
         <Row t="E-mail" d="Invitations d'équipe et liens de réinitialisation du mot de passe." first>
-          <Switch checked={s.enabled} onChange={(v) => u("enabled", v)} />
+          <Switch checked={s.enabled} onChange={(v) => u("enabled", v)} disabled={readOnly} ariaLabel="Envoi des e-mails" />
         </Row>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10, margin: "0 20px 16px", padding: "10px 12px", borderRadius: 10, background: "var(--surface-raised)", font: "400 12px/1.45 var(--font-sans)", color: "var(--text-muted)" }}>
           <Icon name={status[0] as "Info"} size={14} color={status[1]} style={{ marginTop: 1 }} />
@@ -113,10 +113,11 @@ function SmtpForm({ initial }: { initial: NotificationSettings }) {
 
       <Card title="Serveur SMTP" desc="Envoi des e-mails de l'instance. Chiffrement obligatoire.">
         <Row t="Serveur SMTP" d="Nom d'hôte du serveur d'envoi." first>
-          <Input label="Serveur SMTP" value={s.host} onChange={(v) => u("host", v.trim().toLowerCase())} placeholder="smtp.exemple.com" mono />
+          <Input disabled={readOnly} label="Serveur SMTP" value={s.host} onChange={(v) => u("host", v.trim().toLowerCase())} placeholder="smtp.exemple.com" mono />
         </Row>
         <Row t="Chiffrement" d="L'envoi en clair n'est pas proposé.">
           <TlsPicker
+            disabled={readOnly}
             value={s.tls}
             onChange={(tls, p) => {
               u("tls", tls);
@@ -125,34 +126,41 @@ function SmtpForm({ initial }: { initial: NotificationSettings }) {
           />
         </Row>
         <Row t="Port" d="587 pour STARTTLS, 465 pour SSL/TLS en général.">
-          <Input label="Port" value={s.port} onChange={(v) => u("port", v.replace(/\D/g, "").slice(0, 5))} placeholder="587" mono />
+          <Input disabled={readOnly} label="Port" value={s.port} onChange={(v) => u("port", v.replace(/\D/g, "").slice(0, 5))} placeholder="587" mono />
         </Row>
         <Row t="Utilisateur" d="Laissez vide si le serveur n'exige pas d'authentification.">
-          <Input label="Utilisateur SMTP" value={s.username} onChange={(v) => u("username", v)} placeholder="utilisateur" autoComplete="off" />
+          <Input disabled={readOnly} label="Utilisateur SMTP" value={s.username} onChange={(v) => u("username", v)} placeholder="utilisateur" autoComplete="off" />
         </Row>
         <Row t="Mot de passe" d={saved.password_set ? "Un mot de passe est enregistré (chiffré, jamais réaffiché). Laissez vide pour le conserver." : "Chiffré sur le serveur, jamais réaffiché."}>
-          <Input label="Mot de passe SMTP" type="password" value={s.password} onChange={(v) => u("password", v)} placeholder={saved.password_set ? "••••••••" : ""} autoComplete="new-password" />
+          <Input disabled={readOnly} label="Mot de passe SMTP" type="password" value={s.password} onChange={(v) => u("password", v)} placeholder={saved.password_set ? "••••••••" : ""} autoComplete="new-password" />
         </Row>
         <Row t="Adresse d'expédition">
-          <Input label="Adresse d'expédition" value={s.from_address} onChange={(v) => u("from_address", v)} placeholder="ciphera@exemple.com" mono />
+          <Input disabled={readOnly} label="Adresse d'expédition" value={s.from_address} onChange={(v) => u("from_address", v)} placeholder="ciphera@exemple.com" mono />
         </Row>
         <Row t="Nom affiché" d={<>Apparaît comme <span style={{ color: "var(--text-body)" }}>{(s.from_name || "Ciphera") + " <" + (s.from_address || "adresse") + ">"}</span></>}>
-          <Input label="Nom affiché" value={s.from_name} onChange={(v) => u("from_name", v)} placeholder="Ciphera" />
+          <Input disabled={readOnly} label="Nom affiché" value={s.from_name} onChange={(v) => u("from_name", v)} placeholder="Ciphera" />
         </Row>
       </Card>
 
       {err && <FormError>{err}</FormError>}
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <Button type="submit" variant="inverse" icon={busy ? "Loader" : undefined} disabled={!valid || busy} aria-busy={busy || undefined}>
-          Enregistrer
-        </Button>
-      </div>
+      {readOnly ? (
+        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, font: "400 12px/1.4 var(--font-sans)", color: "var(--text-muted)" }}>
+          <Icon name="Lock" size={13} />
+          Réservé au propriétaire
+        </div>
+      ) : (
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <Button type="submit" variant="inverse" icon={busy ? "Loader" : undefined} disabled={!valid || busy} aria-busy={busy || undefined}>
+            Enregistrer
+          </Button>
+        </div>
+      )}
     </form>
   );
 }
 
 /** Parametres › Notifications (Pages2.jsx#SettingsV2) : envoi d'e-mails et serveur SMTP. */
-export function NotificationsSection() {
+export function NotificationsSection({ readOnly = false }: { readOnly?: boolean }) {
   const query = useQuery({ queryKey: NOTIFICATIONS_QUERY_KEY, queryFn: fetchNotifications });
   if (query.isError) {
     const status = query.error instanceof ApiError ? query.error.status : 0;
@@ -172,5 +180,5 @@ export function NotificationsSection() {
       </div>
     );
   }
-  return <SmtpForm initial={query.data} />;
+  return <SmtpForm initial={query.data} readOnly={readOnly} />;
 }

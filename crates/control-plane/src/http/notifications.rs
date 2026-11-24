@@ -1,5 +1,6 @@
 //! Parametres › Notifications : serveur SMTP de l'instance.
-//! `GET|PUT /api/settings/notifications` (Parametres : Admin requis).
+//! `GET /api/settings/notifications` (Parametres : Admin requis, lecture
+//! seule) et `PUT` (proprietaire seulement).
 //!
 //! Le mot de passe SMTP est en ecriture seule : chiffre par le coffre de
 //! l'instance, jamais renvoye (seulement `password_set`), conserve quand un
@@ -14,13 +15,14 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::json;
 use shared::error::ApiError;
+use std::net::IpAddr;
 use uuid::Uuid;
 
 use crate::auth::internal;
-use crate::authz::{Require, lvl, res};
 use crate::http::client_ip::ClientIp;
+use crate::http::settings::{Admin, owner_only};
 use crate::http::setup::validate_email;
-use crate::mail::{self, TlsMode};
+use crate::mail::{self, Mailer, TlsMode};
 use crate::state::AppState;
 
 const MAX_BODY: usize = 16 * 1024;
@@ -109,10 +111,7 @@ async fn current(state: &AppState) -> Result<Response, ApiError> {
 }
 
 /// `GET /api/settings/notifications`
-async fn show(
-    State(state): State<AppState>,
-    _auth: Require<res::Settings, lvl::Admin>,
-) -> Result<Response, ApiError> {
+async fn show(State(state): State<AppState>, _auth: Admin) -> Result<Response, ApiError> {
     current(&state).await
 }
 
@@ -120,9 +119,10 @@ async fn show(
 async fn update(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    auth: Require<res::Settings, lvl::Admin>,
+    auth: Admin,
     body: Result<Json<UpdateNotificationSettings>, JsonRejection>,
 ) -> Result<Response, ApiError> {
+    owner_only(&auth)?;
     let Json(input) = body.map_err(|_| invalid("Requête invalide."))?;
     let tls = TlsMode::parse(&input.tls)
         .ok_or_else(|| invalid("Chiffrement : STARTTLS ou SSL/TLS uniquement."))?;
@@ -130,6 +130,8 @@ async fn update(
         return Err(invalid("Port invalide."));
     }
     let host = input.host.trim().to_ascii_lowercase();
+    // Avant la validation du nom : `::1` ou `[::1]` donnent le meme refus.
+    refuse_private_host(&state, &host).await?;
     if !valid_host(&host) {
         return Err(invalid("Serveur SMTP : nom d'hôte invalide."));
     }
@@ -160,26 +162,37 @@ async fn update(
         None => None,
     };
 
+    // Ancien transport (meilleur effort) : sert a prevenir les proprietaires.
+    let previous = match mail::load_settings(&state.db, &state.secrets).await {
+        Ok(settings) => settings,
+        Err(e) => {
+            tracing::warn!(error = %e, "anciens reglages SMTP illisibles");
+            None
+        }
+    };
+
     let mut tx = state
         .db
         .begin()
         .await
         .map_err(|e| internal("transaction des reglages SMTP", e))?;
-    // Le mot de passe enregistre n'est conserve que pour le meme serveur et
-    // le meme utilisateur : sinon un administrateur pourrait le faire envoyer
-    // a un serveur qu'il controle. Ligne verrouillee jusqu'a l'ecriture.
+    // Le mot de passe enregistre n'est conserve que pour le meme serveur, le
+    // meme port et le meme utilisateur : sinon il pourrait etre envoye a un
+    // serveur controle par un tiers. Ligne verrouillee jusqu'a l'ecriture.
     if sealed.is_none() && !username.is_empty() {
-        let stored: Option<(String, String, bool)> = sqlx::query_as(
-            "SELECT host, username, password_sealed IS NOT NULL FROM smtp_settings FOR UPDATE",
+        let stored: Option<(String, i32, String, bool)> = sqlx::query_as(
+            "SELECT host, port, username, password_sealed IS NOT NULL FROM smtp_settings FOR UPDATE",
         )
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| internal("lecture des reglages SMTP", e))?;
-        if let Some((stored_host, stored_username, true)) = stored
-            && (stored_host != host || stored_username != username)
+        if let Some((stored_host, stored_port, stored_username, true)) = stored
+            && (stored_host != host
+                || stored_port != i32::from(input.port)
+                || stored_username != username)
         {
             return Err(invalid(
-                "Ressaisissez le mot de passe SMTP pour changer de serveur ou d'utilisateur.",
+                "Ressaisissez le mot de passe SMTP pour changer de serveur, de port ou d'utilisateur.",
             ));
         }
     }
@@ -237,12 +250,146 @@ async fn update(
     tx.commit()
         .await
         .map_err(|e| internal("transaction des reglages SMTP", e))?;
+    if let Some(previous) = previous
+        && (previous.host != host
+            || previous.port != input.port
+            || previous.from_address != from_address)
+    {
+        notify_owners(
+            &state,
+            &previous,
+            &auth.user.email,
+            (&host, input.port, &from_address),
+        )
+        .await;
+    }
     current(&state).await
+}
+
+/// Refuse un serveur qui vise la machine ou le reseau prive : `localhost`,
+/// adresse litterale ou resolue (boucle locale, privee, lien-local, ULA).
+async fn refuse_private_host(state: &AppState, host: &str) -> Result<(), ApiError> {
+    let refused = || {
+        ApiError::new(
+            422,
+            "smtp_host_private",
+            "Serveur SMTP : les adresses locales ou privées sont refusées.",
+        )
+    };
+    let bare = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.');
+    if bare == "localhost" || bare.ends_with(".localhost") {
+        return Err(refused());
+    }
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        return if is_private_ip(ip) {
+            Err(refused())
+        } else {
+            Ok(())
+        };
+    }
+    if !valid_host(bare) {
+        return Ok(());
+    }
+    // Nom : chaque adresse resolue doit etre publique. Un nom inconnu n'a
+    // aucune adresse (le resolveur renvoie alors une liste vide).
+    match state.dns.resolve(bare).await {
+        Ok(ips) if ips.iter().any(|ip| is_private_ip(*ip)) => Err(refused()),
+        Ok(_) => Ok(()),
+        Err(e) => {
+            tracing::warn!(error = %e, "resolution du serveur SMTP impossible");
+            Err(invalid(
+                "Serveur SMTP : résolution du nom impossible, réessayez.",
+            ))
+        }
+    }
+}
+
+/// Adresse locale, privee, lien-local, ULA ou non routable.
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v6) => {
+            let seg = v6.segments();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (seg[0] & 0xfe00) == 0xfc00
+                || (seg[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// Previent les proprietaires par l'ancien transport (meilleur effort :
+/// non configure, desactive ou injoignable, l'echec est seulement journalise).
+async fn notify_owners(
+    state: &AppState,
+    previous: &mail::SmtpSettings,
+    actor: &str,
+    new: (&str, u16, &str),
+) {
+    let Some(mailer) = Mailer::from_settings(previous) else {
+        tracing::info!("reglages SMTP modifies : ancien transport inactif, aucun avis");
+        return;
+    };
+    let owners: Vec<String> =
+        match sqlx::query_scalar("SELECT email FROM users WHERE role = 'owner'")
+            .fetch_all(&state.db)
+            .await
+        {
+            Ok(owners) => owners,
+            Err(e) => {
+                tracing::warn!(error = %e, "proprietaires illisibles : avis SMTP non envoye");
+                return;
+            }
+        };
+    for to in owners {
+        let message = mail::smtp_changed_mail(
+            &to,
+            actor,
+            (&previous.host, previous.port, &previous.from_address),
+            new,
+        );
+        state.mail.spawn(mailer.clone(), message, "smtp_changed");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_addresses_are_recognised() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.5.4",
+            "192.168.0.1",
+            "169.254.1.1",
+            "0.0.0.0",
+            "100.64.0.1",
+            "::1",
+            "::",
+            "fd12::1",
+            "fe80::1",
+            "::ffff:10.0.0.1",
+        ] {
+            assert!(is_private_ip(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["8.8.8.8", "93.184.216.34", "2606:4700::1111", "172.32.0.1"] {
+            assert!(!is_private_ip(ip.parse().unwrap()), "{ip}");
+        }
+    }
 
     #[test]
     fn hosts_are_dns_names() {

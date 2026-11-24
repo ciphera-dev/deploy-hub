@@ -292,3 +292,11 @@ it("notifications : la section SMTP est montée dans la page", async () => {
   expect(await screen.findByLabelText("Serveur SMTP", undefined, { timeout: 5000 })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Notifications" })).toHaveAttribute("aria-current", "page");
 });
+
+it("notifications : le rôle admin voit la section en lecture seule, le propriétaire la modifie", async () => {
+  me = { ...OWNER, role: "admin" };
+  mount("/settings/notifications");
+  expect(await screen.findByLabelText("Serveur SMTP", undefined, { timeout: 5000 })).toBeDisabled();
+  expect(screen.getByText("Réservé au propriétaire")).toBeInTheDocument();
+  for (const button of screen.getAllByRole("button", { name: "Enregistrer" })) expect(button).toBeDisabled();
+});

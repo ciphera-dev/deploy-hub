@@ -1265,7 +1265,7 @@ export interface paths {
         };
         /** Serveur SMTP de l'instance (sans le mot de passe). */
         get: operations["get_notifications"];
-        /** Enregistre le serveur SMTP (STARTTLS ou TLS obligatoire). */
+        /** Enregistre le serveur SMTP (STARTTLS ou TLS obligatoire) ; proprietaire seulement. */
         put: operations["put_notifications"];
         post?: never;
         delete?: never;
@@ -7002,14 +7002,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `forbidden` (Parametres : Admin requis) ou jeton CSRF invalide */
+            /** @description Proprietaire seulement, ou jeton CSRF absent ou invalide */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Hote, port, mode TLS, identifiants ou expediteur invalide */
+            /** @description `validation_failed` (hote, port, mode TLS, identifiants, expediteur, mot de passe a ressaisir) ou `smtp_host_private` (hote local ou prive) */
             422: {
                 headers: {
                     [name: string]: unknown;

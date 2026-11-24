@@ -453,6 +453,29 @@ pub fn mfa_reset_mail(to: &str) -> OutgoingMail {
     }
 }
 
+/// Avis aux proprietaires apres un changement de serveur ou d'expediteur
+/// SMTP, envoye par l'ancien transport (jamais de mot de passe).
+pub fn smtp_changed_mail(
+    to: &str,
+    actor: &str,
+    old: (&str, u16, &str),
+    new: (&str, u16, &str),
+) -> OutgoingMail {
+    OutgoingMail {
+        to: to.to_string(),
+        subject: "Serveur d'envoi des e-mails Ciphera modifié".to_string(),
+        text: format!(
+            "Bonjour,\n\n\
+             Les réglages d'envoi des e-mails de votre instance Ciphera ont été modifiés par {actor}.\n\n\
+             Avant : serveur {}:{}, expéditeur {}\n\
+             Après : serveur {}:{}, expéditeur {}\n\n\
+             Si vous n'êtes pas à l'origine de ce changement, vérifiez Paramètres › Notifications \
+             et les comptes de votre instance sans attendre.\n",
+            old.0, old.1, old.2, new.0, new.1, new.2
+        ),
+    }
+}
+
 /// E-mail d'invitation (72 heures).
 pub fn invitation_mail(to: &str, link: &str) -> OutgoingMail {
     OutgoingMail {

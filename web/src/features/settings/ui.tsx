@@ -46,20 +46,22 @@ interface InputProps {
   mono?: boolean;
   type?: string;
   autoComplete?: string;
+  disabled?: boolean;
 }
 
 /** Champ `inp` de SettingsV2 (38 px, fond translucide) ; le libelle de la ligne est son nom accessible. */
-export function Input({ label, value, onChange, placeholder, mono, type = "text", autoComplete = "off" }: InputProps) {
+export function Input({ label, value, onChange, placeholder, mono, type = "text", autoComplete = "off", disabled }: InputProps) {
   return (
     <input
       aria-label={label}
       type={type}
       value={value}
       autoComplete={autoComplete}
+      disabled={disabled}
       spellCheck={false}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      style={{ width: "100%", maxWidth: 340, height: 38, padding: "0 12px", boxSizing: "border-box", borderRadius: 10, border: "1px solid rgba(255,255,255,.1)", background: "rgba(255,255,255,.045)", color: "var(--text-strong)", font: "400 13px/1 " + (mono ? "var(--font-mono)" : "var(--font-sans)"), outline: "none" }}
+      style={{ width: "100%", maxWidth: 340, height: 38, padding: "0 12px", boxSizing: "border-box", borderRadius: 10, border: "1px solid rgba(255,255,255,.1)", background: "rgba(255,255,255,.045)", color: "var(--text-strong)", font: "400 13px/1 " + (mono ? "var(--font-mono)" : "var(--font-sans)"), outline: "none", opacity: disabled ? 0.55 : 1 }}
     />
   );
 }
