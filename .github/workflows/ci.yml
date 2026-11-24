@@ -413,6 +413,7 @@ jobs:
           EXPECTED: ${{ matrix.variant }}
         run: |
           set -eu
+          # shellcheck disable=SC2034 # lue par apparmor_variant (chargée par eval)
           APPARMOR_PROFILE=ciphera-buildkitd
           APPARMOR_PROFILE_ABI3=ciphera-buildkitd.abi3
           eval "$(sed -n '/^apparmor_variant() {/,/^}/p' install/install.sh)"
