@@ -1900,6 +1900,24 @@ mod tests {
     }
 
     #[test]
+    fn kill_pending_matches_only_a_pending_kill() {
+        let err = |status_code: u16, message: &str| BollardError::DockerResponseServerError {
+            status_code,
+            message: message.to_string(),
+        };
+        assert!(kill_pending(&err(
+            500,
+            "could not kill container: container 387e9da67373 PID 16682 is zombie and can not be killed"
+        )));
+        assert!(kill_pending(&err(
+            500,
+            "tried to kill container, but did not receive an exit event"
+        )));
+        assert!(!kill_pending(&err(500, "driver failed")));
+        assert!(!kill_pending(&err(409, "is zombie")));
+    }
+
+    #[test]
     fn same_spec_same_fingerprint() {
         let a = ContainerSpec::app(
             DeploymentId::new(),

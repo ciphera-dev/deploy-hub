@@ -814,6 +814,32 @@ remove_legacy_buildkit_volume() {
 	fi
 }
 
+# buildkitd tourne avec l'init de Docker (`--init`, binaire docker-init,
+# tini) : sans lui, chaque build echoue au demarrage de buildkitd. Present
+# si le demon en lit la version (InitCommit) ou si le binaire configure
+# (InitBinary) se trouve dans les dossiers ou dockerd le cherche.
+# Avertissement seulement : le PATH de dockerd peut differer du notre.
+check_docker_init() {
+	[ "$have_docker" = yes ] && docker info >/dev/null 2>&1 || return 0
+	init_id=$(docker info --format '{{.InitCommit.ID}}' 2>/dev/null || true)
+	case $init_id in
+	'' | N/A | '<no value>') ;;
+	*) return 0 ;;
+	esac
+	init_bin=$(docker info --format '{{.InitBinary}}' 2>/dev/null || true)
+	[ -n "$init_bin" ] && [ "$init_bin" != '<no value>' ] || init_bin=docker-init
+	case $init_bin in
+	/*) [ -x "$init_bin" ] && return 0 ;;
+	*)
+		for d in /usr/local/libexec/docker /usr/libexec/docker /usr/local/lib/docker /usr/lib/docker; do
+			[ -x "$d/$init_bin" ] && return 0
+		done
+		command -v "$init_bin" >/dev/null 2>&1 && return 0
+		;;
+	esac
+	warn "init de Docker ($init_bin) introuvable : les builds echoueront tant qu'il manque (installer tini, paquet qui fournit docker-init, ou regler init-path de dockerd)"
+}
+
 # Adresse source de la route par defaut : aucun paquet n'est envoye.
 detect_ip() {
 	ip -4 route get 1.1.1.1 2>/dev/null |
@@ -907,6 +933,7 @@ main() {
 		usermod -aG docker ciphera-agent
 	fi
 	remove_legacy_buildkit_volume
+	check_docker_init
 	install_files
 	init_instance
 	start_services

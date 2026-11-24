@@ -543,8 +543,15 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
         {
             // Arret propre d'abord (SIGTERM relaye jusqu'a buildkitd) : une
             // suppression forcee d'un buildkitd en marche le tue par SIGKILL,
-            // et Docker peut echouer le temps que ses processus sortent.
-            self.docker.stop(&c.id).await?;
+            // et Docker peut echouer le temps que ses processus sortent. Un
+            // arret refuse n'empeche pas la suppression (nouvel essai borne
+            // de la suppression forcee) : erreur seulement si elle echoue.
+            if let Err(e) = self.docker.stop(&c.id).await {
+                tracing::warn!(
+                    "buildkitd {} : arret refuse ({e}), suppression forcee",
+                    c.name
+                );
+            }
             self.docker.remove(&c.id).await?;
         }
         self.fs.remove(project).await?;

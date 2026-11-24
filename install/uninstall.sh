@@ -98,12 +98,15 @@ main() {
 
 	# Arguments fixes, aucune entree utilisateur.
 	have_docker=no
+	leftover=no
 	if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 		have_docker=yes
 		if remove_managed_containers; then
 			say "conteneurs Ciphera supprimes"
 		else
-			say "attention : conteneurs Ciphera restants (docker ps -a --filter $MANAGED), relancer uninstall.sh"
+			leftover=yes
+			printf 'ciphera : erreur : conteneurs Ciphera restants (relancer uninstall.sh) :\n' >&2
+			docker ps -a --filter "$MANAGED" --format '  {{.ID}} {{.Names}} {{.Status}}' >&2 || true
 		fi
 	fi
 	# Filtrage de la sortie des builds (charge par ciphera-agent.service),
@@ -124,7 +127,11 @@ main() {
 		fi
 	fi
 
-	if [ "$purge" = yes ]; then
+	if [ "$purge" = yes ] && [ "$leftover" = yes ]; then
+		# Un conteneur encore vivant (buildkitd, PostgreSQL) tient ses
+		# dossiers d'etat et de secrets : rien n'est purge sous lui.
+		say "purge non faite : conteneurs Ciphera restants ; conserves : /etc/ciphera*, /var/lib/ciphera*, /var/backups/ciphera, volumes Docker, comptes (relancer uninstall.sh --purge)"
+	elif [ "$purge" = yes ]; then
 		if [ "$have_docker" = yes ]; then
 			for v in $VOLUMES; do
 				docker volume rm -f "$v" >/dev/null 2>&1 || true
@@ -155,6 +162,8 @@ main() {
 	else
 		say "conserves : /etc/ciphera et /etc/ciphera-agent (secrets), /etc/ciphera-updater, /var/lib/ciphera* (dont l'etat de BuildKit), sauvegardes /var/backups/ciphera, volume Docker de PostgreSQL, comptes (--purge pour tout supprimer)"
 	fi
+	# Desinstallation incomplete : code non nul.
+	[ "$leftover" = no ] || exit 1
 }
 
 main "$@"

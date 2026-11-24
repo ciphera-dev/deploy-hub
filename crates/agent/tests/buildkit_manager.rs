@@ -338,6 +338,17 @@ async fn remove_project_deletes_container_state_and_usage_file() {
         matches!((stop, remove), (Some(s), Some(r)) if s < r),
         "arret puis suppression attendus : {calls:?}"
     );
+    // Arret refuse : la suppression forcee est tentee quand meme.
+    drop(f.manager.ensure(gone).await.unwrap());
+    f.docker
+        .fail_stop
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.manager.remove_project(gone).await.unwrap();
+    f.docker
+        .fail_stop
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(f.running(gone), None);
+    assert!(!marker(gone).exists());
 }
 
 #[tokio::test]
