@@ -1802,9 +1802,14 @@ fn compose_services_are_forced_onto_the_project_network() {
         assert_eq!(labels[MANAGED_LABEL], "true");
         assert_eq!(labels[COMPOSE_LABEL], "shop-production");
         assert_eq!(labels[PROJECT_LABEL], project.to_string());
+        // Toujours posee, vide hors du service expose : jamais celle de l'image.
         assert_eq!(
-            labels.contains_key(DEPLOYMENT_LABEL),
-            name == "web",
+            labels[DEPLOYMENT_LABEL],
+            if name == "web" {
+                deployment.to_string()
+            } else {
+                String::new()
+            },
             "{name} : etiquette de deploiement sur le service expose seul"
         );
         assert!(
@@ -2018,6 +2023,128 @@ async fn compose_deploy_restarts_others_in_order_and_switches_the_exposed_servic
             .running,
         "services non exposes jamais arretes par le drainage"
     );
+}
+
+fn compose_deploy_spec(project: ProjectId, web: ServiceId, id: DeploymentId) -> DeploySpec {
+    DeploySpec {
+        deployment_id: id,
+        service_id: web,
+        image: ImageRef("ciphera/shop-production/web:x".into()),
+        internal_port: Some(3000),
+        project_id: project,
+        healthcheck: Healthcheck::default(),
+        compose: Some(ComposeDeploy {
+            service: "web".into(),
+            bundle: id,
+        }),
+        service_name: Some("web".into()),
+        env: Vec::new(),
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn restart_does_not_start_previous_compose_deployment() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.com", Some(web))])
+        .await
+        .unwrap();
+    for n in 100..120 {
+        bench.probe.answer(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let (first, second) = (DeploymentId::new(), DeploymentId::new());
+    for id in [first, second] {
+        bench
+            .db
+            .put_bundle(id, &compose_bundle().to_string())
+            .unwrap();
+        bench
+            .deploy(&compose_deploy_spec(project, web, id))
+            .await
+            .0
+            .unwrap();
+    }
+    let old = format!("cid-ciphera-d-{first}-web-1");
+    let current = format!("cid-ciphera-d-{second}-web-1");
+    assert!(!bench.docker.container(&old).unwrap().running);
+    assert!(bench.docker.container(&current).unwrap().running);
+
+    bench.deployer.restart(second).await;
+
+    let calls = bench.docker.calls();
+    assert!(calls.contains(&format!("restart:{current}")));
+    assert!(
+        calls.contains(&"restart:cid-shop-production-cache-1".to_string()),
+        "les services non exposes redemarrent"
+    );
+    assert!(
+        !calls.contains(&format!("restart:{old}")),
+        "l'ancien deploiement n'est pas relance"
+    );
+    assert!(!bench.docker.container(&old).unwrap().running);
+}
+
+#[tokio::test(start_paused = true)]
+async fn image_labels_cannot_join_other_project() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    let other = ProjectId::new();
+    bench
+        .deployer
+        .apply_routes(vec![route("app.example.com", Some(web))])
+        .await
+        .unwrap();
+    // Ensemble Compose d'un autre projet : service non expose en marche.
+    let other_project = other.to_string();
+    bench.docker.add_container(
+        "cid-other-db",
+        "other-db",
+        &[
+            (COMPOSE_LABEL, "other-production"),
+            (PROJECT_LABEL, other_project.as_str()),
+        ],
+        Some("172.18.9.9"),
+    );
+    let v1 = spec(project, web, "ciphera/web-production:v1");
+    deploy_ok(&bench, &v1).await;
+    let container = format!("id-ciphera-d-{}", v1.deployment_id);
+
+    // Les etiquettes reservees sont posees par l'agent, vides si sans objet.
+    let run = bench.docker.runs.lock().unwrap().last().unwrap().clone();
+    let body = ciphera_agent::docker::create_body(&run);
+    let labels = body.labels.unwrap();
+    assert_eq!(labels[COMPOSE_LABEL], "");
+    assert_eq!(labels[PROJECT_LABEL], project.to_string());
+    assert_eq!(labels[DEPLOYMENT_LABEL], v1.deployment_id.to_string());
+
+    // Meme si le conteneur portait des etiquettes etrangeres (image
+    // hostile), l'etat local fait foi : aucun ordre ne vise l'autre projet.
+    bench
+        .docker
+        .containers
+        .lock()
+        .unwrap()
+        .get_mut(&container)
+        .unwrap()
+        .labels
+        .extend([
+            (COMPOSE_LABEL.to_string(), "other-production".to_string()),
+            (PROJECT_LABEL.to_string(), other_project.clone()),
+        ]);
+    bench.deployer.restart(v1.deployment_id).await;
+    bench.deployer.stop_containers(v1.deployment_id).await;
+    bench.deployer.remove(v1.deployment_id).await;
+    let calls = bench.docker.calls();
+    assert!(
+        !calls.iter().any(|c| c.ends_with("cid-other-db")),
+        "le conteneur de l'autre projet n'est pas touche : {calls:?}"
+    );
+    assert!(bench.docker.container("cid-other-db").unwrap().running);
 }
 
 // --- variables d'environnement (Task 29) ----------------------------------------

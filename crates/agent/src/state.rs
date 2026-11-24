@@ -13,11 +13,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use proto::{AgentState, DeploymentOutcome, ImageRef, RunningDeployment, Stage, StageStatus};
 use rusqlite::{Connection, params};
-use shared::ids::{DeploymentId, ServiceId};
+use shared::ids::{DeploymentId, ProjectId, ServiceId};
 
 use crate::docker::ContainerId;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Tables de la version 1 (Task 19).
 const SCHEMA_V1: &str = "
@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS outcomes (
 CREATE INDEX IF NOT EXISTS outcomes_recent ON outcomes (recorded_at);
 ";
 
+/// Version 4 : projet du deploiement (les actions du cycle de vie ne
+/// s'etendent qu'a ce projet). Vide pour un deploiement plus ancien.
+const MIGRATE_V4: &str = "
+ALTER TABLE deployments ADD COLUMN project_id TEXT;
+";
+
 #[derive(Debug)]
 pub enum StateError {
     Sqlite(rusqlite::Error),
@@ -102,6 +108,10 @@ pub struct DeploymentRecord {
     pub deployment: RunningDeployment,
     pub container: ContainerId,
     pub port: Option<u16>,
+    /// Projet du deploiement, tel que le plan de controle l'a donne au
+    /// `Deploy` (jamais lu d'une etiquette de conteneur). `None` : etat
+    /// ecrit avant que l'agent ne le garde.
+    pub project: Option<ProjectId>,
 }
 
 #[derive(Clone)]
@@ -145,6 +155,9 @@ impl StateDb {
         if version < 3 {
             tx.execute_batch(MIGRATE_V3)?;
         }
+        if version < 4 {
+            tx.execute_batch(MIGRATE_V4)?;
+        }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
         Ok(Self {
@@ -170,6 +183,7 @@ impl StateDb {
             deployment: d.clone(),
             container: container.clone(),
             port: None,
+            project: None,
         })
     }
 
@@ -178,13 +192,14 @@ impl StateDb {
         let d = &r.deployment;
         self.conn().execute(
             "INSERT INTO deployments
-               (deployment_id, service_id, image, container_id, healthy, port, serving, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+               (deployment_id, service_id, image, container_id, healthy, port, serving, updated_at,
+                project_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT (deployment_id) DO UPDATE SET
                service_id = excluded.service_id, image = excluded.image,
                container_id = excluded.container_id, healthy = excluded.healthy,
                port = excluded.port, serving = excluded.serving,
-               updated_at = excluded.updated_at",
+               updated_at = excluded.updated_at, project_id = excluded.project_id",
             params![
                 d.deployment_id.to_string(),
                 d.service_id.to_string(),
@@ -193,7 +208,8 @@ impl StateDb {
                 d.healthy,
                 r.port,
                 d.serving,
-                now_secs()
+                now_secs(),
+                r.project.map(|p| p.to_string())
             ],
         )?;
         Ok(())
@@ -239,7 +255,8 @@ impl StateDb {
     ) -> Result<Vec<DeploymentRecord>, StateError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT deployment_id, service_id, image, container_id, healthy, port, serving
+            "SELECT deployment_id, service_id, image, container_id, healthy, port, serving,
+                    project_id
              FROM deployments {filter} ORDER BY deployment_id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -251,11 +268,13 @@ impl StateDb {
                 r.get::<_, bool>(4)?,
                 r.get::<_, Option<u16>>(5)?,
                 r.get::<_, bool>(6)?,
+                r.get::<_, Option<String>>(7)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (deployment_id, service_id, image, container, healthy, port, serving) = row?;
+            let (deployment_id, service_id, image, container, healthy, port, serving, project) =
+                row?;
             out.push(DeploymentRecord {
                 deployment: RunningDeployment {
                     deployment_id: deployment_id
@@ -271,6 +290,9 @@ impl StateDb {
                 },
                 container: ContainerId(container),
                 port,
+                project: project
+                    .map(|p| p.parse().map_err(|_| StateError::Corrupt("project_id")))
+                    .transpose()?,
             });
         }
         Ok(out)

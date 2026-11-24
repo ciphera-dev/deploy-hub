@@ -49,17 +49,14 @@ use crate::build::argv::{self, AllowedBin, ValidatedArg};
 use crate::build::compose::ComposeFile;
 use crate::build::{BuildBackend, ProgressSink, compose_policy};
 use crate::docker::{
-    DEPLOYMENT_LABEL, LOG_DRIVER, LOG_MAX_FILE, LOG_MAX_SIZE, MANAGED_LABEL, internal_alias,
-    project_network,
+    LOG_DRIVER, LOG_MAX_FILE, LOG_MAX_SIZE, MANAGED_LABEL, SPEC_LABEL, internal_alias,
+    project_network, scope_labels,
 };
 
 /// Etiquettes posees par Compose sur ses conteneurs.
 pub const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
 pub const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
-/// Projet Compose stable de l'environnement (services non exposes).
-pub const COMPOSE_LABEL: &str = "dev.ciphera.compose";
-/// Projet Ciphera d'un conteneur.
-pub const PROJECT_LABEL: &str = "dev.ciphera.project";
+pub use crate::docker::{COMPOSE_LABEL, PROJECT_LABEL};
 /// Prefixe du projet Compose du service expose d'un deploiement.
 pub const EXPOSED_PROJECT_PREFIX: &str = "ciphera-d-";
 /// Prefixe des variables de Ciphera dans l'environnement de `docker compose`.
@@ -209,11 +206,14 @@ impl ComposePlan {
             let labels = labels
                 .as_object_mut()
                 .ok_or_else(|| format!("service {name} : etiquettes invalides"))?;
+            // Toutes les etiquettes reservees, vides si sans objet (le
+            // service non expose n'a pas de deploiement) : aucune ne peut
+            // venir de l'image.
             labels.insert(MANAGED_LABEL.into(), "true".into());
-            labels.insert(COMPOSE_LABEL.into(), stable_name.into());
-            labels.insert(PROJECT_LABEL.into(), project.to_string().into());
-            if name == exposed {
-                labels.insert(DEPLOYMENT_LABEL.into(), deployment.to_string().into());
+            labels.insert(SPEC_LABEL.into(), "".into());
+            let owner = (name == exposed).then_some(deployment);
+            for (key, value) in scope_labels(owner, stable_name, Some(project)) {
+                labels.insert(key.into(), value.into());
             }
             let opts = svc
                 .entry("security_opt")

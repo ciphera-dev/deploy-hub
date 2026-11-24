@@ -42,6 +42,10 @@ pub const MANAGED_LABEL: &str = "dev.ciphera.managed";
 pub const SPEC_LABEL: &str = "dev.ciphera.spec";
 /// Deploiement porte par un conteneur d'application.
 pub const DEPLOYMENT_LABEL: &str = "dev.ciphera.deployment";
+/// Projet Compose stable de l'environnement (services d'un ensemble Compose).
+pub const COMPOSE_LABEL: &str = "dev.ciphera.compose";
+/// Projet Ciphera d'un conteneur.
+pub const PROJECT_LABEL: &str = "dev.ciphera.project";
 /// Role d'un conteneur de Ciphera hors application (`PREPARE_ROLE` : bac a
 /// sable de `railpack prepare`). Reserve : refuse dans un fichier Compose.
 pub const ROLE_LABEL: &str = "dev.ciphera.role";
@@ -399,6 +403,29 @@ impl Canonical {
     }
 }
 
+/// Etiquettes reservees de portee (`deployment`, `compose`, `project`) de
+/// tout conteneur cree par l'agent. Toujours toutes presentes, vides si sans
+/// objet : une etiquette absente se lirait dans l'image, et le cycle de vie
+/// (redemarrer, arreter, supprimer) s'etendrait alors a un autre projet.
+/// Point unique pour l'application simple et les services Compose.
+pub fn scope_labels(
+    deployment: Option<DeploymentId>,
+    compose: &str,
+    project: Option<ProjectId>,
+) -> [(&'static str, String); 3] {
+    [
+        (
+            DEPLOYMENT_LABEL,
+            deployment.map(|d| d.to_string()).unwrap_or_default(),
+        ),
+        (COMPOSE_LABEL, compose.to_string()),
+        (
+            PROJECT_LABEL,
+            project.map(|p| p.to_string()).unwrap_or_default(),
+        ),
+    ]
+}
+
 impl ContainerSpec {
     /// Conteneur d'application : reseau du projet, aucun port publie (le
     /// proxy du noeud le joint par le reseau), aucun montage, aucun
@@ -428,7 +455,10 @@ impl ContainerSpec {
             pids_limit: Some(APP_PIDS_LIMIT),
             memory: None,
             nano_cpus: None,
-            labels: vec![(DEPLOYMENT_LABEL.to_string(), deployment.to_string())],
+            labels: scope_labels(Some(deployment), "", Some(project))
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
             aliases: Vec::new(),
         }
     }
@@ -564,6 +594,10 @@ impl ContainerSpec {
 /// les volumes nommes par `mounts`.
 pub fn create_body(spec: &ContainerSpec) -> ContainerCreateBody {
     let mut labels: HashMap<String, String> = spec.labels.iter().cloned().collect();
+    // Etiquettes reservees : posees par l'agent, jamais celles de l'image.
+    for (key, value) in scope_labels(None, "", None) {
+        labels.entry(key.to_string()).or_insert(value);
+    }
     labels.insert(MANAGED_LABEL.to_string(), "true".to_string());
     labels.insert(SPEC_LABEL.to_string(), spec.fingerprint());
     let mut mounts: Vec<Mount> = Vec::new();

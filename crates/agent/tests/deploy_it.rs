@@ -399,3 +399,87 @@ async fn real_compose_deploy_forces_every_service_onto_the_project_network() {
     }
     assert!(bench.routes.upstreams("shop.example.test").is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et docker compose : job agent-docker de la CI"]
+async fn real_compose_restart_leaves_previous_deployments_stopped() {
+    for image in [APP_IMAGE, CACHE_IMAGE] {
+        pull(image).await;
+    }
+    let mut bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    let stable = format!("it{}-production", &DeploymentId::new().to_string()[..8]);
+    bench.networks.push(docker::project_network(project));
+    bench.compose_projects.push(stable.clone());
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.test", web)])
+        .await
+        .unwrap();
+    let bundle = json!({
+        "name": stable,
+        "services": {
+            "web": {
+                "image": APP_IMAGE,
+                "depends_on": {"cache": {"condition": "service_started", "required": true}},
+                "networks": {"default": null}
+            },
+            "cache": {"image": CACHE_IMAGE, "networks": {"default": null}}
+        },
+        "networks": {"default": {"name": format!("{stable}_default")}}
+    });
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let deployment = DeploymentId::new();
+        bench
+            .compose_projects
+            .push(format!("ciphera-d-{deployment}"));
+        bench
+            .db
+            .put_bundle(deployment, &bundle.to_string())
+            .unwrap();
+        let spec = DeploySpec {
+            deployment_id: deployment,
+            service_id: web,
+            image: ImageRef(APP_IMAGE.into()),
+            internal_port: Some(80),
+            project_id: project,
+            healthcheck: Healthcheck {
+                path: "/".into(),
+                tries: 30,
+                interval_secs: 1,
+            },
+            compose: Some(ComposeDeploy {
+                service: "web".into(),
+                bundle: deployment,
+            }),
+            service_name: Some("web".into()),
+            env: Vec::new(),
+            environment_id: None,
+            run_as: None,
+            read_only_rootfs: false,
+        };
+        let (result, stages) = bench.deploy(&spec).await;
+        result.unwrap_or_else(|e| panic!("compose : {e} ({stages:?})"));
+        ids.push(deployment);
+    }
+    let (first, second) = (ids[0], ids[1]);
+    let container = |id: DeploymentId| bench.db.record(id).unwrap().unwrap().container;
+    assert_eq!(
+        bench.docker.health(&container(first)).await.unwrap(),
+        Health::Stopped,
+        "l'ancien deploiement est arrete apres le drainage"
+    );
+
+    bench.deployer.restart(second).await;
+
+    assert_eq!(
+        bench.docker.health(&container(first)).await.unwrap(),
+        Health::Stopped,
+        "Redemarrer ne relance pas l'ancien deploiement"
+    );
+    assert_ne!(
+        bench.docker.health(&container(second)).await.unwrap(),
+        Health::Stopped
+    );
+}

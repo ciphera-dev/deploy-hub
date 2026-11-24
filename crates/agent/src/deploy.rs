@@ -551,6 +551,7 @@ where
             },
             container: container.clone(),
             port: spec.internal_port,
+            project: Some(spec.project_id),
         })?;
         Ok(Started { container })
     }
@@ -807,7 +808,7 @@ where
             });
         let mut doomed: Vec<ContainerId> = containers.iter().map(|c| c.id.clone()).collect();
         if serving {
-            doomed.extend(self.compose_siblings(&containers).await);
+            doomed.extend(self.compose_siblings(id, &containers).await);
         }
         for c in &doomed {
             if let Err(e) = self.docker.remove(c).await {
@@ -826,20 +827,30 @@ where
         }
     }
 
-    /// Autres services de l'ensemble Compose des conteneurs `containers`.
-    /// Etiquettes reservees a Ciphera (refusees dans un fichier Compose) :
-    /// jamais les conteneurs d'un autre projet.
+    /// Services non exposes de l'ensemble Compose du deploiement `id` : les
+    /// conteneurs du projet `project` (celui de l'etat local du deploiement,
+    /// jamais une etiquette de conteneur) et de l'ensemble stable `stable`
+    /// (celui des conteneurs `containers`) qui ne portent aucun deploiement.
+    /// Les conteneurs exposes des autres deploiements (anciens, gardes pour
+    /// le retour arriere) portent les memes etiquettes de projet et
+    /// d'ensemble : ils ne sont jamais touches.
     async fn compose_siblings(
         &self,
+        id: DeploymentId,
         containers: &[crate::docker::ManagedContainer],
     ) -> Vec<ContainerId> {
+        let Some(project) = self.db.record(id).ok().flatten().and_then(|r| r.project) else {
+            return Vec::new();
+        };
+        let project = project.to_string();
         let mut out: Vec<ContainerId> = Vec::new();
         for c in containers {
-            let (Some(stable), Some(project)) =
-                (c.labels.get(COMPOSE_LABEL), c.labels.get(PROJECT_LABEL))
-            else {
+            let Some(stable) = c.labels.get(COMPOSE_LABEL).filter(|s| !s.is_empty()) else {
                 continue;
             };
+            if c.labels.get(PROJECT_LABEL) != Some(&project) {
+                continue;
+            }
             if let Ok(others) = self
                 .docker
                 .list_managed(&[
@@ -849,7 +860,8 @@ where
                 .await
             {
                 for o in others {
-                    if !containers.iter().any(|c| c.id == o.id) && !out.contains(&o.id) {
+                    let unowned = o.labels.get(DEPLOYMENT_LABEL).is_none_or(String::is_empty);
+                    if unowned && !containers.iter().any(|c| c.id == o.id) && !out.contains(&o.id) {
                         out.push(o.id);
                     }
                 }
@@ -891,7 +903,7 @@ where
                 tracing::warn!("deploiement {id} : conteneurs illisibles : {e}");
                 Vec::new()
             });
-        let mut targets: Vec<ContainerId> = self.compose_siblings(&containers).await;
+        let mut targets: Vec<ContainerId> = self.compose_siblings(id, &containers).await;
         targets.extend(containers.into_iter().map(|c| c.id));
         targets
     }

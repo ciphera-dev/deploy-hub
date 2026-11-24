@@ -103,6 +103,7 @@ fn record(service: ServiceId, container: &str, port: Option<u16>) -> DeploymentR
         },
         container: ContainerId(container.into()),
         port,
+        project: None,
     }
 }
 
