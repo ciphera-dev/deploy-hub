@@ -374,12 +374,25 @@ async fn real_compose_deploy_forces_every_service_onto_the_project_network() {
             let host = info.host_config.unwrap();
             assert!(
                 host.security_opt
+                    .clone()
                     .unwrap_or_default()
                     .iter()
                     .any(|o| o.starts_with("no-new-privileges")),
                 "{}",
                 c.name
             );
+            // Memes limites que l'application simple, sans les avoir demandees.
+            assert_eq!(host.pids_limit, Some(docker::APP_PIDS_LIMIT), "{}", c.name);
+            let dropped = host.cap_drop.unwrap_or_default();
+            for cap in ["NET_RAW", "MKNOD"] {
+                assert!(
+                    dropped.iter().any(|d| d.ends_with(cap)),
+                    "{}: {dropped:?}",
+                    c.name
+                );
+            }
+            assert!(host.memory.unwrap_or(0) >= 256 << 20, "{}", c.name);
+            assert!(host.nano_cpus.unwrap_or(0) >= 1_000_000_000, "{}", c.name);
             seen.push(c.name);
         }
     }

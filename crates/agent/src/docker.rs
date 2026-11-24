@@ -67,10 +67,47 @@ pub const MAX_LOG_LINE: usize = 16 * 1024;
 const STOP_TIMEOUT_SECS: i32 = 10;
 /// Processus au plus par conteneur d'application (bombe fork).
 pub const APP_PIDS_LIMIT: i64 = 1024;
+/// Memoire plancher par conteneur d'application, en octets.
+pub const APP_MIN_MEMORY: u64 = 256 << 20;
+
+/// Plafonds de ressources de tout conteneur d'application (application
+/// simple et services Compose), calcules sur le noeud : memoire = la moitie
+/// de la RAM, 256 Mio au moins ; CPU = tous sauf un, un au moins ; au plus
+/// `APP_PIDS_LIMIT` processus. Point unique des deux chemins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppLimits {
+    /// Memoire, en octets.
+    pub memory: u64,
+    /// CPU, en milliardiemes de CPU.
+    pub nano_cpus: u64,
+}
+
+impl AppLimits {
+    pub fn compute(total_memory: u64, cpus: usize) -> Self {
+        let cpus = u64::try_from(cpus.saturating_sub(1).max(1)).unwrap_or(1);
+        Self {
+            memory: (total_memory / 2).max(APP_MIN_MEMORY),
+            nano_cpus: cpus.saturating_mul(1_000_000_000),
+        }
+    }
+
+    /// Plafonds du noeud, lus une fois (RAM illisible : le plancher).
+    pub fn node() -> Self {
+        static NODE: std::sync::OnceLock<AppLimits> = std::sync::OnceLock::new();
+        *NODE.get_or_init(|| {
+            let memory = sysinfo::System::new().map_or(0, |mut s| {
+                s.refresh_memory();
+                s.total_memory()
+            });
+            let cpus = std::thread::available_parallelism().map_or(1, usize::from);
+            Self::compute(memory, cpus)
+        })
+    }
+}
 /// Version de la traduction spec -> requete Docker, comprise dans
 /// l'empreinte : a incrementer quand `create_body` change, pour recreer les
 /// conteneurs existants.
-const SPEC_VERSION: &str = "ciphera-spec-v4";
+const SPEC_VERSION: &str = "ciphera-spec-v5";
 /// Journaux de chaque conteneur cree par Ciphera (applications, services
 /// Compose, PostgreSQL, buildkitd, bac a sable de prepare) : pilote
 /// `json-file` borne a `LOG_MAX_FILE` fichiers de `LOG_MAX_SIZE` (30 Mio au
@@ -439,6 +476,7 @@ impl ContainerSpec {
         image: &ImageRef,
         env: Vec<(String, String)>,
     ) -> Self {
+        let limits = AppLimits::node();
         Self {
             name: format!("ciphera-d-{deployment}"),
             image: image.0.clone(),
@@ -454,8 +492,8 @@ impl ContainerSpec {
             security_opt: Vec::new(),
             unmask_system_paths: false,
             pids_limit: Some(APP_PIDS_LIMIT),
-            memory: None,
-            nano_cpus: None,
+            memory: i64::try_from(limits.memory).ok(),
+            nano_cpus: i64::try_from(limits.nano_cpus).ok(),
             labels: scope_labels(Some(deployment), "", Some(project))
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
@@ -1582,6 +1620,28 @@ mod tests {
         assert_eq!(project_ip(none.iter().map(|(n, i)| (*n, *i))), None);
         let empty = [("ciphera-p-x", Some(""))];
         assert_eq!(project_ip(empty.iter().map(|(n, i)| (*n, *i))), None);
+    }
+
+    #[test]
+    fn app_container_has_memory_cpu() {
+        let limits = AppLimits::compute(8 << 30, 4);
+        assert_eq!((limits.memory, limits.nano_cpus), (4 << 30, 3_000_000_000));
+        // Petit noeud : plancher de 256 Mio et un CPU.
+        let small = AppLimits::compute(1 << 29, 1);
+        assert_eq!((small.memory, small.nano_cpus), (256 << 20, 1_000_000_000));
+        // Le conteneur d'application les porte, avec la limite de processus.
+        let node = AppLimits::node();
+        let spec = ContainerSpec::app(
+            DeploymentId::new(),
+            ProjectId::new(),
+            &ImageRef("x:1".into()),
+            vec![],
+        );
+        assert_eq!(spec.memory, i64::try_from(node.memory).ok());
+        assert_eq!(spec.nano_cpus, i64::try_from(node.nano_cpus).ok());
+        assert!(spec.memory.is_some_and(|m| m >= 256 << 20));
+        assert!(spec.nano_cpus.is_some_and(|c| c >= 1_000_000_000));
+        assert_eq!(spec.pids_limit, Some(APP_PIDS_LIMIT));
     }
 
     #[test]

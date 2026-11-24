@@ -49,8 +49,8 @@ use crate::build::argv::{self, AllowedBin, ValidatedArg};
 use crate::build::compose::ComposeFile;
 use crate::build::{BuildBackend, ProgressSink, compose_policy};
 use crate::docker::{
-    LOG_DRIVER, LOG_MAX_FILE, LOG_MAX_SIZE, MANAGED_LABEL, SPEC_LABEL, internal_alias,
-    project_network, scope_labels,
+    APP_PIDS_LIMIT, AppLimits, LOG_DRIVER, LOG_MAX_FILE, LOG_MAX_SIZE, MANAGED_LABEL, SPEC_LABEL,
+    internal_alias, project_network, scope_labels,
 };
 
 /// Etiquettes posees par Compose sur ses conteneurs.
@@ -78,6 +78,214 @@ pub struct ComposePlan {
 
 fn err(m: impl Into<String>) -> String {
     m.into()
+}
+
+/// Taille maximale d'un `tmpfs` et de `shm_size`, en octets.
+const MAX_TMPFS_BYTES: u64 = 256 << 20;
+
+/// Octets d'une taille Compose : entier, ou texte `<n>[b|k|m|g][b]`.
+fn parse_bytes(v: &Value) -> Option<u64> {
+    match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => {
+            let s = s.trim().to_ascii_lowercase();
+            let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+            let n: u64 = s[..digits].parse().ok()?;
+            let shift = match s[digits..].trim_end_matches('b') {
+                "" => 0,
+                "k" => 10,
+                "m" => 20,
+                "g" => 30,
+                _ => return None,
+            };
+            n.checked_mul(1 << shift)
+        }
+        _ => None,
+    }
+}
+
+/// Plus petite des valeurs strictement positives.
+fn min_positive<const N: usize>(values: [Option<f64>; N]) -> Option<f64> {
+    values
+        .into_iter()
+        .flatten()
+        .filter(|v| *v > 0.0)
+        .min_by(f64::total_cmp)
+}
+
+fn as_f64(v: Option<&Value>) -> Option<f64> {
+    match v? {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// Option `size=` d'un `tmpfs` en forme courte (`/chemin[:opt,opt]`), bornee
+/// a `MAX_TMPFS_BYTES` et imposee si absente.
+fn bound_tmpfs_entry(entry: &str) -> String {
+    let (path, opts) = entry.split_once(':').unwrap_or((entry, ""));
+    let mut size = MAX_TMPFS_BYTES;
+    let mut kept: Vec<String> = Vec::new();
+    for o in opts.split(',').filter(|o| !o.is_empty()) {
+        match o.strip_prefix("size=") {
+            Some(v) => {
+                size = parse_bytes(&Value::String(v.to_string()))
+                    .map_or(MAX_TMPFS_BYTES, |b| b.min(MAX_TMPFS_BYTES));
+            }
+            None => kept.push(o.to_string()),
+        }
+    }
+    kept.push(format!("size={size}"));
+    format!("{path}:{}", kept.join(","))
+}
+
+/// Memes limites que les conteneurs d'application simples, par service :
+/// processus (`APP_PIDS_LIMIT`), capacites `NET_RAW` et `MKNOD` retirees,
+/// memoire et CPU (la valeur demandee si elle est plus basse que le plafond
+/// du noeud), repliques (une pour le service expose), `tmpfs` et `shm_size`
+/// bornes. Chaque limite n'a qu'une valeur, au niveau du service : Compose
+/// refuse la meme limite en `deploy.resources.limits` avec une autre valeur.
+fn bound_service(
+    name: &str,
+    svc: &mut Map<String, Value>,
+    limits: AppLimits,
+    exposed: bool,
+) -> Result<(), String> {
+    // Repliques : au plus 4 deja garanti par la politique ; une seule pour
+    // le service expose (le proxy route vers un conteneur par deploiement).
+    let scale = svc.get("scale").and_then(compose_policy::replica_count);
+    let deployed = svc
+        .get("deploy")
+        .and_then(|d| d.get("replicas"))
+        .and_then(compose_policy::replica_count);
+    if exposed && scale.into_iter().chain(deployed).any(|n| n != 1) {
+        return Err(format!(
+            "service expose {name} : une seule replique (scale, deploy.replicas)"
+        ));
+    }
+
+    let mut deployed_limits = Map::new();
+    if let Some(Value::Object(deploy)) = svc.get_mut("deploy")
+        && let Some(Value::Object(resources)) = deploy.get_mut("resources")
+        && let Some(Value::Object(l)) = resources.remove("limits")
+    {
+        deployed_limits = l;
+    }
+    // -1 (illimite) et 0 : le plafond.
+    let pids = min_positive([
+        as_f64(svc.get("pids_limit")),
+        as_f64(deployed_limits.get("pids")),
+        Some(APP_PIDS_LIMIT as f64),
+    ])
+    .map_or(APP_PIDS_LIMIT, |p| p as i64);
+    svc.insert("pids_limit".into(), json!(pids));
+
+    let cap_mem = limits.memory;
+    let memory = [svc.get("mem_limit"), deployed_limits.get("memory")]
+        .into_iter()
+        .flatten()
+        .filter_map(parse_bytes)
+        .filter(|m| *m > 0)
+        .fold(cap_mem, u64::min);
+    svc.insert("mem_limit".into(), json!(memory));
+    // Sans swap en plus de la memoire.
+    svc.insert("memswap_limit".into(), json!(memory));
+
+    let cap_cpus = limits.nano_cpus as f64 / 1e9;
+    let cpus = min_positive([
+        as_f64(svc.get("cpus")),
+        as_f64(deployed_limits.get("cpus")),
+        Some(cap_cpus),
+    ])
+    .unwrap_or(cap_cpus)
+    .min(cap_cpus);
+    svc.insert("cpus".into(), json!(cpus));
+
+    // `deploy` ne garde que ce qui n'a pas ete deplace au niveau du service.
+    if let Some(Value::Object(deploy)) = svc.get_mut("deploy") {
+        let empty = deploy
+            .get("resources")
+            .and_then(Value::as_object)
+            .is_some_and(Map::is_empty);
+        if empty {
+            deploy.remove("resources");
+        }
+    }
+    if svc
+        .get("deploy")
+        .and_then(Value::as_object)
+        .is_some_and(Map::is_empty)
+    {
+        svc.remove("deploy");
+    }
+
+    let drop = svc
+        .entry("cap_drop")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if drop.is_null() {
+        *drop = Value::Array(Vec::new());
+    }
+    let drop = drop
+        .as_array_mut()
+        .ok_or_else(|| format!("service {name} : cap_drop invalide"))?;
+    for cap in ["NET_RAW", "MKNOD"] {
+        if !drop
+            .iter()
+            .any(|c| c.as_str().is_some_and(|c| c.eq_ignore_ascii_case(cap)))
+        {
+            drop.push(cap.into());
+        }
+    }
+
+    if let Some(shm) = svc.get("shm_size") {
+        let bytes = parse_bytes(shm).map_or(MAX_TMPFS_BYTES, |b| b.min(MAX_TMPFS_BYTES));
+        svc.insert("shm_size".into(), json!(bytes));
+    }
+    match svc.get("tmpfs") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(one)) => {
+            let bounded = bound_tmpfs_entry(one);
+            svc.insert("tmpfs".into(), json!([bounded]));
+        }
+        Some(Value::Array(items)) => {
+            let bounded = items
+                .iter()
+                .map(|i| {
+                    i.as_str()
+                        .map(|s| Value::String(bound_tmpfs_entry(s)))
+                        .ok_or_else(|| format!("service {name} : tmpfs invalide"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            svc.insert("tmpfs".into(), Value::Array(bounded));
+        }
+        Some(_) => return Err(format!("service {name} : tmpfs invalide")),
+    }
+    if let Some(Value::Array(volumes)) = svc.get_mut("volumes") {
+        for v in volumes {
+            let Some(vol) = v.as_object_mut() else {
+                continue;
+            };
+            if vol.get("type").and_then(Value::as_str) != Some("tmpfs") {
+                continue;
+            }
+            let tmpfs = vol
+                .entry("tmpfs")
+                .or_insert_with(|| Value::Object(Map::new()));
+            if tmpfs.is_null() {
+                *tmpfs = Value::Object(Map::new());
+            }
+            let tmpfs = tmpfs
+                .as_object_mut()
+                .ok_or_else(|| format!("service {name} : tmpfs invalide"))?;
+            let size = tmpfs
+                .get("size")
+                .and_then(parse_bytes)
+                .map_or(MAX_TMPFS_BYTES, |b| b.min(MAX_TMPFS_BYTES));
+            tmpfs.insert("size".into(), json!(size));
+        }
+    }
+    Ok(())
 }
 
 /// Dependances d'un service (`depends_on` en liste ou en table).
@@ -137,6 +345,18 @@ impl ComposePlan {
         exposed: &str,
         project: ProjectId,
         deployment: DeploymentId,
+    ) -> Result<Self, String> {
+        Self::with_limits(bundle, exposed, project, deployment, AppLimits::node())
+    }
+
+    /// Comme `new`, avec les plafonds de ressources `limits` (ceux du noeud
+    /// en production).
+    pub fn with_limits(
+        bundle: &Value,
+        exposed: &str,
+        project: ProjectId,
+        deployment: DeploymentId,
+        limits: AppLimits,
     ) -> Result<Self, String> {
         let stable_name = bundle
             .get("name")
@@ -227,6 +447,7 @@ impl ComposePlan {
             }) {
                 opts.push("no-new-privileges:true".into());
             }
+            bound_service(name, svc, limits, name == exposed)?;
         }
         let order = order
             .into_iter()

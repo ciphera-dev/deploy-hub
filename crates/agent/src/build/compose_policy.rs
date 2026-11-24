@@ -217,6 +217,7 @@ fn services(file: &ComposeFile, value: &Value) -> Checked {
                 "networks" => service_networks(file, v, &path)?,
                 "extends" => extends(v, &path)?,
                 "deploy" => deploy(v, &path)?,
+                "scale" => replicas(v, &path)?,
                 "labels" => labels(v, &path)?,
                 _ => {}
             }
@@ -441,6 +442,31 @@ fn extends(value: &Value, path: &str) -> Checked {
     }
 }
 
+/// Repliques au plus par service (`scale`, `deploy.replicas`) ; le service
+/// expose en a exactement une (verifie au plan de deploiement).
+pub const MAX_REPLICAS: u64 = 4;
+
+/// Nombre de repliques d'un service : entier ou texte entier, au plus
+/// `MAX_REPLICAS`.
+pub(crate) fn replica_count(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn replicas(value: &Value, path: &str) -> Checked {
+    if value.is_null() {
+        return Ok(());
+    }
+    match replica_count(value) {
+        Some(n) if n <= MAX_REPLICAS => Ok(()),
+        Some(_) => Err(deny(path, "trop de repliques (4 au plus par service)")),
+        None => Err(deny(path, "nombre de repliques invalide")),
+    }
+}
+
 fn deploy(value: &Value, path: &str) -> Checked {
     let allowed = |v: &Value, at: &str, keys: &[&str]| -> Checked {
         for k in object(v, at)?.keys() {
@@ -462,6 +488,9 @@ fn deploy(value: &Value, path: &str) -> Checked {
         if let Some(l) = r.get("reservations") {
             allowed(l, &format!("{at}.reservations"), &["cpus", "memory"])?;
         }
+    }
+    if let Some(n) = d.get("replicas") {
+        replicas(n, &format!("{path}.replicas"))?;
     }
     if let Some(p) = d.get("restart_policy") {
         allowed(

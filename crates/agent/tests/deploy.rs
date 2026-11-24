@@ -1868,6 +1868,121 @@ fn compose_bundle_with_declared_network_or_privilege_is_refused() {
     assert!(ComposePlan::new(&unbuilt, "web", project, deployment).is_err());
 }
 
+const GIB: u64 = 1 << 30;
+
+fn limited_plan(bundle: &Value) -> Result<ComposePlan, String> {
+    let limits = ciphera_agent::docker::AppLimits::compute(8 * GIB, 4);
+    ComposePlan::with_limits(bundle, "web", ProjectId::new(), DeploymentId::new(), limits)
+}
+
+#[test]
+fn compose_plan_forces_pids_and_caps() {
+    let mut bundle = compose_bundle();
+    bundle["services"]["api"]["cap_drop"] = json!(["SYS_CHROOT"]);
+    bundle["services"]["cache"]["pids_limit"] = json!(50);
+    bundle["services"]["web"]["pids_limit"] = json!(-1);
+    let plan = limited_plan(&bundle).unwrap();
+    let services = plan.file["services"].as_object().unwrap();
+    for (name, svc) in services {
+        let drop = svc["cap_drop"].as_array().unwrap();
+        assert!(drop.contains(&json!("NET_RAW")), "{name}");
+        assert!(drop.contains(&json!("MKNOD")), "{name}");
+        // Moitie de 8 Gio, 3 CPU (4 - 1), sans swap en plus.
+        assert_eq!(svc["mem_limit"], json!(4 * GIB), "{name}");
+        assert_eq!(svc["memswap_limit"], json!(4 * GIB), "{name}");
+        assert_eq!(svc["cpus"], json!(3.0), "{name}");
+    }
+    assert!(
+        services["api"]["cap_drop"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("SYS_CHROOT"))
+    );
+    assert_eq!(services["api"]["pids_limit"], json!(1024));
+    assert_eq!(
+        services["cache"]["pids_limit"],
+        json!(50),
+        "plus bas : gardee"
+    );
+    assert_eq!(
+        services["web"]["pids_limit"],
+        json!(1024),
+        "illimite : plafonne"
+    );
+}
+
+#[test]
+fn compose_pids_conflict_single_value() {
+    let mut bundle = compose_bundle();
+    bundle["services"]["api"]["pids_limit"] = json!(5000);
+    bundle["services"]["api"]["deploy"] = json!({
+        "resources": {"limits": {"pids": 300, "memory": "512m", "cpus": "0.5"}}
+    });
+    let plan = limited_plan(&bundle).unwrap();
+    let api = &plan.file["services"]["api"];
+    assert_eq!(api["pids_limit"], json!(300));
+    assert_eq!(api["mem_limit"], json!(512u64 << 20));
+    assert_eq!(api["cpus"], json!(0.5));
+    // Plus aucune limite en double sous `deploy`.
+    assert!(api.get("deploy").is_none(), "{api}");
+}
+
+#[test]
+fn replicas_over_cap_refused() {
+    let mut bundle = compose_bundle();
+    bundle["services"]["api"]["scale"] = json!(5);
+    let err = limited_plan(&bundle).unwrap_err();
+    assert!(err.contains("repliques"), "{err}");
+    let mut bundle = compose_bundle();
+    bundle["services"]["api"]["deploy"] = json!({"replicas": 100});
+    assert!(limited_plan(&bundle).is_err());
+    let mut bundle = compose_bundle();
+    bundle["services"]["api"]["scale"] = json!(4);
+    bundle["services"]["cache"]["deploy"] = json!({"replicas": 2});
+    assert!(limited_plan(&bundle).is_ok());
+}
+
+#[test]
+fn exposed_service_replicas_must_be_1() {
+    let mut bundle = compose_bundle();
+    bundle["services"]["web"]["scale"] = json!(2);
+    let err = limited_plan(&bundle).unwrap_err();
+    assert!(err.contains("une seule replique"), "{err}");
+    let mut bundle = compose_bundle();
+    bundle["services"]["web"]["deploy"] = json!({"replicas": 3});
+    assert!(limited_plan(&bundle).is_err());
+    let mut bundle = compose_bundle();
+    bundle["services"]["web"]["scale"] = json!(1);
+    assert!(limited_plan(&bundle).is_ok());
+}
+
+#[test]
+fn tmpfs_shm_bounded() {
+    let mut bundle = compose_bundle();
+    bundle["services"]["api"]["tmpfs"] = json!(["/run", "/tmp:size=10g,mode=1777", "/var:size=1m"]);
+    bundle["services"]["api"]["shm_size"] = json!("4g");
+    bundle["services"]["cache"]["shm_size"] = json!(1_048_576);
+    bundle["services"]["web"]["volumes"] = json!([
+        {"type": "tmpfs", "target": "/scratch"},
+        {"type": "tmpfs", "target": "/big", "tmpfs": {"size": 10_000_000_000u64}},
+    ]);
+    let plan = limited_plan(&bundle).unwrap();
+    let services = &plan.file["services"];
+    let max = 256u64 << 20;
+    assert_eq!(
+        services["api"]["tmpfs"],
+        json!([
+            format!("/run:size={max}"),
+            format!("/tmp:mode=1777,size={max}"),
+            format!("/var:size={}", 1u64 << 20),
+        ])
+    );
+    assert_eq!(services["api"]["shm_size"], json!(max));
+    assert_eq!(services["cache"]["shm_size"], json!(1_048_576));
+    assert_eq!(services["web"]["volumes"][0]["tmpfs"]["size"], json!(max));
+    assert_eq!(services["web"]["volumes"][1]["tmpfs"]["size"], json!(max));
+}
+
 #[test]
 fn build_bundle_replaces_build_sections_with_built_images() {
     let normalized = json!({
