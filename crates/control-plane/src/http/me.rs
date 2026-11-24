@@ -37,7 +37,7 @@ use zeroize::Zeroizing;
 use super::auth::audit;
 use super::mfa::{invalid_request, rate_limited};
 use super::setup::validate_email;
-use crate::auth::{CurrentUser, factors, internal, password, rate_limit, totp, webauthn};
+use crate::auth::{CurrentUser, internal, password, rate_limit, totp, webauthn};
 use crate::avatar::{self, AvatarError, UploadLimiter};
 use crate::http::client_ip::ClientIp;
 use crate::mail;
@@ -225,10 +225,10 @@ pub(crate) async fn reauthenticate(
 }
 
 /// Mot de passe actuel exige avant d'ajouter un second facteur (passkey ou
-/// TOTP), sauf pour une session restreinte a l'enrolement obligatoire (le
-/// compte n'a alors aucun facteur et vient de se connecter par mot de
-/// passe). `Ok(Some(reponse))` : limite atteinte, reponse 429 prete. Une
-/// verification reussie ne compte pas comme un echec.
+/// TOTP), sans exception : une session restreinte a l'enrolement peut etre une
+/// session ouverte avant que l'organisation impose la 2FA. `Ok(Some(reponse))` :
+/// limite atteinte, reponse 429 prete. Une verification reussie ne compte pas
+/// comme un echec.
 pub(crate) async fn require_password_for_factor(
     state: &AppState,
     user: &CurrentUser,
@@ -236,21 +236,6 @@ pub(crate) async fn require_password_for_factor(
     body: Result<Json<AddFactor>, JsonRejection>,
     failure_action: &str,
 ) -> Result<Option<Response>, ApiError> {
-    // Exemption seulement tant que le compte n'a aucun facteur (relu ici) :
-    // le drapeau de la session est fige a la connexion.
-    if user.session.enrollment_required {
-        let mut conn = state
-            .db
-            .acquire()
-            .await
-            .map_err(|e| internal("connexion a la base", e))?;
-        let f = factors::read(&mut conn, user.id)
-            .await
-            .map_err(|e| internal("lecture des seconds facteurs", e))?;
-        if !f.totp && f.passkeys == 0 {
-            return Ok(None);
-        }
-    }
     let missing = || {
         ApiError::new(
             401,

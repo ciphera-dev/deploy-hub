@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 import { Button, CodeBlock, CopyButton, Icon, Modal, TextField } from "@/design-system";
 
@@ -67,21 +67,21 @@ const muted = { margin: 0, font: "400 12px/1.5 var(--font-sans)", color: "var(--
  * codes de secours affichés une seule fois.
  */
 export function EnrollTotp({ forced = false, onClose, onDone, onSignOut, signOutError }: EnrollTotpProps) {
-  const [stage, setStage] = useState<Stage>({ kind: forced ? "loading" : "password" });
+  const [stage, setStage] = useState<Stage>({ kind: "password" });
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const started = useRef(false);
 
-  // Mot de passe actuel redemande avant d'ajouter un second facteur (sauf
-  // enrolement impose : session restreinte, le serveur ne l'exige pas).
+  // Mot de passe actuel toujours redemande avant d'ajouter un second facteur,
+  // y compris en enrolement impose (une session ouverte avant l'obligation
+  // peut y avoir ete basculee).
   const start = async () => {
     if (busy) return;
     setBusy(true);
     setError("");
     setStage({ kind: "loading" });
-    const result = await startTotp(forced ? undefined : password);
+    const result = await startTotp(password);
     setBusy(false);
     if (result.ok) {
       setPassword("");
@@ -91,15 +91,6 @@ export function EnrollTotp({ forced = false, onClose, onDone, onSignOut, signOut
       setError(result.reason === "password" ? "Mot de passe incorrect." : "Trop de tentatives. Réessayez dans quelques minutes.");
     } else setStage({ kind: "failed" });
   };
-
-  // Enrolement impose : une seule graine par ouverture (le double montage du
-  // mode strict n'en cree pas deux).
-  useEffect(() => {
-    if (!forced || started.current) return;
-    started.current = true;
-    void start();
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const valid = /^\d{6}$/.test(code);
   const verify = async () => {

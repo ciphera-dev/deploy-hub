@@ -130,7 +130,7 @@ async fn mfa_state(state: &AppState, user_id: Uuid) -> Result<(bool, bool), ApiE
     sqlx::query_as(
         "SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1 AND confirmed_at IS NOT NULL) \
                 OR EXISTS (SELECT 1 FROM webauthn_credentials WHERE user_id = $1), \
-                coalesce((SELECT mfa_required FROM instance LIMIT 1), false)",
+                coalesce((SELECT mfa_required FROM instance LIMIT 1 FOR SHARE), false)",
     )
     .bind(user_id)
     .fetch_one(&state.db)

@@ -1093,7 +1093,7 @@ async fn totp_start_requires_password() {
 }
 
 #[tokio::test]
-async fn enrollment_session_can_start_totp_without_password() {
+async fn enrollment_session_needs_password_to_start_totp() {
     let env = env().await;
     sqlx::query("INSERT INTO instance (id, name, mfa_required) VALUES ($1, 'Acme', true)")
         .bind(Uuid::new_v4())
@@ -1104,14 +1104,21 @@ async fn enrollment_session_can_start_totp_without_password() {
     assert!(!mfa);
     let m = me(&env.state, &token).await;
     assert_eq!(m.json()["mfa_enrollment_required"], true);
-    let r = post(
-        &env.state,
-        "/api/me/mfa/totp/start",
-        &token,
-        Some(&csrf),
-        json!({}),
-    )
-    .await;
+    let start = |body| {
+        post(
+            &env.state,
+            "/api/me/mfa/totp/start",
+            &token,
+            Some(&csrf),
+            body,
+        )
+    };
+    let r = start(json!({})).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_credentials");
+    let r = start(json!({ "current_password": "mauvais mot de passe" })).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    let r = start(json!({ "current_password": PASSWORD })).await;
     assert_eq!(r.status, 200, "{}", r.raw);
 }
 

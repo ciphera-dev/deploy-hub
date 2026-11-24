@@ -6545,7 +6545,7 @@
           },
           "mfa_required": {
             "type": "boolean",
-            "description": "2FA obligatoire : appliquee a la prochaine connexion de chaque compte."
+            "description": "2FA obligatoire : appliquee a chaque compte, sessions deja ouvertes\ncomprises (sans second facteur : enrolement avant toute autre page)."
           },
           "self_enrollment_required": {
             "type": "boolean",

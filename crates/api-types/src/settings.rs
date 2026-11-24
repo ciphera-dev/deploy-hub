@@ -62,7 +62,8 @@ pub struct UpdateDeploySettings {
 /// Parametres › Securite de l'organisation.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct OrgSecurity {
-    /// 2FA obligatoire : appliquee a la prochaine connexion de chaque compte.
+    /// 2FA obligatoire : appliquee a chaque compte, sessions deja ouvertes
+    /// comprises (sans second facteur : enrolement avant toute autre page).
     pub mfa_required: bool,
     /// Adresses ou blocs CIDR autorises sur l'API et le panneau ; vide :
     /// aucune restriction.

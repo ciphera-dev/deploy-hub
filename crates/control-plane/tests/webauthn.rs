@@ -1307,22 +1307,27 @@ async fn register_options_without_password_is_401() {
 }
 
 #[tokio::test]
-async fn enrollment_session_can_register_without_password() {
+async fn enrollment_session_needs_password_to_register() {
     let env = env().await;
     let s = &env.state;
     require_mfa(s).await;
     let (token, csrf, mfa) = login(s).await;
     assert!(!mfa);
     assert_eq!(me(s, &token).await.json()["mfa_enrollment_required"], true);
-    let r = send(
-        s,
-        "POST",
-        "/api/me/webauthn/register/options",
-        Some(&token),
-        Some(&csrf),
-        None,
-    )
-    .await;
+    let options = |body| {
+        send(
+            s,
+            "POST",
+            "/api/me/webauthn/register/options",
+            Some(&token),
+            Some(&csrf),
+            body,
+        )
+    };
+    let r = options(None).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_credentials");
+    let r = options(Some(json!({ "current_password": PASSWORD }))).await;
     assert_eq!(r.status, 200, "{}", r.raw);
 }
 
@@ -1343,14 +1348,14 @@ async fn first_factor_ends_other_enrollment_sessions() {
     let (b, _, _) = login(s).await;
     assert_eq!(session_count(s, true).await, 2);
     let mut auth = authenticator();
-    // Premiere passkey depuis une session d'enrolement (sans mot de passe).
+    // Premiere passkey depuis une session d'enrolement (mot de passe exige).
     let r = send(
         s,
         "POST",
         "/api/me/webauthn/register/options",
         Some(&a),
         Some(&a_csrf),
-        None,
+        Some(json!({ "current_password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 200, "{}", r.raw);

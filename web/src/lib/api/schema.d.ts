@@ -2254,7 +2254,10 @@ export interface components {
              *     aucune restriction.
              */
             ip_allowlist: string[];
-            /** @description 2FA obligatoire : appliquee a la prochaine connexion de chaque compte. */
+            /**
+             * @description 2FA obligatoire : appliquee a chaque compte, sessions deja ouvertes
+             *     comprises (sans second facteur : enrolement avant toute autre page).
+             */
             mfa_required: boolean;
             /**
              * @description La session qui fait la requete doit d'abord enrôler un second facteur

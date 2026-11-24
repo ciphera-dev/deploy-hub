@@ -30,7 +30,7 @@ pub struct Factors {
 
 pub async fn read(conn: &mut PgConnection, user_id: Uuid) -> Result<Factors, sqlx::Error> {
     let (org_requires, totp, passkeys): (bool, bool, i64) = sqlx::query_as(
-        "SELECT coalesce((SELECT mfa_required FROM instance LIMIT 1), false), \
+        "SELECT coalesce((SELECT mfa_required FROM instance LIMIT 1 FOR SHARE), false), \
                 EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1 AND confirmed_at IS NOT NULL), \
                 (SELECT count(*) FROM webauthn_credentials WHERE user_id = $1)",
     )

@@ -17,13 +17,12 @@ function failure(status: number, error?: unknown): FactorFailure {
 
 /**
  * Nouvelle graine TOTP (remplace un enrolement non confirme). Le mot de passe
- * actuel est redemande, sauf pour l'enrolement impose (session restreinte :
- * le serveur ignore alors le champ).
+ * actuel est toujours redemande, enrolement impose compris.
  */
-export async function startTotp(password?: string): Promise<StartResult> {
+export async function startTotp(password: string): Promise<StartResult> {
   let result;
   try {
-    result = await api.POST("/api/me/mfa/totp/start", { body: { current_password: password ?? "" } });
+    result = await api.POST("/api/me/mfa/totp/start", { body: { current_password: password } });
   } catch {
     return { ok: false, reason: "unavailable" };
   }

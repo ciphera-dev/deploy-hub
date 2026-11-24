@@ -1378,6 +1378,50 @@ async fn revoked_session_and_allowlist_close_open_streams() {
     assert_eq!(closed_with(&mut kept_ws).await, Some(1008));
 }
 
+/// 2FA imposee : le flux ouvert par une session sans second facteur, basculee
+/// en enrolement obligatoire, se ferme (1008).
+#[tokio::test]
+async fn enforced_two_factor_closes_open_streams_of_switched_sessions() {
+    let env = Env::new().await;
+    let origin = env.origin();
+    let q = format!("deployment={}", env.deployment);
+    sqlx::query(
+        "INSERT INTO instance (id, name, slug, timezone, language)          VALUES ($1, 'Acme', 'acme', 'Europe/Zurich', 'fr')",
+    )
+    .bind(Uuid::new_v4())
+    .execute(&env.state.db)
+    .await
+    .unwrap();
+    let viewer = login(&env.state, "viewer").await;
+    let mut ws = env.ws(&q, Some(&viewer), Some(&origin)).await.unwrap();
+    let owner = login(&env.state, "owner").await;
+    let me = call(
+        &env.state,
+        "GET",
+        "/api/me",
+        Req {
+            cookie: Some(&owner),
+            ..Req::default()
+        },
+    )
+    .await;
+    let csrf = me.json()["csrf_token"].as_str().unwrap().to_string();
+    let r = call(
+        &env.state,
+        "PATCH",
+        "/api/settings/security",
+        Req {
+            cookie: Some(&owner),
+            csrf: Some(&csrf),
+            body: Some(json!({ "mfa_required": true })),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(closed_with(&mut ws).await, Some(1008));
+}
+
 /// Une ligne n'est acceptee que de l'agent du serveur de sa cible : ni
 /// diffusee, ni enregistree si un autre agent l'envoie.
 #[tokio::test]

@@ -522,6 +522,48 @@ async fn enabling_mfa_required_forces_open_sessions() {
 }
 
 #[tokio::test]
+async fn switched_session_needs_password_to_add_a_factor() {
+    let (state, _pg) = common::state().await;
+    instance(&state).await;
+    let (owner_id, owner) = login(&state, "owner").await;
+    give_totp(&state, owner_id).await;
+    let (_, email) = user(&state, "developer").await;
+    let open = login_as(&state, &email).await;
+    let open: Session = (open.token(), open.csrf());
+    let r = patch_security(&state, &owner, json!({ "mfa_required": true })).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let r = send(&state, &open, "GET", "/api/me", None).await;
+    assert_eq!(r.json()["mfa_enrollment_required"], true, "{}", r.raw);
+
+    // Pas de TOTP sans mot de passe, ni avec un mauvais (les passkeys :
+    // `tests/webauthn.rs`, hote en nom de domaine requis).
+    let path = "/api/me/mfa/totp/start";
+    for body in [
+        None,
+        Some(json!({ "current_password": "mauvais mot de passe" })),
+    ] {
+        let r = send(&state, &open, "POST", path, body).await;
+        assert_eq!(r.status, 401, "{}", r.raw);
+        assert_eq!(r.code(), "invalid_credentials");
+    }
+    let seeds: i64 = sqlx::query_scalar("SELECT count(*) FROM user_totp")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(seeds, 1, "aucune graine creee sans mot de passe");
+    // Avec le mot de passe : permis.
+    let r = send(
+        &state,
+        &open,
+        "POST",
+        path,
+        Some(json!({ "current_password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
+#[tokio::test]
 async fn author_without_factor_gets_enrollment() {
     let (state, _pg) = common::state().await;
     instance(&state).await;

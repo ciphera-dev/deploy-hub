@@ -154,6 +154,7 @@ it("code accepte : les 10 codes de secours s'affichent une fois, a copier ou tel
 
 it("enrolement impose : pas de fermeture ni d'annulation", async () => {
   renderEnroll({ forced: true });
+  await givePassword();
   await screen.findByRole("img", { name: /QR code/ });
   expect(screen.queryByRole("button", { name: "Annuler" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Fermer" })).not.toBeInTheDocument();
@@ -180,6 +181,7 @@ it("2FA imposee par l'organisation : le shell redirige vers l'enrolement, puis v
   me = { ...ME, mfa_enrollment_required: true };
   const { router } = mount("/projects");
   await waitFor(() => expect(router.state.location.pathname).toBe("/2fa-setup"));
+  await givePassword();
   await screen.findByRole("img", { name: /QR code/ });
   expect(screen.queryByRole("button", { name: "Annuler" })).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Code à 6 chiffres"), { target: { value: "123456" } });
@@ -193,6 +195,7 @@ it("enrolement impose : « Se déconnecter » ferme la session et mene a /login"
   me = { ...ME, mfa_enrollment_required: true };
   const { router } = mount("/projects");
   await waitFor(() => expect(router.state.location.pathname).toBe("/2fa-setup"));
+  await givePassword();
   await screen.findByRole("img", { name: /QR code/ });
   fireEvent.click(screen.getByRole("button", { name: "Se déconnecter" }));
   await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
@@ -204,9 +207,12 @@ it("enrolement impose apres rechargement de /2fa-setup : GET /api/me d'abord, pu
   me = { ...ME, mfa_enrollment_required: true, csrf_token: "csrf-3" };
   setCsrfToken(null);
   const { router } = mount("/2fa-setup");
+  // Le mot de passe est toujours demande : rien n'est demarre avant.
+  await givePassword("bon mot de passe");
   await screen.findByRole("img", { name: /QR code/ });
   expect(router.state.location.pathname).toBe("/2fa-setup");
   expect(starts).toEqual(["csrf-3"]);
+  expect(startBodies).toEqual([{ current_password: "bon mot de passe" }]);
   fireEvent.click(screen.getByRole("button", { name: "Se déconnecter" }));
   await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
   expect(logouts).toEqual(["csrf-3"]);
@@ -231,6 +237,7 @@ it("enrolement impose : une deconnexion refusee reste sur la page et l'affiche",
   me = { ...ME, mfa_enrollment_required: true };
   server.use(http.post("*/api/auth/logout", () => HttpResponse.json({ error: { code: "csrf", message: "" } }, { status: 403 })));
   const { router } = mount("/2fa-setup");
+  await givePassword();
   await screen.findByRole("img", { name: /QR code/ });
   fireEvent.click(screen.getByRole("button", { name: "Se déconnecter" }));
   expect(await screen.findByText(/Déconnexion impossible/)).toBeInTheDocument();
@@ -248,6 +255,7 @@ it("/2fa-setup : GET /api/me en echec affiche une erreur et « Réessayer », ja
   expect(starts).toEqual([]);
   meFails = false;
   fireEvent.click(retry);
+  await givePassword();
   await screen.findByRole("img", { name: /QR code/ });
   expect(router.state.location.pathname).toBe("/2fa-setup");
 });
@@ -256,6 +264,7 @@ it("enrolement impose : une deconnexion en 401 (session deja fermee) mene a /log
   me = { ...ME, mfa_enrollment_required: true };
   server.use(http.post("*/api/auth/logout", () => HttpResponse.json({ error: { code: "unauthorized", message: "" } }, { status: 401 })));
   const { router } = mount("/2fa-setup");
+  await givePassword();
   await screen.findByRole("img", { name: /QR code/ });
   fireEvent.click(screen.getByRole("button", { name: "Se déconnecter" }));
   await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
