@@ -1176,12 +1176,17 @@ async fn project_state_removed_on_remove_project() {
         .unwrap()
         .set_modified(old)
         .unwrap();
+    // Dernier demarre : son buildkitd tourne encore. Le balayage l'arrete
+    // proprement avant de le supprimer (une suppression forcee d'emblee
+    // pouvait echouer : PID 1 zombie, « 0 » au lieu de « 1 »).
+    assert_eq!(buildkitd_running(&api, stale).await, Some(true));
     assert_eq!(
         manager
             .sweep_stale(ciphera_agent::buildkit::STALE_AFTER)
             .await,
         1
     );
+    assert_eq!(buildkitd_running(&api, stale).await, None);
     assert!(!state_exists(&cfg.buildkit_state_dir, stale));
     assert!(state_exists(&cfg.buildkit_state_dir, kept));
 }

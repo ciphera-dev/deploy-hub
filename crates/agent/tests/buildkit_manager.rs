@@ -324,6 +324,20 @@ async fn remove_project_deletes_container_state_and_usage_file() {
             .count(),
         2
     );
+    // buildkitd en marche (celui de `gone`, relance) : arrete proprement
+    // avant d'etre supprime, jamais tue directement par la suppression.
+    assert_eq!(f.running(gone), Some(true));
+    let before = f.docker.calls().len();
+    f.manager.remove_project(gone).await.unwrap();
+    assert_eq!(f.running(gone), None);
+    let calls = f.docker.calls()[before..].to_vec();
+    let id = format!("id-{}", infra::buildkit_container_name(gone));
+    let stop = calls.iter().position(|c| *c == format!("stop:{id}"));
+    let remove = calls.iter().position(|c| *c == format!("remove:{id}"));
+    assert!(
+        matches!((stop, remove), (Some(s), Some(r)) if s < r),
+        "arret puis suppression attendus : {calls:?}"
+    );
 }
 
 #[tokio::test]

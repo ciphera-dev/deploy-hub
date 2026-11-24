@@ -65,6 +65,10 @@ pub const PROJECT_NETWORK_PREFIX: &str = "ciphera-p-";
 /// Longueur maximale d'une ligne de journal transmise (le reste est coupe).
 pub const MAX_LOG_LINE: usize = 16 * 1024;
 const STOP_TIMEOUT_SECS: i32 = 10;
+/// Suppression forcee : essais au plus, et pause entre deux (voir
+/// `force_remove`), soit 30 s d'attente au plus en plus de celle de Docker.
+const REMOVE_ATTEMPTS: u32 = 4;
+const REMOVE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
 /// Processus au plus par conteneur d'application (bombe fork).
 pub const APP_PIDS_LIMIT: i64 = 1024;
 /// Memoire plancher par conteneur d'application, en octets.
@@ -254,6 +258,17 @@ fn is_status(e: &BollardError, code: u16) -> bool {
     matches!(e, BollardError::DockerResponseServerError { status_code, .. } if *status_code == code)
 }
 
+/// Docker a envoye SIGKILL mais n'a pas encore vu le conteneur sortir :
+/// PID 1 zombie (« is zombie and can not be killed ») ou sortie non
+/// recue. Passager : le conteneur sort une fois son espace de noms vide.
+fn kill_pending(e: &BollardError) -> bool {
+    matches!(
+        e,
+        BollardError::DockerResponseServerError { status_code: 500, message }
+            if message.contains("is zombie") || message.contains("did not receive an exit event")
+    )
+}
+
 /// Nom de conteneur ou de reseau acceptable : `[A-Za-z0-9][A-Za-z0-9_.-]*`,
 /// 128 caracteres au plus. Rien qui puisse sortir du chemin de l'API
 /// (`/`, `?`, `..`) ni passer pour une option.
@@ -378,6 +393,10 @@ pub struct ContainerSpec {
     /// `systempaths=unconfined` : ni chemins masques ni chemins en lecture
     /// seule dans /proc (buildkitd rootless seulement, voir `infra`).
     pub(crate) unmask_system_paths: bool,
+    /// `--init` : init de Docker (tini) en PID 1, qui relaie les signaux et
+    /// recolte les processus orphelins (buildkitd seulement : rootlesskit,
+    /// programme Go multi-thread, n'est pas fait pour etre PID 1).
+    pub(crate) init: bool,
     pub(crate) pids_limit: Option<i64>,
     /// Plafond de memoire en octets (buildkitd seulement).
     pub(crate) memory: Option<i64>,
@@ -491,6 +510,7 @@ impl ContainerSpec {
             no_new_privileges: true,
             security_opt: Vec::new(),
             unmask_system_paths: false,
+            init: false,
             pids_limit: Some(APP_PIDS_LIMIT),
             memory: i64::try_from(limits.memory).ok(),
             nano_cpus: i64::try_from(limits.nano_cpus).ok(),
@@ -589,6 +609,10 @@ impl ContainerSpec {
             c.str("resources");
             c.0.extend_from_slice(&self.memory.unwrap_or(0).to_be_bytes());
             c.0.extend_from_slice(&self.nano_cpus.unwrap_or(0).to_be_bytes());
+        }
+        // Absent sans init : l'empreinte des autres conteneurs ne change pas.
+        if self.init {
+            c.str("init");
         }
         // Absent pour l'infrastructure : son empreinte ne change pas.
         if !self.aliases.is_empty() {
@@ -689,6 +713,7 @@ pub fn create_body(spec: &ContainerSpec) -> ContainerCreateBody {
             // (option traduite par le client docker, pas par le demon).
             masked_paths: spec.unmask_system_paths.then(Vec::new),
             readonly_paths: spec.unmask_system_paths.then(Vec::new),
+            init: spec.init.then_some(true),
             publish_all_ports: Some(false),
             log_config: Some(log_config()),
             restart_policy: Some(DockerRestart {
@@ -998,15 +1023,28 @@ impl BollardDocker {
         Ok(())
     }
 
+    /// Suppression forcee ; si Docker n'a pas vu le conteneur sortir apres
+    /// son SIGKILL (PID 1 zombie le temps que l'espace de noms des processus
+    /// se vide), nouvel essai, `REMOVE_ATTEMPTS` au plus.
     async fn force_remove(&self, id: &str) -> Result<(), DockerError> {
-        let options = RemoveContainerOptions {
-            force: true,
-            ..Default::default()
-        };
-        match self.docker.remove_container(id, Some(options)).await {
-            Ok(()) => Ok(()),
-            Err(e) if is_status(&e, 404) => Ok(()),
-            Err(e) => Err(api(e)),
+        let mut attempt = 1;
+        loop {
+            let options = RemoveContainerOptions {
+                force: true,
+                ..Default::default()
+            };
+            match self.docker.remove_container(id, Some(options)).await {
+                Ok(()) => return Ok(()),
+                Err(e) if is_status(&e, 404) => return Ok(()),
+                Err(e) if attempt < REMOVE_ATTEMPTS && kill_pending(&e) => {
+                    tracing::warn!(
+                        "conteneur {id} pas encore sorti apres SIGKILL (essai {attempt}/{REMOVE_ATTEMPTS}) : {e}"
+                    );
+                    attempt += 1;
+                    tokio::time::sleep(REMOVE_RETRY_DELAY).await;
+                }
+                Err(e) => return Err(api(e)),
+            }
         }
     }
 }

@@ -467,6 +467,8 @@ async fn app_container_cannot_reach_infra_network() {
         ["SETUID", "SETGID"]
     );
     assert_eq!(bk_hc.cap_drop.clone().unwrap_or_default(), ["ALL"]);
+    // Init de Docker en PID 1 (relais des signaux, orphelins recoltes).
+    assert_eq!(bk_hc.init, Some(true));
     // Plafonds de ressources vus par Docker.
     assert_eq!(bk_hc.pids_limit, Some(infra::BUILDKIT_PIDS_LIMIT));
     assert_eq!(bk_hc.memory, Some(cfg.buildkit_resources.memory as i64));

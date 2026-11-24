@@ -541,6 +541,10 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
             .list_managed(&[(BUILDKIT_PROJECT_LABEL, label.as_str())])
             .await?
         {
+            // Arret propre d'abord (SIGTERM relaye jusqu'a buildkitd) : une
+            // suppression forcee d'un buildkitd en marche le tue par SIGKILL,
+            // et Docker peut echouer le temps que ses processus sortent.
+            self.docker.stop(&c.id).await?;
             self.docker.remove(&c.id).await?;
         }
         self.fs.remove(project).await?;

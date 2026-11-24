@@ -650,6 +650,7 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
         no_new_privileges: true,
         security_opt: Vec::new(),
         unmask_system_paths: false,
+        init: false,
         pids_limit: None,
         memory: None,
         nano_cpus: None,
@@ -739,6 +740,10 @@ pub fn buildkit_spec(
             format!("apparmor={apparmor}"),
         ],
         unmask_system_paths: true,
+        // PID 1 : init de Docker, qui relaie SIGTERM a rootlesskit et recolte
+        // les orphelins ; rootlesskit (Go, multi-thread) en PID 1 laissait
+        // un zombie que Docker ne pouvait ni tuer ni supprimer a temps.
+        init: true,
         pids_limit: Some(BUILDKIT_PIDS_LIMIT),
         memory: i64::try_from(resources.memory).ok(),
         nano_cpus: i64::try_from(resources.nano_cpus).ok(),
@@ -917,12 +922,22 @@ mod tests {
         assert_eq!(bk.pids_limit, Some(4096));
         assert_eq!(bk.memory, Some((8 * GIB) as i64));
         assert_eq!(bk.nano_cpus, Some(7_000_000_000));
-        // PostgreSQL : aucun plafond ajoute.
+        assert!(bk.init);
+        assert_eq!(
+            crate::docker::create_body(&bk).host_config.unwrap().init,
+            Some(true)
+        );
+        // PostgreSQL : aucun plafond ajoute, pas d'init.
         let specs = infra_specs(&cfg(r)).unwrap();
         assert_eq!(specs.len(), 1);
         let pg = &specs[0];
         assert_eq!(pg.name(), POSTGRES_CONTAINER);
         assert_eq!((pg.memory, pg.nano_cpus), (None, None));
+        assert!(!pg.init);
+        assert_eq!(
+            crate::docker::create_body(pg).host_config.unwrap().init,
+            None
+        );
         // Un autre plafond recree le conteneur (empreinte differente).
         let other = BuildkitResources::compute(32 * GIB, 8, 200 * GIB);
         let bk2 = buildkit_spec(&cfg(other), p, 1).unwrap();
