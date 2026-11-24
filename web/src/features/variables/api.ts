@@ -17,6 +17,20 @@ export const GLOBAL_VARIABLES_QUERY_KEY = ["variables"] as const;
 /** Environnements de la maquette (portée des variables globales), dans l'ordre affiché. */
 export const ENVIRONMENTS = ["production", "preview", "staging"] as const;
 
+/** Avertissement d'une écriture : secret de moins de 4 caractères, accepté mais jamais masqué dans les journaux. */
+export const TOO_SHORT_TO_REDACT = "too_short_to_redact";
+
+/** Clés des variables renvoyées avec l'avertissement `too_short_to_redact`. */
+export function shortSecretKeys(rows: { key: string; warnings?: string[] }[]): string[] {
+  return rows.filter((r) => r.warnings?.includes(TOO_SHORT_TO_REDACT)).map((r) => r.key);
+}
+
+/** Message affiché après l'enregistrement d'un secret trop court (`null` s'il n'y en a pas). */
+export function shortSecretNotice(keys: string[]): string | null {
+  if (keys.length === 0) return null;
+  return `${keys.join(", ")} : secret de moins de 4 caractères, enregistré mais non masqué dans les journaux.`;
+}
+
 /** `production` → `Production`. */
 export function envLabel(name: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1);

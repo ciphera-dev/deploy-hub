@@ -206,7 +206,7 @@ async fn open_deployment(state: &AppState, id: &str, tail: u32) -> Result<Opened
     );
     let redactor = state
         .logs
-        .redactor(project)
+        .project_redactor(project)
         .await
         .map_err(|_| masking_unavailable())?;
     let history = store::tail(&state.db, id, i64::from(tail))
@@ -400,7 +400,7 @@ async fn download(
     let (project, number) = row.ok_or_else(not_found)?;
     let redactor = state
         .logs
-        .redactor(project)
+        .project_redactor(project)
         .await
         .map_err(|_| masking_unavailable())?;
     let body = store::download(&state.db, id, &redactor)

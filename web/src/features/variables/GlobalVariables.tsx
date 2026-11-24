@@ -6,7 +6,7 @@ import { fetchMe, ME_QUERY_KEY, MFA_PENDING } from "@/features/auth/api";
 import { fetchProjects, PROJECTS_QUERY_KEY, type ProjectSummary } from "@/features/projects/api";
 import { timeAgo } from "@/features/projects/format";
 
-import { createGlobalVariable, deleteGlobalVariable, download, ENVIRONMENTS, envLabel, exportGlobalVariables, fetchGlobalVariables, GLOBAL_VARIABLES_QUERY_KEY, parseDotenv, updateGlobalVariable, type GlobalVariable } from "./api";
+import { createGlobalVariable, deleteGlobalVariable, download, ENVIRONMENTS, envLabel, exportGlobalVariables, fetchGlobalVariables, GLOBAL_VARIABLES_QUERY_KEY, parseDotenv, shortSecretKeys, shortSecretNotice, updateGlobalVariable, type GlobalVariable } from "./api";
 
 // Port de prototypes/dashboard/GlobalVariables.jsx (structure, libellés, tokens).
 // Écarts imposés par le backend v0.1 :
@@ -212,12 +212,14 @@ function GlobalVariables() {
         return;
       }
       await refresh();
-      flash(row ? "Variable mise à jour" : "Variable ajoutée");
+      const notice = shortSecretNotice(shortSecretKeys([result.variable]));
+      flash(notice ?? (row ? "Variable mise à jour" : "Variable ajoutée"), notice ? 6000 : undefined);
       close();
     });
   const importRows = (pairs: [string, string][], secret: boolean) =>
     guarded(async () => {
       let done = 0;
+      const short: string[] = [];
       for (const [key, value] of pairs) {
         const result = await createGlobalVariable({ key, value, secret, environments: [...ENVS], all_projects: true, projects: [] });
         if (!result.ok) {
@@ -225,9 +227,11 @@ function GlobalVariables() {
           break;
         }
         done += 1;
+        short.push(...shortSecretKeys([result.variable]));
       }
       await refresh();
-      if (done) flash(done + " variables importées");
+      const notice = shortSecretNotice(short);
+      if (done) flash(notice ? `${done} variables importées. ${notice}` : done + " variables importées", notice ? 6000 : undefined);
       close();
     });
   const exportEnv = () =>

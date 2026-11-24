@@ -524,12 +524,12 @@ fn send_logged(state: &AppState, server: Uuid, msg: ControlToAgent) -> bool {
     }
 }
 
-/// Message d'erreur enregistre : masque (secrets du projet) avant d'etre
-/// nettoye et coupe. Masquage indisponible : message generique, jamais le
-/// texte brut.
+/// Message d'erreur enregistre : sequences ANSI retirees puis masque
+/// (secrets du projet) avant d'etre nettoye et coupe. Masquage
+/// indisponible : message generique, jamais le texte brut.
 async fn masked_message(state: &AppState, project: Uuid, message: &str) -> String {
     match state.logs.project_redactor(project).await {
-        Ok(redactor) => clean_message(&redactor.redact(message.to_string())),
+        Ok(redactor) => clean_message(&redactor.redact_message(message)),
         Err(_) => "erreur masquée (masquage indisponible)".to_string(),
     }
 }

@@ -96,6 +96,16 @@ impl LogEvent {
 /// echappements a deux octets) sont retirees, les autres caracteres de
 /// controle C0/C1 (dont retour a la ligne) deviennent une espace, sauf `\t`.
 pub fn neutralize(text: &str) -> String {
+    strip_escapes(text)
+        .chars()
+        .map(|c| if c != '\t' && c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+/// Retire les sequences ANSI (CSI, OSC et echappements a deux octets) et
+/// tout ESC isole ; les autres caracteres (retours a la ligne compris) sont
+/// gardes.
+pub fn strip_escapes(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -128,8 +138,6 @@ pub fn neutralize(text: &str) -> String {
                 }
                 _ => {}
             },
-            '\t' => out.push(c),
-            c if c.is_control() => out.push(' '),
             c => out.push(c),
         }
     }

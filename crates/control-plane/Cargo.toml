@@ -26,6 +26,9 @@ embed = ["dep:rust-embed"]
 
 [dependencies]
 age = "0.11"
+# Masquage des secrets dans les journaux : un automate pour tous les motifs
+# (temps lineaire en la longueur de la ligne).
+aho-corasick = "1.1.5"
 argon2 = "0.6.0"
 api-types = { path = "../api-types" }
 axum = { workspace = true, features = ["http1", "tokio", "query", "ws"] }

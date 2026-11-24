@@ -19,6 +19,13 @@
 //! `RECENT_LINES` par cible) derriere un seul marqueur `MASKING_DOWN`, rien
 //! n'est garde en cache.
 //!
+//! Masquage hors du verrou des cibles : une ligne est masquee avant de
+//! prendre le verrou (diffusion), les lignes retenues sont sorties sous le
+//! verrou, masquees sans lui, puis diffusees (liberation). Une longue ligne
+//! d'un projet ne retarde donc pas les autres flux. Ordre garde : tant que
+//! des lignes retenues d'une cible attendent ou sont en cours de liberation,
+//! les nouvelles lignes de cette cible sont retenues derriere elles.
+//!
 //! Sans blocage : la lecture des secrets d'un projet se fait dans une tache a
 //! part (`LOAD_TIMEOUT` au plus par essai, un essai par `BACKOFF` tant que la
 //! lecture echoue et que des lignes attendent). La diffusion l'attend au plus
@@ -83,6 +90,10 @@ pub struct Source {
 }
 
 struct Entry {
+    /// Identifiant de l'entree (une cible supprimee puis recreee en a un
+    /// autre) : une liberation ne diffuse que dans l'entree d'ou viennent
+    /// ses lignes.
+    id: u64,
     tx: broadcast::Sender<LogEvent>,
     subscribers: usize,
     /// Serveur qui suit la cible a notre demande.
@@ -100,6 +111,9 @@ struct Entry {
     held_lost: u64,
     /// Marqueur `MASKING_DOWN` deja envoye pour les lignes retenues.
     down_notified: bool,
+    /// Lignes retenues sorties pour etre masquees hors du verrou, pas
+    /// encore diffusees : les nouvelles lignes attendent derriere.
+    releasing: bool,
 }
 
 impl Entry {
@@ -115,6 +129,11 @@ impl Entry {
 
     fn holds(&self) -> bool {
         !self.held.is_empty() || self.held_lost > 0
+    }
+
+    /// Une nouvelle ligne doit attendre derriere des lignes retenues.
+    fn busy(&self) -> bool {
+        self.holds() || self.releasing
     }
 
     /// Masquage indisponible : un seul marqueur tant que des lignes attendent.
@@ -138,28 +157,43 @@ impl Entry {
         }
     }
 
-    fn redacted(&self, line: &proto::LogLine, redactor: &Redactor) -> LogEvent {
-        LogEvent::line(
-            line.timestamp_ms,
-            line.stream,
-            &self.container,
-            redactor.redact_line(&line.line),
-        )
-    }
-
-    /// Masquage revenu : lignes retenues envoyees masquees, dans l'ordre.
-    fn release(&mut self, redactor: &Redactor) {
+    /// Masquage revenu : lignes retenues sorties (a masquer hors du verrou),
+    /// avec le nombre de lignes perdues ; la cible reste occupee
+    /// (`releasing`) jusqu'a leur diffusion.
+    fn take_held(&mut self, target: LogTarget) -> Option<Release> {
+        if !self.holds() {
+            return None;
+        }
         self.down_notified = false;
-        if self.held_lost > 0 {
-            self.emit(LogEvent::lost(self.held_lost));
-            self.held_lost = 0;
-        }
-        while let Some(line) = self.held.pop_front() {
-            let event = self.redacted(&line, redactor);
-            self.emit(event);
-        }
+        self.releasing = true;
         self.held_bytes = 0;
+        Some(Release {
+            target,
+            id: self.id,
+            container: self.container.clone(),
+            lost: std::mem::take(&mut self.held_lost),
+            lines: std::mem::take(&mut self.held).into(),
+        })
     }
+}
+
+/// Ligne masquee (hors de tout verrou).
+fn redacted(line: &proto::LogLine, container: &str, redactor: &Redactor) -> LogEvent {
+    LogEvent::line(
+        line.timestamp_ms,
+        line.stream,
+        container,
+        redactor.redact_line(&line.line),
+    )
+}
+
+/// Lignes retenues d'une entree, sorties pour etre masquees hors du verrou.
+struct Release {
+    target: LogTarget,
+    id: u64,
+    container: String,
+    lost: u64,
+    lines: Vec<proto::LogLine>,
 }
 
 #[derive(Default)]
@@ -167,6 +201,8 @@ struct Targets {
     entries: HashMap<LogTarget, Entry>,
     /// Cibles dont l'arret a deja ete demande (lignes encore en vol).
     stopped: HashSet<LogTarget>,
+    /// Identifiant de la prochaine entree.
+    next_id: u64,
 }
 
 struct Cached {
@@ -371,15 +407,14 @@ impl LogHub {
             loop {
                 let result = hub.project_redactor(project).await;
                 let ok = result.is_ok();
-                {
-                    let mut targets = hub.targets();
-                    for entry in targets.entries.values_mut() {
-                        if entry.project != project {
-                            continue;
-                        }
-                        match &result {
-                            Ok(redactor) => entry.release(redactor),
-                            Err(SecretsUnavailable) => entry.notify_down(),
+                match &result {
+                    Ok(redactor) => hub.release_project(project, redactor),
+                    Err(SecretsUnavailable) => {
+                        let mut targets = hub.targets();
+                        for entry in targets.entries.values_mut() {
+                            if entry.project == project {
+                                entry.notify_down();
+                            }
                         }
                     }
                 }
@@ -396,6 +431,54 @@ impl LogHub {
             }
         });
         wait
+    }
+
+    /// Libere les lignes retenues du projet, dans l'ordre : sorties sous le
+    /// verrou, masquees sans lui, diffusees sous le verrou ; recommence tant
+    /// que des lignes sont arrivees entre-temps.
+    fn release_project(&self, project: Uuid, redactor: &Redactor) {
+        loop {
+            let batches: Vec<Release> = {
+                let mut targets = self.targets();
+                targets
+                    .entries
+                    .iter_mut()
+                    .filter(|(_, e)| e.project == project)
+                    .filter_map(|(target, e)| e.take_held(*target))
+                    .collect()
+            };
+            if batches.is_empty() {
+                return;
+            }
+            // Masquage hors du verrou.
+            let masked: Vec<(LogTarget, u64, Vec<LogEvent>)> = batches
+                .into_iter()
+                .map(|b| {
+                    let mut events = Vec::with_capacity(b.lines.len() + 1);
+                    if b.lost > 0 {
+                        events.push(LogEvent::lost(b.lost));
+                    }
+                    events.extend(
+                        b.lines
+                            .iter()
+                            .map(|line| redacted(line, &b.container, redactor)),
+                    );
+                    (b.target, b.id, events)
+                })
+                .collect();
+            let mut targets = self.targets();
+            for (target, id, events) in masked {
+                // Entree supprimee ou recreee entre-temps : ces lignes ne
+                // sont pas les siennes.
+                let Some(entry) = targets.entries.get_mut(&target).filter(|e| e.id == id) else {
+                    continue;
+                };
+                for event in events {
+                    entry.emit(event);
+                }
+                entry.releasing = false;
+            }
+        }
     }
 
     /// Secrets du projet modifies : le masquage est relu a la ligne
@@ -426,10 +509,16 @@ impl LogHub {
     pub fn subscribe(&self, source: Source, backlog: usize) -> Subscription {
         let target = source.target;
         let mut targets = self.targets();
-        let Targets { entries, stopped } = &mut *targets;
+        let Targets {
+            entries,
+            stopped,
+            next_id,
+        } = &mut *targets;
         let entry = entries.entry(target).or_insert_with(|| {
             stopped.remove(&target);
+            *next_id += 1;
             Entry {
+                id: *next_id,
                 tx: broadcast::channel(CLIENT_BUFFER).0,
                 subscribers: 0,
                 follow: None,
@@ -441,6 +530,7 @@ impl LogHub {
                 held_bytes: 0,
                 held_lost: 0,
                 down_notified: false,
+                releasing: false,
             }
         });
         entry.subscribers += 1;
@@ -496,19 +586,27 @@ impl LogHub {
     pub async fn dispatch(&self, server: ServerId, msg: &AgentToControl) {
         match msg {
             AgentToControl::LogLine(line) => {
-                let project = match self.targets().entries.get(&line.target) {
+                let seen = match self.targets().entries.get(&line.target) {
                     // Ligne d'un autre agent que celui de la cible : ignoree,
                     // sans meme lire les secrets du projet.
                     Some(e) if e.origin.is_some_and(|origin| origin != server) => {
                         tracing::debug!(%server, "ligne de journal d'une cible d'un autre serveur : ignoree");
                         return;
                     }
-                    Some(e) => Some(e.project),
+                    Some(e) => Some((e.id, e.project, e.container.clone())),
                     None => None,
                 };
+                let project = seen.as_ref().map(|(_, project, _)| *project);
                 let redactor = match project {
                     Some(project) => Some(self.live_redactor(project).await),
                     None => None,
+                };
+                // Masquage hors du verrou des cibles.
+                let event = match (&redactor, &seen) {
+                    (Some(Live::Ready(redactor)), Some((id, _, container))) => {
+                        Some((*id, redacted(line, container, redactor)))
+                    }
+                    _ => None,
                 };
                 let mut targets = self.targets();
                 if let Some(entry) = targets.entries.get(&line.target)
@@ -522,16 +620,19 @@ impl LogHub {
                 {
                     // Serveur encore inconnu : le premier qui envoie une ligne.
                     entry.origin.get_or_insert(server);
-                    match redactor {
-                        Live::Ready(redactor) => {
-                            entry.release(&redactor);
-                            let event = entry.redacted(line, &redactor);
+                    match (redactor, event) {
+                        // Aucune ligne retenue devant elle, meme entree :
+                        // diffusee telle que masquee.
+                        (Live::Ready(_), Some((id, event))) if id == entry.id && !entry.busy() => {
                             entry.emit(event);
                         }
+                        // Lignes retenues devant elle : elle attend son tour,
+                        // une tache libere le tout dans l'ordre.
+                        (Live::Ready(_), _) => entry.hold(line),
                         // Echec ferme : rien ne part sans masquage ; une
                         // tache libere les lignes retenues.
-                        Live::Pending => entry.hold(line),
-                        Live::Down => {
+                        (Live::Pending, _) => entry.hold(line),
+                        (Live::Down, _) => {
                             entry.hold(line);
                             entry.notify_down();
                         }
@@ -640,6 +741,7 @@ mod held_tests {
 
     fn entry() -> Entry {
         Entry {
+            id: 1,
             tx: broadcast::channel(4).0,
             subscribers: 0,
             follow: None,
@@ -651,6 +753,7 @@ mod held_tests {
             held_bytes: 0,
             held_lost: 0,
             down_notified: false,
+            releasing: false,
         }
     }
 
@@ -669,7 +772,145 @@ mod held_tests {
         let mut l = line(0);
         l.line = "k=s3cr\x1b[31m3t-va\x1b[0mlue fin".into();
         let e = entry();
-        assert_eq!(e.redacted(&l, &redactor).message, "k=•••• fin");
+        assert_eq!(redacted(&l, &e.container, &redactor).message, "k=•••• fin");
+    }
+
+    fn source(project: Uuid) -> (LogTarget, Source) {
+        let target = LogTarget::Deployment(shared::ids::DeploymentId(Uuid::new_v4()));
+        let source = Source {
+            target,
+            project,
+            container: "build".into(),
+            follow: None,
+            origin: None,
+        };
+        (target, source)
+    }
+
+    fn seed(hub: &LogHub, project: Uuid, redactor: Redactor) {
+        hub.redactors().projects.insert(
+            project,
+            Cached {
+                at: Instant::now(),
+                redactor: Arc::new(redactor),
+            },
+        );
+    }
+
+    /// Une ligne d'un projet en cours de masquage ne retarde pas celles d'un
+    /// autre projet : le masquage se fait hors du verrou des cibles.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn masking_one_project_does_not_delay_another() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let hub = LogHub::new(
+            AgentRegistry::new(),
+            Arc::new(super::super::redact::NoSecrets),
+        );
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = Mutex::new(go_rx);
+        let released_by_b = Arc::new(AtomicBool::new(false));
+        let flag = released_by_b.clone();
+        let mut gated = Redactor::new(vec![zeroize::Zeroizing::new("secret-of-a".to_string())]);
+        gated.gate = Some(Arc::new(move || {
+            let _ = entered_tx.send(());
+            let ok = go_rx
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .recv_timeout(Duration::from_secs(5))
+                .is_ok();
+            flag.store(ok, Ordering::SeqCst);
+        }));
+        seed(&hub, a, gated);
+        seed(&hub, b, Redactor::new(Vec::new()));
+        let (target_a, source_a) = source(a);
+        let (target_b, source_b) = source(b);
+        let mut sub_a = hub.subscribe(source_a, 0);
+        let mut sub_b = hub.subscribe(source_b, 0);
+        let server = ServerId(Uuid::new_v4());
+        let line_of = |target, text: &str| {
+            AgentToControl::LogLine(proto::LogLine {
+                target,
+                stream: proto::LogStream::Stdout,
+                timestamp_ms: 1,
+                line: text.to_string(),
+            })
+        };
+
+        // Ligne de A : son masquage reste bloque jusqu'au feu vert.
+        let hub_a = hub.clone();
+        let msg_a = line_of(target_a, "a secret-of-a");
+        let task_a = tokio::spawn(async move { hub_a.dispatch(server, &msg_a).await });
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("masquage de A commence");
+
+        // Pendant ce temps, la ligne de B passe.
+        hub.dispatch(server, &line_of(target_b, "ligne de b")).await;
+        let got = tokio::time::timeout(Duration::from_secs(1), sub_b.next())
+            .await
+            .expect("ligne de B retardee")
+            .unwrap();
+        assert_eq!(got.message, "ligne de b");
+        assert_eq!(hub.streams(), 2);
+
+        go_tx.send(()).unwrap();
+        task_a.await.unwrap();
+        assert!(
+            released_by_b.load(Ordering::SeqCst),
+            "B attendait le masquage de A"
+        );
+        assert_eq!(sub_a.next().await.unwrap().message, "a ••••");
+    }
+
+    /// Lignes retenues puis liberees (masquees hors du verrou) : dans
+    /// l'ordre, une nouvelle ligne arrivee entre-temps passe apres elles.
+    #[tokio::test]
+    async fn held_lines_released_in_order_before_new_ones() {
+        let hub = LogHub::new(
+            AgentRegistry::new(),
+            Arc::new(super::super::redact::NoSecrets),
+        );
+        let project = Uuid::new_v4();
+        let (target, source) = source(project);
+        let mut sub = hub.subscribe(source, 0);
+        {
+            let mut targets = hub.targets();
+            let entry = targets.entries.get_mut(&target).unwrap();
+            for text in ["un secret-x", "deux"] {
+                let mut l = line(0);
+                l.target = target;
+                l.line = text.into();
+                entry.hold(&l);
+            }
+        }
+        seed(
+            &hub,
+            project,
+            Redactor::new(vec![zeroize::Zeroizing::new("secret-x".to_string())]),
+        );
+        let server = ServerId(Uuid::new_v4());
+        hub.dispatch(
+            server,
+            &AgentToControl::LogLine(proto::LogLine {
+                target,
+                stream: proto::LogStream::Stdout,
+                timestamp_ms: 2,
+                line: "trois secret-x".into(),
+            }),
+        )
+        .await;
+        let mut got = Vec::new();
+        for _ in 0..3 {
+            let e = tokio::time::timeout(Duration::from_secs(5), sub.next())
+                .await
+                .unwrap()
+                .unwrap();
+            got.push(e.message);
+        }
+        assert_eq!(got, ["un ••••", "deux", "trois ••••"]);
     }
 
     #[test]

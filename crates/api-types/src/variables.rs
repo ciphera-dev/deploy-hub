@@ -32,6 +32,11 @@ pub struct ProjectVariable {
     pub updated_at: String,
     /// Nom de l'auteur de la derniere modification.
     pub updated_by: Option<String>,
+    /// Reponse d'une ecriture seulement : `too_short_to_redact` pour un
+    /// secret de moins de 4 caracteres (accepte, mais jamais masque dans
+    /// les journaux).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Corps de `PUT /api/projects/{id}/variables` : cree ou remplace une
@@ -101,6 +106,11 @@ pub struct GlobalVariable {
     /// RFC 3339.
     pub updated_at: String,
     pub updated_by: Option<String>,
+    /// Reponse d'une ecriture seulement : `too_short_to_redact` pour un
+    /// secret de moins de 4 caracteres (accepte, mais jamais masque dans
+    /// les journaux).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Corps de `POST /api/variables`.

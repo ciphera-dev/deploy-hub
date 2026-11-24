@@ -2070,6 +2070,12 @@ export interface components {
             updated_by?: string | null;
             /** @description `null` pour un secret (ecriture seule). */
             value?: string | null;
+            /**
+             * @description Reponse d'une ecriture seulement : `too_short_to_redact` pour un
+             *     secret de moins de 4 caracteres (accepte, mais jamais masque dans
+             *     les journaux).
+             */
+            warnings?: string[];
         };
         /** @description Reponse de `GET /api/health`. */
         HealthResponse: {
@@ -2564,6 +2570,12 @@ export interface components {
             updated_by?: string | null;
             /** @description `null` pour un secret (ecriture seule). */
             value?: string | null;
+            /**
+             * @description Reponse d'une ecriture seulement : `too_short_to_redact` pour un
+             *     secret de moins de 4 caracteres (accepte, mais jamais masque dans
+             *     les journaux).
+             */
+            warnings?: string[];
         };
         /**
          * @description Corps de `PUT /api/projects/{id}/variables` : cree ou remplace une

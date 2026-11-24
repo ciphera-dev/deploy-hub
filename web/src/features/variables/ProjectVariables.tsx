@@ -8,7 +8,7 @@ import type { Project } from "@/features/projects/api";
 import { timeAgo } from "@/features/projects/format";
 import { ApiError } from "@/lib/api/errors";
 
-import { bulkProjectVariables, deleteProjectVariable, download, envLabel, fetchProjectVariables, fetchVariablesStatus, projectVariablesQueryKey, putProjectVariable, variablesStatusQueryKey, type ProjectVariable } from "./api";
+import { bulkProjectVariables, deleteProjectVariable, download, envLabel, fetchProjectVariables, fetchVariablesStatus, projectVariablesQueryKey, putProjectVariable, shortSecretKeys, shortSecretNotice, variablesStatusQueryKey, type ProjectVariable } from "./api";
 import { dotenvLine } from "./dotenv";
 
 // Port de prototypes/dashboard/ProjectVariables.jsx (structure, libellés, tokens).
@@ -176,16 +176,20 @@ export function ProjectVariables({ project }: { project: Project }) {
 
   const save = (old: ProjectVariable | null, d: Draft) =>
     guarded(async () => {
+      let short = false;
       for (const target of d.envs) {
         const result = await putProjectVariable(project.id, target, { key: d.k, value: d.v, secret: d.secret, previous_key: old && target === env && old.key !== d.k ? old.key : null });
         if (!result.ok) {
           flash(result.message, 5000);
           return;
         }
+        short ||= shortSecretKeys(result.list).includes(d.k);
         if (target === env) store(result.list);
         else void client.invalidateQueries({ queryKey: projectVariablesQueryKey(project.id, target) });
       }
       setEdit(null);
+      const notice = shortSecretNotice(short ? [d.k] : []);
+      if (notice) flash(notice, 6000);
     });
   const del = (r: ProjectVariable) =>
     guarded(async () => {
@@ -210,7 +214,9 @@ export function ProjectVariables({ project }: { project: Project }) {
       }
       store(result.list);
       setRaw(false);
-      flash(result.list.filter((r) => !r.inherited).length + " variables enregistrées");
+      const saved = result.list.filter((r) => !r.inherited).length + " variables enregistrées";
+      const notice = shortSecretNotice(shortSecretKeys(result.list));
+      flash(notice ? `${saved}. ${notice}` : saved, notice ? 6000 : undefined);
     });
   const downloadEnv = () => {
     // Sans les secrets : leur valeur n'est jamais relue.

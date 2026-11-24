@@ -80,6 +80,25 @@ it("ajout d'un secret : PUT avec le jeton CSRF, la valeur ne revient jamais", as
   expect(puts[0]).toEqual({ env: "production", body: { key: "STRIPE_KEY", value: "sk_live_x", secret: true, previous_key: null }, csrf: "csrf-1" });
 });
 
+it("secret trop court : enregistré, avertissement « non masqué dans les journaux »", async () => {
+  server.use(
+    http.put("*/api/projects/:id/variables", async ({ request }) => {
+      puts.push({ env: new URL(request.url).searchParams.get("env"), body: await request.json(), csrf: request.headers.get("x-csrf-token") });
+      return HttpResponse.json([...PROJECT_VARIABLES, { key: "PIN", value: null, secret: true, inherited: false, pending_apply: true, updated_at: "2026-11-24T10:00:00.000Z", updated_by: "Alice Martin", warnings: ["too_short_to_redact"] }]);
+    }),
+  );
+  mount(`/projects/${WEB.id}/variables`);
+  await screen.findByTestId("var-PORT", {}, { timeout: 5000 });
+  screen.getByRole("button", { name: "Ajouter" }).click();
+  fireEvent.change(await screen.findByLabelText("Clé"), { target: { value: "PIN" } });
+  fireEvent.change(screen.getByLabelText("Valeur"), { target: { value: "123" } });
+  screen.getByRole("button", { name: "Secret" }).click();
+  await waitFor(() => expect(screen.getByLabelText("Valeur")).toHaveAttribute("type", "password"));
+  screen.getByRole("button", { name: "Valider" }).click();
+  await waitFor(() => expect(puts).toHaveLength(1));
+  expect(await screen.findByText("PIN : secret de moins de 4 caractères, enregistré mais non masqué dans les journaux.")).toBeInTheDocument();
+});
+
 it("secret modifié : « Laisser vide pour conserver », valeur vide envoyée", async () => {
   mount(`/projects/${WEB.id}/variables`);
   const row = await screen.findByTestId("var-STRIPE_SECRET_KEY", {}, { timeout: 5000 });

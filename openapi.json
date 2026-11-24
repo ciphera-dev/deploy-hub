@@ -6104,6 +6104,13 @@
               "null"
             ],
             "description": "`null` pour un secret (ecriture seule)."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Reponse d'une ecriture seulement : `too_short_to_redact` pour un\nsecret de moins de 4 caracteres (accepte, mais jamais masque dans\nles journaux)."
           }
         }
       },
@@ -7317,6 +7324,13 @@
               "null"
             ],
             "description": "`null` pour un secret (ecriture seule)."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Reponse d'une ecriture seulement : `too_short_to_redact` pour un\nsecret de moins de 4 caracteres (accepte, mais jamais masque dans\nles journaux)."
           }
         }
       },

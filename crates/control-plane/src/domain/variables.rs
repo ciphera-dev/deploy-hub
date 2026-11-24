@@ -11,6 +11,10 @@
 //!   projets », puis la plus recente.
 //! - Une variable est « a appliquer » si elle a change apres l'envoi du
 //!   dernier deploiement reussi de l'environnement (ou s'il n'y en a pas).
+//! - Plafonds verifies a chaque ecriture (`check_caps`) : environnement
+//!   envoye a l'agent (`MAX_ENV_BYTES`), et secrets d'un projet, globales
+//!   comprises (`MAX_ENV_BYTES` octets, `redact::MAX_FRAGMENTS` fragments
+//!   masques dans les journaux).
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
@@ -24,14 +28,17 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::domain::logs::redact::{SecretValues, SecretsResult, SecretsUnavailable};
+use crate::domain::logs::redact::{
+    self, MAX_FRAGMENTS, SecretValues, SecretsResult, SecretsUnavailable,
+};
 use crate::secrets::{SecretBox, SecretError, labels};
 
 /// Taille maximale d'une valeur (octets).
 pub const MAX_VALUE_BYTES: usize = 32 * 1024;
 /// Variables au plus par environnement d'un projet, et globales au plus.
 pub const MAX_VARIABLES: usize = 500;
-/// Taille totale maximale de l'environnement envoye a l'agent (octets).
+/// Taille totale maximale de l'environnement envoye a l'agent (octets), et
+/// des valeurs secretes d'un projet (globales comprises).
 pub const MAX_ENV_BYTES: usize = 1024 * 1024;
 /// Environnements au plus d'une variable globale.
 pub const MAX_ENVIRONMENTS: usize = 16;
@@ -234,6 +241,19 @@ pub fn next_value(
         },
     };
     Ok((current != Some(&next)).then_some(next))
+}
+
+/// L'ecriture stocke un secret trop court pour etre masque dans les
+/// journaux (accepte, avec l'avertissement `too_short_to_redact`).
+pub fn short_secret(secret: bool, value: Option<&str>, current: Option<&Stored>) -> bool {
+    if !secret {
+        return false;
+    }
+    match value.filter(|v| !v.is_empty()) {
+        Some(v) => redact::too_short_to_redact(v),
+        // Publique rendue secrete : sa valeur actuelle.
+        None => matches!(current, Some(Stored::Plain(old)) if redact::too_short_to_redact(old)),
+    }
 }
 
 // --- format .env ----------------------------------------------------------------
@@ -548,6 +568,7 @@ pub async fn list_project(
                 pending_apply: r.pending_apply,
                 updated_at: r.updated_at,
                 updated_by: r.updated_by,
+                warnings: Vec::new(),
             },
         );
     }
@@ -628,8 +649,17 @@ pub async fn delete(conn: &mut PgConnection, environment: Uuid, key: &str) -> sq
     Ok(n > 0)
 }
 
-/// Ecriture d'une variable (avec renommage depuis `previous_key`) ; renvoie
-/// `true` si quelque chose a change. Environnement verrouille par l'appelant.
+/// Issue d'une ecriture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Written {
+    /// Quelque chose a change.
+    pub changed: bool,
+    /// Secret trop court pour etre masque (`short_secret`).
+    pub short_secret: bool,
+}
+
+/// Ecriture d'une variable (avec renommage depuis `previous_key`).
+/// Environnement verrouille par l'appelant.
 #[allow(clippy::too_many_arguments)]
 pub async fn put(
     conn: &mut PgConnection,
@@ -640,7 +670,7 @@ pub async fn put(
     wanted: Wanted<'_>,
     actor: Uuid,
     now: f64,
-) -> Result<bool, VarError> {
+) -> Result<Written, VarError> {
     if !valid_key(key) {
         return Err(invalid_key(key));
     }
@@ -674,6 +704,7 @@ pub async fn put(
         }
         _ => source,
     };
+    let short = short_secret(wanted.secret, wanted.value, source);
     // Renommage : la valeur source est comparee a la cible, ecrite meme si
     // identique (nouvelle cle).
     let next = match next_value(secrets, owner, source, wanted)? {
@@ -682,17 +713,32 @@ pub async fn put(
         None => None,
     };
     let Some(next) = next else {
-        return Ok(false);
+        return Ok(Written::default());
     };
     if let Some(p) = renamed {
         delete(conn, environment, p).await?;
     }
     upsert(conn, environment, key, &next, actor, now).await?;
-    Ok(true)
+    Ok(Written {
+        changed: true,
+        short_secret: short,
+    })
 }
 
-/// Remplace les variables de l'environnement par `lines` ; renvoie les cles
-/// modifiees et supprimees. Environnement verrouille par l'appelant.
+/// Issue de `replace_all`.
+#[derive(Debug, Default)]
+pub struct Replaced {
+    /// Cles creees ou modifiees.
+    pub changed: Vec<String>,
+    /// Cles supprimees.
+    pub removed: Vec<String>,
+    /// Cles ecrites comme secrets trop courts pour etre masques.
+    pub short_secrets: Vec<String>,
+}
+
+/// Remplace les variables de l'environnement par `lines`. Une cle deja
+/// secrete le reste ; `# secret` rend secrete une cle nouvelle ou publique.
+/// Environnement verrouille par l'appelant.
 pub async fn replace_all(
     conn: &mut PgConnection,
     secrets: &SecretBox,
@@ -700,7 +746,7 @@ pub async fn replace_all(
     lines: &[DotenvLine],
     actor: Uuid,
     now: f64,
-) -> Result<(Vec<String>, Vec<String>), VarError> {
+) -> Result<Replaced, VarError> {
     let existing = current(conn, environment).await?;
     let mut wanted: BTreeMap<&str, &DotenvLine> = BTreeMap::new();
     for l in lines {
@@ -711,9 +757,10 @@ pub async fn replace_all(
         return Err(invalid("500 variables au plus par environnement."));
     }
     let mut writes = Vec::new();
+    let mut short_secrets = Vec::new();
     for (key, l) in &wanted {
         let current = existing.get(*key);
-        let secret = current.map_or(l.secret, Stored::is_secret);
+        let secret = current.is_some_and(Stored::is_secret) || l.secret;
         let next = next_value(
             secrets,
             Owner::Project { environment, key },
@@ -728,6 +775,9 @@ pub async fn replace_all(
             other => other,
         })?;
         if let Some(next) = next {
+            if short_secret(secret, Some(l.value.as_str()), current) {
+                short_secrets.push(key.to_string());
+            }
             writes.push((key.to_string(), next));
         }
     }
@@ -744,7 +794,11 @@ pub async fn replace_all(
         upsert(conn, environment, &key, &next, actor, now).await?;
         changed.push(key);
     }
-    Ok((changed, removed))
+    Ok(Replaced {
+        changed,
+        removed,
+        short_secrets,
+    })
 }
 
 // --- globales -------------------------------------------------------------------
@@ -774,6 +828,7 @@ impl From<GlobalRow> for GlobalVariable {
             projects: r.projects.iter().map(Uuid::to_string).collect(),
             updated_at: r.updated_at,
             updated_by: r.updated_by,
+            warnings: Vec::new(),
         }
     }
 }
@@ -1042,6 +1097,32 @@ impl fmt::Display for ResolveError {
     }
 }
 
+/// Variables effectives de l'environnement (le projet l'emporte sur les
+/// globales), par cle : (globale, ligne).
+async fn effective_rows(
+    conn: &mut PgConnection,
+    project: Uuid,
+    environment: Uuid,
+    environment_name: &str,
+) -> sqlx::Result<BTreeMap<String, (bool, Row)>> {
+    let own = own_rows(conn, environment).await?;
+    let globals = global_rows(conn, project, environment, environment_name).await?;
+    let mut rows = BTreeMap::new();
+    for (global, r) in globals
+        .into_iter()
+        .map(|r| (true, r))
+        .chain(own.into_iter().map(|r| (false, r)))
+    {
+        rows.insert(r.key.clone(), (global, r));
+    }
+    Ok(rows)
+}
+
+/// Taille (octets) d'une variable dans l'environnement envoye a l'agent.
+fn env_entry_bytes(key: &str, value: &str) -> usize {
+    key.len() + value.len() + 2
+}
+
 /// Environnement d'un deploiement (projet puis globales), secrets
 /// dechiffres : a appeler juste avant l'envoi a l'agent.
 pub async fn resolve_env(
@@ -1051,20 +1132,9 @@ pub async fn resolve_env(
     environment: Uuid,
     environment_name: &str,
 ) -> Result<Vec<EnvVar>, ResolveError> {
-    let own = own_rows(conn, environment)
+    let rows = effective_rows(conn, project, environment, environment_name)
         .await
         .map_err(ResolveError::Db)?;
-    let globals = global_rows(conn, project, environment, environment_name)
-        .await
-        .map_err(ResolveError::Db)?;
-    let mut rows = BTreeMap::new();
-    for (global, r) in globals
-        .into_iter()
-        .map(|r| (true, r))
-        .chain(own.into_iter().map(|r| (false, r)))
-    {
-        rows.insert(r.key.clone(), (global, r));
-    }
     let mut env = Vec::with_capacity(rows.len());
     let mut total = 0usize;
     for (key, (global, r)) in rows {
@@ -1088,13 +1158,144 @@ pub async fn resolve_env(
             (false, Some(v), _) => EnvValue::new(v),
             _ => continue,
         };
-        total += key.len() + value.expose().len() + 2;
+        total += env_entry_bytes(&key, value.expose());
         if total > MAX_ENV_BYTES {
             return Err(ResolveError::TooLarge);
         }
         env.push(EnvVar { key, value });
     }
     Ok(env)
+}
+
+/// Taille de l'environnement envoye a l'agent (comme `resolve_env`) ; un
+/// secret illisible, qui ne pourra pas etre envoye, ne compte pas.
+async fn env_bytes(
+    conn: &mut PgConnection,
+    secrets: &SecretBox,
+    project: Uuid,
+    environment: Uuid,
+    environment_name: &str,
+) -> sqlx::Result<usize> {
+    let rows = effective_rows(conn, project, environment, environment_name).await?;
+    let mut total = 0usize;
+    for (key, (global, r)) in rows {
+        let owner = if global {
+            Owner::Global { id: r.owner }
+        } else {
+            Owner::Project {
+                environment: r.owner,
+                key: &key,
+            }
+        };
+        let len = match (r.secret, r.value, r.value_sealed) {
+            (true, _, Some(sealed)) => match owner.open(secrets, &sealed) {
+                Ok(clear) => clear.len(),
+                Err(_) => continue,
+            },
+            (false, Some(v), _) => v.len(),
+            _ => continue,
+        };
+        total += key.len() + len + 2;
+    }
+    Ok(total)
+}
+
+/// Plafonds a verifier apres une ecriture, dans sa transaction (422 sinon) :
+/// chaque environnement de `environments` (identifiant, nom) reste envoyable
+/// (`MAX_ENV_BYTES`), et les secrets du projet, globales comprises, restent
+/// masquables (`MAX_ENV_BYTES` octets, `MAX_FRAGMENTS` fragments).
+pub async fn check_caps(
+    conn: &mut PgConnection,
+    secrets: &SecretBox,
+    project: Uuid,
+    environments: &[(Uuid, String)],
+) -> Result<(), VarError> {
+    for (environment, name) in environments {
+        if env_bytes(conn, secrets, project, *environment, name).await? > MAX_ENV_BYTES {
+            return Err(invalid(
+                "Variables d'environnement trop volumineuses (1 Mio au plus, variables globales comprises).",
+            ));
+        }
+    }
+    let values = project_secret_values(conn, secrets, project).await?;
+    if values.iter().map(|v| v.len()).sum::<usize>() > MAX_ENV_BYTES {
+        return Err(invalid(
+            "Secrets du projet trop volumineux (1 Mio au plus, tous environnements et variables globales comprises).",
+        ));
+    }
+    if redact::fragments(&values).len() > MAX_FRAGMENTS {
+        return Err(invalid(format!(
+            "Trop de valeurs secrètes à masquer dans les journaux : {MAX_FRAGMENTS} au plus par projet, \
+             variables globales comprises (chaque ligne d'un secret de plusieurs lignes compte)."
+        )));
+    }
+    Ok(())
+}
+
+/// `check_caps` pour chaque projet de `scope`, sur ses environnements
+/// nommes dans `environments` (ecriture d'une globale).
+pub async fn check_scope_caps(
+    conn: &mut PgConnection,
+    secrets: &SecretBox,
+    scope: Scope,
+    environments: &[String],
+) -> Result<(), VarError> {
+    for project in scope.projects(&mut *conn).await? {
+        let envs: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT id, name FROM environments WHERE project_id = $1 AND name = ANY ($2)",
+        )
+        .bind(project)
+        .bind(environments)
+        .fetch_all(&mut *conn)
+        .await?;
+        check_caps(conn, secrets, project, &envs).await?;
+    }
+    Ok(())
+}
+
+/// Valeurs secretes d'un projet (tous environnements, globales comprises),
+/// en clair. Un secret indechiffrable (cle d'instance perdue, chiffre d'une
+/// autre ligne) n'a jamais pu etre injecte : il est ignore.
+async fn project_secret_values(
+    conn: &mut PgConnection,
+    secrets: &SecretBox,
+    project: Uuid,
+) -> sqlx::Result<Vec<Zeroizing<String>>> {
+    let sealed: Vec<(bool, Uuid, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT false, v.environment_id, v.key, v.value_sealed FROM project_variables v \
+         JOIN environments e ON e.id = v.environment_id \
+         WHERE e.project_id = $1 AND v.secret \
+         UNION ALL \
+         SELECT true, g.id, g.key, g.value_sealed FROM global_variables g \
+         WHERE g.secret AND (g.all_projects OR EXISTS (SELECT 1 \
+             FROM global_variable_projects p WHERE p.variable_id = g.id AND p.project_id = $1))",
+    )
+    .bind(project)
+    .fetch_all(conn)
+    .await?;
+    Ok(sealed
+        .iter()
+        .map(|(global, owner, key, b)| {
+            let owner = if *global {
+                Owner::Global { id: *owner }
+            } else {
+                Owner::Project {
+                    environment: *owner,
+                    key,
+                }
+            };
+            owner.open(secrets, b)
+        })
+        .filter_map(|opened| match opened {
+            Ok(clear) => std::str::from_utf8(&clear)
+                .ok()
+                .map(|s| Zeroizing::new(s.to_string())),
+            Err(_) => {
+                tracing::warn!(%project, "secret illisible ignore pour le masquage");
+                None
+            }
+        })
+        .collect())
 }
 
 /// Portees de `rebind_all`, une par famille de secrets (marqueurs de la table
@@ -1297,52 +1498,15 @@ impl VariableSecrets {
     }
 
     async fn load(&self, project: Uuid) -> SecretsResult {
-        let sealed: Vec<(bool, Uuid, String, Vec<u8>)> = match sqlx::query_as(
-            "SELECT false, v.environment_id, v.key, v.value_sealed FROM project_variables v \
-             JOIN environments e ON e.id = v.environment_id \
-             WHERE e.project_id = $1 AND v.secret \
-             UNION ALL \
-             SELECT true, g.id, g.key, g.value_sealed FROM global_variables g \
-             WHERE g.secret AND (g.all_projects OR EXISTS (SELECT 1 \
-                 FROM global_variable_projects p WHERE p.variable_id = g.id AND p.project_id = $1))",
-        )
-        .bind(project)
-        .fetch_all(&self.db)
-        .await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                // Echec ferme : les lignes du projet sont retenues.
-                tracing::error!(%project, error = %e, "secrets du projet illisibles : lignes retenues");
-                return Err(SecretsUnavailable);
-            }
+        let values = match self.db.acquire().await {
+            Ok(mut conn) => project_secret_values(&mut conn, &self.secrets, project).await,
+            Err(e) => Err(e),
         };
-        // Un secret indechiffrable (cle d'instance perdue, chiffre d'une
-        // autre ligne) n'a jamais pu etre injecte : il est ignore plutot que
-        // de bloquer tous les journaux.
-        Ok(sealed
-            .iter()
-            .map(|(global, owner, key, b)| {
-                let owner = if *global {
-                    Owner::Global { id: *owner }
-                } else {
-                    Owner::Project {
-                        environment: *owner,
-                        key,
-                    }
-                };
-                owner.open(&self.secrets, b)
-            })
-            .filter_map(|opened| match opened {
-                Ok(clear) => std::str::from_utf8(&clear)
-                    .ok()
-                    .map(|s| Zeroizing::new(s.to_string())),
-                Err(_) => {
-                    tracing::warn!(%project, "secret illisible ignore pour le masquage");
-                    None
-                }
-            })
-            .collect())
+        values.map_err(|e| {
+            // Echec ferme : les lignes du projet sont retenues.
+            tracing::error!(%project, error = %e, "secrets du projet illisibles : lignes retenues");
+            SecretsUnavailable
+        })
     }
 }
 

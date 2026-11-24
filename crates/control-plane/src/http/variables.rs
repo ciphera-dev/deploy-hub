@@ -6,8 +6,10 @@
 //!   et `GET /api/variables/export` (Admin).
 //!
 //! Ecritures sous CSRF (couche du routeur) et auditees, sans valeur dans
-//! l'audit. Un secret n'est jamais renvoye. Chaque ecriture relit le masquage
-//! des journaux des projets concernes (`LogHub::invalidate`).
+//! l'audit. Un secret n'est jamais renvoye. Chaque ecriture verifie les
+//! plafonds des projets concernes (`vars::check_caps`, 422 sinon), relit le
+//! masquage de leurs journaux (`LogHub::invalidate`), et signale un secret
+//! trop court pour etre masque (`warnings: ["too_short_to_redact"]`).
 
 use api_types::variables::{
     BulkProjectVariables, GlobalVariable, NewGlobalVariable, PutProjectVariable,
@@ -27,6 +29,7 @@ use uuid::Uuid;
 
 use crate::auth::internal;
 use crate::authz::{Require, lvl, res};
+use crate::domain::logs::redact::TOO_SHORT_TO_REDACT;
 use crate::domain::projects::store::PRODUCTION;
 use crate::domain::variables::{self as vars, Scope, VarError, Wanted};
 use crate::state::AppState;
@@ -148,9 +151,26 @@ async fn project_list(
     environment: Uuid,
     env: &str,
 ) -> Result<Response, ApiError> {
-    let list = vars::list_project(conn, project, environment, env)
+    project_list_warned(conn, project, environment, env, &[]).await
+}
+
+/// Liste de l'environnement ; les variables de `short` portent
+/// l'avertissement `too_short_to_redact`.
+async fn project_list_warned(
+    conn: &mut PgConnection,
+    project: Uuid,
+    environment: Uuid,
+    env: &str,
+    short: &[String],
+) -> Result<Response, ApiError> {
+    let mut list = vars::list_project(conn, project, environment, env)
         .await
         .map_err(db("liste des variables"))?;
+    for v in &mut list {
+        if !v.inherited && short.contains(&v.key) {
+            v.warnings.push(TOO_SHORT_TO_REDACT.to_string());
+        }
+    }
     Ok(no_store(Json(list).into_response()))
 }
 
@@ -221,7 +241,7 @@ async fn put_project(
     vars::lock_environment(&mut tx, environment)
         .await
         .map_err(db("verrou de l'environnement"))?;
-    let changed = vars::put(
+    let written = vars::put(
         &mut tx,
         &state.secrets,
         environment,
@@ -236,7 +256,16 @@ async fn put_project(
     )
     .await
     .map_err(var_error)?;
+    let changed = written.changed;
     if changed {
+        vars::check_caps(
+            &mut tx,
+            &state.secrets,
+            project,
+            &[(environment, env.clone())],
+        )
+        .await
+        .map_err(var_error)?;
         vars::touch(&mut tx, environment, state.clock.unix_secs())
             .await
             .map_err(db("environnement des variables"))?;
@@ -250,7 +279,12 @@ async fn put_project(
         )
         .await?;
     }
-    let res = project_list(&mut tx, project, environment, &env).await?;
+    let short: &[String] = if written.short_secret {
+        std::slice::from_ref(&input.key)
+    } else {
+        &[]
+    };
+    let res = project_list_warned(&mut tx, project, environment, &env, short).await?;
     tx.commit().await.map_err(db("transaction des variables"))?;
     if changed {
         state.logs.invalidate(project);
@@ -279,7 +313,11 @@ async fn bulk_project(
     vars::lock_environment(&mut tx, environment)
         .await
         .map_err(db("verrou de l'environnement"))?;
-    let (changed, removed) = vars::replace_all(
+    let vars::Replaced {
+        changed,
+        removed,
+        short_secrets,
+    } = vars::replace_all(
         &mut tx,
         &state.secrets,
         environment,
@@ -291,6 +329,14 @@ async fn bulk_project(
     .map_err(var_error)?;
     let touched = !changed.is_empty() || !removed.is_empty();
     if touched {
+        vars::check_caps(
+            &mut tx,
+            &state.secrets,
+            project,
+            &[(environment, env.clone())],
+        )
+        .await
+        .map_err(var_error)?;
         vars::touch(&mut tx, environment, state.clock.unix_secs())
             .await
             .map_err(db("environnement des variables"))?;
@@ -303,7 +349,7 @@ async fn bulk_project(
         )
         .await?;
     }
-    let res = project_list(&mut tx, project, environment, &env).await?;
+    let res = project_list_warned(&mut tx, project, environment, &env, &short_secrets).await?;
     tx.commit().await.map_err(db("transaction des variables"))?;
     if touched {
         state.logs.invalidate(project);
@@ -433,12 +479,14 @@ async fn create_global(
         .await
         .map_err(var_error)?;
     let id = Uuid::new_v4();
+    let given = input.value.as_ref().map(|v| v.as_str());
+    let short = vars::short_secret(input.secret, given, None);
     let value = vars::next_value(
         &state.secrets,
         vars::Owner::Global { id },
         None,
         Wanted {
-            value: input.value.as_ref().map(|v| v.as_str()),
+            value: given,
             secret: input.secret,
         },
     )
@@ -461,6 +509,9 @@ async fn create_global(
     )
     .await
     .map_err(db("creation de la variable globale"))?;
+    vars::check_scope_caps(&mut tx, &state.secrets, scope.clone(), &environments)
+        .await
+        .map_err(var_error)?;
     vars::touch_scope(&mut tx, &scope, &environments, now)
         .await
         .map_err(db("environnements de la variable globale"))?;
@@ -472,7 +523,10 @@ async fn create_global(
         json!({ "variable_id": id, "key": input.key, "secret": input.secret }),
     )
     .await?;
-    let created = reply_global(&mut tx, id).await?;
+    let mut created = reply_global(&mut tx, id).await?;
+    if short {
+        created.warnings.push(TOO_SHORT_TO_REDACT.to_string());
+    }
     tx.commit().await.map_err(db("transaction des variables"))?;
     invalidate(&state, scope).await;
     Ok(no_store(
@@ -520,17 +574,19 @@ async fn update_global(
         }
     };
     let secret = input.secret.unwrap_or(current.value.is_secret());
-    let value = vars::next_value(
+    let given = input.value.as_ref().map(|v| v.as_str());
+    let changed = vars::next_value(
         &state.secrets,
         vars::Owner::Global { id },
         Some(&current.value),
         Wanted {
-            value: input.value.as_ref().map(|v| v.as_str()),
+            value: given,
             secret,
         },
     )
-    .map_err(var_error)?
-    .unwrap_or_else(|| current.value.clone());
+    .map_err(var_error)?;
+    let short = changed.is_some() && vars::short_secret(secret, given, Some(&current.value));
+    let value = changed.unwrap_or_else(|| current.value.clone());
     // Ancienne et nouvelle portee : un projet retire perd la variable au
     // prochain deploiement. Verrouillees avant l'horodatage (`lock_scope`).
     let touched_scope = current.scope.clone().union(scope.clone());
@@ -554,6 +610,9 @@ async fn update_global(
     )
     .await
     .map_err(db("modification de la variable globale"))?;
+    vars::check_scope_caps(&mut tx, &state.secrets, scope.clone(), &environments)
+        .await
+        .map_err(var_error)?;
     vars::touch_scope(&mut tx, &touched_scope, &touched_envs, now)
         .await
         .map_err(db("environnements de la variable globale"))?;
@@ -565,7 +624,10 @@ async fn update_global(
         json!({ "variable_id": id, "key": key, "secret": secret }),
     )
     .await?;
-    let updated = reply_global(&mut tx, id).await?;
+    let mut updated = reply_global(&mut tx, id).await?;
+    if short {
+        updated.warnings.push(TOO_SHORT_TO_REDACT.to_string());
+    }
     tx.commit().await.map_err(db("transaction des variables"))?;
     invalidate(&state, current.scope.union(scope)).await;
     Ok(no_store(Json(updated).into_response()))

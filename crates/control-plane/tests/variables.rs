@@ -1289,3 +1289,240 @@ async fn legacy_ciphertexts_are_rebound_once() {
     );
     assert_eq!(resolved(&state, web).await, Err("OLD_SECRET".to_string()));
 }
+
+async fn bulk(state: &AppState, s: &Session, project: Uuid, content: &str) -> Reply {
+    send(
+        state,
+        s,
+        "PUT",
+        &format!("/api/projects/{project}/variables/bulk?env=production"),
+        Some(json!({ "content": content })),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn import_secret_flag_on_existing_public_key_seals() {
+    let (state, _pg) = common::state().await;
+    let project = image_project(&state, "web").await;
+    let dev = login(&state, "developer").await;
+    let r = put_var(
+        &state,
+        &dev,
+        project,
+        json!({ "key": "API_KEY", "value": "public-value", "secret": false }),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    // `# secret` sur une cle deja publique : scellee, jamais renvoyee.
+    let r = bulk(
+        &state,
+        &dev,
+        project,
+        &format!("API_KEY={SECRET} # secret\n"),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert!(!r.raw.contains(SECRET));
+    let rows = list(&state, &dev, project).await;
+    assert_eq!(row(&rows, "API_KEY")["secret"], true);
+    assert_eq!(row(&rows, "API_KEY")["value"], Value::Null);
+    let (value, bytes) = sealed(&state, project, "API_KEY").await;
+    assert_eq!(value, None);
+    assert_eq!(clear(&state, &bytes.unwrap()).as_slice(), SECRET.as_bytes());
+    // Un secret existant reste secret sans le commentaire.
+    let r = bulk(&state, &dev, project, "API_KEY=autre-valeur-secrete\n").await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert!(!r.raw.contains("autre-valeur-secrete"));
+    assert_eq!(sealed(&state, project, "API_KEY").await.0, None);
+}
+
+/// Secret de plusieurs lignes : la valeur entiere et chacune de ses lignes.
+fn multi_line_secret(lines: usize, tag: &str) -> String {
+    (0..lines)
+        .map(|i| format!("{tag}-{i:05}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn fragment_cap_refused() {
+    let (state, _pg) = common::state().await;
+    let project = image_project(&state, "web").await;
+    let dev = login(&state, "developer").await;
+    let admin = login(&state, "admin").await;
+    // 999 lignes + la valeur entiere : 1 000 fragments, accepte.
+    let r = put_var(
+        &state,
+        &dev,
+        project,
+        json!({ "key": "BIG_KEY", "value": multi_line_secret(999, "ligne"), "secret": true }),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    // Un de plus : refuse, rien n'est ecrit.
+    let r = put_var(
+        &state,
+        &dev,
+        project,
+        json!({ "key": "EXTRA", "value": "encore-un-secret", "secret": true }),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    assert!(r.raw.contains("1000"), "{}", r.raw);
+    assert!(
+        list(&state, &dev, project)
+            .await
+            .iter()
+            .all(|v| v["key"] != "EXTRA")
+    );
+    // Import `.env` : meme plafond.
+    let r = bulk(
+        &state,
+        &dev,
+        project,
+        "BIG_KEY=\nEXTRA=encore-un-secret # secret\n",
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    // Une globale secrete qui s'applique au projet compte aussi.
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        "/api/variables",
+        Some(
+            json!({ "key": "GLOBAL_SECRET", "value": "globale-secrete", "secret": true,
+                     "environments": ["production"], "all_projects": true, "projects": [] }),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM global_variables")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    // Une valeur publique ne compte pas.
+    let r = put_var(
+        &state,
+        &dev,
+        project,
+        json!({ "key": "PUBLIC", "value": "valeur-publique", "secret": false }),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn env_bytes_cap_refused_at_write() {
+    let (state, _pg) = common::state().await;
+    let project = image_project(&state, "web").await;
+    let dev = login(&state, "developer").await;
+    let big = "a".repeat(vars_max_value());
+    for i in 0..31 {
+        let r = put_var(
+            &state,
+            &dev,
+            project,
+            json!({ "key": format!("K{i:02}"), "value": big, "secret": false }),
+        )
+        .await;
+        assert_eq!(r.status, 200, "{}", &r.raw[..r.raw.len().min(200)]);
+    }
+    // Au-dela de 1 Mio pour l'environnement : refuse des l'ecriture.
+    let r = put_var(
+        &state,
+        &dev,
+        project,
+        json!({ "key": "K31", "value": big, "secret": true }),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", &r.raw[..r.raw.len().min(200)]);
+    assert!(r.raw.contains("1 Mio"), "{}", r.raw);
+    let exists: Option<bool> =
+        sqlx::query_scalar("SELECT true FROM project_variables WHERE key = 'K31'")
+            .fetch_optional(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(exists, None);
+}
+
+fn vars_max_value() -> usize {
+    control_plane::domain::variables::MAX_VALUE_BYTES
+}
+
+#[tokio::test]
+async fn short_secret_warning() {
+    let (state, _pg) = common::state().await;
+    let project = image_project(&state, "web").await;
+    let dev = login(&state, "developer").await;
+    let admin = login(&state, "admin").await;
+    let warned =
+        |rows: &[Value], key: &str| row(rows, key)["warnings"] == json!(["too_short_to_redact"]);
+
+    // Secret de moins de 4 caracteres : accepte, avec avertissement.
+    let r = put_var(
+        &state,
+        &dev,
+        project,
+        json!({ "key": "PIN", "value": "123", "secret": true }),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let rows = r.json().as_array().unwrap().clone();
+    assert!(warned(&rows, "PIN"), "{rows:?}");
+    assert_eq!(row(&rows, "PIN")["value"], Value::Null);
+    // Ni pour une valeur publique, ni pour un secret assez long, ni a la lecture.
+    let r = put_var(
+        &state,
+        &dev,
+        project,
+        json!({ "key": "SHORT", "value": "ab", "secret": false }),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert!(
+        row(r.json().as_array().unwrap(), "SHORT")
+            .get("warnings")
+            .is_none()
+    );
+    let r = put_var(
+        &state,
+        &dev,
+        project,
+        json!({ "key": "LONG", "value": "abcd", "secret": true }),
+    )
+    .await;
+    assert!(
+        row(r.json().as_array().unwrap(), "LONG")
+            .get("warnings")
+            .is_none()
+    );
+    let rows = list(&state, &dev, project).await;
+    assert!(rows.iter().all(|v| v.get("warnings").is_none()));
+    // Import `.env`.
+    let r = bulk(
+        &state,
+        &dev,
+        project,
+        "PIN=\nSHORT=ab\nLONG=\nCODE=xy # secret\n",
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let rows = r.json().as_array().unwrap().clone();
+    assert!(warned(&rows, "CODE"), "{rows:?}");
+    assert!(row(&rows, "PIN").get("warnings").is_none());
+    // Globale.
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        "/api/variables",
+        Some(json!({ "key": "G_PIN", "value": "42", "secret": true,
+                     "environments": ["production"], "all_projects": true, "projects": [] })),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+    assert_eq!(r.json()["warnings"], json!(["too_short_to_redact"]));
+}
