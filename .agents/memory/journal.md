@@ -313,3 +313,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 23:30 — Session v0.1-sdd — claude-code (orchestrateur) — Task R12 : Remédiation audit — 2FA imposée aux sessions ouvertes, sécurité réservée au propriétaire
 - fait : Sessions ouvertes basculées en enrôlement, mot de passe toujours exigé pour un facteur, réglages de sécurité réservés au propriétaire
 - résultat : relecture : 1 Important corrigé, approuvée ; vérifiée avec R13
+
+## 2026-11-25 00:55 — Session v0.1-sdd — claude-code (orchestrateur) — Task R15 : Remédiation audit — vérification de l'adresse e-mail
+- fait : Changement d'adresse et inscription ouverte confirmés par lien, mot de passe choisi à la confirmation, comptes en attente encadrés et purgés, délai mesuré sur les demandes
+- résultat : relecture : 4 Importants corrigés en 3 tours, approuvée

@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-24 23:30
+# État courant — mis à jour le 2026-11-25 00:55
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R12 : Remédiation audit — 2FA imposée aux sessions ouvertes, sécurité réservée au propriétaire — statut : TERMINÉ (relecture : 1 Important corrigé, approuvée ; vérifiée avec R13)
+Task R15 : Remédiation audit — vérification de l'adresse e-mail — statut : TERMINÉ (relecture : 4 Importants corrigés en 3 tours, approuvée)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R15 : Remédiation audit — vérification de l'adresse e-mail
 - Task R12 : Remédiation audit — 2FA imposée aux sessions ouvertes, sécurité réservée au propriétaire
 - Task R46 : Remédiation audit — utilisateur et racine en lecture seule des conteneurs
 - Task R13 : Remédiation audit — limites du second facteur, de la ré-authentification et de la connexion
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R18 : Remédiation audit — secrets masqués dans les journaux avant toute coupe
 - Task R11 : Remédiation audit — domaine du panneau, DNS et bascule sûre
 - Task R20 : Remédiation audit — anti-rejeu des webhooks sur l'empreinte du corps
-- Task R16 : Remédiation audit — secrets liés à leur ligne, contrôle d'age.key
 
 ## Prochaine étape exacte
-Intégrer R4 ; R15 tour 3 ; R14 en cours ; lancer R17, R19, R21…
+Intégrer R14 (tour 1), R4 ; relectures R17, R21
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,10 +32,11 @@ Intégrer R4 ; R15 tour 3 ; R14 en cours ; lancer R17, R19, R21…
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/control-plane/src/http/settings.rs`
+- `crates/control-plane/src/http/email_verification.rs`
 - `crates/control-plane/src/http/me.rs`
-- `crates/control-plane/src/http/auth.rs`
-- `web/src/features/settings/sections/OrgSecurity.tsx`
+- `crates/control-plane/src/http/invitations.rs`
+- `crates/control-plane/migrations/0031_email_verification.sql`
+- `web/src/features/auth`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
