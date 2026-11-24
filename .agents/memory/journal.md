@@ -293,3 +293,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 21:23 — Session v0.1-sdd — claude-code (orchestrateur) — Task R11 : Remédiation audit — domaine du panneau, DNS et bascule sûre
 - fait : Verdicts DNS négatifs comptés en transaction, bascule du panneau résistante à l'annulation, recheck limité, cert_error effacé au recheck
 - résultat : relecture : 1 Important corrigé, relecture ciblée approuvée, tests DB panel_domain 12/12 et domains 23/23
+
+## 2026-11-24 21:27 — Session v0.1-sdd — claude-code (orchestrateur) — Task R18 : Remédiation audit — secrets masqués dans les journaux avant toute coupe
+- fait : Rassemblage des fragments Docker à 64 Kio, nettoyage puis masquage sur tous les chemins, coupe après masquage, lignes retenues bornées en octets
+- résultat : relecture : 2 tours de correctifs, relecture ciblée approuvée ; tests Docker et DB en CI

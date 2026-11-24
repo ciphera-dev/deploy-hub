@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-24 21:23
+# État courant — mis à jour le 2026-11-24 21:27
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R11 : Remédiation audit — domaine du panneau, DNS et bascule sûre — statut : TERMINÉ (relecture : 1 Important corrigé, relecture ciblée approuvée, tests DB panel_domain 12/12 et domains 23/23)
+Task R18 : Remédiation audit — secrets masqués dans les journaux avant toute coupe — statut : TERMINÉ (relecture : 2 tours de correctifs, relecture ciblée approuvée ; tests Docker et DB en CI)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R18 : Remédiation audit — secrets masqués dans les journaux avant toute coupe
 - Task R11 : Remédiation audit — domaine du panneau, DNS et bascule sûre
 - Task R20 : Remédiation audit — anti-rejeu des webhooks sur l'empreinte du corps
 - Task R16 : Remédiation audit — secrets liés à leur ligne, contrôle d'age.key
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R7 : Remédiation audit — ré-authentification avant un second facteur
 - Task fixci : CI rouge après R45 et R6
 - Task R45 : Remédiation audit — un état BuildKit par projet
-- Task R6 : Remédiation audit — écran Équipe
 
 ## Prochaine étape exacte
-Intégrer R4 (rebase en cours) et R18 (tour 2) ; R12, R15, R46 en cours
+Intégrer R4 ; R12, R13, R15, R46 en cours ; R17 reprend les mineurs de R18
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,10 +32,11 @@ Intégrer R4 (rebase en cours) et R18 (tour 2) ; R12, R15, R46 en cours
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/control-plane/src/domains/panel.rs`
-- `crates/control-plane/src/domains/acme.rs`
-- `crates/control-plane/migrations/0029_domains_dns_failures.sql`
-- `crates/control-plane/tests/panel_domain.rs`
+- `crates/agent/src/logs.rs`
+- `crates/control-plane/src/logs/hub.rs`
+- `crates/control-plane/src/logs/store.rs`
+- `crates/control-plane/src/logs/redact.rs`
+- `crates/agent/src/build/local.rs`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
