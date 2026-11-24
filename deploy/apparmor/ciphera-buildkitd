@@ -1,22 +1,69 @@
-# Profil AppArmor du conteneur ciphera-buildkitd (BuildKit rootless).
+# Profil AppArmor du conteneur ciphera-buildkitd-<projet> (BuildKit rootless),
+# en mode applique (enforce).
 #
-# Ubuntu >= 23.10 interdit les espaces de noms utilisateur aux processus non
-# confines (kernel.apparmor_restrict_unprivileged_userns=1) ; rootlesskit en
-# a besoin. Ce profil n'autorise que cela, pour ce seul conteneur
-# (security_opt apparmor=ciphera-buildkitd), sans toucher au reglage global
-# de la machine. Installe par install.sh dans /etc/apparmor.d/ la ou ce
-# reglage existe ; ailleurs l'agent utilise apparmor=unconfined.
+# Ubuntu >= 23.10 interdit les espaces de noms utilisateur aux processus sans
+# profil (kernel.apparmor_restrict_unprivileged_userns=1) ; rootlesskit en a
+# besoin. Ce profil les autorise pour ce seul conteneur (security_opt
+# apparmor=ciphera-buildkitd), sans toucher au reglage global de la machine.
+# Installe par install.sh dans /etc/apparmor.d/ la ou ce reglage existe
+# (syntaxe AppArmor 4). Ailleurs (noyau sans AppArmor, ou sans mediation des
+# espaces de noms utilisateur), il n'est pas installe et l'agent ne demande
+# aucun profil a Docker (risque residuel R13, docs/security/threat-model.md).
 #
-# `flags=(unconfined)` est volontaire et documente (risque residuel R13, voir
-# docs/security/threat-model.md) : un profil applique devrait autoriser tout
-# ce que rootlesskit, buildkitd et le runc imbrique font (montages, pivot_root,
-# ptrace et signal entre les etapes RUN, acces fichiers de chaque image) ;
-# il n'a pas pu etre valide contre un vrai buildkitd rootless, et un profil
-# trop strict casserait tous les builds. Les limites de ressources, le
-# bac a sable des processus de BuildKit et la separation par compte de
-# l'hote (voir agent/src/infra.rs) restent en place.
+# rootlesskit, buildkitd, le runc imbrique et les etapes RUN de tous les builds
+# tournent sous ce profil (le runc imbrique ne change pas de profil) : les
+# droits de base sont donc larges (fichiers, montages, pivot_root, reseau).
+# Le gain tient aux regles `deny`, qui priment sur toute autorisation :
+# /proc et /sys sensibles, systemes de fichiers du noyau, reglages globaux de
+# /proc/sys ; `ptrace` et les signaux sont limites aux processus de ce profil
+# (plus les signaux de Docker). Les limites de ressources, le bac a sable des
+# processus de BuildKit et le compte dedie de l'hote (voir
+# crates/agent/src/infra.rs) s'ajoutent a ce profil.
+#
+# Profil installe mais pas charge : Docker refuse de demarrer le conteneur et
+# l'agent le signale, sans jamais se replier sur un conteneur sans profil.
 abi <abi/4.0>,
 
-profile ciphera-buildkitd flags=(unconfined) {
+include <tunables/global>
+
+profile ciphera-buildkitd flags=(attach_disconnected,mediate_deleted) {
+  include <abstractions/base>
+
+  # Espaces de noms de rootlesskit et des etapes RUN, runc imbrique.
   userns,
+  capability,
+  network,
+  unix,
+  mqueue,
+  io_uring,
+  file,
+  mount,
+  remount,
+  umount,
+  pivot_root,
+
+  # Entre processus du conteneur (rootlesskit, buildkitd, runc, etapes RUN) ;
+  # arret et `docker exec` par Docker, qui tourne sans profil.
+  ptrace (trace,read,tracedby,readby) peer=ciphera-buildkitd,
+  signal (send,receive) peer=ciphera-buildkitd,
+  signal (receive) peer=unconfined,
+
+  # Systemes de fichiers du noyau.
+  deny mount fstype=securityfs,
+  deny mount fstype=debugfs,
+  deny mount fstype=configfs,
+
+  # /proc sensible (repris de docker-default).
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  # Reglages globaux de /proc/sys en ecriture. Restent permis, comme dans
+  # docker-default : net (propre a chaque espace de noms reseau) et
+  # kernel/shm* (propre a chaque espace de noms IPC).
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sys/{abi,crypto,debug,dev,fs,user,vm}/** w,
+
+  # /sys sensible.
+  deny /sys/firmware/** rwklx,
+  deny /sys/kernel/security/** rwklx,
 }

@@ -68,13 +68,19 @@ pub enum BuildkitError {
     Docker(DockerError),
     /// Dossiers du projet (creation, suppression) ou fichier d'usage.
     Fs(String),
-    /// Le socket n'est pas apparu a temps.
     /// Socket absent ou muet (etat et journal du conteneur : journal de
     /// l'agent seulement, jamais dans ce message).
     SocketTimeout(PathBuf),
     /// Un autre projet a un build en cours sur son buildkitd (sans le
     /// nommer : le message finit dans le journal d'un autre projet).
     Busy,
+    /// Docker refuse de demarrer buildkitd sous son profil AppArmor
+    /// (installe mais pas charge, ou refuse) : buildkitd n'est pas demarre,
+    /// jamais de repli sans profil.
+    AppArmor {
+        profile: String,
+        detail: String,
+    },
 }
 
 impl fmt::Display for BuildkitError {
@@ -90,6 +96,13 @@ impl fmt::Display for BuildkitError {
                 )
             }
             Self::Busy => write!(f, "un autre build utilise deja buildkitd"),
+            Self::AppArmor { profile, detail } => write!(
+                f,
+                "profil AppArmor {profile} non charge ou refuse : buildkitd n'est pas demarre \
+                 (aucun repli sans profil) ; le recharger en root \
+                 (`apparmor_parser -r -W {}`) ou relancer install.sh ({detail})",
+                infra::BUILDKIT_APPARMOR_FILE
+            ),
         }
     }
 }
@@ -348,7 +361,11 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
             )));
         }
         let spec = infra::buildkit_spec(&self.cfg, project, projects)?;
-        let id = self.docker.run(&spec).await?;
+        let id = self
+            .docker
+            .run(&spec)
+            .await
+            .map_err(|e| self.start_error(e))?;
         locked(&self.usage).running.insert(project);
         self.wait_ready(&socket, &id).await?;
         {
@@ -364,6 +381,24 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
                 marker: self.marker(project),
             }),
         })
+    }
+
+    /// Erreur du demarrage de buildkitd ; refus d'AppArmor sous le profil
+    /// de buildkitd : `AppArmor` (message explicite, journalise).
+    fn start_error(&self, e: DockerError) -> BuildkitError {
+        match (&self.cfg.buildkit_apparmor_profile, e) {
+            (Some(profile), DockerError::Api(detail))
+                if detail.to_ascii_lowercase().contains("apparmor") =>
+            {
+                let e = BuildkitError::AppArmor {
+                    profile: profile.clone(),
+                    detail,
+                };
+                tracing::error!("{e}");
+                e
+            }
+            (_, e) => e.into(),
+        }
     }
 
     async fn wait_ready(&self, socket: &Path, id: &ContainerId) -> Result<(), BuildkitError> {

@@ -47,10 +47,19 @@
 //!   newuidmap/newgidmap ont besoin pour ecrire la correspondance des uids
 //!   (sans elles, rootlesskit echoue : verifie avec Docker) ;
 //! - la configuration Docker recommandee par BuildKit (docs/rootless.md) :
-//!   `seccomp=unconfined` (unshare, mount), AppArmor non confine
-//!   (`apparmor=unconfined`, ou le profil `ciphera-buildkitd` qui n'autorise
-//!   que les espaces de noms utilisateur, installe par install.sh la ou le
-//!   noyau les restreint, Ubuntu >= 23.10) et `systempaths=unconfined`
+//!   `seccomp=unconfined` (unshare, mount), le profil AppArmor applique
+//!   `ciphera-buildkitd` (`deploy/apparmor/ciphera-buildkitd` : espaces de
+//!   noms utilisateur, montages et fichiers permis, `/proc` et `/sys`
+//!   sensibles refuses, `ptrace` et signaux limites au conteneur), installe
+//!   par install.sh la ou le noyau restreint les espaces de noms
+//!   utilisateur (Ubuntu >= 23.10, AppArmor 4) ; ailleurs
+//!   `apparmor=unconfined` (risque residuel R13). Profil installe mais pas
+//!   charge : buildkitd n'est pas demarre (`BuildkitError::AppArmor`),
+//!   jamais de repli sans profil. `OCIConfig.apparmor-profile` de BuildKit (profil
+//!   propre aux etapes RUN) n'est pas utilisable : BuildKit le refuse quand
+//!   il ne voit pas AppArmor, ce qui est le cas dans le conteneur (ni
+//!   securityfs ni `apparmor_parser`) ; les etapes RUN restent sous le
+//!   profil du conteneur. Et `systempaths=unconfined`
 //!   (`MaskedPaths`/`ReadonlyPaths` vides) : chaque etape RUN recoit son
 //!   propre espace de noms PID et son /proc. Le bac a sable des processus de
 //!   BuildKit reste actif : jamais `--oci-worker-no-process-sandbox`, qui
@@ -392,10 +401,18 @@ pub fn lookup_subids(text: &str, name: &str) -> Option<SubIds> {
 }
 
 /// Profil AppArmor de buildkitd s'il est installe (`BUILDKIT_APPARMOR_FILE`).
+/// Installe mais pas charge : Docker refuse de demarrer buildkitd, l'agent le
+/// signale (`buildkit::BuildkitError::AppArmor`).
 pub fn buildkit_apparmor_profile() -> Option<String> {
     Path::new(BUILDKIT_APPARMOR_FILE)
         .is_file()
         .then(|| BUILDKIT_APPARMOR_PROFILE.to_string())
+}
+
+/// AppArmor actif sur l'hote (`/sys/module/apparmor/parameters/enabled`).
+pub fn host_apparmor_enabled() -> bool {
+    std::fs::read_to_string("/sys/module/apparmor/parameters/enabled")
+        .is_ok_and(|v| v.trim_start().starts_with('Y'))
 }
 
 fn read_etc(etc: &Path, file: &'static str) -> Result<String, InfraError> {
@@ -445,12 +462,20 @@ impl InfraConfig {
                 None
             }
         };
+        let buildkit_apparmor_profile = buildkit_apparmor_profile();
+        if buildkit_apparmor_profile.is_none() && host_apparmor_enabled() {
+            tracing::warn!(
+                "AppArmor actif mais profil {BUILDKIT_APPARMOR_PROFILE} absent \
+                 ({BUILDKIT_APPARMOR_FILE}, installe par install.sh la ou le noyau \
+                 restreint les espaces de noms utilisateur) : buildkitd sans profil AppArmor"
+            );
+        }
         Ok(Self {
             postgres_secret_dir: PathBuf::from(DEFAULT_POSTGRES_SECRET_DIR),
             postgres_socket_dir: PathBuf::from(DEFAULT_POSTGRES_SOCKET_DIR),
             postgres_user,
             buildkit_socket_dir: PathBuf::from(DEFAULT_BUILDKIT_SOCKET_DIR),
-            buildkit_apparmor_profile: buildkit_apparmor_profile(),
+            buildkit_apparmor_profile,
             buildkit_account,
             buildkit_state_dir: PathBuf::from(DEFAULT_BUILDKIT_STATE_DIR),
             buildkit_identity_dir: PathBuf::from(DEFAULT_BUILDKIT_IDENTITY_DIR),

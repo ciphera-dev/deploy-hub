@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use ciphera_agent::buildkit::{BuildkitError, BuildkitManager, ProjectFs};
-use ciphera_agent::docker::{DockerOps, ROLE_LABEL};
+use ciphera_agent::docker::{self, DockerOps, ROLE_LABEL};
 use ciphera_agent::infra::{
     self, BUILDKIT_PROJECT_LABEL, BUILDKITD_ROLE, BuildkitAccount, InfraConfig, SubIds,
 };
@@ -500,5 +500,85 @@ async fn a_stopped_container_fails_fast_with_a_short_user_message() {
     assert!(message.len() < 120, "message trop long : {message}");
     for secret in ["SECRET-DU-JOURNAL", "xxxx", "/"] {
         assert!(!message.contains(secret), "{message}");
+    }
+}
+
+/// Profil AppArmor installe mais pas charge (ou refuse) : Docker refuse de
+/// demarrer buildkitd ; l'erreur le dit et rien ne redemarre sans profil.
+#[tokio::test]
+async fn an_apparmor_refusal_is_reported_without_falling_back() {
+    let scratch = Scratch::new();
+    let mut c = cfg(&scratch.0);
+    c.buildkit_apparmor_profile = Some(infra::BUILDKIT_APPARMOR_PROFILE.into());
+    let docker = Arc::new(FakeDocker::default());
+    *docker.fail_run.lock().unwrap() = Some(
+        "error during container init: unable to apply apparmor profile: apparmor failed \
+         to apply profile: write /proc/thread-self/attr/apparmor/exec: no such file or directory"
+            .into(),
+    );
+    let manager = BuildkitManager::new(docker.clone(), FakeFs::default(), c)
+        .with_readiness(Duration::from_secs(1), |_| true);
+    let err = manager
+        .ensure(ProjectId::new())
+        .await
+        .err()
+        .expect("refus attendu");
+    let text = err.to_string();
+    assert!(
+        matches!(&err, BuildkitError::AppArmor { profile, .. } if profile == "ciphera-buildkitd"),
+        "{text}"
+    );
+    assert!(text.contains("ciphera-buildkitd"), "{text}");
+    assert!(
+        text.contains("apparmor_parser -r -W /etc/apparmor.d/ciphera-buildkitd"),
+        "{text}"
+    );
+    assert!(text.contains("install.sh"), "{text}");
+    // Une seule tentative, sous le profil : aucun repli sur apparmor=unconfined.
+    assert_eq!(docker.runs.lock().unwrap().len(), 1);
+    // Nouvel essai : meme refus, toujours sous le profil.
+    let again = manager
+        .ensure(ProjectId::new())
+        .await
+        .err()
+        .expect("refus attendu");
+    assert!(matches!(again, BuildkitError::AppArmor { .. }), "{again}");
+    let runs = docker.runs.lock().unwrap().clone();
+    assert_eq!(runs.len(), 2);
+    for spec in &runs {
+        let opts = docker::create_body(spec)
+            .host_config
+            .and_then(|h| h.security_opt)
+            .unwrap_or_default();
+        assert!(
+            opts.contains(&"apparmor=ciphera-buildkitd".to_string()),
+            "{opts:?}"
+        );
+        assert!(!opts.iter().any(|o| o == "apparmor=unconfined"), "{opts:?}");
+    }
+}
+
+/// Une autre erreur de Docker reste une erreur de Docker ; sans profil, un
+/// message qui cite AppArmor n'est pas attribue au profil.
+#[tokio::test]
+async fn other_start_errors_are_not_blamed_on_apparmor() {
+    for (profile, message) in [
+        (Some("ciphera-buildkitd"), "no space left on device"),
+        (None, "apparmor failed to apply profile"),
+    ] {
+        let scratch = Scratch::new();
+        let mut c = cfg(&scratch.0);
+        c.buildkit_apparmor_profile = profile.map(Into::into);
+        let docker = Arc::new(FakeDocker::default());
+        *docker.fail_run.lock().unwrap() = Some(message.into());
+        let manager = BuildkitManager::new(docker, FakeFs::default(), c)
+            .with_readiness(Duration::from_secs(1), |_| true);
+        let err = manager
+            .ensure(ProjectId::new())
+            .await
+            .err()
+            .expect("refus attendu");
+        assert!(matches!(err, BuildkitError::Docker(_)), "{err}");
+        assert!(err.to_string().contains(message), "{err}");
     }
 }

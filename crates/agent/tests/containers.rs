@@ -324,7 +324,8 @@ fn buildkitd_is_rootless_unprivileged_and_on_its_own_network() {
     assert_ne!(hc.privileged, Some(true));
     assert!(hc.devices.as_ref().is_none_or(|d| d.is_empty()));
     // Configuration Docker recommandee par BuildKit (docs/rootless.md) :
-    // seccomp et AppArmor non confines, `systempaths=unconfined` (cote API :
+    // seccomp non confine, AppArmor sans profil quand `ciphera-buildkitd`
+    // n'est pas installe, `systempaths=unconfined` (cote API :
     // `MaskedPaths` et `ReadonlyPaths` vides) pour que chaque etape RUN ait
     // son propre /proc. Le bac a sable des processus reste actif : jamais
     // `--oci-worker-no-process-sandbox` (une etape pourrait tuer ou tracer
@@ -351,7 +352,8 @@ fn buildkitd_is_rootless_unprivileged_and_on_its_own_network() {
     // Son reseau, jamais celui de PostgreSQL ni d'un projet.
     assert_eq!(hc.network_mode.as_deref(), Some(infra::BUILD_NETWORK));
     assert!(body.networking_config.is_none());
-    // Profil AppArmor installe par install.sh (Ubuntu >= 23.10) : utilise.
+    // Profil AppArmor applique, installe par install.sh (Ubuntu >= 23.10) :
+    // utilise.
     let mut with_profile = cfg();
     with_profile.buildkit_apparmor_profile = Some("ciphera-buildkitd".into());
     let opts = security_opt(&docker::create_body(&bk_spec_in(&with_profile)));
@@ -1044,4 +1046,70 @@ fn project_config_is_written_atomically_and_restored() {
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names.len(), 1, "{names:?}");
+}
+
+/// Profil AppArmor livre (`deploy/apparmor/ciphera-buildkitd`), regles sans
+/// les commentaires.
+fn apparmor_rules() -> Vec<String> {
+    include_str!("../../../deploy/apparmor/ciphera-buildkitd")
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+#[test]
+fn buildkitd_apparmor_profile_is_enforced() {
+    let rules = apparmor_rules();
+    let header = rules
+        .iter()
+        .find(|l| l.starts_with("profile "))
+        .expect("en-tete du profil");
+    assert!(
+        header.starts_with(&format!("profile {} ", infra::BUILDKIT_APPARMOR_PROFILE)),
+        "{header}"
+    );
+    // Mode applique : ni `unconfined` ni `complain` dans les drapeaux.
+    assert!(!header.contains("unconfined"), "{header}");
+    assert!(!header.contains("complain"), "{header}");
+    // Le seul `unconfined` des regles : les signaux recus de Docker.
+    let unconfined: Vec<&String> = rules.iter().filter(|l| l.contains("unconfined")).collect();
+    assert_eq!(
+        unconfined,
+        ["signal (receive) peer=unconfined,"],
+        "{rules:#?}"
+    );
+    // Aucune sortie du profil : ni changement de profil ni execution hors
+    // profil (ux, Ux, px, Px, cx...).
+    assert!(
+        !rules.iter().any(|l| l.contains("change_profile")
+            || l.split_whitespace().any(|w| {
+                let w = w.trim_end_matches(',');
+                ["ux", "Ux", "px", "Px", "cx", "Cx", "pux", "PUx"].contains(&w)
+            })),
+        "{rules:#?}"
+    );
+    // ptrace et signaux limites aux processus du profil.
+    for rule in rules
+        .iter()
+        .filter(|l| l.starts_with("ptrace") || l.starts_with("signal"))
+    {
+        assert!(rule.contains(" peer="), "{rule}");
+    }
+    assert!(rules.contains(&"userns,".to_string()), "{rules:#?}");
+    for deny in [
+        "deny @{PROC}/sysrq-trigger rwklx,",
+        "deny @{PROC}/kcore rwklx,",
+        "deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,",
+        "deny @{PROC}/sys/{abi,crypto,debug,dev,fs,user,vm}/** w,",
+        "deny /sys/firmware/** rwklx,",
+        "deny /sys/kernel/security/** rwklx,",
+        "deny mount fstype=securityfs,",
+        "deny mount fstype=debugfs,",
+    ] {
+        assert!(
+            rules.contains(&deny.to_string()),
+            "{deny} absent : {rules:#?}"
+        );
+    }
 }

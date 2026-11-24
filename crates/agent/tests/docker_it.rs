@@ -3,7 +3,7 @@
 //! (`cargo test -p ciphera-agent -- --ignored`). Ils telechargent les images
 //! epinglees de PostgreSQL et BuildKit, plus busybox et nginx. A partir
 //! d'Ubuntu 23.10, le profil AppArmor `ciphera-buildkitd` doit etre charge
-//! (voir le job `agent-docker`).
+//! (voir le job `agent-docker`) : il est verifie en mode applique.
 #![cfg(unix)]
 
 use std::collections::HashMap;
@@ -30,6 +30,11 @@ use proto::ImageRef;
 use shared::ids::{DeploymentId, ProjectId};
 
 const PROBE_IMAGE: &str = "docker.io/library/busybox:1.37";
+/// Present la ou le noyau restreint les espaces de noms utilisateur
+/// (Ubuntu >= 23.10) : le profil AppArmor de buildkitd y est charge.
+const USERNS_RESTRICT: &str = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
+/// Contexte AppArmor des processus de buildkitd (`/proc/<pid>/attr/current`).
+const ENFORCED: &str = "ciphera-buildkitd (enforce)";
 const APP_IMAGE: &str = "docker.io/library/nginx:alpine";
 const WAIT: Duration = Duration::from_secs(180);
 /// Nom complet (point final) : sans lui, busybox nslookup essaie aussi les
@@ -223,20 +228,27 @@ async fn probe(api: &Docker, project: ProjectId, network: Option<&str>, cmd: &[&
     code
 }
 
-/// Build d'un Dockerfile minimal par le socket de buildkitd, avec `buildctl`
-/// de l'image (dans le conteneur, utilisateur de l'image) : image de base
-/// tiree par `ciphera-build`, etape `RUN` executee. Renvoie le code de sortie
-/// et la sortie.
-async fn buildctl_build(api: &Docker, container: &str) -> (i64, String) {
+/// Build du Dockerfile `dockerfile` par le socket de buildkitd, avec
+/// `buildctl` de l'image (dans le conteneur, utilisateur de l'image), sans
+/// cache, sortie des etapes en clair. Renvoie le code de sortie et la sortie.
+async fn buildctl_build(api: &Docker, container: &str, dockerfile: &str) -> (i64, String) {
     let script = "set -e; d=$(mktemp -d); \
-        printf 'FROM docker.io/library/busybox:1.37\\nRUN echo ok > /ok\\n' > \"$d/Dockerfile\"; \
-        buildctl --addr unix:///run/buildkit/buildkitd.sock build \
+        printf '%s\\n' \"$DOCKERFILE\" > \"$d/Dockerfile\"; \
+        buildctl --addr unix:///run/buildkit/buildkitd.sock build --no-cache --progress=plain \
           --frontend dockerfile.v0 --local context=\"$d\" --local dockerfile=\"$d\"";
+    let env = format!("DOCKERFILE={dockerfile}");
+    exec_sh(api, container, script, &[env.as_str()]).await
+}
+
+/// Code de sortie et sortie de `sh -c <script>` dans `container`
+/// (utilisateur et profil AppArmor du conteneur), avec `env`.
+async fn exec_sh(api: &Docker, container: &str, script: &str, env: &[&str]) -> (i64, String) {
     let exec = api
         .create_exec(
             container,
             CreateExecOptions {
                 cmd: Some(vec!["sh", "-c", script]),
+                env: Some(env.to_vec()),
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
                 ..Default::default()
@@ -487,8 +499,65 @@ async fn app_container_cannot_reach_infra_network() {
 
     // BuildKit rootless repond sur son socket et construit (image de base
     // tiree par ciphera-build, etape RUN).
-    let (code, output) = buildctl_build(&api, &bk_name).await;
+    let (code, output) = buildctl_build(
+        &api,
+        &bk_name,
+        "FROM docker.io/library/busybox:1.37\nRUN echo ok > /ok",
+    )
+    .await;
     assert_eq!(code, 0, "build par le socket de buildkitd :\n{output}");
+
+    // Profil AppArmor applique : la ou le noyau restreint les espaces de
+    // noms utilisateur (job agent-docker, Ubuntu 24.04), le job charge le
+    // profil comme install.sh.
+    if Path::new(USERNS_RESTRICT).exists() {
+        assert_eq!(
+            cfg.buildkit_apparmor_profile.as_deref(),
+            Some(infra::BUILDKIT_APPARMOR_PROFILE),
+            "{} absent (voir le job agent-docker)",
+            infra::BUILDKIT_APPARMOR_FILE
+        );
+        let info = api.inspect_container(&bk_name, None).await.unwrap();
+        assert_eq!(
+            info.app_armor_profile.as_deref(),
+            Some(infra::BUILDKIT_APPARMOR_PROFILE)
+        );
+        // Processus du conteneur (ici `docker exec`) sous le profil, en
+        // mode applique.
+        let (code, current) = exec_sh(&api, &bk_name, "cat /proc/self/attr/current", &[]).await;
+        assert_eq!(code, 0, "{current}");
+        assert_eq!(
+            current.trim_matches(|c: char| c.is_whitespace() || c == '\0'),
+            ENFORCED
+        );
+        // Etapes RUN (descendantes de buildkitd) : meme profil.
+        let (code, output) = buildctl_build(
+            &api,
+            &bk_name,
+            "FROM docker.io/library/busybox:1.37\nRUN cat /proc/self/attr/current",
+        )
+        .await;
+        assert_eq!(code, 0, "{output}");
+        assert!(
+            output.contains(ENFORCED),
+            "profil des etapes RUN :\n{output}"
+        );
+        // /proc sensible refuse aux etapes RUN. Sans le profil, la lecture
+        // de /proc/kcore (masque par /dev/null) reussirait. `h` : aide de
+        // sysrq seulement, sans effet si l'ecriture passait.
+        for step in [
+            "head -c 1 /proc/kcore > /dev/null",
+            "echo h > /proc/sysrq-trigger",
+        ] {
+            let (code, output) = buildctl_build(
+                &api,
+                &bk_name,
+                &format!("FROM docker.io/library/busybox:1.37\nRUN {step}"),
+            )
+            .await;
+            assert_ne!(code, 0, "etape RUN acceptee : {step}\n{output}");
+        }
+    }
 
     // Vraie ecoute TCP sur ciphera-internal (busybox httpd).
     foreign_container(

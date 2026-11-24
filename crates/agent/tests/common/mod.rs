@@ -39,6 +39,8 @@ pub struct FakeDocker {
     pub hang: AtomicBool,
     /// `stop` echoue (erreur d'API) tant que vrai.
     pub fail_stop: AtomicBool,
+    /// `run` echoue avec cette erreur d'API (refus au demarrage).
+    pub fail_run: Mutex<Option<String>>,
     /// Conteneurs existants par identifiant.
     pub containers: Mutex<HashMap<String, FakeContainer>>,
     /// Duree de la suppression des images (nettoyage lent).
@@ -126,6 +128,9 @@ impl DockerOps for FakeDocker {
             .unwrap()
             .push(format!("run:{}", spec.name()));
         self.runs.lock().unwrap().push(spec.clone());
+        if let Some(e) = self.fail_run.lock().unwrap().clone() {
+            return Err(DockerError::Api(e));
+        }
         let id = format!("id-{}", spec.name());
         let mut containers = self.containers.lock().unwrap();
         let n = containers.len() + 10;

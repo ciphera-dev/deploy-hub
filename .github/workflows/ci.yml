@@ -91,12 +91,13 @@ jobs:
           persist-credentials: false
       - run: rustup show
       - run: docker info
-      # Comme install.sh : profil AppArmor de buildkitd rootless la ou le
-      # noyau restreint les espaces de noms utilisateur (Ubuntu >= 23.10).
+      # Comme install.sh : profil AppArmor applique de buildkitd rootless la
+      # ou le noyau restreint les espaces de noms utilisateur (Ubuntu >= 23.10).
       - run: |
           if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo install -m 0644 deploy/apparmor/ciphera-buildkitd /etc/apparmor.d/ciphera-buildkitd
             sudo apparmor_parser -r -W /etc/apparmor.d/ciphera-buildkitd
+            sudo grep -qxF 'ciphera-buildkitd (enforce)' /sys/kernel/security/apparmor/profiles
           fi
       # Outils du pipeline de build, memes versions et SHA-256 que
       # install.sh (lus dans le script) : tests de crates/agent/tests/build_it.rs.
@@ -131,6 +132,9 @@ jobs:
       # cache-reader ; frontends limites par buildkitd.toml) ; deploiements (bascule, healthcheck en echec,
       # Compose sur le reseau du projet : crates/agent/tests/deploy_it.rs).
       - run: cargo test -p ciphera-agent -- --ignored --test-threads=1
+      # Refus du profil AppArmor de buildkitd (regle manquante).
+      - if: failure()
+        run: sudo journalctl -k --no-pager | grep -F 'apparmor="DENIED"' | tail -n 200 || true
 
   # Emission ACME HTTP-01 de bout en bout (proxy, socket de pilotage,
   # certificat chiffre, 308) contre Pebble, le serveur ACME de test de
@@ -209,6 +213,8 @@ jobs:
           cargo build --release --locked --target x86_64-unknown-linux-musl
           -p ciphera-agent --example buildkitd_up
       - run: sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 bash install/tests/run-docker-host.sh
+      - if: failure()
+        run: sudo journalctl -k --no-pager | grep -F 'apparmor="DENIED"' | tail -n 200 || true
 
   # Parcours golden-path dans le navigateur (web/e2e/golden-path.spec.ts) sur
   # une instance installee par install.sh sur le runner (systemd + Docker) :

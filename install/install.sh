@@ -42,8 +42,8 @@ UNITS='ciphera.service ciphera-proxy.socket ciphera-proxy.service ciphera-agent.
 # Dossiers des sockets Unix (PostgreSQL, buildkitd), recrees a chaque demarrage.
 TMPFILES=ciphera.tmpfiles.conf
 TMPFILES_DEST=/etc/tmpfiles.d/ciphera.conf
-# Profil AppArmor de buildkitd rootless (seulement si le noyau restreint les
-# espaces de noms utilisateur : Ubuntu >= 23.10).
+# Profil AppArmor applique de buildkitd rootless (seulement si le noyau
+# restreint les espaces de noms utilisateur : Ubuntu >= 23.10, AppArmor 4).
 APPARMOR_PROFILE=ciphera-buildkitd
 APPARMOR_DEST=/etc/apparmor.d/ciphera-buildkitd
 USERNS_RESTRICT=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
@@ -523,9 +523,12 @@ write_updater_config() {
 }
 
 # buildkitd rootless cree des espaces de noms utilisateur. La ou le noyau les
-# refuse aux processus non confines (Ubuntu >= 23.10), un profil AppArmor
-# limite a ce seul droit est charge pour son conteneur ; le reglage global
-# de la machine n'est pas modifie. L'agent l'utilise s'il est present.
+# refuse aux processus sans profil (Ubuntu >= 23.10), le profil AppArmor
+# applique de son conteneur est charge (espaces de noms utilisateur permis,
+# /proc et /sys sensibles refuses : deploy/apparmor/ciphera-buildkitd) ; le
+# reglage global de la machine n'est pas modifie. L'agent l'utilise s'il est
+# present ; s'il n'est pas charge, buildkitd ne demarre pas (aucun repli sans
+# profil).
 install_apparmor_profile() {
 	if [ ! -r "$USERNS_RESTRICT" ]; then
 		return 0

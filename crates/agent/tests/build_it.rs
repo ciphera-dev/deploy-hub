@@ -4,7 +4,9 @@
 //! (`cargo test -p ciphera-agent -- --ignored`). Exigent `buildctl` et
 //! `railpack` dans `/usr/local/lib/ciphera/bin` (versions de install.sh),
 //! `git` et le greffon `docker compose`, et le reseau (images de base,
-//! frontend Railpack, depot public pour le clone).
+//! frontend Railpack, depot public pour le clone). La ou le noyau restreint
+//! les espaces de noms utilisateur, buildkitd tourne sous le profil AppArmor
+//! applique `ciphera-buildkitd` (charge par le job).
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -187,6 +189,16 @@ fn infra_config(tmp: &TempDir) -> InfraConfig {
     // /run/ciphera-agent/buildkit au groupe ciphera-agent) pour que le
     // dossier d'un projet et son socket 0660 soient joignables par ce
     // processus.
+    // Profil AppArmor applique la ou le noyau restreint les espaces de noms
+    // utilisateur (job agent-docker, Ubuntu 24.04) : les builds Dockerfile,
+    // Railpack et Compose passent sous ce profil.
+    if Path::new("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").exists() {
+        assert!(
+            infra::buildkit_apparmor_profile().is_some(),
+            "{} absent (voir le job agent-docker)",
+            infra::BUILDKIT_APPARMOR_FILE
+        );
+    }
     InfraConfig {
         postgres_secret_dir: secret_dir,
         postgres_socket_dir: tmp.subdir("pg", 0o777),
