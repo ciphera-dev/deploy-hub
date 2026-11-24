@@ -1709,7 +1709,7 @@
           }
         ],
         "requestBody": {
-          "description": "Mot de passe actuel (sauf session d'enrolement obligatoire)",
+          "description": "Mot de passe actuel (toute session, enrolement obligatoire compris)",
           "content": {
             "application/json": {
               "schema": {
@@ -1978,7 +1978,7 @@
           }
         ],
         "requestBody": {
-          "description": "Mot de passe actuel (sauf session d'enrolement obligatoire)",
+          "description": "Mot de passe actuel (toute session, enrolement obligatoire compris)",
           "content": {
             "application/json": {
               "schema": {
@@ -4888,7 +4888,7 @@
       },
       "AddFactor": {
         "type": "object",
-        "description": "Corps de `POST /api/me/mfa/totp/start` et de `POST /api/me/webauthn/register/options` :\nmot de passe actuel, redemande avant l'ajout d'un second facteur (inutile\npour une session restreinte a l'enrolement obligatoire).",
+        "description": "Corps de `POST /api/me/mfa/totp/start` et de `POST /api/me/webauthn/register/options` :\nmot de passe actuel, redemande avant l'ajout d'un second facteur (toute\nsession, enrolement obligatoire compris).",
         "required": [
           "current_password"
         ],

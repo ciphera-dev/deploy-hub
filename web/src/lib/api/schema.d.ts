@@ -1579,8 +1579,8 @@ export interface components {
         };
         /**
          * @description Corps de `POST /api/me/mfa/totp/start` et de `POST /api/me/webauthn/register/options` :
-         *     mot de passe actuel, redemande avant l'ajout d'un second facteur (inutile
-         *     pour une session restreinte a l'enrolement obligatoire).
+         *     mot de passe actuel, redemande avant l'ajout d'un second facteur (toute
+         *     session, enrolement obligatoire compris).
          */
         AddFactor: {
             /** Format: password */
@@ -4767,7 +4767,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Mot de passe actuel (sauf session d'enrolement obligatoire) */
+        /** @description Mot de passe actuel (toute session, enrolement obligatoire compris) */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AddFactor"];
@@ -5029,7 +5029,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Mot de passe actuel (sauf session d'enrolement obligatoire) */
+        /** @description Mot de passe actuel (toute session, enrolement obligatoire compris) */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AddFactor"];

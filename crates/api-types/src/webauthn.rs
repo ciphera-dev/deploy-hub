@@ -136,7 +136,7 @@ pub fn webauthn_status() {}
     post,
     path = "/api/me/webauthn/register/options",
     tag = "webauthn",
-    request_body(content = crate::mfa::AddFactor, description = "Mot de passe actuel (sauf session d'enrolement obligatoire)"),
+    request_body(content = crate::mfa::AddFactor, description = "Mot de passe actuel (toute session, enrolement obligatoire compris)"),
     params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
     responses(
         (status = 200, description = "Options de creation", body = WebauthnOptions),

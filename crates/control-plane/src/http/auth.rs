@@ -126,14 +126,14 @@ pub(crate) fn user_agent(headers: &HeaderMap) -> Option<String> {
 
 /// (second facteur configure : TOTP confirmee ou passkey, 2FA imposee par
 /// l'organisation) pour ce compte.
-async fn mfa_state(state: &AppState, user_id: Uuid) -> Result<(bool, bool), ApiError> {
+async fn mfa_state(conn: &mut PgConnection, user_id: Uuid) -> Result<(bool, bool), ApiError> {
     sqlx::query_as(
         "SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1 AND confirmed_at IS NOT NULL) \
                 OR EXISTS (SELECT 1 FROM webauthn_credentials WHERE user_id = $1), \
                 coalesce((SELECT mfa_required FROM instance LIMIT 1 FOR SHARE), false)",
     )
     .bind(user_id)
-    .fetch_one(&state.db)
+    .fetch_one(conn)
     .await
     .map_err(|e| internal("lecture de la double authentification", e))
 }
@@ -228,7 +228,7 @@ async fn login(
         .await
         .map_err(|e| internal("transaction de connexion", e))?;
     let mfa = match user_id.filter(|_| ok) {
-        Some(id) => Some(mfa_state(&state, id).await?),
+        Some(id) => Some(mfa_state(&mut tx, id).await?),
         None => None,
     };
     let Some(user_id) = user_id.filter(|_| ok) else {

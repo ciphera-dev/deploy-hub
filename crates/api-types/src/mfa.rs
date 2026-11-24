@@ -23,8 +23,8 @@ impl fmt::Debug for MfaCode {
 }
 
 /// Corps de `POST /api/me/mfa/totp/start` et de `POST /api/me/webauthn/register/options` :
-/// mot de passe actuel, redemande avant l'ajout d'un second facteur (inutile
-/// pour une session restreinte a l'enrolement obligatoire).
+/// mot de passe actuel, redemande avant l'ajout d'un second facteur (toute
+/// session, enrolement obligatoire compris).
 #[derive(Deserialize, ToSchema)]
 pub struct AddFactor {
     #[schema(value_type = String, format = Password, max_length = 1024)]
@@ -108,7 +108,7 @@ impl fmt::Debug for DisableTotp {
     post,
     path = "/api/me/mfa/totp/start",
     tag = "mfa",
-    request_body(content = AddFactor, description = "Mot de passe actuel (sauf session d'enrolement obligatoire)"),
+    request_body(content = AddFactor, description = "Mot de passe actuel (toute session, enrolement obligatoire compris)"),
     params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
     responses(
         (status = 200, description = "Graine creee, a confirmer", body = TotpStart),
