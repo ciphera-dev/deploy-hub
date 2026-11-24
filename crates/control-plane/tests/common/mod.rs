@@ -213,7 +213,7 @@ pub async fn state() -> (AppState, TestDb) {
             github: Arc::new(control_plane::connectors::github::app::GithubClient::new().unwrap()),
             logs: control_plane::domain::logs::hub::LogHub::new(agents.clone(), redaction),
             agents,
-            dns: Arc::new(control_plane::domain::domains::SystemResolver),
+            dns: Arc::new(PublicDns),
             panel: control_plane::domain::domains::panel::PanelSwitch::default(),
             ip_allowlist: Default::default(),
             access: Default::default(),
@@ -348,4 +348,19 @@ pub async fn tls_request(addr: SocketAddr, cert: &Cert, method: &str, path: &str
     // Le serveur coupe parfois sans close_notify : la fin brutale apres les donnees est acceptee.
     let _ = tls.read_to_end(&mut raw).await;
     parse(&raw)
+}
+
+/// Resolveur des tests : aucun appel reseau, tout nom pointe vers une
+/// adresse publique de documentation.
+pub struct PublicDns;
+
+impl control_plane::domain::domains::DnsResolver for PublicDns {
+    fn resolve<'a>(
+        &'a self,
+        _host: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send + 'a>,
+    > {
+        Box::pin(async { Ok(vec!["203.0.113.10".parse().unwrap()]) })
+    }
 }

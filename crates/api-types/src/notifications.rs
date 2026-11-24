@@ -89,7 +89,7 @@ pub fn get_notifications() {}
         (status = 200, description = "Reglages enregistres", body = NotificationSettings),
         (status = 401, description = "Pas de session complete"),
         (status = 403, description = "Proprietaire seulement, ou jeton CSRF absent ou invalide"),
-        (status = 422, description = "`validation_failed` (hote, port, mode TLS, identifiants, expediteur, mot de passe a ressaisir) ou `smtp_host_private` (hote local ou prive)"),
+        (status = 422, description = "`validation_failed` (hote, port, mode TLS, identifiants, expediteur, mot de passe a ressaisir), `smtp_host_private` (hote local ou prive) ou `smtp_host_unresolved` (nom non resolu)"),
     )
 )]
 #[allow(dead_code)]

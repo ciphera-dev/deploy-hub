@@ -284,7 +284,7 @@ async fn refuse_private_host(state: &AppState, host: &str) -> Result<(), ApiErro
         return Err(refused());
     }
     if let Ok(ip) = bare.parse::<IpAddr>() {
-        return if is_private_ip(ip) {
+        return if mail::is_private_ip(ip) {
             Err(refused())
         } else {
             Ok(())
@@ -296,36 +296,18 @@ async fn refuse_private_host(state: &AppState, host: &str) -> Result<(), ApiErro
     // Nom : chaque adresse resolue doit etre publique. Un nom inconnu n'a
     // aucune adresse (le resolveur renvoie alors une liste vide).
     match state.dns.resolve(bare).await {
-        Ok(ips) if ips.iter().any(|ip| is_private_ip(*ip)) => Err(refused()),
-        Ok(_) => Ok(()),
-        Err(e) => {
-            tracing::warn!(error = %e, "resolution du serveur SMTP impossible");
-            Err(invalid(
-                "Serveur SMTP : résolution du nom impossible, réessayez.",
+        Ok(ips) if ips.iter().any(|ip| mail::is_private_ip(*ip)) => Err(refused()),
+        Ok(ips) if !ips.is_empty() => Ok(()),
+        // Nom inconnu ou panne du resolveur : pas de serveur utilisable.
+        outcome => {
+            if let Err(e) = outcome {
+                tracing::warn!(error = %e, "resolution du serveur SMTP impossible");
+            }
+            Err(ApiError::new(
+                422,
+                "smtp_host_unresolved",
+                "Serveur SMTP : le nom ne se résout pas (vérifiez l'orthographe ou réessayez).",
             ))
-        }
-    }
-}
-
-/// Adresse locale, privee, lien-local, ULA ou non routable.
-fn is_private_ip(ip: IpAddr) -> bool {
-    match ip.to_canonical() {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || o[0] == 0
-                || (o[0] == 100 && (o[1] & 0xc0) == 64)
-        }
-        IpAddr::V6(v6) => {
-            let seg = v6.segments();
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || (seg[0] & 0xfe00) == 0xfc00
-                || (seg[0] & 0xffc0) == 0xfe80
         }
     }
 }
@@ -338,7 +320,7 @@ async fn notify_owners(
     actor: &str,
     new: (&str, u16, &str),
 ) {
-    let Some(mailer) = Mailer::from_settings(previous) else {
+    let Some(mailer) = Mailer::from_settings(previous, state.dns.clone()) else {
         tracing::info!("reglages SMTP modifies : ancien transport inactif, aucun avis");
         return;
     };
@@ -367,29 +349,6 @@ async fn notify_owners(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn private_addresses_are_recognised() {
-        for ip in [
-            "127.0.0.1",
-            "10.0.0.1",
-            "172.16.5.4",
-            "192.168.0.1",
-            "169.254.1.1",
-            "0.0.0.0",
-            "100.64.0.1",
-            "::1",
-            "::",
-            "fd12::1",
-            "fe80::1",
-            "::ffff:10.0.0.1",
-        ] {
-            assert!(is_private_ip(ip.parse().unwrap()), "{ip}");
-        }
-        for ip in ["8.8.8.8", "93.184.216.34", "2606:4700::1111", "172.32.0.1"] {
-            assert!(!is_private_ip(ip.parse().unwrap()), "{ip}");
-        }
-    }
 
     #[test]
     fn hosts_are_dns_names() {

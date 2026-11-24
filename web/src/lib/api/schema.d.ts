@@ -7009,7 +7009,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `validation_failed` (hote, port, mode TLS, identifiants, expediteur, mot de passe a ressaisir) ou `smtp_host_private` (hote local ou prive) */
+            /** @description `validation_failed` (hote, port, mode TLS, identifiants, expediteur, mot de passe a ressaisir), `smtp_host_private` (hote local ou prive) ou `smtp_host_unresolved` (nom non resolu) */
             422: {
                 headers: {
                     [name: string]: unknown;

@@ -843,12 +843,15 @@ async fn smtp_requires_tls() {
         from_address: "ciphera@example.com".into(),
         from_name: "Ciphera".into(),
     };
-    assert!(Mailer::from_settings(&settings).is_some());
+    assert!(Mailer::from_settings(&settings, Arc::new(common::PublicDns)).is_some());
     settings.tls = TlsMode::Tls;
     settings.port = 465;
-    assert!(Mailer::from_settings(&settings).is_some());
+    assert!(Mailer::from_settings(&settings, Arc::new(common::PublicDns)).is_some());
     settings.enabled = false;
-    assert!(Mailer::from_settings(&settings).is_none(), "desactive");
+    assert!(
+        Mailer::from_settings(&settings, Arc::new(common::PublicDns)).is_none(),
+        "desactive"
+    );
 }
 
 #[tokio::test]
@@ -1168,7 +1171,11 @@ impl control_plane::domain::domains::DnsResolver for FixedDns {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send + 'a>,
     > {
-        let found = if host == self.0 { vec![self.1] } else { vec![] };
+        let found = vec![if host == self.0 {
+            self.1
+        } else {
+            "203.0.113.10".parse().unwrap()
+        }];
         Box::pin(async move { Ok(found) })
     }
 }
@@ -1254,6 +1261,77 @@ async fn smtp_host_private_refused() {
     assert_eq!(count(&state, "SELECT count(*) FROM smtp_settings").await, 0);
     // Un nom public reste accepte.
     configure_smtp(&state, &owner).await;
+}
+
+/// Resolveur qui ne connait aucun nom.
+struct EmptyDns;
+
+impl control_plane::domain::domains::DnsResolver for EmptyDns {
+    fn resolve<'a>(
+        &'a self,
+        _host: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send + 'a>,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+/// Resolveur en panne.
+struct FailingDns;
+
+impl control_plane::domain::domains::DnsResolver for FailingDns {
+    fn resolve<'a>(
+        &'a self,
+        _host: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send + 'a>,
+    > {
+        Box::pin(async { Err(std::io::Error::other("SERVFAIL")) })
+    }
+}
+
+#[tokio::test]
+async fn smtp_host_unresolved_or_dns_failure_refused() {
+    let (mut state, _pg) = common::state().await;
+    user(&state, "owner@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    // Nom inconnu (aucune adresse), puis panne du resolveur.
+    state.dns = Arc::new(EmptyDns);
+    let r = as_user(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        Some(smtp_body()),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    assert!(r.raw.contains("smtp_host_unresolved"), "{}", r.raw);
+    state.dns = Arc::new(FailingDns);
+    let r = as_user(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        Some(smtp_body()),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    assert!(r.raw.contains("smtp_host_unresolved"), "{}", r.raw);
+    assert_eq!(count(&state, "SELECT count(*) FROM smtp_settings").await, 0);
+    // Une adresse litterale publique n'a pas besoin du resolveur.
+    let mut body = smtp_body();
+    body["host"] = json!("203.0.113.77");
+    let r = as_user(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        Some(body),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
 }
 
 #[tokio::test]
