@@ -70,6 +70,14 @@ fn proxy_is_hardened_and_may_only_bind_low_ports() {
     );
     // Plafond de connexions du proxy (conn_limit::MAX_CONNECTIONS) tenable.
     assert_eq!(values(&text, "LimitNOFILE"), vec!["65536"]);
+    // Ressources plafonnees, ecoutes limitees a 80 et 443.
+    assert_eq!(values(&text, "MemoryMax"), vec!["2G"]);
+    assert_eq!(values(&text, "TasksMax"), vec!["4096"]);
+    assert_eq!(values(&text, "SocketBindAllow"), vec!["tcp:80", "tcp:443"]);
+    assert_eq!(values(&text, "SocketBindDeny"), vec!["any"]);
+    assert_eq!(values(&text, "ProcSubset"), vec!["pid"]);
+    assert_eq!(values(&text, "RemoveIPC"), vec!["yes"]);
+    assert_eq!(values(&text, "PrivateIPC"), vec!["yes"]);
 }
 
 #[test]

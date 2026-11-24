@@ -23,6 +23,11 @@ Environment=CIPHERA_PANEL_PORT=8443
 # plafond de 16 384 connexions clientes du proxy (conn_limit.rs).
 LimitNOFILE=65536
 
+# Plafonds de ressources : une rafale de connexions ou de requetes ne peut
+# pas priver le noeud de memoire ni de processus.
+MemoryMax=2G
+TasksMax=4096
+
 # Certificats ACME et compte ACME chiffres (age) dans /var/lib/ciphera-proxy,
 # avec l'identite age.key (0600) du seul compte ciphera-proxy. Annuaire :
 # Let's Encrypt (production) par defaut ; CIPHERA_PROXY_ACME_DIRECTORY=staging
@@ -51,6 +56,15 @@ RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Seules ecoutes reseau : 80 et 443. Les connexions sortantes (amonts,
+# ACME) ne lient aucun port ; le socket de pilotage est un socket Unix
+# transmis par systemd.
+SocketBindAllow=tcp:80
+SocketBindAllow=tcp:443
+SocketBindDeny=any
+ProcSubset=pid
+RemoveIPC=yes
+PrivateIPC=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged

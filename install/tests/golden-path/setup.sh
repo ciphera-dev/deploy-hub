@@ -166,8 +166,10 @@ printf 'CIPHERA_GITHUB_API_URL=http://%s\n' "$api_addr" >>/etc/ciphera/ciphera.e
 install -d -m 0755 /etc/systemd/system/ciphera-proxy.service.d
 cat >/etc/systemd/system/ciphera-proxy.service.d/e2e.conf <<'EOF'
 # Parcours golden-path : 127.0.0.2:443 reste libre pour le GitHub simule ;
-# 5002 est le port ou Pebble valide HTTP-01.
+# 5002 est le port ou Pebble valide HTTP-01 (ecoute autorisee en plus de
+# 80 et 443 : SocketBindDeny=any dans l'unite).
 [Service]
+SocketBindAllow=tcp:5002
 Environment=CIPHERA_PROXY_HTTP=127.0.0.1:80,127.0.0.1:5002
 Environment=CIPHERA_PROXY_HTTPS=127.0.0.1:443
 Environment=CIPHERA_PROXY_ACME_DIRECTORY=https://localhost:14000/dir
