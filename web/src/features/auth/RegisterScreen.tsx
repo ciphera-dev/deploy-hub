@@ -28,8 +28,10 @@ export function RegisterScreen({ onCreated, onSignIn, onSignedIn }: RegisterScre
         <AccountForm
           title="Créer un compte"
           submitLabel="Créer le compte"
+          withoutPassword
+          intro="Un lien de confirmation sera envoyé à cette adresse : vous y choisirez votre mot de passe."
           onSubmit={async (values) => {
-            const result = await register(values);
+            const result = await register({ name: values.name, email: values.email });
             if (result.ok) {
               onCreated();
               return undefined;

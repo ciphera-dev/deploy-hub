@@ -21,6 +21,10 @@ pub struct TeamMember {
     pub last_active_at: Option<i64>,
     /// Creation du compte, en secondes depuis l'epoque Unix.
     pub created_at: i64,
+    /// Inscription ouverte dont l'adresse n'est pas encore confirmee : le
+    /// compte ne peut pas se connecter, son role et sa reinitialisation sont
+    /// refuses (409 `account_pending`).
+    pub pending: bool,
 }
 
 /// Corps de `PATCH /api/team/members/{id}`.

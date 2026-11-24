@@ -10,7 +10,7 @@ const PASSWORD: &str = "correct horse battery staple";
 
 async fn user(state: &AppState, email: &str, role: &str) {
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, $4, 'Test')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, $4, 'Test', now())",
     )
     .bind(Uuid::new_v4())
     .bind(email)

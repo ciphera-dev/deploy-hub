@@ -290,7 +290,7 @@ async fn token_file_deleted_after_complete() {
 async fn token_invalid_as_soon_as_a_user_exists_even_if_file_lingers() {
     let env = env().await;
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role) VALUES ($1, 'x@example.com', 'h', 'owner')",
+        "INSERT INTO users (id, email, password_hash, role, email_verified_at) VALUES ($1, 'x@example.com', 'h', 'owner', now())",
     )
     .bind(uuid::Uuid::new_v4())
     .execute(&env.state.db)

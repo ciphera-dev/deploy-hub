@@ -10,7 +10,7 @@ import { canManage, grantableRoles, TeamSection } from "./Team";
 
 const ID = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
 const NOW = Math.floor(Date.now() / 1000);
-const member = (n: number, name: string, role: string) => ({ id: ID(n), name, email: `${name.toLowerCase()}@example.com`, role, two_factor: n % 2 === 0, created_at: NOW - 1000, last_active_at: n === 3 ? null : NOW - 120 });
+const member = (n: number, name: string, role: string) => ({ id: ID(n), name, email: `${name.toLowerCase()}@example.com`, role, two_factor: n % 2 === 0, created_at: NOW - 1000, last_active_at: n === 3 ? null : NOW - 120, pending: n === 4 });
 
 let me: { id: string; role: string; name: string; email: string };
 let members: ReturnType<typeof member>[];
@@ -91,6 +91,14 @@ it("affiche les membres, les invitations et les onglets v0.2 désactivés", asyn
   expect(screen.getByRole("tab", { name: /Rôles et permissions/ })).toBeDisabled();
   expect(screen.getByRole("tab", { name: /Journal d'accès/ })).toBeDisabled();
   expect(screen.getAllByText("v0.2")).toHaveLength(2);
+});
+
+it("compte en attente : badge, pas de changement de rôle", async () => {
+  mount();
+  await screen.findByText("Bruno");
+  expect(screen.getAllByText("En attente")).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "Changer le rôle de David" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Changer le rôle de Bruno" })).toBeInTheDocument();
 });
 
 it("ne propose aucune action sur sa propre ligne", async () => {

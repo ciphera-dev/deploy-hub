@@ -360,8 +360,8 @@ async fn try_create(
         .await?;
     let user_id = Uuid::new_v4();
     let inserted = sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) \
-         SELECT $1, $2, $3, 'owner', $4 WHERE NOT EXISTS (SELECT 1 FROM users)",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) \
+         SELECT $1, $2, $3, 'owner', $4, now() WHERE NOT EXISTS (SELECT 1 FROM users)",
     )
     .bind(user_id)
     .bind(&v.email)

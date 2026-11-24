@@ -52,7 +52,7 @@
         "tags": [
           "auth"
         ],
-        "summary": "Confirme l'adresse : remplace l'adresse du compte (changement) ou active\nle compte (inscription). Un changement ferme les autres sessions du compte.",
+        "summary": "Confirme l'adresse : remplace l'adresse du compte (changement) ou active\nle compte avec le mot de passe choisi (inscription). Un changement ferme les\nautres sessions du compte.",
         "operationId": "confirm_email_verification",
         "parameters": [
           {
@@ -65,6 +65,23 @@
             }
           }
         ],
+        "requestBody": {
+          "description": "Obligatoire pour une inscription (motif `signup`)",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ConfirmEmailVerification"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "204": {
             "description": "Adresse confirmee ; le lien est consomme"
@@ -77,6 +94,9 @@
           },
           "410": {
             "description": "`email_verification_expired`"
+          },
+          "422": {
+            "description": "Mot de passe absent ou refuse par la politique (inscription)"
           },
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
@@ -500,7 +520,7 @@
         "tags": [
           "auth"
         ],
-        "summary": "Inscription publique (role Lecteur), si l'instance l'autorise. Le compte\nreste en attente jusqu'a la confirmation du lien envoye a l'adresse ;\nmeme reponse que l'adresse soit deja connue ou non.",
+        "summary": "Inscription publique (role Lecteur), si l'instance l'autorise. Nom et\nadresse seulement : le mot de passe se choisit en ouvrant le lien envoye a\nl'adresse (preuve de possession de la boite). Le compte reste en attente\njusqu'a la confirmation ; meme reponse que l'adresse soit deja connue ou non.",
         "operationId": "register",
         "requestBody": {
           "content": {
@@ -523,7 +543,7 @@
             "description": "`smtp_required` : inscription impossible sans envoi d'e-mails"
           },
           "422": {
-            "description": "Nom, e-mail ou mot de passe invalide"
+            "description": "Nom ou e-mail invalide"
           },
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
@@ -5169,6 +5189,22 @@
           }
         }
       },
+      "ConfirmEmailVerification": {
+        "type": "object",
+        "description": "Corps de `POST /api/auth/email-verification/{token}/confirm` : mot de passe\ndu compte, exige (12 a 1024 caracteres) pour le motif `signup`, ignore\nsinon.",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "format": "password",
+            "maxLength": 1024,
+            "minLength": 12
+          }
+        },
+        "additionalProperties": false
+      },
       "ConfirmPanelDomain": {
         "type": "object",
         "description": "Corps (facultatif) de `POST /api/settings/panel-domain/confirm`.",
@@ -7321,8 +7357,7 @@
         "description": "Corps de `POST /api/auth/register`.",
         "required": [
           "name",
-          "email",
-          "password"
+          "email"
         ],
         "properties": {
           "email": {
@@ -7330,12 +7365,6 @@
           },
           "name": {
             "type": "string"
-          },
-          "password": {
-            "type": "string",
-            "format": "password",
-            "maxLength": 1024,
-            "minLength": 12
           }
         }
       },
@@ -7934,7 +7963,8 @@
           "email",
           "role",
           "two_factor",
-          "created_at"
+          "created_at",
+          "pending"
         ],
         "properties": {
           "created_at": {
@@ -7958,6 +7988,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "pending": {
+            "type": "boolean",
+            "description": "Inscription ouverte dont l'adresse n'est pas encore confirmee : le\ncompte ne peut pas se connecter, son role et sa reinitialisation sont\nrefuses (409 `account_pending`)."
           },
           "role": {
             "type": "string",

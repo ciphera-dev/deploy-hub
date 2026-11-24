@@ -55,8 +55,8 @@ async fn initial_migration_creates_the_tables() {
     }
     // Le role est contraint.
     let bad = sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role) \
-         VALUES (gen_random_uuid(), 'a@b.c', 'x', 'root')",
+        "INSERT INTO users (id, email, password_hash, role, email_verified_at) \
+         VALUES (gen_random_uuid(), 'a@b.c', 'x', 'root', now())",
     )
     .execute(&state.db)
     .await;

@@ -14,6 +14,8 @@ CREATE TABLE email_verifications (
 CREATE INDEX email_verifications_user_id_idx ON email_verifications (user_id);
 
 -- NULL : adresse non verifiee (inscription ouverte en attente), connexion
--- refusee. Les comptes existants et ceux crees par l'assistant ou par une
--- invitation (lien recu a cette adresse) prennent la date de creation par defaut.
-ALTER TABLE users ADD COLUMN email_verified_at timestamptz DEFAULT now();
+-- refusee. Les comptes existants sont verifies a leur date de creation. Pas de
+-- valeur par defaut : chaque chemin de creation de compte (assistant,
+-- invitation, inscription) dit explicitement s'il est verifie.
+ALTER TABLE users ADD COLUMN email_verified_at timestamptz;
+UPDATE users SET email_verified_at = created_at;

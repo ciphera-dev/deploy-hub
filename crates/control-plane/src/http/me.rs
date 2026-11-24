@@ -435,7 +435,7 @@ async fn update(
             )
             .await
             .map_err(|e| internal("creation du lien de verification", e))?;
-            verification = Some((email.clone(), token));
+            verification = token.map(|token| (email.clone(), token));
         }
         audit(
             &mut tx,

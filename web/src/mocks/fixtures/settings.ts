@@ -32,9 +32,9 @@ export const NOTIFICATIONS: S["NotificationSettings"] = {
 const NOW = Math.floor(Date.now() / 1000);
 
 export const TEAM_MEMBERS: S["TeamMember"][] = [
-  { id: "00000000-0000-4000-8000-0000000000a1", name: "Alex Martin", email: "alex@ciphera.com", role: "owner", two_factor: true, created_at: NOW - 86_400 * 300, last_active_at: NOW },
-  { id: "00000000-0000-4000-8000-0000000000a2", name: "Camille Roux", email: "camille@ciphera.com", role: "admin", two_factor: true, created_at: NOW - 86_400 * 200, last_active_at: NOW - 3_600 },
-  { id: "00000000-0000-4000-8000-0000000000a3", name: "Nora Kaci", email: "nora@ciphera.com", role: "developer", two_factor: false, created_at: NOW - 86_400 * 40, last_active_at: NOW - 86_400 * 2 },
+  { id: "00000000-0000-4000-8000-0000000000a1", name: "Alex Martin", email: "alex@ciphera.com", role: "owner", two_factor: true, created_at: NOW - 86_400 * 300, last_active_at: NOW, pending: false },
+  { id: "00000000-0000-4000-8000-0000000000a2", name: "Camille Roux", email: "camille@ciphera.com", role: "admin", two_factor: true, created_at: NOW - 86_400 * 200, last_active_at: NOW - 3_600, pending: false },
+  { id: "00000000-0000-4000-8000-0000000000a3", name: "Nora Kaci", email: "nora@ciphera.com", role: "developer", two_factor: false, created_at: NOW - 86_400 * 40, last_active_at: NOW - 86_400 * 2, pending: false },
 ];
 
 export const TEAM_INVITATIONS: S["PendingInvitation"][] = [

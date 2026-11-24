@@ -261,13 +261,15 @@ export async function fetchEmailVerification(token: string): Promise<EmailVerifi
   return { ok: false, reason: "unavailable" };
 }
 
-export type EmailConfirmResult = { ok: true } | { ok: false; reason: "invalid" | "expired" | "taken" | "unavailable" };
+export type EmailConfirmResult =
+  | { ok: true }
+  | { ok: false; reason: "invalid" | "expired" | "taken" | "rejected" | "rate_limited" | "unavailable"; message?: string; retryAfter?: number };
 
-/** Confirme l'adresse : active le compte (inscription) ou remplace l'adresse et ferme les autres sessions (changement). */
-export async function confirmEmailVerification(token: string): Promise<EmailConfirmResult> {
+/** Confirme l'adresse : active le compte avec le mot de passe choisi (inscription) ou remplace l'adresse et ferme les autres sessions (changement). */
+export async function confirmEmailVerification(token: string, password?: string): Promise<EmailConfirmResult> {
   let result;
   try {
-    result = await api.POST("/api/auth/email-verification/{token}/confirm", { params: { path: { token } } });
+    result = await api.POST("/api/auth/email-verification/{token}/confirm", { params: { path: { token } }, ...(password === undefined ? {} : { body: { password } }) });
   } catch {
     return { ok: false, reason: "unavailable" };
   }
@@ -276,6 +278,8 @@ export async function confirmEmailVerification(token: string): Promise<EmailConf
   if (status === 404) return { ok: false, reason: "invalid" };
   if (status === 410) return { ok: false, reason: "expired" };
   if (status === 409) return { ok: false, reason: "taken" };
+  if (status === 422) return { ok: false, reason: "rejected", message: errorMessage(result.error) };
+  if (status === 429) return { ok: false, reason: "rate_limited", retryAfter: retryAfterOf(result.response) };
   return { ok: false, reason: "unavailable" };
 }
 

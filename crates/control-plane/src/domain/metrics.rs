@@ -237,6 +237,9 @@ pub async fn run_rollup(state: &AppState, _job: Job) -> Result<(), HandlerError>
         crate::domain::notifications::sweep(&state.db, now).await?;
         crate::domain::notifications::purge(&state.db, now).await
     };
+    if let Err(e) = crate::http::email_verification::purge_pending(&state.db).await {
+        tracing::warn!(error = %e, "purge des comptes en attente impossible");
+    }
     notifications.await.map_err(|e| {
         tracing::error!(error = %e, "entretien des notifications impossible");
         HandlerError::retry("entretien des notifications : base de donnees indisponible")

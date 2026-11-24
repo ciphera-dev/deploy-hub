@@ -17,7 +17,7 @@ const NEW_PASSWORD: &str = "une phrase de passe assez longue";
 
 async fn user(state: &AppState, email: &str, role: &str) {
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, $4, 'Test')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, $4, 'Test', now())",
     )
     .bind(Uuid::new_v4())
     .bind(email)
@@ -437,11 +437,20 @@ async fn register(state: &AppState, name: &str, email: &str, peer: &str) -> Repl
         "/api/auth/register",
         Req {
             peer: Some(peer),
-            body: Some(json!({ "name": name, "email": email, "password": NEW_PASSWORD })),
+            body: Some(json!({ "name": name, "email": email })),
             ..Req::default()
         },
     )
     .await
+}
+
+/// Rend le dernier envoi assez ancien pour que le delai minimal entre deux
+/// liens ne s'applique plus.
+async fn age_links(state: &AppState) {
+    sqlx::query("UPDATE email_verifications SET created_at = created_at - interval '5 minutes'")
+        .execute(&state.db)
+        .await
+        .unwrap();
 }
 
 async fn mails_to(outbox: &Outbox, to: &str, n: usize) -> Vec<OutgoingMail> {
@@ -473,14 +482,25 @@ fn verification_token(mail: &OutgoingMail) -> String {
     token
 }
 
-async fn confirm_email(state: &AppState, token: &str) -> Reply {
+async fn confirm_with(state: &AppState, token: &str, password: Option<&str>) -> Reply {
     call(
         state,
         "POST",
         &format!("/api/auth/email-verification/{token}/confirm"),
-        Req::default(),
+        Req {
+            body: password.map(|p| json!({ "password": p })),
+            ..Req::default()
+        },
     )
     .await
+}
+
+async fn users_with(state: &AppState, email: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM users WHERE lower(email) = lower($1)")
+        .bind(email)
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -512,7 +532,12 @@ async fn register_when_enabled_creates_pending_viewer() {
     .await;
     assert_eq!(info.status, 200, "{}", info.raw);
     assert_eq!(info.json()["purpose"], "signup");
-    assert_eq!(confirm_email(&state, &token).await.status, 204);
+    assert_eq!(
+        confirm_with(&state, &token, Some(NEW_PASSWORD))
+            .await
+            .status,
+        204
+    );
     let verified: bool = sqlx::query_scalar(
         "SELECT email_verified_at IS NOT NULL FROM users WHERE email = 'eve@example.com'",
     )
@@ -521,7 +546,9 @@ async fn register_when_enabled_creates_pending_viewer() {
     .unwrap();
     assert!(verified);
     assert_eq!(
-        confirm_email(&state, &token).await.status,
+        confirm_with(&state, &token, Some(NEW_PASSWORD))
+            .await
+            .status,
         404,
         "usage unique"
     );
@@ -551,30 +578,110 @@ async fn register_same_response_existing_email() {
         200
     );
     assert_eq!(mails_to(&outbox, "eve@example.com", 1).await.len(), 1);
-    assert!(mails_to(&outbox, "Nora@Example.com", 0).await.is_empty());
     assert!(mails_to(&outbox, "nora@example.com", 0).await.is_empty());
-    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
-        .fetch_one(&state.db)
-        .await
-        .unwrap();
-    assert_eq!(users, 2);
+    assert_eq!(users_with(&state, "eve@example.com").await, 1);
+    assert_eq!(users_with(&state, "nora@example.com").await, 1);
+}
 
-    // Inscription non confirmee refaite : un seul compte, nouveau lien, l'ancien tombe.
+#[tokio::test]
+async fn reregistration_cannot_hijack_and_replaces_the_old_link() {
+    let (state, _pg, outbox) = signup_env().await;
+    // La victime s'inscrit, puis un tiers refait l'inscription de la meme adresse.
+    let r = register(&state, "Victime", "eve@example.com", "198.51.100.1:1000").await;
+    assert_eq!(r.status, 202, "{}", r.raw);
     let first = verification_token(&mails_to(&outbox, "eve@example.com", 1).await[0]);
-    let again = register(&state, "Eve B", "eve@example.com", "198.51.100.1:1000").await;
-    assert_eq!(again.status, 202, "{}", again.raw);
-    assert_eq!(again.raw, fresh.raw);
+    let password_before: String =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE email = 'eve@example.com'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+
+    // Delai minimal entre deux liens : meme reponse, rien n'est envoye, l'ancien lien vaut toujours.
+    let again = register(&state, "Tiers", "eve@example.com", "198.51.100.2:1000").await;
+    assert_eq!(again.raw, r.raw);
+    assert_eq!(mails_to(&outbox, "eve@example.com", 1).await.len(), 1);
+    let info = call(
+        &state,
+        "GET",
+        &format!("/api/auth/email-verification/{first}"),
+        Req::default(),
+    )
+    .await;
+    assert_eq!(info.status, 200, "{}", info.raw);
+
+    // Apres le delai : nouveau lien, l'ancien tombe.
+    age_links(&state).await;
+    let again = register(&state, "Tiers", "eve@example.com", "198.51.100.2:1000").await;
+    assert_eq!(again.raw, r.raw);
     let mails = mails_to(&outbox, "eve@example.com", 2).await;
     assert_eq!(mails.len(), 2);
     let second = verification_token(&mails[1]);
     assert_ne!(first, second);
-    assert_eq!(confirm_email(&state, &first).await.status, 404);
-    assert_eq!(confirm_email(&state, &second).await.status, 204);
-    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
-        .fetch_one(&state.db)
-        .await
-        .unwrap();
-    assert_eq!(users, 2);
+    assert_eq!(
+        confirm_with(&state, &first, Some(NEW_PASSWORD))
+            .await
+            .status,
+        404,
+        "l'ancien lien est invalide"
+    );
+    // Ni le nom ni le mot de passe du compte en attente n'ont ete repris par le tiers.
+    let (name, password_after): (String, String) =
+        sqlx::query_as("SELECT name, password_hash FROM users WHERE email = 'eve@example.com'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(name, "Victime");
+    assert_eq!(password_after, password_before);
+    assert_eq!(users_with(&state, "eve@example.com").await, 1);
+
+    // Seul le titulaire de la boite, avec le nouveau lien, fixe le mot de passe.
+    assert_eq!(
+        confirm_with(&state, &second, Some(NEW_PASSWORD))
+            .await
+            .status,
+        204
+    );
+    assert_eq!(
+        login_as(&state, "eve@example.com", NEW_PASSWORD)
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        login_as(&state, "eve@example.com", "mot de passe du tiers inconnu")
+            .await
+            .status,
+        401
+    );
+}
+
+#[tokio::test]
+async fn confirm_needs_a_valid_password() {
+    let (state, _pg, outbox) = signup_env().await;
+    register(&state, "Eve", "eve@example.com", "198.51.100.1:1000").await;
+    let token = verification_token(&mails_to(&outbox, "eve@example.com", 1).await[0]);
+    // Sans mot de passe, ou trop court : refus, le lien reste utilisable.
+    let r = confirm_with(&state, &token, None).await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    let r = confirm_with(&state, &token, Some("court")).await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    let verified: bool = sqlx::query_scalar(
+        "SELECT email_verified_at IS NOT NULL FROM users WHERE email = 'eve@example.com'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert!(!verified);
+    assert_eq!(
+        login_as(&state, "eve@example.com", "court").await.status,
+        401
+    );
+    assert_eq!(
+        confirm_with(&state, &token, Some(NEW_PASSWORD))
+            .await
+            .status,
+        204
+    );
 }
 
 #[tokio::test]
@@ -582,17 +689,29 @@ async fn unverified_signup_cannot_login() {
     let (state, _pg, outbox) = signup_env().await;
     let r = register(&state, "Eve", "eve@example.com", "198.51.100.1:1000").await;
     assert_eq!(r.status, 202, "{}", r.raw);
-
+    // Aucun mot de passe n'existe avant la confirmation.
+    let r = login_as(&state, "eve@example.com", NEW_PASSWORD).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    // Meme avec un hachage connu, un compte non confirme n'ouvre pas de session.
+    sqlx::query("UPDATE users SET password_hash = $1 WHERE email = 'eve@example.com'")
+        .bind(password::hash(NEW_PASSWORD).unwrap())
+        .execute(&state.db)
+        .await
+        .unwrap();
     let r = login_as(&state, "eve@example.com", NEW_PASSWORD).await;
     assert_eq!(r.status, 403, "{}", r.raw);
     assert_eq!(r.code(), "email_not_verified");
     assert!(r.set_cookie.is_none());
-    // Mot de passe faux : refus ordinaire, sans reveler l'etat du compte.
     let r = login_as(&state, "eve@example.com", "mauvais mot de passe").await;
     assert_eq!(r.status, 401, "{}", r.raw);
 
     let token = verification_token(&mails_to(&outbox, "eve@example.com", 1).await[0]);
-    assert_eq!(confirm_email(&state, &token).await.status, 204);
+    assert_eq!(
+        confirm_with(&state, &token, Some(NEW_PASSWORD))
+            .await
+            .status,
+        204
+    );
     let r = login_as(&state, "eve@example.com", NEW_PASSWORD).await;
     assert_eq!(r.status, 200, "{}", r.raw);
 }
@@ -608,12 +727,100 @@ async fn register_requires_smtp() {
     let r = register(&state, "Eve", "eve@example.com", "198.51.100.1:1000").await;
     assert_eq!(r.status, 409, "{}", r.raw);
     assert_eq!(r.code(), "smtp_required");
-    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+    assert_eq!(users_with(&state, "eve@example.com").await, 0);
+}
+
+#[tokio::test]
+async fn forgot_password_for_pending_account_sends_nothing() {
+    let (state, _pg, outbox) = signup_env().await;
+    register(&state, "Eve", "eve@example.com", "198.51.100.1:1000").await;
+    assert_eq!(mails_to(&outbox, "eve@example.com", 1).await.len(), 1);
+    let r = call(
+        &state,
+        "POST",
+        "/api/auth/password/forgot",
+        Req {
+            body: Some(json!({ "email": "eve@example.com" })),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        mails_to(&outbox, "eve@example.com", 0).await.len(),
+        1,
+        "aucun lien de reinitialisation"
+    );
+    let resets: i64 = sqlx::query_scalar("SELECT count(*) FROM password_resets")
         .fetch_one(&state.db)
         .await
         .unwrap();
-    assert_eq!(users, 0);
+    assert_eq!(resets, 0);
 }
+
+#[tokio::test]
+async fn invitation_replaces_pending_account() {
+    let (state, _pg, _outbox) = signup_env().await;
+    user(&state, "owner@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    register(&state, "Intrus", "eve@example.com", "198.51.100.1:1000").await;
+    assert_eq!(users_with(&state, "eve@example.com").await, 1);
+
+    let r = invite(
+        &state,
+        &owner,
+        json!({ "email": "eve@example.com", "role": "developer" }),
+    )
+    .await;
+    let token = token_of(&r);
+    assert_eq!(
+        users_with(&state, "eve@example.com").await,
+        0,
+        "compte en attente supprime"
+    );
+    let r = accept(&state, &token, None).await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    let (role, verified): (String, bool) = sqlx::query_as(
+        "SELECT role, email_verified_at IS NOT NULL FROM users WHERE email = 'eve@example.com'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!((role.as_str(), verified), ("developer", true));
+}
+
+#[tokio::test]
+async fn unconfirmed_signups_are_purged_after_the_link_expires() {
+    let (state, _pg, outbox) = signup_env().await;
+    user(&state, "nora@example.com", "developer").await;
+    register(&state, "Eve", "eve@example.com", "198.51.100.1:1000").await;
+    register(&state, "Zoe", "zoe@example.com", "198.51.100.1:1000").await;
+    let token = verification_token(&mails_to(&outbox, "zoe@example.com", 1).await[0]);
+    assert_eq!(
+        confirm_with(&state, &token, Some(NEW_PASSWORD))
+            .await
+            .status,
+        204
+    );
+
+    // Lien encore valable : rien n'est supprime.
+    let purge = || control_plane::http::email_verification::purge_pending(&state.db);
+    assert_eq!(purge().await.unwrap(), 0);
+    sqlx::query("UPDATE email_verifications SET expires_at = now() - interval '1 minute'")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(purge().await.unwrap(), 1);
+    assert_eq!(users_with(&state, "eve@example.com").await, 0);
+    assert_eq!(
+        users_with(&state, "zoe@example.com").await,
+        1,
+        "compte confirme conserve"
+    );
+    assert_eq!(users_with(&state, "nora@example.com").await, 1);
+}
+
 #[tokio::test]
 async fn concurrent_accepts_create_one_account() {
     let (state, _pg, owner) = owner_env().await;

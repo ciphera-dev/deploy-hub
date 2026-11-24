@@ -126,10 +126,10 @@ it("inscription publique ouverte : formulaire de register.html, puis connexion a
   expect(screen.getByRole("list", { name: "Étapes de l'inscription" })).toBeInTheDocument();
   type("Nom complet", "Eve");
   type("E-mail", "eve@example.com");
-  type("Mot de passe", PASSWORD);
+  expect(screen.queryByLabelText("Mot de passe")).not.toBeInTheDocument();
   fireEvent.click(createButton());
   await waitFor(() => expect(router.state.location.pathname).toBe("/login"));
-  expect(registerCalls).toEqual([{ name: "Eve", email: "eve@example.com", password: PASSWORD }]);
+  expect(registerCalls).toEqual([{ name: "Eve", email: "eve@example.com" }]);
   expect(router.state.location.search).toEqual({ verify: 1 });
   expect(await screen.findByRole("heading", { name: "Vérifiez votre boîte mail" })).toBeInTheDocument();
 });

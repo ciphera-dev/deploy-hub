@@ -20,6 +20,8 @@ export interface AccountFormProps {
   intro?: ReactNode;
   /** E-mail impose (invitation) : non modifiable, le champ n'est pas affiche. */
   fixedEmail?: string;
+  /** Sans mot de passe (inscription ouverte) : il se choisit en confirmant le lien recu par e-mail. */
+  withoutPassword?: boolean;
   initialName?: string;
   submitLabel: string;
   /** `undefined` : compte cree ; sinon le refus a afficher. */
@@ -28,21 +30,21 @@ export interface AccountFormProps {
 }
 
 /** Formulaire de creation de compte, porte de register.html (nom, e-mail, mot de passe). */
-export function AccountForm({ title, intro, fixedEmail, initialName = "", submitLabel, onSubmit, footer }: AccountFormProps) {
+export function AccountForm({ title, intro, fixedEmail, withoutPassword = false, initialName = "", submitLabel, onSubmit, footer }: AccountFormProps) {
   const [name, setName] = useState(initialName);
   const [email, setEmail] = useState("");
   const [pwd, setPwd] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
-  const valid = name.trim().length > 0 && (fixedEmail !== undefined || looksLikeEmail(email)) && [...pwd].length >= MIN_PASSWORD;
+  const valid = name.trim().length > 0 && (fixedEmail !== undefined || looksLikeEmail(email)) && (withoutPassword || [...pwd].length >= MIN_PASSWORD);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!valid || busy) return;
     setErr("");
     setBusy(true);
-    const refusal = await onSubmit({ name: name.trim(), email: (fixedEmail ?? email).trim(), password: pwd });
+    const refusal = await onSubmit({ name: name.trim(), email: (fixedEmail ?? email).trim(), password: withoutPassword ? "" : pwd });
     setBusy(false);
     if (refusal) setErr(refusal);
   };
@@ -59,7 +61,7 @@ export function AccountForm({ title, intro, fixedEmail, initialName = "", submit
       <div style={{ height: 4 }} />
       <TextField label="Nom complet" autoComplete="name" value={name} onChange={edit(setName)} />
       {fixedEmail === undefined && <TextField label="E-mail" type="email" autoComplete="email" value={email} onChange={edit(setEmail)} />}
-      <TextField label="Mot de passe" type="password" autoComplete="new-password" hint={`${MIN_PASSWORD} caractères minimum.`} value={pwd} onChange={edit(setPwd)} />
+      {!withoutPassword && <TextField label="Mot de passe" type="password" autoComplete="new-password" hint={`${MIN_PASSWORD} caractères minimum.`} value={pwd} onChange={edit(setPwd)} />}
       {err && <FormError>{err}</FormError>}
       <Button type="submit" variant="inverse" block icon={busy ? "Loader" : undefined} disabled={!valid || busy} aria-busy={busy || undefined}>
         {submitLabel}

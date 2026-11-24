@@ -42,8 +42,8 @@ async fn insert_github(db: &PgPool, key: Vec<u8>, hook: Vec<u8>) {
 async fn insert_user(db: &PgPool) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) \
-         VALUES ($1, $2, 'x', 'owner', 'Test')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) \
+         VALUES ($1, $2, 'x', 'owner', 'Test', now())",
     )
     .bind(id)
     .bind(format!("u-{}@example.com", id.simple()))

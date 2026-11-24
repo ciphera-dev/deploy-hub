@@ -315,7 +315,7 @@ fn concrete(path: &str) -> String {
 async fn session(state: &AppState, role: Role, n: usize) -> (String, String) {
     let email = format!("{}@example.com", role.as_str());
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, $4, 'Test')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, $4, 'Test', now())",
     )
     .bind(Uuid::new_v4())
     .bind(&email)

@@ -4,18 +4,25 @@
 //! - `POST /api/auth/email-verification/{token}/confirm` : consomme le lien.
 //!   Motif `change` : l'adresse du compte est remplacee, les autres sessions
 //!   sont fermees, les liens de reinitialisation en cours tombent et l'ancienne
-//!   adresse recoit un avis. Motif `signup` : le compte (cree en attente par
-//!   l'inscription ouverte) peut se connecter.
+//!   adresse recoit un avis. Motif `signup` : le corps porte le mot de passe du
+//!   compte, choisi ici par le titulaire de la boite (l'inscription ouverte ne
+//!   prend aucun mot de passe, comme l'acceptation d'une invitation, dont elle
+//!   reprend la politique et la limite de debit) ; le compte peut alors se
+//!   connecter.
 //!
 //! Lien a usage unique valable 24 heures, envoye a l'adresse a confirmer. Le
 //! jeton (32 octets aleatoires) n'est jamais stocke, journalise ni ecrit dans
 //! l'audit : la base n'en garde que le SHA-256. Consommation par
-//! `UPDATE ... WHERE used_at IS NULL AND expires_at > maintenant`, atomique. La
-//! confirmation n'exige pas de session (le lien s'ouvre souvent ailleurs) ; une
-//! ouverture par GET ne change rien : seule la confirmation du POST agit.
+//! `UPDATE ... WHERE used_at IS NULL AND expires_at > maintenant`, atomique. Au
+//! plus un lien par minute et par compte (`MAIL_COOLDOWN_SECS`) : au-dela, la
+//! reponse est la meme mais rien n'est envoye. Les comptes d'inscription jamais
+//! confirmes sont supprimes quand leur dernier lien a expire (`purge_pending`).
+//! La confirmation n'exige pas de session (le lien s'ouvre souvent ailleurs) ;
+//! une ouverture par GET ne change rien : seule la confirmation du POST agit.
 
-use api_types::email_verification::EmailVerificationInfo;
-use axum::extract::{Path, State};
+use api_types::email_verification::{ConfirmEmailVerification, EmailVerificationInfo};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -26,13 +33,21 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+use super::invitations::hash_password;
 use super::password_reset::audit;
-use crate::auth::internal;
 use crate::auth::session::{self, SessionToken};
+use crate::auth::{internal, password, rate_limit};
+use crate::http::client_ip::ClientIp;
 use crate::state::AppState;
 
 /// Duree de validite d'un lien, en secondes (24 heures).
 pub const TTL_SECS: i64 = 24 * 3600;
+/// Delai minimal entre deux liens pour un meme compte, en secondes.
+pub const MAIL_COOLDOWN_SECS: f64 = 60.0;
+/// Corps JSON maximal (mot de passe de 1024 caracteres compris).
+const MAX_BODY: usize = 16 * 1024;
+/// Cle de limitation des confirmations d'inscription : 5 echecs par IP.
+const CONFIRM_KEY: &str = "ciphera:email-verification-confirm";
 
 pub const PURPOSE_CHANGE: &str = "change";
 pub const PURPOSE_SIGNUP: &str = "signup";
@@ -44,6 +59,7 @@ pub fn routes() -> Router<AppState> {
             "/api/auth/email-verification/{token}/confirm",
             post(confirm),
         )
+        .layer(DefaultBodyLimit::max(MAX_BODY))
 }
 
 fn verification_invalid() -> ApiError {
@@ -74,13 +90,27 @@ pub fn link(state: &AppState, token: &str) -> String {
 
 /// Cree un lien de verification de `new_email` pour ce compte, dans la
 /// transaction de l'appelant, et supprime les liens inutilises du meme motif.
+/// `None` (rien n'est cree ni envoye) si le dernier lien du compte a moins de
+/// `MAIL_COOLDOWN_SECS` : pas de rafale d'e-mails vers une meme adresse.
 pub async fn issue(
     conn: &mut PgConnection,
     user_id: Uuid,
     new_email: &str,
     purpose: &str,
     now: f64,
-) -> Result<SessionToken, sqlx::Error> {
+) -> Result<Option<SessionToken>, sqlx::Error> {
+    let recent: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM email_verifications WHERE user_id = $1 \
+                          AND created_at > to_timestamp($2) - make_interval(secs => $3))",
+    )
+    .bind(user_id)
+    .bind(now)
+    .bind(MAIL_COOLDOWN_SECS)
+    .fetch_one(&mut *conn)
+    .await?;
+    if recent {
+        return Ok(None);
+    }
     let token = SessionToken::generate().map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
     sqlx::query(
         "DELETE FROM email_verifications WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL",
@@ -102,7 +132,20 @@ pub async fn issue(
     .bind(TTL_SECS as f64)
     .execute(conn)
     .await?;
-    Ok(token)
+    Ok(Some(token))
+}
+
+/// Supprime les comptes d'inscription ouverte jamais confirmes : adresse non
+/// verifiee et plus aucun lien valable (24 h apres le dernier envoi).
+pub async fn purge_pending(db: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM users u WHERE u.email_verified_at IS NULL \
+           AND NOT EXISTS (SELECT 1 FROM email_verifications v WHERE v.user_id = u.id \
+                             AND v.used_at IS NULL AND v.expires_at > now())",
+    )
+    .execute(db)
+    .await
+    .map(|done| done.rows_affected())
 }
 
 /// `GET /api/auth/email-verification/{token}`
@@ -140,12 +183,67 @@ async fn info(
 /// lien porte sa propre preuve).
 async fn confirm(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     headers: HeaderMap,
     Path(token): Path<String>,
+    body: Result<Option<Json<ConfirmEmailVerification>>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let token = Zeroizing::new(token);
     let token_hash = session::hash_token(&token);
     let now = state.clock.unix_secs();
+    // Lecture sans consommation avant Argon2 : un lien inconnu, utilise ou
+    // expire ne coute qu'une requete indexee.
+    let usable: Option<(String, bool)> = sqlx::query_as(
+        "SELECT purpose, expires_at <= to_timestamp($2) FROM email_verifications \
+         WHERE token_hash = $1 AND used_at IS NULL",
+    )
+    .bind(&token_hash)
+    .bind(now)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| internal("lecture du lien de verification", e))?;
+    let purpose = match usable {
+        None => return Err(verification_invalid()),
+        Some((_, true)) => return Err(verification_expired()),
+        Some((purpose, false)) => purpose,
+    };
+    // Inscription : le mot de passe est choisi ici, par le titulaire de la boite.
+    let mut chosen: Option<(i64, String)> = None;
+    if purpose == PURPOSE_SIGNUP {
+        let Some(Json(input)) = body.ok().flatten() else {
+            return Err(ApiError::new(
+                422,
+                "validation_failed",
+                "Choisissez un mot de passe pour activer le compte.",
+            ));
+        };
+        password::check_policy(&input.password)
+            .map_err(|m| ApiError::new(422, "validation_failed", m))?;
+        let attempt = match rate_limit::admit(
+            &state.db,
+            &rate_limit::IpKey::login(ip),
+            &rate_limit::email_key(CONFIRM_KEY),
+        )
+        .await
+        .map_err(|e| internal("limitation de debit", e))?
+        {
+            rate_limit::Admission::Allowed(id) => id,
+            rate_limit::Admission::Limited(retry_after) => {
+                let mut res = ApiError::new(
+                    429,
+                    "rate_limited",
+                    "Trop de tentatives. Réessayez dans quelques minutes.",
+                )
+                .into_response();
+                res.headers_mut()
+                    .insert(header::RETRY_AFTER, retry_after.into());
+                return Ok(res);
+            }
+        };
+        let hash = hash_password(&state, attempt, input.password).await?;
+        chosen = Some((attempt, hash));
+    }
+
     let mut tx = state
         .db
         .begin()
@@ -179,14 +277,18 @@ async fn confirm(
 
     let mut old_email = None;
     if purpose == PURPOSE_SIGNUP {
+        let Some((attempt, password_hash)) = chosen else {
+            return Err(verification_invalid());
+        };
         // Seul un compte encore en attente, a cette adresse, est active.
         let activated = sqlx::query(
-            "UPDATE users SET email_verified_at = to_timestamp($3) \
+            "UPDATE users SET email_verified_at = to_timestamp($3), password_hash = $4 \
              WHERE id = $1 AND lower(email) = lower($2) AND email_verified_at IS NULL",
         )
         .bind(user_id)
         .bind(&new_email)
         .bind(now)
+        .bind(&password_hash)
         .execute(&mut *tx)
         .await
         .map_err(|e| internal("activation du compte", e))?
@@ -194,6 +296,9 @@ async fn confirm(
         if activated != 1 {
             return Err(verification_invalid());
         }
+        rate_limit::mark_success(&mut tx, attempt)
+            .await
+            .map_err(|e| internal("enregistrement de la tentative", e))?;
         audit(&mut tx, Some(user_id), "auth.email.verified", json!({}))
             .await
             .map_err(|e| internal("audit de verification", e))?;

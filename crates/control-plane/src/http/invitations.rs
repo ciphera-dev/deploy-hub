@@ -185,6 +185,13 @@ async fn create(
     .execute(&mut *tx)
     .await
     .map_err(|e| internal("verrou d'invitation", e))?;
+    // Un compte d'inscription ouverte encore non confirme ne reserve pas
+    // l'adresse : l'invitation le remplace.
+    sqlx::query("DELETE FROM users WHERE lower(email) = lower($1) AND email_verified_at IS NULL")
+        .bind(&email)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| internal("remplacement du compte en attente", e))?;
     let taken: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower($1))")
             .bind(&email)
@@ -286,7 +293,7 @@ async fn info(
 
 /// Hachage Argon2id hors du thread asynchrone (~50 ms, 19 Mio).
 /// Un refus « occupe » retire la tentative `attempt` (pas un echec du client).
-async fn hash_password(
+pub(crate) async fn hash_password(
     state: &AppState,
     attempt: i64,
     password: Zeroizing<String>,
@@ -365,9 +372,15 @@ async fn accept(
         });
     };
 
+    // Compte en attente a cette adresse (inscription ouverte) : remplace.
+    sqlx::query("DELETE FROM users WHERE lower(email) = lower($1) AND email_verified_at IS NULL")
+        .bind(&email)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| internal("remplacement du compte en attente", e))?;
     let user_id = Uuid::new_v4();
     let inserted = sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, $4, $5, now())",
     )
     .bind(user_id)
     .bind(&email)
@@ -414,7 +427,9 @@ async fn signup_status(State(state): State<AppState>) -> Result<Json<SignupStatu
     }))
 }
 
-/// `POST /api/auth/register` (exempte de CSRF : aucune session).
+/// `POST /api/auth/register` (exempte de CSRF : aucune session). Nom et adresse
+/// seulement : le mot de passe est choisi par le titulaire de la boite, en
+/// confirmant le lien (`email_verification`).
 async fn register(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -433,8 +448,6 @@ async fn register(
     if !validate_email(&email) {
         return Err(invalid("E-mail invalide."));
     }
-    password::check_policy(&input.password).map_err(invalid)?;
-
     // Sans envoi d'e-mails, l'adresse ne pourrait jamais etre verifiee. Reglage
     // de l'instance : la reponse ne depend pas du compte.
     let mailer = mail::ready(&state)
@@ -461,7 +474,16 @@ async fn register(
         rate_limit::Admission::Allowed(id) => id,
         rate_limit::Admission::Limited(retry_after) => return Ok(rate_limited(retry_after)),
     };
-    let password_hash = hash_password(&state, attempt, input.password).await?;
+    // Aucun mot de passe n'existe encore : un hachage d'une valeur aleatoire
+    // jamais divulguee remplit la colonne (et garde le meme cout sur tous les
+    // chemins). Le compte ne peut pas se connecter avant la confirmation.
+    let placeholder = SessionToken::generate().map_err(|e| internal("jeton d'inscription", e))?;
+    let password_hash = hash_password(
+        &state,
+        attempt,
+        Zeroizing::new(placeholder.expose().to_string()),
+    )
+    .await?;
 
     let mut tx = state
         .db
@@ -484,16 +506,14 @@ async fn register(
     .await
     .map_err(|e| internal("lecture des comptes", e))?;
     // Adresse libre : compte en attente. Compte encore en attente a cette
-    // adresse : il est repris (nom, mot de passe) et un nouveau lien part, pour
-    // qu'une inscription non confirmee ne bloque pas le vrai titulaire. Compte
-    // deja verifie : rien ne change, rien n'est envoye. Dans tous les cas, la
-    // reponse est la meme.
+    // adresse : il reste tel quel (ni nom ni mot de passe ne sont repris) et
+    // un nouveau lien remplace l'ancien. Compte deja verifie : rien ne change,
+    // rien n'est envoye. Dans tous les cas, la reponse est la meme.
     let user_id = match existing {
         None => {
             let user_id = Uuid::new_v4();
             sqlx::query(
-                "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) \
-                 VALUES ($1, $2, $3, $4, $5, NULL)",
+                "INSERT INTO users (id, email, password_hash, role, name, email_verified_at)                  VALUES ($1, $2, $3, $4, $5, NULL)",
             )
             .bind(user_id)
             .bind(&email)
@@ -514,30 +534,20 @@ async fn register(
             .map_err(|e| internal("audit d'inscription", e))?;
             Some(user_id)
         }
-        Some((user_id, true)) => {
-            sqlx::query("UPDATE users SET name = $2, password_hash = $3 WHERE id = $1")
-                .bind(user_id)
-                .bind(&name)
-                .bind(&password_hash)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| internal("mise a jour du compte en attente", e))?;
-            Some(user_id)
-        }
+        Some((user_id, true)) => Some(user_id),
         Some((_, false)) => None,
     };
+    // Au plus un lien par minute et par adresse (`issue`) : meme reponse.
     let verification = match user_id {
-        Some(user_id) => Some(
-            email_verification::issue(
-                &mut tx,
-                user_id,
-                &email,
-                email_verification::PURPOSE_SIGNUP,
-                state.clock.unix_secs(),
-            )
-            .await
-            .map_err(|e| internal("creation du lien de verification", e))?,
-        ),
+        Some(user_id) => email_verification::issue(
+            &mut tx,
+            user_id,
+            &email,
+            email_verification::PURPOSE_SIGNUP,
+            state.clock.unix_secs(),
+        )
+        .await
+        .map_err(|e| internal("creation du lien de verification", e))?,
         None => None,
     };
     tx.commit()

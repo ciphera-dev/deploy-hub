@@ -14,7 +14,7 @@ const PASSWORD: &str = "correct horse battery staple";
 async fn user(state: &AppState, email: &str, role: &str) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, $4, $5, now())",
     )
     .bind(id)
     .bind(email)
@@ -644,4 +644,47 @@ async fn cancel_invitation_rereads_actor_role() {
         .await
         .unwrap();
     assert_eq!(left, 1);
+}
+
+#[tokio::test]
+async fn pending_account_is_flagged_and_refuses_role_and_reset_link() {
+    let (state, _pg) = common::state().await;
+    user(&state, "owner@example.com", "owner").await;
+    let pending = user(&state, "eve@example.com", "viewer").await;
+    sqlx::query("UPDATE users SET email_verified_at = NULL WHERE id = $1")
+        .bind(pending)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let owner = session(&state, "owner@example.com").await;
+
+    let r = send(&state, &owner, "GET", "/api/team/members", None).await;
+    let list = r.json();
+    let flag = |email: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["email"] == email)
+            .unwrap()["pending"]
+            .clone()
+    };
+    assert_eq!(flag("eve@example.com"), true);
+    assert_eq!(flag("owner@example.com"), false);
+
+    let r = set_role(&state, &owner, pending, "developer").await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "account_pending");
+    assert_eq!(role_of(&state, pending).await.as_deref(), Some("viewer"));
+    let r = send(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/team/members/{pending}/reset-link"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "account_pending");
+    // Le retrait reste possible.
+    assert_eq!(remove(&state, &owner, pending).await.status, 200);
 }

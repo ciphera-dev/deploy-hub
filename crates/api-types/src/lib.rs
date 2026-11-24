@@ -189,6 +189,7 @@ use utoipa::OpenApi;
         password::ResetPassword,
         password::ResetLink,
         email_verification::EmailVerificationInfo,
+        email_verification::ConfirmEmailVerification,
         notifications::NotificationSettings,
         notifications::UpdateNotificationSettings,
         me::UpdateMe,
@@ -384,12 +385,10 @@ mod tests {
         let accept: invitations::AcceptInvitation =
             serde_json::from_str(r#"{"name":"N","password":"test-password-value"}"#).unwrap();
         assert!(!format!("{accept:?}").contains("test-password-value"));
-        let reg: invitations::RegisterRequest = serde_json::from_str(
-            r#"{"name":"N","email":"a@example.com","password":"test-password-value"}"#,
-        )
-        .unwrap();
+        let reg: invitations::RegisterRequest =
+            serde_json::from_str(r#"{"name":"N","email":"a@example.com"}"#).unwrap();
         let dbg = format!("{reg:?}");
-        assert!(!dbg.contains("test-password-value") && !dbg.contains("a@example.com"));
+        assert!(!dbg.contains("a@example.com"));
         let link = invitations::InvitationLink {
             link: "/invite/SECRETTESTTOKEN".into(),
         };
@@ -524,7 +523,7 @@ mod tests {
         )
         .unwrap();
         let dbg = format!("{update:?}");
-        assert!(!dbg.contains("test-password-value") && !dbg.contains("a@example.com"));
+        assert!(!dbg.contains("a@example.com"));
         let change: me::ChangePassword = serde_json::from_str(
             r#"{"current_password":"old-test-password","new_password":"new-test-password"}"#,
         )

@@ -271,11 +271,9 @@ function MembersView({ me, members, invitations }: { me: { id: string; role: str
         {list.map((m) => {
           const self = m.id === me.id;
           const manage = !self && canManage(me.role, m.role);
-          const items: MenuItem[] = [
-            { icon: "KeyRound", label: "Lien de réinitialisation", onSelect: () => void resetLink(m) },
-            "separator",
-            { icon: "Trash", label: "Retirer", danger: true, onSelect: () => setDialog({ kind: "remove", member: m }) },
-          ];
+          // Compte d'inscription ouverte dont l'adresse n'est pas confirmee : ni role ni lien de reinitialisation.
+          const removal: MenuItem = { icon: "Trash", label: "Retirer", danger: true, onSelect: () => setDialog({ kind: "remove", member: m }) };
+          const items: MenuItem[] = m.pending ? [removal] : [{ icon: "KeyRound", label: "Lien de réinitialisation", onSelect: () => void resetLink(m) }, "separator", removal];
           return (
             <div key={m.id} style={{ display: "grid", gridTemplateColumns: COLS, gap: 16, alignItems: "center", padding: "12px 18px", borderTop: hair }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
@@ -284,11 +282,12 @@ function MembersView({ me, members, invitations }: { me: { id: string; role: str
                   <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                     <span style={{ font: "500 13px/1 var(--font-sans)", color: "var(--text-strong)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name || m.email}</span>
                     {self && <Badge>Vous</Badge>}
+                    {m.pending && <Badge>En attente</Badge>}
                   </span>
                   <span style={{ ...lbl, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.email}</span>
                 </div>
               </div>
-              {manage ? <RolePicker member={m} roles={roles} onChange={(r) => void setRole(m, r)} /> : <span><RoleBadge id={m.role} /></span>}
+              {manage && !m.pending ? <RolePicker member={m} roles={roles} onChange={(r) => void setRole(m, r)} /> : <span><RoleBadge id={m.role} /></span>}
               <span>
                 {m.two_factor ? (
                   <span style={{ display: "flex", alignItems: "center", gap: 6, font: "400 12px/1 var(--font-sans)", color: "var(--text-body)" }}>

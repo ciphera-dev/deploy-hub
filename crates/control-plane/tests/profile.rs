@@ -25,7 +25,7 @@ const EXIF_MARKER: &[u8] = b"GPS-46.2044-6.1432-SECRET";
 async fn add_user(state: &AppState, email: &str) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, 'developer', 'Alice Martin')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, 'developer', 'Alice Martin', now())",
     )
     .bind(id)
     .bind(email)
@@ -822,6 +822,10 @@ async fn email_change_revokes_other_sessions() {
     );
 
     // Confirmation sans session : toutes les sessions tombent.
+    sqlx::query("UPDATE email_verifications SET created_at = created_at - interval '5 minutes'")
+        .execute(&state.db)
+        .await
+        .unwrap();
     let r = send(
         &state,
         &who,

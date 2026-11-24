@@ -73,6 +73,24 @@ fn last_owner() -> ApiError {
     )
 }
 
+pub(crate) fn account_pending() -> ApiError {
+    ApiError::new(
+        409,
+        "account_pending",
+        "Ce compte n'a pas encore confirmé son adresse e-mail.",
+    )
+}
+
+/// Compte d'inscription ouverte dont l'adresse n'est pas confirmee.
+pub(crate) async fn is_pending(conn: &mut PgConnection, id: Uuid) -> Result<bool, ApiError> {
+    sqlx::query_scalar("SELECT coalesce(email_verified_at IS NULL, false) FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_optional(conn)
+        .await
+        .map(|pending| pending.unwrap_or(false))
+        .map_err(|e| internal("lecture du compte", e))
+}
+
 fn invalid(message: &str) -> ApiError {
     ApiError::new(422, "validation_failed", message)
 }
@@ -83,14 +101,15 @@ async fn list_members(
     _auth: Require<res::Team, lvl::Admin>,
 ) -> Result<Response, ApiError> {
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(Uuid, String, String, String, bool, Option<i64>, i64)> = sqlx::query_as(
+    let rows: Vec<(Uuid, String, String, String, bool, Option<i64>, i64, bool)> = sqlx::query_as(
         "SELECT u.id, u.name, u.email, u.role, \
                 (EXISTS (SELECT 1 FROM user_totp t \
                           WHERE t.user_id = u.id AND t.confirmed_at IS NOT NULL) \
                  OR EXISTS (SELECT 1 FROM webauthn_credentials w WHERE w.user_id = u.id)), \
                 (SELECT extract(epoch FROM max(s.last_seen_at))::bigint \
                    FROM sessions s WHERE s.user_id = u.id AND NOT s.mfa_pending), \
-                extract(epoch FROM u.created_at)::bigint \
+                extract(epoch FROM u.created_at)::bigint, \
+                u.email_verified_at IS NULL \
          FROM users u ORDER BY u.created_at, u.email",
     )
     .fetch_all(&state.db)
@@ -99,7 +118,7 @@ async fn list_members(
     let members: Vec<TeamMember> = rows
         .into_iter()
         .map(
-            |(id, name, email, role, two_factor, last_active_at, created_at)| TeamMember {
+            |(id, name, email, role, two_factor, last_active_at, created_at, pending)| TeamMember {
                 id: id.to_string(),
                 name,
                 email,
@@ -107,6 +126,7 @@ async fn list_members(
                 two_factor,
                 last_active_at,
                 created_at,
+                pending,
             },
         )
         .collect();
@@ -178,6 +198,9 @@ async fn update_member(
         .await
         .map_err(|e| internal("transaction de changement de role", e))?;
     let locked = lock_and_check(&mut tx, auth.user.id, id).await?;
+    if is_pending(&mut tx, id).await? {
+        return Err(account_pending());
+    }
     if !locked.actor.can_grant(new_role) {
         return Err(forbidden());
     }

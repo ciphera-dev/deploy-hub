@@ -32,7 +32,8 @@ export interface paths {
         put?: never;
         /**
          * Confirme l'adresse : remplace l'adresse du compte (changement) ou active
-         *     le compte (inscription). Un changement ferme les autres sessions du compte.
+         *     le compte avec le mot de passe choisi (inscription). Un changement ferme les
+         *     autres sessions du compte.
          */
         post: operations["confirm_email_verification"];
         delete?: never;
@@ -234,9 +235,10 @@ export interface paths {
         get: operations["signup_status"];
         put?: never;
         /**
-         * Inscription publique (role Lecteur), si l'instance l'autorise. Le compte
-         *     reste en attente jusqu'a la confirmation du lien envoye a l'adresse ;
-         *     meme reponse que l'adresse soit deja connue ou non.
+         * Inscription publique (role Lecteur), si l'instance l'autorise. Nom et
+         *     adresse seulement : le mot de passe se choisit en ouvrant le lien envoye a
+         *     l'adresse (preuve de possession de la boite). Le compte reste en attente
+         *     jusqu'a la confirmation ; meme reponse que l'adresse soit deja connue ou non.
          */
         post: operations["register"];
         delete?: never;
@@ -1702,6 +1704,15 @@ export interface components {
             /** Format: double */
             value: number;
         };
+        /**
+         * @description Corps de `POST /api/auth/email-verification/{token}/confirm` : mot de passe
+         *     du compte, exige (12 a 1024 caracteres) pour le motif `signup`, ignore
+         *     sinon.
+         */
+        ConfirmEmailVerification: {
+            /** Format: password */
+            password: string;
+        };
         /** @description Corps (facultatif) de `POST /api/settings/panel-domain/confirm`. */
         ConfirmPanelDomain: {
             /**
@@ -2579,8 +2590,6 @@ export interface components {
         RegisterRequest: {
             email: string;
             name: string;
-            /** Format: password */
-            password: string;
         };
         /** @description Projet non supprime (agent injoignable) : conserve pour un nouvel essai. */
         RemainingProject: {
@@ -2826,6 +2835,12 @@ export interface components {
              */
             last_active_at?: number | null;
             name: string;
+            /**
+             * @description Inscription ouverte dont l'adresse n'est pas encore confirmee : le
+             *     compte ne peut pas se connecter, son role et sa reinitialisation sont
+             *     refuses (409 `account_pending`).
+             */
+            pending: boolean;
             /** @description `owner`, `admin`, `ops`, `developer` ou `viewer`. */
             role: string;
             /** @description Une TOTP confirmee ou au moins une passkey. */
@@ -3106,7 +3121,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Obligatoire pour une inscription (motif `signup`) */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ConfirmEmailVerification"] | null;
+            };
+        };
         responses: {
             /** @description Adresse confirmee ; le lien est consomme */
             204: {
@@ -3131,6 +3151,13 @@ export interface operations {
             };
             /** @description `email_verification_expired` */
             410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Mot de passe absent ou refuse par la politique (inscription) */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3643,7 +3670,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Nom, e-mail ou mot de passe invalide */
+            /** @description Nom ou e-mail invalide */
             422: {
                 headers: {
                     [name: string]: unknown;

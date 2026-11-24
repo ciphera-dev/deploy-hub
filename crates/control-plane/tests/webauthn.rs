@@ -68,7 +68,7 @@ async fn env() -> Env {
 async fn add_user(state: &AppState, email: &str) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, 'admin', 'Alice Martin')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, 'admin', 'Alice Martin', now())",
     )
     .bind(id)
     .bind(email)

@@ -151,7 +151,7 @@ pub async fn issue(
         .await?;
     let issued: Option<(Uuid, String)> = sqlx::query_as(
         "WITH target AS (SELECT id, email FROM users \
-                         WHERE lower(email) = lower($1) \
+                         WHERE lower(email) = lower($1) AND email_verified_at IS NOT NULL \
                            AND NOT EXISTS (SELECT 1 FROM password_resets r \
                                            WHERE r.user_id = users.id \
                                              AND r.created_at > to_timestamp($4) - make_interval(secs => $6))), \
@@ -450,6 +450,9 @@ async fn member_link(
     // base n'est gere par personne.
     if !Role::parse(&role).is_some_and(|role| auth.role.can_manage(role)) {
         return Err(forbidden());
+    }
+    if super::team::is_pending(&mut tx, id).await? {
+        return Err(super::team::account_pending());
     }
     let issued = issue(&mut tx, &email, state.clock.unix_secs(), 0.0)
         .await

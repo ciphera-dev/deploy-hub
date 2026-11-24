@@ -258,7 +258,7 @@ impl Ws {
 async fn login(state: &AppState, role: &str) -> String {
     let email = format!("{role}-{}@example.com", Uuid::new_v4().simple());
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, $4, 'Test')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, $4, 'Test', now())",
     )
     .bind(Uuid::new_v4())
     .bind(&email)
@@ -285,7 +285,7 @@ async fn login(state: &AppState, role: &str) -> String {
 async fn image_project(state: &AppState, name: &str) -> (Uuid, Uuid, Uuid) {
     let email = format!("dev-{}@example.com", Uuid::new_v4().simple());
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, 'developer', 'Dev')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, 'developer', 'Dev', now())",
     )
     .bind(Uuid::new_v4())
     .bind(&email)

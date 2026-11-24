@@ -26,7 +26,7 @@ async fn user(state: &AppState, role: &str) -> (Uuid, String) {
     let id = Uuid::new_v4();
     let email = format!("{role}-{}@example.com", id.simple());
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, $4, 'Test')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, $4, 'Test', now())",
     )
     .bind(id)
     .bind(&email)

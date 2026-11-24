@@ -192,7 +192,7 @@ export function LoginFlow({ expired = false, created = false, verifyEmail = fals
           <Icon name="Mail" size={15} color="var(--green-500)" style={{ marginTop: 2 }} />
           <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <h2 style={{ margin: 0, font: "600 13px/1.3 var(--font-sans)", color: "var(--text-strong)" }}>Vérifiez votre boîte mail</h2>
-            Si cette adresse peut s'inscrire, un lien de confirmation vient de lui être envoyé. Ouvrez-le (24 h), puis connectez-vous.
+            Si cette adresse peut s'inscrire, un lien de confirmation vient de lui être envoyé. Ouvrez-le (24 h) pour choisir votre mot de passe, puis connectez-vous.
           </span>
         </div>
       )}

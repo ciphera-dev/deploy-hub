@@ -25,7 +25,7 @@ async fn env() -> Env {
     let (state, pg) = common::state().await;
     let user_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, 'admin', 'Alice Martin')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, 'admin', 'Alice Martin', now())",
     )
     .bind(user_id)
     .bind(EMAIL)
@@ -1147,7 +1147,7 @@ async fn factor_added_mail_sent() {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, role, name) VALUES ($1, $2, $3, 'admin', 'Alice Martin')",
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, 'admin', 'Alice Martin', now())",
     )
     .bind(Uuid::new_v4())
     .bind(EMAIL)

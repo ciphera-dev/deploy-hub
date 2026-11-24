@@ -1,12 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 
-import { Button, Icon, type IconName } from "@/design-system";
+import { Button, Icon, TextField, type IconName } from "@/design-system";
 
+import { MIN_PASSWORD } from "./AccountForm";
 import { confirmEmailVerification, fetchEmailVerification, type EmailConfirmResult } from "./api";
 import { AuthLayout, type AuthStep } from "./AuthLayout";
 import { SignInLink } from "./InviteAccept";
-import { StepTitle } from "./ui";
+import { tooManyAttempts } from "./LoginFlow";
+import { FormError, StepTitle } from "./ui";
 
 /** Etapes du panneau de gauche : l'adresse est confirmee, la connexion suit. */
 const VERIFY_STEPS: AuthStep[] = [
@@ -31,6 +33,7 @@ function Notice({ icon, title, text, onSignIn }: { icon: IconName; title: string
 function failure(reason: Extract<EmailConfirmResult, { ok: false }>["reason"]): [IconName, string, string] {
   if (reason === "expired") return ["Clock", "Lien expiré", "Ce lien n'est valable que 24 heures. Refaites la demande depuis le panneau (changement d'adresse) ou l'écran d'inscription."];
   if (reason === "invalid") return ["Link2Off", "Lien de vérification invalide", "Ce lien a déjà été utilisé, a été remplacé par une demande plus récente ou n'existe pas."];
+  if (reason === "rate_limited") return ["Clock", "Trop de tentatives", "Réessayez dans quelques minutes."];
   if (reason === "taken") return ["CircleX", "Adresse déjà utilisée", "Cette adresse e-mail est maintenant utilisée par un autre compte. Rien n'a été modifié."];
   return ["CircleX", "Lien indisponible", "Impossible de vérifier le lien pour le moment. Réessayez dans un instant."];
 }
@@ -48,13 +51,23 @@ export function VerifyEmail({ token, onSignIn }: VerifyEmailProps) {
   const lookup = useQuery({ queryKey: ["email-verification", token], queryFn: () => fetchEmailVerification(token), staleTime: Infinity, gcTime: 0, retry: false });
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<EmailConfirmResult | null>(null);
+  const [pwd, setPwd] = useState("");
+  const [confirmPwd, setConfirmPwd] = useState("");
+  const [err, setErr] = useState("");
+
+  const signup = lookup.data?.ok === true && lookup.data.purpose === "signup";
+  const mismatch = confirmPwd.length > 0 && confirmPwd !== pwd;
+  const ready = !signup || ([...pwd].length >= MIN_PASSWORD && confirmPwd === pwd);
 
   const confirm = async () => {
-    if (busy) return;
+    if (busy || !ready) return;
+    setErr("");
     setBusy(true);
-    const result = await confirmEmailVerification(token);
+    const result = await confirmEmailVerification(token, signup ? pwd : undefined);
     setBusy(false);
-    setOutcome(result);
+    if (!result.ok && result.reason === "rejected") setErr(result.message ?? "Vérifiez le mot de passe.");
+    else if (!result.ok && result.reason === "rate_limited") setErr(tooManyAttempts(result.retryAfter));
+    else setOutcome(result);
   };
 
   let content: ReactNode;
@@ -62,9 +75,9 @@ export function VerifyEmail({ token, onSignIn }: VerifyEmailProps) {
   if (outcome?.ok && result?.ok) {
     content =
       result.purpose === "change" ? (
-        <Notice icon="CircleCheck" title="Adresse e-mail confirmée" text={`Votre compte utilise désormais ${result.email}. Vos autres sessions ont été fermées : connectez-vous avec cette adresse.`} onSignIn={onSignIn} />
+        <Notice icon="CircleCheck" title="Adresse e-mail confirmée" text={`Votre compte utilise désormais ${result.email}. Les sessions ouvertes sur vos autres appareils ont été fermées ; la session de ce navigateur, si elle est ouverte, reste active.`} onSignIn={onSignIn} />
       ) : (
-        <Notice icon="CircleCheck" title="Adresse e-mail confirmée" text="Votre compte est activé. Connectez-vous pour continuer." onSignIn={onSignIn} />
+        <Notice icon="CircleCheck" title="Adresse e-mail confirmée" text="Votre compte est activé avec le mot de passe choisi. Connectez-vous pour continuer." onSignIn={onSignIn} />
       );
   } else if (outcome && !outcome.ok) {
     const [icon, title, text] = failure(outcome.reason);
@@ -90,13 +103,21 @@ export function VerifyEmail({ token, onSignIn }: VerifyEmailProps) {
             </>
           ) : (
             <>
-              Activez le compte créé avec <strong style={{ color: "var(--text-strong)" }}>{result.email}</strong>.
+              Choisissez le mot de passe du compte créé avec <strong style={{ color: "var(--text-strong)" }}>{result.email}</strong>. Si vous n'êtes pas à l'origine de cette inscription, n'activez pas ce compte.
             </>
           )}
         </span>
         <div style={{ height: 4 }} />
-        <Button variant="inverse" block icon={busy ? "Loader" : undefined} disabled={busy} aria-busy={busy || undefined} onClick={() => void confirm()}>
-          Confirmer l'adresse
+        {signup && (
+          <>
+            <TextField label="Mot de passe" type="password" autoComplete="new-password" hint={`${MIN_PASSWORD} caractères minimum.`} value={pwd} onChange={(v) => { setPwd(v); setErr(""); }} />
+            <TextField label="Confirmer le mot de passe" type="password" autoComplete="new-password" value={confirmPwd} onChange={(v) => { setConfirmPwd(v); setErr(""); }} />
+            {mismatch && <span style={{ font: "400 12px/1.3 var(--font-sans)", color: "#f87171" }}>Les deux mots de passe ne correspondent pas.</span>}
+          </>
+        )}
+        {err && <FormError>{err}</FormError>}
+        <Button variant="inverse" block icon={busy ? "Loader" : undefined} disabled={busy || !ready} aria-busy={busy || undefined} onClick={() => void confirm()}>
+          {signup ? "Activer le compte" : "Confirmer l'adresse"}
         </Button>
         <SignInLink onSignIn={onSignIn} />
       </div>

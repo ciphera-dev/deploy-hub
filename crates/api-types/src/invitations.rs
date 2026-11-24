@@ -78,8 +78,6 @@ pub struct SignupStatus {
 pub struct RegisterRequest {
     pub name: String,
     pub email: String,
-    #[schema(value_type = String, format = Password, min_length = 12, max_length = 1024)]
-    pub password: Zeroizing<String>,
 }
 
 impl fmt::Debug for RegisterRequest {
@@ -87,7 +85,6 @@ impl fmt::Debug for RegisterRequest {
         f.debug_struct("RegisterRequest")
             .field("name", &self.name)
             .field("email", &"***")
-            .field("password", &"***")
             .finish()
     }
 }
@@ -155,9 +152,10 @@ pub fn accept_invitation() {}
 #[allow(dead_code)]
 pub fn signup_status() {}
 
-/// Inscription publique (role Lecteur), si l'instance l'autorise. Le compte
-/// reste en attente jusqu'a la confirmation du lien envoye a l'adresse ;
-/// meme reponse que l'adresse soit deja connue ou non.
+/// Inscription publique (role Lecteur), si l'instance l'autorise. Nom et
+/// adresse seulement : le mot de passe se choisit en ouvrant le lien envoye a
+/// l'adresse (preuve de possession de la boite). Le compte reste en attente
+/// jusqu'a la confirmation ; meme reponse que l'adresse soit deja connue ou non.
 #[utoipa::path(
     post,
     path = "/api/auth/register",
@@ -167,7 +165,7 @@ pub fn signup_status() {}
         (status = 202, description = "Demande enregistree ; un e-mail de verification part si l'adresse est libre"),
         (status = 403, description = "`signup_disabled` : inscription sur invitation seulement"),
         (status = 409, description = "`smtp_required` : inscription impossible sans envoi d'e-mails"),
-        (status = 422, description = "Nom, e-mail ou mot de passe invalide"),
+        (status = 422, description = "Nom ou e-mail invalide"),
         (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),
     )
 )]
