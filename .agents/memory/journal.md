@@ -265,3 +265,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 18:32 — Session v0.1-sdd — claude-code (orchestrateur) — Task R6 : Remédiation audit — écran Équipe
 - fait : intégré (277155a)
 - résultat : relecture approuvée (écart accepté : nombre de hooks annoncé après le retrait) ; vitest 297 verts
+
+## 2026-11-24 18:58 — Session v0.1-sdd — claude-code (orchestrateur) — Task R45 : Remédiation audit — un état BuildKit par projet
+- fait : rebasé sur a3cfdd2, intégré (b37298e, ffe8491), tests de l'agent verts après rebase
+- résultat : relecture : 1 Important corrigé (outil d'installation sorti du binaire), relecture ciblée approuvée

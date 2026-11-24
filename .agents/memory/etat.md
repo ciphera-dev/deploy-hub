@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-24 18:32
+# État courant — mis à jour le 2026-11-24 18:58
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R6 : Remédiation audit — écran Équipe — statut : TERMINÉ (relecture approuvée (écart accepté : nombre de hooks annoncé après le retrait) ; vitest 297 verts)
+Task R45 : Remédiation audit — un état BuildKit par projet — statut : TERMINÉ (relecture : 1 Important corrigé (outil d'installation sorti du binaire), relecture ciblée approuvée)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R45 : Remédiation audit — un état BuildKit par projet
 - Task R6 : Remédiation audit — écran Équipe
 - Task R5 : Remédiation audit — gestion de l'équipe (API)
 - Task R10 : Remédiation audit — limites des services Compose
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R9 : Remédiation audit — Compose : redémarrage et étiquettes réservées
 - Task R3 : Remédiation audit — ressources du build
 - Task R2 : Remédiation audit — cloisonnement des caches de build
-- Task R1 : Remédiation audit — protocole v6
 
 ## Prochaine étape exacte
-Relire R4 ; R45 et R7 en cours ; puis R3b, R46, R11
+Intégrer R4 et R7 ; puis R3b (AppArmor), R46, R11
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,7 +32,7 @@ Relire R4 ; R45 et R7 en cours ; puis R3b, R46, R11
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `web/src/features/settings`
+- `crates/agent`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
