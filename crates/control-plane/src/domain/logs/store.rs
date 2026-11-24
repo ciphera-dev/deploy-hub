@@ -39,8 +39,10 @@ const BATCH: usize = 500;
 const PROJECTS_TTL: Duration = Duration::from_secs(60);
 /// Lignes retenues au plus par deploiement quand le masquage est indisponible.
 const MAX_HELD: usize = 5_000;
-/// Octets bruts retenus au plus par deploiement (une ligne brute peut peser
-/// 64 Kio) : meme budget memoire qu'avec des lignes de 16 Kio.
+/// Octets bruts retenus au plus par file (une ligne brute peut peser 64 Kio) :
+/// meme budget qu'avec des lignes de 16 Kio. `Held` a deux files (`lines` et
+/// `unchecked`) : 2 x 80 Mio, soit 160 Mio par deploiement. Aucun plafond
+/// global sur le nombre de deploiements retenus (existant avant ce correctif).
 const MAX_HELD_BYTES: usize = MAX_HELD * 16 * 1024;
 /// Reessai des lignes retenues.
 const HELD_RETRY: Duration = Duration::from_secs(2);
@@ -74,7 +76,7 @@ impl StoredLine {
             self.ts_ms,
             stream,
             super::BUILD_CONTAINER,
-            redactor.redact(self.line),
+            redactor.redact_line(&self.line),
         )
     }
 }
@@ -191,6 +193,13 @@ pub async fn download(db: &PgPool, deployment: Uuid, redactor: &Redactor) -> sql
     }
 }
 
+/// Masque les lignes avant l'enregistrement (ANSI retire d'abord).
+fn mask_lines(lines: &mut [NewLine], redactor: &Redactor) {
+    for line in lines {
+        line.line = redactor.redact_line(&line.line);
+    }
+}
+
 /// Ligne de `logs.txt` : sequences ANSI et caracteres de controle retires
 /// AVANT le masquage (un secret entrecoupe de codes ANSI doit etre reconnu).
 fn export_line(mut row: StoredLine, redactor: &Redactor) -> String {
@@ -219,9 +228,13 @@ struct Projects {
 #[derive(Default)]
 struct Held {
     lines: Vec<NewLine>,
+    /// Octets de `lines` (total courant).
+    lines_bytes: usize,
     /// Lignes dont le serveur n'a pas pu etre verifie (base indisponible),
     /// avec le serveur qui les a envoyees : reverifiees au prochain essai.
     unchecked: Vec<(Uuid, NewLine)>,
+    /// Octets de `unchecked` (total courant).
+    unchecked_bytes: usize,
     /// Marqueur `MASKING_DOWN` deja enregistre.
     marked: bool,
     /// Lignes retenues perdues au-dela de `MAX_HELD` (marqueur « N lignes
@@ -233,28 +246,44 @@ impl Held {
     /// Retient `lines` ; au-dela de `MAX_HELD`, les plus anciennes sont
     /// perdues et comptees.
     fn keep(&mut self, mut lines: Vec<NewLine>) {
+        self.lines_bytes += lines.iter().map(|l| l.line.len()).sum::<usize>();
         self.lines.append(&mut lines);
-        let excess = excess_held(&self.lines, |l| l.line.len());
+        let excess = excess_held(&self.lines, &mut self.lines_bytes, |l| l.line.len());
         self.lines.drain(..excess);
         self.lost += excess as u64;
     }
 
+    /// Vide les lignes retenues (liberation).
+    fn take_lines(&mut self) -> Vec<NewLine> {
+        self.lines_bytes = 0;
+        std::mem::take(&mut self.lines)
+    }
+
+    /// Vide les lignes a verifier (nouvel essai).
+    fn take_unchecked(&mut self) -> Vec<(Uuid, NewLine)> {
+        self.unchecked_bytes = 0;
+        std::mem::take(&mut self.unchecked)
+    }
+
     /// Retient une ligne a verifier ; meme borne que `keep`.
     fn keep_unchecked(&mut self, server: Uuid, line: NewLine) {
+        self.unchecked_bytes += line.line.len();
         self.unchecked.push((server, line));
-        let excess = excess_held(&self.unchecked, |(_, l)| l.line.len());
+        let excess = excess_held(&self.unchecked, &mut self.unchecked_bytes, |(_, l)| {
+            l.line.len()
+        });
         self.unchecked.drain(..excess);
         self.lost += excess as u64;
     }
 }
 
 /// Nombre de lignes les plus anciennes a perdre pour tenir dans `MAX_HELD`
-/// lignes et `MAX_HELD_BYTES` octets.
-fn excess_held<T>(items: &[T], size: impl Fn(&T) -> usize) -> usize {
-    let mut excess = items.len().saturating_sub(MAX_HELD);
-    let mut total: usize = items[excess..].iter().map(&size).sum();
-    while total > MAX_HELD_BYTES && excess < items.len() {
-        total -= size(&items[excess]);
+/// lignes et `MAX_HELD_BYTES` octets. `bytes` est le total courant de
+/// `items`, mis a jour (pas de re-somme a chaque ligne).
+fn excess_held<T>(items: &[T], bytes: &mut usize, size: impl Fn(&T) -> usize) -> usize {
+    let mut excess = 0;
+    while excess < items.len() && (items.len() - excess > MAX_HELD || *bytes > MAX_HELD_BYTES) {
+        *bytes = bytes.saturating_sub(size(&items[excess]));
         excess += 1;
     }
     excess
@@ -336,9 +365,9 @@ async fn save(state: &AppState, projects: &mut Projects, batch: Vec<(Uuid, Uuid,
     // n'a pas pu etre verifie repassent par le controle.
     let mut pending = Vec::new();
     for (id, held) in &mut projects.held {
-        by_deployment.push((*id, std::mem::take(&mut held.lines)));
+        by_deployment.push((*id, held.take_lines()));
         pending.extend(
-            std::mem::take(&mut held.unchecked)
+            held.take_unchecked()
                 .into_iter()
                 .map(|(server, line)| (*id, server, line)),
         );
@@ -403,9 +432,7 @@ async fn save(state: &AppState, projects: &mut Projects, batch: Vec<(Uuid, Uuid,
             Some(_) => projects.held.remove(&id).map_or(0, |h| h.lost),
             None => 0,
         };
-        for line in &mut lines {
-            line.line = redactor.redact(std::mem::take(&mut line.line));
-        }
+        mask_lines(&mut lines, &redactor);
         if lost > 0 {
             // Meme texte que le marqueur du flux en direct.
             let marker = NewLine {
@@ -506,6 +533,25 @@ mod held_tests {
         let text = export_line(row, &redactor);
         assert!(text.contains("k=•••• fin"), "{text}");
         assert!(!text.contains("3t-va"), "{text}");
+    }
+
+    #[test]
+    fn ansi_inside_a_secret_is_stripped_before_masking_on_save_and_replay() {
+        let redactor = Redactor::new(vec![zeroize::Zeroizing::new("s3cr3t-value".to_string())]);
+        let raw = "k=s3cr\x1b[31m3t-va\x1b[0mlue fin";
+        // Enregistrement.
+        let mut lines = vec![new_line(0)];
+        lines[0].line = raw.to_string();
+        mask_lines(&mut lines, &redactor);
+        assert_eq!(lines[0].line, "k=•••• fin");
+        // Relecture (lignes deja en base, enregistrees avant ce correctif).
+        let row = StoredLine {
+            seq: 1,
+            ts_ms: 0,
+            stream: "stdout".into(),
+            line: raw.into(),
+        };
+        assert_eq!(row.event(&redactor).message, "k=•••• fin");
     }
 
     #[test]

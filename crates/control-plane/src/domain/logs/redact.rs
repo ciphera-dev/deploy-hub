@@ -90,6 +90,15 @@ impl Redactor {
         Self { values }
     }
 
+    /// Ligne de journal masquee : octets nuls et sequences ANSI/controle
+    /// retires AVANT le masquage (un secret entrecoupe de codes ANSI doit
+    /// etre reconnu). Point d'entree unique du direct, de l'enregistrement
+    /// et de la relecture : aucun chemin ne masque une ligne brute.
+    pub fn redact_line(&self, line: &str) -> String {
+        let line: String = line.chars().filter(|c| *c != '\0').collect();
+        self.redact(super::neutralize(&line))
+    }
+
     /// Ligne masquee. Les octets nuls sont retires d'abord, au meme endroit
     /// pour le direct, l'enregistrement et le telechargement : un octet nul
     /// glisse dans une valeur ne la soustrait pas au masquage. La coupe a la

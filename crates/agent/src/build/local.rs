@@ -26,7 +26,7 @@ use super::argv::AllowedBin;
 use super::sandbox::{self, PrepareContainer};
 use super::{BuildBackend, BuildError, MAX_LOG_LINE, ProgressSink};
 use crate::buildkit::{BuildkitLease, ProductionBuildkit};
-use crate::docker::check_managed;
+use crate::docker::{LogAssembler, check_managed};
 
 /// Lignes de journal de `railpack prepare` transmises au plus (les
 /// dernieres).
@@ -75,20 +75,6 @@ fn not_found(e: &BollardError) -> bool {
             ..
         }
     )
-}
-
-/// Envoie au journal du build chaque ligne d'un bloc de journal Docker,
-/// coupee a `MAX_LOG_LINE` octets.
-async fn forward_chunk(bytes: &[u8], stream: LogStream, sink: &ProgressSink) {
-    for line in bytes.split(|&b| b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let mut bounded = Vec::new();
-        push_bounded(&mut bounded, line);
-        let text = String::from_utf8_lossy(&bounded);
-        sink.log(stream, text.trim_end_matches('\r')).await;
-    }
 }
 
 /// `depot:etiquette` (l'etiquette suit le dernier `:` apres le dernier `/`).
@@ -510,21 +496,30 @@ impl LocalBackend {
         let options = LogsOptions {
             stdout: true,
             stderr: true,
+            // L'assembleur retire l'horodatage de chaque message partiel.
+            timestamps: true,
             tail: PREPARE_LOG_TAIL.to_string(),
             ..Default::default()
         };
         let mut logs = self.docker.logs(id, Some(options));
+        // Les messages partiels de Docker (16 Kio) sont rassembles avant
+        // l'envoi : le plan de controle masque la ligne entiere.
+        let mut assembler = LogAssembler::default();
         while let Some(Ok(out)) = logs.next().await {
             use bollard::container::LogOutput;
-            match out {
-                LogOutput::StdErr { message } => {
-                    forward_chunk(&message, LogStream::Stderr, sink).await
-                }
+            let (stream, message) = match out {
+                LogOutput::StdErr { message } => (LogStream::Stderr, message),
                 LogOutput::StdOut { message } | LogOutput::Console { message } => {
-                    forward_chunk(&message, LogStream::Stdout, sink).await
+                    (LogStream::Stdout, message)
                 }
-                LogOutput::StdIn { .. } => {}
+                LogOutput::StdIn { .. } => continue,
+            };
+            for line in assembler.push(stream, &message) {
+                sink.log(line.stream, &line.line).await;
             }
+        }
+        for line in assembler.finish() {
+            sink.log(line.stream, &line.line).await;
         }
     }
 }

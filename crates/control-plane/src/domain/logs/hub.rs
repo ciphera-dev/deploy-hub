@@ -143,7 +143,7 @@ impl Entry {
             line.timestamp_ms,
             line.stream,
             &self.container,
-            redactor.redact(line.line.clone()),
+            redactor.redact_line(&line.line),
         )
     }
 
@@ -661,6 +661,15 @@ mod held_tests {
             timestamp_ms: 0,
             line: "x".repeat(n),
         }
+    }
+
+    #[test]
+    fn ansi_inside_a_secret_is_stripped_before_masking_live() {
+        let redactor = Redactor::new(vec![zeroize::Zeroizing::new("s3cr3t-value".to_string())]);
+        let mut l = line(0);
+        l.line = "k=s3cr\x1b[31m3t-va\x1b[0mlue fin".into();
+        let e = entry();
+        assert_eq!(e.redacted(&l, &redactor).message, "k=•••• fin");
     }
 
     #[test]
