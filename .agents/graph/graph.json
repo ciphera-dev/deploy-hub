@@ -1516,7 +1516,7 @@
    "kind": "session",
    "created": "2026-11-21T13:21:26",
    "agent": "claude",
-   "updated": "2026-11-24T16:43:34",
+   "updated": "2026-11-24T17:07:07",
    "last_event": "SubagentStop",
    "transcript": "44bb7ee7-218a-4800-8b31-40b1d121dbdb.jsonl"
   },
@@ -3460,7 +3460,7 @@
   "agent:general-purpose": {
    "kind": "agent",
    "created": "2026-11-22T16:57:07",
-   "updated": "2026-11-24T16:38:40"
+   "updated": "2026-11-24T16:46:57"
   },
   "config:.claude/settings.local.json": {
    "kind": "config",
@@ -4596,6 +4596,24 @@
    "created": "2026-11-24T16:36:18",
    "path": ".superpowers/sdd/audit-2026-11-24/task-R9-report.md",
    "updated": "2026-11-24T16:36:18"
+  },
+  "file:.superpowers/sdd/audit-2026-11-24/task-R8-report.md": {
+   "kind": "file",
+   "created": "2026-11-24T16:46:26",
+   "path": ".superpowers/sdd/audit-2026-11-24/task-R8-report.md",
+   "updated": "2026-11-24T16:46:26"
+  },
+  "file:.superpowers/sdd/audit-2026-11-24/task-R5-report.md": {
+   "kind": "file",
+   "created": "2026-11-24T16:50:06",
+   "path": ".superpowers/sdd/audit-2026-11-24/task-R5-report.md",
+   "updated": "2026-11-24T16:50:06"
+  },
+  "file:.superpowers/sdd/audit-2026-11-24/task-R8-review.md": {
+   "kind": "file",
+   "created": "2026-11-24T16:53:40",
+   "path": ".superpowers/sdd/audit-2026-11-24/task-R8-review.md",
+   "updated": "2026-11-24T16:53:40"
   }
  },
  "edges": [
@@ -8588,6 +8606,21 @@
    "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
    "rel": "TOUCHED",
    "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R9-report.md"
+  },
+  {
+   "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
+   "rel": "TOUCHED",
+   "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R8-report.md"
+  },
+  {
+   "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
+   "rel": "TOUCHED",
+   "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R5-report.md"
+  },
+  {
+   "src": "session:44bb7ee7-218a-4800-8b31-40b1d121dbdb",
+   "rel": "TOUCHED",
+   "dst": "file:.superpowers/sdd/audit-2026-11-24/task-R8-review.md"
   }
  ]
 }

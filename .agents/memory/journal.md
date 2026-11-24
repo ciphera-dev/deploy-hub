@@ -249,3 +249,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-24 16:43 — Session v0.1-sdd — claude-code (orchestrateur) — Task R9 : Remédiation audit — Compose : redémarrage et étiquettes réservées
 - fait : portée du redémarrage par projet, étiquettes réservées posées par l'agent
 - résultat : relecture propre ; agent-docker à confirmer
+
+## 2026-11-24 17:06 — Session v0.1-sdd — claude-code (orchestrateur) — Task R8 : Remédiation audit — proxy : échéance d'en-têtes par requête, plafonds de connexions, unité bornée
+- fait : rebasé sur 31b0ef3, intégré (5272ae5, 68e14da)
+- résultat : relecture approuvée (6 mineurs, consignés) ; tests proxy locaux sous podman verts

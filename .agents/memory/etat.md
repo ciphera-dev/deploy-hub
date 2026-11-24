@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-24 16:43
+# État courant — mis à jour le 2026-11-24 17:06
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R9 : Remédiation audit — Compose : redémarrage et étiquettes réservées — statut : TERMINÉ (relecture propre ; agent-docker à confirmer)
+Task R8 : Remédiation audit — proxy : échéance d'en-têtes par requête, plafonds de connexions, unité bornée — statut : TERMINÉ (relecture approuvée (6 mineurs, consignés) ; tests proxy locaux sous podman verts)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R8 : Remédiation audit — proxy : échéance d'en-têtes par requête, plafonds de connexions, unité bornée
 - Task R9 : Remédiation audit — Compose : redémarrage et étiquettes réservées
 - Task R3 : Remédiation audit — ressources du build
 - Task R2 : Remédiation audit — cloisonnement des caches de build
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md
 - Task 35 : Préparation de la publication (signature de production, cosign, SLSA, site get.ciphera.dev)
 - Task N : E-mails de notification et sources Git hors GitHub en v0.2 (décisions utilisateur)
-- Task 34c-2 : Durcissement du plan de contrôle, de l'agent et des mises à jour
 
 ## Prochaine étape exacte
-Intégrer R5 et R8 après relecture ; puis R3b, R45, R4, R10
+Intégrer R5 et R10 après relecture ; puis R3b, R45, R4
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,13 +32,8 @@ Intégrer R5 et R8 après relecture ; puis R3b, R45, R4, R10
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/proxy/src/forward.rs`
-- `crates/proxy/src/routes.rs`
-- `crates/proxy/src/control.rs`
-- `crates/proxy/src/conn_limit.rs`
-- `crates/agent/src/proxy_client.rs`
-- `deploy/systemd/ciphera-proxy.service`
-- `deploy/systemd/ciphera-proxy.socket`
+- `crates/proxy`
+- `install/systemd`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

@@ -142,3 +142,7 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 - **install.sh (M2)** : relecture de la version et du journal sous le verrou, sans test automatise (course non reproductible dans `run.sh`).
 - **Etat des certificats (M3)** : journalise seulement (`warning`/`error`), pas encore affiche dans le panneau.
 - Ecrit par : claude-code (correcteur de la relecture finale v0.1)
+
+## 2026-11-24 — Audit : ressources de buildkitd, builds concurrents, image et clone sans plafond, outils non tues (Task R3)
+- Resolu (sous reserve du job agent-docker) : buildkitd sans limite de processus, memoire ni CPU ; cache sans seuil de ramasse-miettes ; deux builds simultanes (RUN concurrents) ; image chargee dans Docker et clone sans plafond ; delai d'un outil sans arret de ses descendants.
+- Reste : profil AppArmor de buildkitd non applique (`flags=(unconfined)`), voir threat-model R13.
