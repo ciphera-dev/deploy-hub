@@ -445,3 +445,60 @@ async fn a_failed_directory_creation_starts_nothing() {
             .is_empty()
     );
 }
+
+/// Chemin de socket de plus de 107 octets : refuse avant de demarrer le
+/// moindre conteneur (ni `buildctl` ni l'agent ne pourraient s'y connecter).
+#[tokio::test]
+async fn an_over_long_socket_path_is_refused_before_any_container_starts() {
+    let scratch = Scratch::new();
+    let mut c = cfg(&scratch.0);
+    c.buildkit_socket_dir = scratch.0.join("s".repeat(100));
+    let docker = Arc::new(FakeDocker::default());
+    // Test de disponibilite reel (sans `with_readiness`) : la longueur est controlee.
+    let manager = BuildkitManager::new(docker.clone(), FakeFs::default(), c);
+    let err = manager.ensure(ProjectId::new()).await.err().expect("refus");
+    assert!(
+        matches!(&err, BuildkitError::Fs(m) if m.contains("trop long")),
+        "{err}"
+    );
+    assert!(docker.runs.lock().unwrap().is_empty(), "conteneur demarre");
+    assert!(docker.calls().iter().all(|c| !c.starts_with("run:")));
+}
+
+/// Conteneur arrete (ou disparu) : echec rapide, sans attendre le delai, et
+/// message court : le journal de buildkitd n'est pas rapporte a l'utilisateur.
+#[tokio::test]
+async fn a_stopped_container_fails_fast_with_a_short_user_message() {
+    let scratch = Scratch::new();
+    let c = cfg(&scratch.0);
+    let docker = Arc::new(FakeDocker::default());
+    let project = ProjectId::new();
+    // Journal de buildkitd tres long, avec un chemin et un secret fictif.
+    let feed = docker.feed_logs(&format!("id-{}", infra::buildkit_container_name(project)));
+    for _ in 0..30 {
+        feed.send(ciphera_agent::docker::ContainerLog {
+            stream: proto::LogStream::Stderr,
+            timestamp_ms: 0,
+            line: format!("SECRET-DU-JOURNAL {}", "x".repeat(2000)),
+        })
+        .unwrap();
+    }
+    drop(feed);
+    // Le socket ne devient jamais joignable ; le conteneur est « Missing »
+    // pour le faux Docker (non demarre pour de bon).
+    let manager = BuildkitManager::new(docker.clone(), FakeFs::default(), c)
+        .with_readiness(Duration::from_secs(60), |_| false)
+        .with_health_interval(Duration::from_millis(5));
+    let start = std::time::Instant::now();
+    let err = manager.ensure(project).await.err().expect("echec");
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "pas d'echec rapide"
+    );
+    assert!(matches!(err, BuildkitError::SocketTimeout(_)), "{err}");
+    let message = err.to_string();
+    assert!(message.len() < 120, "message trop long : {message}");
+    for secret in ["SECRET-DU-JOURNAL", "xxxx", "/"] {
+        assert!(!message.contains(secret), "{message}");
+    }
+}

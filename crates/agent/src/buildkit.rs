@@ -53,6 +53,10 @@ pub const SWEEP_EVERY: Duration = Duration::from_secs(3600);
 pub const SOCKET_WAIT: Duration = Duration::from_secs(120);
 /// Delai d'un conteneur jetable (creation ou suppression de dossiers).
 const HELPER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Octets d'un chemin de socket Unix (`sun_path` : 108, NUL compris).
+const MAX_SOCKET_PATH: usize = 107;
+/// Caracteres gardes par ligne du journal de buildkitd rapporte a l'agent.
+const MAX_LOG_CHARS: usize = 300;
 /// Role du conteneur jetable (balaye au demarrage).
 const HELPER_ROLE: &str = "buildkit-helper";
 /// Marque : l'etat du buildkitd partage d'avant a ete supprime.
@@ -65,8 +69,9 @@ pub enum BuildkitError {
     /// Dossiers du projet (creation, suppression) ou fichier d'usage.
     Fs(String),
     /// Le socket n'est pas apparu a temps.
-    /// Socket absent ou muet ; `diagnostic` : etat et journaux du conteneur.
-    SocketTimeout(PathBuf, String),
+    /// Socket absent ou muet (etat et journal du conteneur : journal de
+    /// l'agent seulement, jamais dans ce message).
+    SocketTimeout(PathBuf),
     /// Un autre projet a un build en cours sur son buildkitd (sans le
     /// nommer : le message finit dans le journal d'un autre projet).
     Busy,
@@ -78,7 +83,12 @@ impl fmt::Display for BuildkitError {
             Self::Infra(e) => write!(f, "{e}"),
             Self::Docker(e) => write!(f, "{e}"),
             Self::Fs(m) => write!(f, "etat de buildkitd : {m}"),
-            Self::SocketTimeout(p, d) => write!(f, "buildkitd n'a pas cree {} ({d})", p.display()),
+            Self::SocketTimeout(_) => {
+                write!(
+                    f,
+                    "buildkitd du projet n'a pas demarre (voir le journal de l'agent)"
+                )
+            }
             Self::Busy => write!(f, "un autre build utilise deja buildkitd"),
         }
     }
@@ -206,6 +216,8 @@ pub struct BuildkitManager<D: DockerOps, F: ProjectFs> {
     /// Longueur du chemin du socket verifiee (fausse avec un test de
     /// disponibilite simule : les chemins des tests sont longs).
     check_path: bool,
+    /// Intervalle de verification de l'etat du conteneur pendant l'attente.
+    health_every: Duration,
 }
 
 /// Gestionnaire de production.
@@ -223,6 +235,7 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
             socket_wait: SOCKET_WAIT,
             ready: socket_ready,
             check_path: true,
+            health_every: Duration::from_secs(2),
         }
     }
 
@@ -232,6 +245,14 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
         self.socket_wait = wait;
         self.ready = ready;
         self.check_path = false;
+        self
+    }
+
+    /// Intervalle de verification du conteneur pendant l'attente du socket
+    /// (tests).
+    #[must_use]
+    pub fn with_health_interval(mut self, every: Duration) -> Self {
+        self.health_every = every;
         self
     }
 
@@ -317,6 +338,15 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
             self.stop_project(other).await?;
         }
         let socket = self.cfg.buildkit_project_socket(project);
+        // Un socket Unix tient dans 107 octets : au-dela, ni buildctl ni
+        // l'agent ne peuvent s'y connecter (chemin de production : ~80).
+        // Refuse avant de demarrer le moindre conteneur.
+        if self.check_path && socket.as_os_str().len() > MAX_SOCKET_PATH {
+            return Err(BuildkitError::Fs(format!(
+                "chemin du socket trop long ({} octets, {MAX_SOCKET_PATH} au plus)",
+                socket.as_os_str().len(),
+            )));
+        }
         let spec = infra::buildkit_spec(&self.cfg, project, projects)?;
         let id = self.docker.run(&spec).await?;
         locked(&self.usage).running.insert(project);
@@ -337,22 +367,13 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
     }
 
     async fn wait_ready(&self, socket: &Path, id: &ContainerId) -> Result<(), BuildkitError> {
-        // Un socket Unix tient dans 107 octets : au-dela, ni buildctl ni
-        // l'agent ne peuvent s'y connecter (chemin de production : ~80).
-        if self.check_path && socket.as_os_str().len() > 107 {
-            return Err(BuildkitError::Fs(format!(
-                "chemin du socket trop long ({} octets, 107 au plus) : {}",
-                socket.as_os_str().len(),
-                socket.display()
-            )));
-        }
         let start = Instant::now();
         let mut down = 0;
         let mut last_check = Instant::now();
         while !(self.ready)(socket) {
             // Conteneur arrete ou disparu trois fois de suite (verifie toutes
             // les 2 s) : inutile d'attendre la fin du delai.
-            if last_check.elapsed() >= Duration::from_secs(2) {
+            if last_check.elapsed() >= self.health_every {
                 last_check = Instant::now();
                 let gone = matches!(
                     self.docker.health(id).await,
@@ -361,10 +382,14 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
                 down = if gone { down + 1 } else { 0 };
             }
             if down >= 3 || start.elapsed() >= self.socket_wait {
-                return Err(BuildkitError::SocketTimeout(
-                    socket.to_path_buf(),
-                    self.diagnostic(socket, id).await,
-                ));
+                // Le detail (journal de buildkitd compris) reste dans le
+                // journal de l'agent : le message du build est court.
+                tracing::error!(
+                    "buildkitd du projet n'a pas demarre ({}) : {}",
+                    socket.display(),
+                    self.diagnostic(socket, id).await
+                );
+                return Err(BuildkitError::SocketTimeout(socket.to_path_buf()));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -394,7 +419,7 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
         let mut lines: Vec<String> = Vec::new();
         let mut logs = self.docker.logs(id, 40, false).await;
         while let Some(l) = logs.next().await {
-            lines.push(l.line);
+            lines.push(l.line.chars().take(MAX_LOG_CHARS).collect::<String>());
         }
         let start = lines.len().saturating_sub(25);
         format!("{state} ; {dir} ; journal : {}", lines[start..].join(" | "))
