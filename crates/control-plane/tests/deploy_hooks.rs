@@ -389,8 +389,11 @@ fn unix_now() -> i64 {
         .as_secs() as i64
 }
 
+/// Corps unique a chaque appel (compteur) : le webhook rejette un corps deja vu.
 fn push(files: &[&str], message: &str, sender: &str) -> Vec<u8> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     json!({
+        "nonce": SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         "ref": "refs/heads/main",
         "after": COMMIT,
         "deleted": false,

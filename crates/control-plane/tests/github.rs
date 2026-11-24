@@ -412,6 +412,67 @@ async fn webhook_replay_window_is_pruned_after_24h() {
 }
 
 #[tokio::test]
+async fn webhook_body_hash_retention_boundary() {
+    let (mut state, _pg) = common::state().await;
+    install_app(&state).await;
+    project(&state, "web", "ciphera/web", "main").await;
+    let body = push_body("ciphera/web", "main");
+    let sig = sign(WEBHOOK_SECRET, &body);
+    assert_eq!(
+        webhook(&state, body.clone(), Some(sig.clone()), "d-orig")
+            .await
+            .status,
+        202
+    );
+    // Meme corps, autre identifiant, tout de suite : doublon.
+    let dup = webhook(&state, body, Some(sig), "d-dup").await;
+    assert_eq!(dup.json()["status"], "duplicate", "{}", dup.raw);
+
+    let known = |state: &AppState| {
+        let db = state.db.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM github_deliveries WHERE delivery_id = 'd-orig'                  AND body_sha256 IS NOT NULL",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        }
+    };
+    // 24 h 4 min plus tard (sous 24 h 5 min) : l'entree est encore conservee.
+    let early = 24 * 3600 + 4 * 60;
+    state.clock = Clock::from_fn(move || SystemTime::now() + Duration::from_secs(early));
+    let other = push_value("ciphera/web", "other", json!(unix_now() + early as i64))
+        .to_string()
+        .into_bytes();
+    let r = webhook(
+        &state,
+        other.clone(),
+        Some(sign(WEBHOOK_SECRET, &other)),
+        "d-early",
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(known(&state).await, 1, "conservee avant 24 h 5 min");
+
+    // 24 h 6 min plus tard : purgee.
+    let late = 24 * 3600 + 6 * 60;
+    state.clock = Clock::from_fn(move || SystemTime::now() + Duration::from_secs(late));
+    let other = push_value("ciphera/web", "other2", json!(unix_now() + late as i64))
+        .to_string()
+        .into_bytes();
+    let r = webhook(
+        &state,
+        other.clone(),
+        Some(sign(WEBHOOK_SECRET, &other)),
+        "d-late",
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(known(&state).await, 0, "purgee apres 24 h 5 min");
+}
+
+#[tokio::test]
 async fn webhook_unknown_repo_404_no_job() {
     let (state, _pg) = common::state().await;
     install_app(&state).await;
