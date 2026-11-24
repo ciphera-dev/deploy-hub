@@ -71,6 +71,10 @@ const REMOVE_ATTEMPTS: u32 = 4;
 const REMOVE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
 /// Processus au plus par conteneur d'application (bombe fork).
 pub const APP_PIDS_LIMIT: i64 = 1024;
+/// Capacites retirees a tout conteneur d'application (simple ou Compose).
+pub const APP_CAP_DROP: [&str; 4] = ["NET_RAW", "MKNOD", "AUDIT_WRITE", "SETPCAP"];
+/// `tmpfs` de `/tmp` quand la racine est en lecture seule : 64 Mio.
+pub const APP_TMP_TMPFS: &str = "rw,nosuid,nodev,size=64m";
 /// Memoire plancher par conteneur d'application, en octets.
 pub const APP_MIN_MEMORY: u64 = 256 << 20;
 
@@ -406,6 +410,8 @@ pub struct ContainerSpec {
     pub(crate) labels: Vec<(String, String)>,
     /// Alias DNS sur `network` (`<service>.internal` d'une application).
     pub(crate) aliases: Vec<String>,
+    /// Racine en lecture seule, avec un `tmpfs` sur `/tmp` (APP_TMP_TMPFS).
+    pub(crate) read_only_rootfs: bool,
 }
 
 impl fmt::Debug for ContainerSpec {
@@ -505,7 +511,7 @@ impl ContainerSpec {
             env_is_public: false,
             user: None,
             mounts: Vec::new(),
-            cap_drop: vec!["NET_RAW".to_string(), "MKNOD".to_string()],
+            cap_drop: APP_CAP_DROP.iter().map(|c| (*c).to_string()).collect(),
             cap_add: Vec::new(),
             no_new_privileges: true,
             security_opt: Vec::new(),
@@ -519,7 +525,21 @@ impl ContainerSpec {
                 .map(|(k, v)| (k.to_string(), v))
                 .collect(),
             aliases: Vec::new(),
+            read_only_rootfs: false,
         }
+    }
+
+    /// Utilisateur du conteneur (`uid[:gid]` numerique, deja valide par
+    /// l'appelant) ; sans valeur, l'utilisateur de l'image.
+    pub fn with_run_as(mut self, run_as: Option<&str>) -> Self {
+        self.user = run_as.map(str::to_string);
+        self
+    }
+
+    /// Racine en lecture seule et `/tmp` en `tmpfs` (APP_TMP_TMPFS).
+    pub fn with_read_only_rootfs(mut self, on: bool) -> Self {
+        self.read_only_rootfs = on;
+        self
     }
 
     /// Rend l'application joignable sous `<service>.internal` sur le reseau
@@ -534,6 +554,15 @@ impl ContainerSpec {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Utilisateur demande (`uid[:gid]`), s'il y en a un.
+    pub fn user(&self) -> Option<&str> {
+        self.user.as_deref()
+    }
+
+    pub fn read_only_rootfs(&self) -> bool {
+        self.read_only_rootfs
     }
 
     pub fn image(&self) -> &str {
@@ -614,6 +643,10 @@ impl ContainerSpec {
         if self.init {
             c.str("init");
         }
+        // Absent tant que la racine est en ecriture : l'empreinte ne change pas.
+        if self.read_only_rootfs {
+            c.str("read-only-rootfs");
+        }
         // Absent pour l'infrastructure : son empreinte ne change pas.
         if !self.aliases.is_empty() {
             c.list(&self.aliases);
@@ -650,6 +683,15 @@ impl ContainerSpec {
         }
         Ok(())
     }
+}
+
+/// Vrai si l'utilisateur de la configuration d'un conteneur est root : sans
+/// valeur (utilisateur de l'image non precise : root), `0`, `root`, ou un
+/// uid 0 (`0:gid`, `root:groupe`). Un autre nom ne se resout pas ici : il
+/// n'est pas compte comme root.
+pub fn user_is_root(user: Option<&str>) -> bool {
+    let name = user.unwrap_or("").split(':').next().unwrap_or("");
+    name.is_empty() || name == "root" || name.bytes().all(|b| b == b'0')
 }
 
 /// Requete de creation Docker pour `spec`. Les chemins de l'hote passent par
@@ -714,6 +756,10 @@ pub fn create_body(spec: &ContainerSpec) -> ContainerCreateBody {
             masked_paths: spec.unmask_system_paths.then(Vec::new),
             readonly_paths: spec.unmask_system_paths.then(Vec::new),
             init: spec.init.then_some(true),
+            readonly_rootfs: spec.read_only_rootfs.then_some(true),
+            tmpfs: spec
+                .read_only_rootfs
+                .then(|| HashMap::from([("/tmp".to_string(), APP_TMP_TMPFS.to_string())])),
             publish_all_ports: Some(false),
             log_config: Some(log_config()),
             restart_policy: Some(DockerRestart {
@@ -789,6 +835,12 @@ pub trait DockerOps: Send + Sync + 'static {
     fn restart(&self, id: &ContainerId) -> impl Future<Output = Result<(), DockerError>> + Send;
     /// Sante d'un conteneur gere par Ciphera (`NotManaged` sinon).
     fn health(&self, id: &ContainerId) -> impl Future<Output = Result<Health, DockerError>> + Send;
+    /// Le conteneur tourne-t-il en root (utilisateur effectif de sa
+    /// configuration, voir `user_is_root`) ? Absent : non.
+    fn runs_as_root(
+        &self,
+        id: &ContainerId,
+    ) -> impl Future<Output = Result<bool, DockerError>> + Send;
     /// Journaux du conteneur (les `tail` dernieres lignes, puis la suite si
     /// `follow`). Le flux s'arrete a la premiere erreur.
     fn logs(
@@ -1153,6 +1205,14 @@ impl DockerOps for BollardDocker {
             Some(HealthStatusEnum::STARTING) => Health::Starting,
             _ => Health::Running,
         })
+    }
+
+    async fn runs_as_root(&self, id: &ContainerId) -> Result<bool, DockerError> {
+        check_name(&id.0)?;
+        let Some(info) = self.inspect_managed(&id.0).await? else {
+            return Ok(false);
+        };
+        Ok(user_is_root(info.config.and_then(|c| c.user).as_deref()))
     }
 
     async fn logs(
@@ -1915,6 +1975,78 @@ mod tests {
         )));
         assert!(!kill_pending(&err(500, "driver failed")));
         assert!(!kill_pending(&err(409, "is zombie")));
+    }
+
+    #[test]
+    fn run_as_applied() {
+        let app = || {
+            ContainerSpec::app(
+                DeploymentId::new(),
+                ProjectId::new(),
+                &ImageRef("x:1".into()),
+                vec![],
+            )
+        };
+        assert_eq!(create_body(&app()).user, None);
+        let spec = app().with_run_as(Some("1000:1000"));
+        assert_eq!(create_body(&spec).user.as_deref(), Some("1000:1000"));
+        assert_ne!(spec.fingerprint(), app().fingerprint());
+    }
+
+    #[test]
+    fn read_only_rootfs_with_tmp() {
+        let spec = ContainerSpec::app(
+            DeploymentId::new(),
+            ProjectId::new(),
+            &ImageRef("x:1".into()),
+            vec![],
+        );
+        let host = create_body(&spec).host_config.unwrap();
+        assert_eq!((host.readonly_rootfs, host.tmpfs), (None, None));
+        let ro = spec.clone().with_read_only_rootfs(true);
+        let host = create_body(&ro).host_config.unwrap();
+        assert_eq!(host.readonly_rootfs, Some(true));
+        let tmpfs = host.tmpfs.unwrap();
+        assert_eq!(tmpfs.len(), 1);
+        assert_eq!(tmpfs["/tmp"], "rw,nosuid,nodev,size=64m");
+        assert_ne!(ro.fingerprint(), spec.fingerprint());
+    }
+
+    #[test]
+    fn extra_caps_dropped() {
+        let spec = ContainerSpec::app(
+            DeploymentId::new(),
+            ProjectId::new(),
+            &ImageRef("x:1".into()),
+            vec![],
+        );
+        let dropped = create_body(&spec).host_config.unwrap().cap_drop.unwrap();
+        for cap in ["NET_RAW", "MKNOD", "AUDIT_WRITE", "SETPCAP"] {
+            assert!(dropped.iter().any(|c| c == cap), "{cap} manque");
+        }
+    }
+
+    #[test]
+    fn root_user_detection() {
+        for root in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("root"),
+            Some("0:0"),
+            Some("root:app"),
+            Some("00"),
+        ] {
+            assert!(user_is_root(root), "{root:?}");
+        }
+        for other in [
+            Some("1000"),
+            Some("1000:0"),
+            Some("node"),
+            Some("65534:65534"),
+        ] {
+            assert!(!user_is_root(other), "{other:?}");
+        }
     }
 
     #[test]

@@ -750,6 +750,8 @@ struct Info {
     service_name: Option<String>,
     internal_port: Option<i32>,
     healthcheck_path: Option<String>,
+    run_as: Option<String>,
+    read_only_rootfs: Option<bool>,
 }
 
 impl Info {
@@ -772,12 +774,12 @@ async fn info(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Info>> {
                 d.commit_sha, d.branch, d.compose_service, p.name AS project_name, p.source_kind, \
                 p.image_ref, p.build_kind, p.build_path, p.build_service, g.repository, \
                 g.branch AS git_branch, g.root_directory, e.name AS environment, s.id AS service_id, \
-                s.name AS service_name, s.internal_port, s.healthcheck_path \
+                s.name AS service_name, s.internal_port, s.healthcheck_path, s.run_as, s.read_only_rootfs \
          FROM deployments d \
          JOIN projects p ON p.id = d.project_id \
          JOIN environments e ON e.id = d.environment_id \
          LEFT JOIN git_sources g ON g.project_id = d.project_id \
-         LEFT JOIN LATERAL (SELECT id, name, internal_port, healthcheck_path FROM services \
+         LEFT JOIN LATERAL (SELECT id, name, internal_port, healthcheck_path, run_as, read_only_rootfs FROM services \
               WHERE environment_id = d.environment_id ORDER BY created_at, name LIMIT 1) s ON true \
          WHERE d.id = $1 FOR UPDATE OF d",
     )
@@ -1170,8 +1172,8 @@ async fn send_deploy(
         service_name: info.service_name.clone(),
         env,
         environment_id: Some(EnvironmentId(info.environment_id)),
-        run_as: None,
-        read_only_rootfs: false,
+        run_as: info.run_as.clone(),
+        read_only_rootfs: info.read_only_rootfs.unwrap_or(false),
     };
     // Table complete des routes (domaines) : elle part avant chaque `Deploy`
     // (l'agent refuse de basculer sans table), meme vide.

@@ -179,6 +179,17 @@ impl DockerOps for FakeDocker {
         Ok(())
     }
 
+    async fn runs_as_root(&self, id: &ContainerId) -> Result<bool, DockerError> {
+        // Utilisateur demande a la creation ; absent : celui de l'image (root).
+        // Conteneur inconnu du faux : non.
+        let runs = self.runs.lock().unwrap();
+        Ok(runs
+            .iter()
+            .rev()
+            .find(|s| format!("id-{}", s.name()) == id.0)
+            .is_some_and(|s| ciphera_agent::docker::user_is_root(s.user())))
+    }
+
     async fn health(&self, id: &ContainerId) -> Result<Health, DockerError> {
         self.maybe_hang().await;
         Ok(self

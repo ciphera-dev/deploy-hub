@@ -14,12 +14,18 @@ const WEB = projectDetail(PROJECT_SUMMARIES[0]);
 let role = "owner";
 let refusal: { status: number; message: string } | null = null;
 const posts: { path: string; csrf: string | null }[] = [];
+const patches: { path: string; csrf: string | null; body: unknown }[] = [];
 
 const server = setupServer(
   http.get("*/api/me", () => HttpResponse.json({ id: "u1", name: "Alice Martin", email: "alice@example.com", role, csrf_token: "csrf-1" })),
   http.get("*/api/deployments", () => HttpResponse.json([])),
   http.get("*/api/projects/:id", () => HttpResponse.json(WEB)),
   http.get("*/api/projects/:id/services", () => HttpResponse.json(WEB_SERVICES)),
+  http.patch("*/api/projects/:id/services/:sid", async ({ request }) => {
+    const body = await request.json();
+    patches.push({ path: new URL(request.url).pathname, csrf: request.headers.get("x-csrf-token"), body });
+    return HttpResponse.json({ ...WEB_SERVICES[0], ...(body as object), runs_as_root: false });
+  }),
   http.post("*/api/projects/:id/services/:sid/:action", ({ request }) => {
     posts.push({ path: new URL(request.url).pathname, csrf: request.headers.get("x-csrf-token") });
     return refusal ? HttpResponse.json({ error: { code: "nothing_serving", message: refusal.message } }, { status: refusal.status }) : HttpResponse.json({ deployment_id: "d1" }, { status: 202 });
@@ -33,6 +39,7 @@ beforeEach(() => {
   role = "owner";
   refusal = null;
   posts.length = 0;
+  patches.length = 0;
 });
 afterEach(() => server.resetHandlers());
 
@@ -118,4 +125,44 @@ it("lecteur : Redémarrer et Arrêter inactifs, aucun POST", async () => {
   fireEvent.keyDown(within(card("web")).getByRole("button", { name: "Actions" }), { key: "Enter" });
   expect(await screen.findByRole("menuitem", { name: "Arrêter" })).toHaveAttribute("data-disabled");
   expect(posts).toHaveLength(0);
+});
+
+it("badge root sur le service qui tourne en root, absent des autres ; il ouvre les réglages", async () => {
+  mount();
+  await screen.findByRole("article", { name: "web" }, { timeout: 5000 });
+  expect(within(card("web")).getByText("root")).toBeInTheDocument();
+  expect(within(card("worker")).queryByText("root")).not.toBeInTheDocument();
+  await waitFor(() => expect(within(card("web")).getByRole("button", { name: /S'exécute en root/ })).toBeEnabled());
+  fireEvent.click(within(card("web")).getByRole("button", { name: /S'exécute en root/ }));
+  expect(await screen.findByRole("dialog", { name: /Sécurité du conteneur/ })).toBeInTheDocument();
+});
+
+it("formulaire de sécurité : format vérifié, PATCH avec le jeton CSRF", async () => {
+  mount();
+  await screen.findByRole("article", { name: "web" }, { timeout: 5000 });
+  fireEvent.keyDown(within(card("web")).getByRole("button", { name: "Actions" }), { key: "Enter" });
+  await waitFor(() => expect(screen.getByRole("menuitem", { name: "Sécurité" })).not.toHaveAttribute("data-disabled"));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Sécurité" }));
+  const dialog = await screen.findByRole("dialog", { name: /Sécurité du conteneur/ });
+  const save = within(dialog).getByRole("button", { name: "Enregistrer" });
+  const user = within(dialog).getByLabelText(/Utilisateur/);
+  fireEvent.change(user, { target: { value: "root" } });
+  expect(save).toBeDisabled();
+  expect(within(dialog).getByText(/Format attendu/)).toBeInTheDocument();
+  fireEvent.change(user, { target: { value: "1000:1000" } });
+  expect(save).toBeEnabled();
+  fireEvent.click(within(dialog).getByRole("switch", { name: "Racine en lecture seule" }));
+  fireEvent.click(save);
+  await waitFor(() => expect(patches).toHaveLength(1));
+  expect(patches[0]).toEqual({ path: `/api/projects/${WEB.id}/services/${WEB_SERVICES[0]!.id}`, csrf: "csrf-1", body: { run_as: "1000:1000", read_only_rootfs: true } });
+  expect(await screen.findByText(/prochain déploiement/)).toBeInTheDocument();
+});
+
+it("lecteur : réglages de sécurité inactifs", async () => {
+  role = "viewer";
+  mount();
+  await screen.findByRole("article", { name: "web" }, { timeout: 5000 });
+  fireEvent.keyDown(within(card("web")).getByRole("button", { name: "Actions" }), { key: "Enter" });
+  expect(await screen.findByRole("menuitem", { name: "Sécurité" })).toHaveAttribute("data-disabled");
+  expect(patches).toHaveLength(0);
 });

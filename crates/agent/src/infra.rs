@@ -656,6 +656,7 @@ pub fn infra_specs(cfg: &InfraConfig) -> Result<Vec<ContainerSpec>, InfraError> 
         nano_cpus: None,
         labels: Vec::new(),
         aliases: Vec::new(),
+        read_only_rootfs: false,
     };
     Ok(vec![postgres])
 }
@@ -766,6 +767,7 @@ pub fn buildkit_spec(
             ),
         ],
         aliases: Vec::new(),
+        read_only_rootfs: false,
     })
 }
 

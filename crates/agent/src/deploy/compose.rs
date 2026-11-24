@@ -49,8 +49,8 @@ use crate::build::argv::{self, AllowedBin, ValidatedArg};
 use crate::build::compose::ComposeFile;
 use crate::build::{BuildBackend, ProgressSink, compose_policy};
 use crate::docker::{
-    APP_PIDS_LIMIT, AppLimits, LOG_DRIVER, LOG_MAX_FILE, LOG_MAX_SIZE, MANAGED_LABEL, SPEC_LABEL,
-    internal_alias, project_network, scope_labels,
+    APP_CAP_DROP, APP_PIDS_LIMIT, APP_TMP_TMPFS, AppLimits, LOG_DRIVER, LOG_MAX_FILE, LOG_MAX_SIZE,
+    MANAGED_LABEL, SPEC_LABEL, internal_alias, project_network, scope_labels,
 };
 
 /// Etiquettes posees par Compose sur ses conteneurs.
@@ -148,7 +148,7 @@ fn bound_tmpfs_entry(entry: &str) -> String {
 }
 
 /// Memes limites que les conteneurs d'application simples, par service :
-/// processus (`APP_PIDS_LIMIT`), capacites `NET_RAW` et `MKNOD` retirees,
+/// processus (`APP_PIDS_LIMIT`), capacites `APP_CAP_DROP` retirees,
 /// memoire et CPU (la valeur demandee si elle est plus basse que le plafond
 /// du noeud), repliques (une pour le service expose), `tmpfs` et `shm_size`
 /// bornes. Chaque limite n'a qu'une valeur, au niveau du service : Compose
@@ -248,7 +248,7 @@ fn bound_service(
     let drop = drop
         .as_array_mut()
         .ok_or_else(|| format!("service {name} : cap_drop invalide"))?;
-    for cap in ["NET_RAW", "MKNOD"] {
+    for cap in APP_CAP_DROP {
         if !drop
             .iter()
             .any(|c| c.as_str().is_some_and(|c| c.eq_ignore_ascii_case(cap)))
@@ -477,6 +477,62 @@ impl ComposePlan {
             order,
             file,
         })
+    }
+}
+
+impl ComposePlan {
+    /// Reglages de securite du service expose (les autres gardent le `user`
+    /// et le `read_only` de leur fichier Compose) : utilisateur `run_as`
+    /// (`uid[:gid]`, deja valide) et racine en lecture seule avec un `tmpfs`
+    /// sur `/tmp` (`APP_TMP_TMPFS`, sauf si le fichier en declare un).
+    pub fn secure_exposed(
+        &mut self,
+        run_as: Option<&str>,
+        read_only_rootfs: bool,
+    ) -> Result<(), String> {
+        if run_as.is_none() && !read_only_rootfs {
+            return Ok(());
+        }
+        if run_as.is_some_and(|u| !proto::valid_run_as(u)) {
+            return Err("utilisateur (run_as) invalide".into());
+        }
+        let name = self.exposed.as_str().to_string();
+        let svc = self
+            .file
+            .get_mut("services")
+            .and_then(|s| s.get_mut(&name))
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| format!("service expose {name:?} absent du plan"))?;
+        if let Some(user) = run_as {
+            svc.insert("user".into(), json!(user));
+        }
+        if read_only_rootfs {
+            svc.insert("read_only".into(), json!(true));
+            let tmp = format!("/tmp:{APP_TMP_TMPFS}");
+            let declares_tmp = |v: &Value| {
+                v.as_str()
+                    .is_some_and(|s| s.split(':').next() == Some("/tmp"))
+            };
+            let mut entries = match svc.remove("tmpfs") {
+                Some(Value::Array(a)) => a,
+                Some(Value::String(s)) => vec![Value::String(s)],
+                _ => Vec::new(),
+            };
+            let volume_tmp = svc
+                .get("volumes")
+                .and_then(Value::as_array)
+                .is_some_and(|vs| {
+                    vs.iter()
+                        .any(|v| v.get("target").and_then(Value::as_str) == Some("/tmp"))
+                });
+            if !volume_tmp && !entries.iter().any(declares_tmp) {
+                entries.push(Value::String(tmp));
+            }
+            if !entries.is_empty() {
+                svc.insert("tmpfs".into(), Value::Array(entries));
+            }
+        }
+        Ok(())
     }
 }
 

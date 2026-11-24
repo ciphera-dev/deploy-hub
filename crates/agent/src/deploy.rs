@@ -517,6 +517,13 @@ where
                 bad.key
             )));
         }
+        if spec
+            .run_as
+            .as_deref()
+            .is_some_and(|u| !proto::valid_run_as(u))
+        {
+            return Err(DeployError::Invalid("utilisateur (run_as)".into()));
+        }
         self.docker
             .ensure_network(&project_network(spec.project_id))
             .await?;
@@ -528,7 +535,9 @@ where
                     .map(|v| (v.key.clone(), v.value.expose().to_string()))
                     .collect();
                 let mut app =
-                    ContainerSpec::app(spec.deployment_id, spec.project_id, &spec.image, env);
+                    ContainerSpec::app(spec.deployment_id, spec.project_id, &spec.image, env)
+                        .with_run_as(spec.run_as.as_deref())
+                        .with_read_only_rootfs(spec.read_only_rootfs);
                 if let Some(name) = &spec.service_name {
                     app = app.with_service_alias(name);
                 }
@@ -540,6 +549,7 @@ where
                 result?
             }
         };
+        let runs_as_root = self.docker.runs_as_root(&container).await.unwrap_or(false);
         self.db.put_record(&DeploymentRecord {
             deployment: RunningDeployment {
                 deployment_id: spec.deployment_id,
@@ -547,7 +557,7 @@ where
                 image: spec.image.clone(),
                 healthy: false,
                 serving: false,
-                runs_as_root: false,
+                runs_as_root,
             },
             container: container.clone(),
             port: spec.internal_port,
@@ -573,6 +583,8 @@ where
         let value = serde_json::from_str(&text)
             .map_err(|_| DeployError::Compose("ensemble illisible".into()))?;
         let mut plan = ComposePlan::new(&value, service, spec.project_id, spec.deployment_id)
+            .map_err(DeployError::Compose)?;
+        plan.secure_exposed(spec.run_as.as_deref(), spec.read_only_rootfs)
             .map_err(DeployError::Compose)?;
         // Cles seules dans le fichier ; valeurs dans l'environnement de
         // `docker compose` (voir `deploy::compose`).

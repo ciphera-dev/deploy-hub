@@ -1001,6 +1001,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{id}/services/{sid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Reglages de securite du service (developer et plus) : utilisateur du
+         *     conteneur et racine en lecture seule. Ils valent pour les prochains
+         *     deploiements ; les deux champs sont remplaces ensemble.
+         */
+        patch: operations["update_service"];
+        trace?: never;
+    };
     "/api/projects/{id}/services/{sid}/restart": {
         parameters: {
             query?: never;
@@ -2411,7 +2432,16 @@ export interface components {
              */
             memory_bytes?: number | null;
             name: string;
+            /** @description Racine du conteneur en lecture seule (avec un `/tmp` de 64 Mio). */
+            read_only_rootfs: boolean;
             replicas: components["schemas"]["Replicas"];
+            /**
+             * @description Utilisateur du conteneur demande (`uid[:gid]`) ; `null` : celui de
+             *     l'image.
+             */
+            run_as?: string | null;
+            /** @description L'agent signale le conteneur servi en root (utilisateur effectif). */
+            runs_as_root: boolean;
             state: components["schemas"]["ServiceState"];
         };
         /**
@@ -2867,6 +2897,18 @@ export interface components {
             notice: string;
             /** @description Version demandee. */
             version: string;
+        };
+        /**
+         * @description Corps de `PATCH /api/projects/{id}/services/{sid}` : reglages de securite
+         *     du service, qui valent pour les prochains deploiements.
+         */
+        UpdateService: {
+            read_only_rootfs: boolean;
+            /**
+             * @description `uid` ou `uid:gid` numeriques (`^[0-9]{1,10}(:[0-9]{1,10})?$`) ;
+             *     `null` : l'utilisateur de l'image.
+             */
+            run_as?: string | null;
         };
         /**
          * @description Etat de l'environnement : une modification (suppressions comprises) attend
@@ -5916,6 +5958,59 @@ export interface operations {
             };
             /** @description Projet introuvable */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_service: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Jeton CSRF de la session (obligatoire) */
+                "X-CSRF-Token"?: string | null;
+            };
+            path: {
+                /** @description Identifiant du projet */
+                id: string;
+                /** @description Identifiant du service */
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateService"];
+            };
+        };
+        responses: {
+            /** @description Reglages enregistres */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectService"];
+                };
+            };
+            /** @description Role insuffisant, ou jeton CSRF absent ou invalide */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Projet ou service introuvable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `run_as` hors du format `uid[:gid]` numerique */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

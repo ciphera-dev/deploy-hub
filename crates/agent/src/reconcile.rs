@@ -57,6 +57,11 @@ async fn refresh<D: DockerOps>(docker: &D, db: &StateDb) -> Vec<RunningDeploymen
                         tracing::error!("{e}");
                     }
                 }
+                // Utilisateur effectif relu a chaque etat ; illisible : non.
+                deployment.runs_as_root = docker
+                    .runs_as_root(&record.container)
+                    .await
+                    .unwrap_or(false);
             }
             Err(e) => tracing::warn!(
                 "deploiement {} : sante illisible ({e}), derniere valeur conservee",

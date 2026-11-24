@@ -144,16 +144,20 @@ pub async fn record_state(
 ) -> sqlx::Result<()> {
     let ids: Vec<Uuid> = deployments.iter().map(|d| d.deployment_id.0).collect();
     let healthy: Vec<bool> = deployments.iter().map(|d| d.healthy).collect();
+    let root: Vec<bool> = deployments.iter().map(|d| d.runs_as_root).collect();
     sqlx::query(
         "UPDATE deployments d SET container_running = COALESCE( \
            (SELECT x.h FROM unnest($2::uuid[], $3::bool[]) AS x(id, h) WHERE x.id = d.id), false), \
-         container_reported_at = to_timestamp($4::float8) \
+         container_reported_at = to_timestamp($4::float8), \
+         runs_as_root = COALESCE( \
+           (SELECT x.r FROM unnest($2::uuid[], $5::bool[]) AS x(id, r) WHERE x.id = d.id), false) \
          WHERE d.server_id = $1 AND d.status = 'success'",
     )
     .bind(server)
     .bind(&ids)
     .bind(&healthy)
     .bind(at)
+    .bind(&root)
     .execute(db)
     .await
     .map(|_| ())

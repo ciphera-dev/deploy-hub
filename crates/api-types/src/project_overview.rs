@@ -2,7 +2,7 @@
 //! `GET /api/projects/{id}/services` et
 //! `POST /api/projects/{id}/services/{sid}/{restart,stop}`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::deployments::Deployment;
@@ -59,6 +59,24 @@ pub struct ProjectService {
     /// Memoire en octets (mesure de moins de 2 minutes) : `null` sans mesure
     /// courante.
     pub memory_bytes: Option<u64>,
+    /// Utilisateur du conteneur demande (`uid[:gid]`) ; `null` : celui de
+    /// l'image.
+    pub run_as: Option<String>,
+    /// Racine du conteneur en lecture seule (avec un `/tmp` de 64 Mio).
+    pub read_only_rootfs: bool,
+    /// L'agent signale le conteneur servi en root (utilisateur effectif).
+    pub runs_as_root: bool,
+}
+
+/// Corps de `PATCH /api/projects/{id}/services/{sid}` : reglages de securite
+/// du service, qui valent pour les prochains deploiements.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateService {
+    /// `uid` ou `uid:gid` numeriques (`^[0-9]{1,10}(:[0-9]{1,10})?$`) ;
+    /// `null` : l'utilisateur de l'image.
+    pub run_as: Option<String>,
+    pub read_only_rootfs: bool,
 }
 
 /// Indicateur et sa serie (plus ancienne valeur d'abord). Sans metriques :
@@ -134,6 +152,29 @@ pub fn get_project_overview() {}
 )]
 #[allow(dead_code)]
 pub fn list_project_services() {}
+
+/// Reglages de securite du service (developer et plus) : utilisateur du
+/// conteneur et racine en lecture seule. Ils valent pour les prochains
+/// deploiements ; les deux champs sont remplaces ensemble.
+#[utoipa::path(
+    patch,
+    path = "/api/projects/{id}/services/{sid}",
+    tag = "projects",
+    request_body = UpdateService,
+    params(
+        ("id" = String, Path, description = "Identifiant du projet"),
+        ("sid" = String, Path, description = "Identifiant du service"),
+        ("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)"),
+    ),
+    responses(
+        (status = 200, description = "Reglages enregistres", body = ProjectService),
+        (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
+        (status = 404, description = "Projet ou service introuvable"),
+        (status = 422, description = "`run_as` hors du format `uid[:gid]` numerique"),
+    )
+)]
+#[allow(dead_code)]
+pub fn update_service() {}
 
 /// Redemarre les conteneurs du deploiement servi du service (developer et
 /// plus) ; relance un service arrete.

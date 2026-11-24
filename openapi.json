@@ -3001,6 +3001,78 @@
         }
       }
     },
+    "/api/projects/{id}/services/{sid}": {
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Reglages de securite du service (developer et plus) : utilisateur du\nconteneur et racine en lecture seule. Ils valent pour les prochains\ndeploiements ; les deux champs sont remplaces ensemble.",
+        "operationId": "update_service",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Identifiant du projet",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Identifiant du service",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "Jeton CSRF de la session (obligatoire)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateService"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Reglages enregistres",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectService"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Role insuffisant, ou jeton CSRF absent ou invalide"
+          },
+          "404": {
+            "description": "Projet ou service introuvable"
+          },
+          "422": {
+            "description": "`run_as` hors du format `uid[:gid]` numerique"
+          }
+        }
+      }
+    },
     "/api/projects/{id}/services/{sid}/restart": {
       "post": {
         "tags": [
@@ -6888,7 +6960,9 @@
           "name",
           "environment",
           "state",
-          "replicas"
+          "replicas",
+          "read_only_rootfs",
+          "runs_as_root"
         ],
         "properties": {
           "cpu_percent": {
@@ -6948,8 +7022,23 @@
           "name": {
             "type": "string"
           },
+          "read_only_rootfs": {
+            "type": "boolean",
+            "description": "Racine du conteneur en lecture seule (avec un `/tmp` de 64 Mio)."
+          },
           "replicas": {
             "$ref": "#/components/schemas/Replicas"
+          },
+          "run_as": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Utilisateur du conteneur demande (`uid[:gid]`) ; `null` : celui de\nl'image."
+          },
+          "runs_as_root": {
+            "type": "boolean",
+            "description": "L'agent signale le conteneur servi en root (utilisateur effectif)."
           },
           "state": {
             "$ref": "#/components/schemas/ServiceState"
@@ -8161,6 +8250,26 @@
             "description": "Version demandee."
           }
         }
+      },
+      "UpdateService": {
+        "type": "object",
+        "description": "Corps de `PATCH /api/projects/{id}/services/{sid}` : reglages de securite\ndu service, qui valent pour les prochains deploiements.",
+        "required": [
+          "read_only_rootfs"
+        ],
+        "properties": {
+          "read_only_rootfs": {
+            "type": "boolean"
+          },
+          "run_as": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`uid` ou `uid:gid` numeriques (`^[0-9]{1,10}(:[0-9]{1,10})?$`) ;\n`null` : l'utilisateur de l'image."
+          }
+        },
+        "additionalProperties": false
       },
       "VariablesStatus": {
         "type": "object",

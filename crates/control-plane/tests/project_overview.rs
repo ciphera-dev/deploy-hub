@@ -496,3 +496,126 @@ async fn agent_reported_state_and_metrics_feed_the_overview() {
     assert_eq!(o["status"], "stopped");
     assert_eq!(o["services"][0]["state"], "stopped");
 }
+
+#[test]
+fn run_as_format_validated() {
+    for ok in ["0", "1000", "1000:1000", "4294967295:0", "0000000001:12"] {
+        assert!(proto::valid_run_as(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        ":",
+        "1000:",
+        ":1000",
+        "root",
+        "app:app",
+        "-1",
+        "+1",
+        "1.5",
+        "1000:1000:1000",
+        " 1000",
+        "1000 ",
+        "12345678901",
+        "1000:12345678901",
+        "\u{661}",
+        "1000\n",
+    ] {
+        assert!(!proto::valid_run_as(bad), "{bad:?}");
+    }
+}
+
+#[tokio::test]
+async fn service_security_is_validated_stored_audited_and_sent_to_the_agent() {
+    let (state, _pg) = common::state().await;
+    let (project, env, service) = git_project(&state, "web").await;
+    let dev = login(&state, "developer").await;
+    let viewer = login(&state, "viewer").await;
+    let patch = async |sid: Uuid, who: &(String, String), body: Value, csrf: bool| {
+        call(
+            &state,
+            "PATCH",
+            &format!("/api/projects/{project}/services/{sid}"),
+            Req {
+                cookie: Some(&who.0),
+                csrf: csrf.then_some(who.1.as_str()),
+                body: Some(body),
+                ..Req::default()
+            },
+        )
+        .await
+    };
+    let good = json!({ "run_as": "1000:1000", "read_only_rootfs": true });
+
+    // Lecteur ou sans jeton CSRF : 403.
+    assert_eq!(
+        patch(service, &viewer, good.clone(), true).await.status,
+        403
+    );
+    assert_eq!(patch(service, &dev, good.clone(), false).await.status, 403);
+    // Format refuse : 422, rien d'ecrit.
+    for bad in ["root", "1000:", "1000:1000:1", "-1", "99999999999"] {
+        let body = json!({ "run_as": bad, "read_only_rootfs": false });
+        let r = patch(service, &dev, body, true).await;
+        assert_eq!(r.status, 422, "{bad} : {}", r.raw);
+    }
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM services WHERE run_as IS NOT NULL"
+        )
+        .await,
+        0
+    );
+    // Champ inconnu : 422.
+    let body = json!({ "run_as": null, "read_only_rootfs": false, "x": 1 });
+    assert_eq!(patch(service, &dev, body, true).await.status, 422);
+    // Service d'un autre projet ou inconnu : 404.
+    let (_, _, other) = git_project(&state, "api").await;
+    for sid in [other, Uuid::new_v4()] {
+        let r = patch(sid, &dev, good.clone(), true).await;
+        assert_eq!(r.status, 404, "{}", r.raw);
+    }
+
+    let r = patch(service, &dev, good.clone(), true).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let updated = r.json();
+    assert_eq!(updated["run_as"], "1000:1000");
+    assert_eq!(updated["read_only_rootfs"], true);
+    assert_eq!(updated["runs_as_root"], false);
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM audit_events WHERE action = 'service.security'"
+        )
+        .await,
+        1
+    );
+
+    // Le deploiement suivant porte les reglages.
+    let srv = server(&state).await;
+    let mut agent = state.agents.attach_channel(ServerId(srv));
+    let d = deployment(&state, project, env, srv, "running", 10).await;
+    sqlx::query("UPDATE deployments SET image_built_at = now() WHERE id = $1")
+        .bind(d)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    control_plane::domain::deployments::orchestrator::dispatch(&state, d)
+        .await
+        .unwrap();
+    let mut seen = false;
+    while let Ok(msg) = agent.try_recv() {
+        if let ControlToAgent::Deploy(spec) = msg {
+            assert_eq!(spec.run_as.as_deref(), Some("1000:1000"));
+            assert!(spec.read_only_rootfs);
+            seen = true;
+        }
+    }
+    assert!(seen, "Deploy attendu");
+
+    // `null` : l'utilisateur de l'image.
+    let body = json!({ "run_as": null, "read_only_rootfs": false });
+    let r = patch(service, &dev, body, true).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["run_as"], Value::Null);
+}

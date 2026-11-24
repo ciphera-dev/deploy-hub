@@ -1876,6 +1876,47 @@ fn limited_plan(bundle: &Value) -> Result<ComposePlan, String> {
 }
 
 #[test]
+fn compose_exposed_service_gets_user_and_read_only_root() {
+    let mut plan = limited_plan(&compose_bundle()).unwrap();
+    // Sans reglage : rien ne change.
+    let before = plan.file.clone();
+    plan.secure_exposed(None, false).unwrap();
+    assert_eq!(plan.file, before);
+    assert!(plan.secure_exposed(Some("root"), false).is_err());
+    plan.secure_exposed(Some("1000:1000"), true).unwrap();
+    let services = plan.file["services"].as_object().unwrap();
+    assert_eq!(services["web"]["user"], json!("1000:1000"));
+    assert_eq!(services["web"]["read_only"], json!(true));
+    assert_eq!(
+        services["web"]["tmpfs"],
+        json!(["/tmp:rw,nosuid,nodev,size=64m"])
+    );
+    // Les autres services gardent leur fichier Compose.
+    for other in ["api", "cache"] {
+        for key in ["user", "read_only", "tmpfs"] {
+            assert!(services[other].get(key).is_none(), "{other}.{key}");
+        }
+    }
+    for (name, svc) in services {
+        let drop = svc["cap_drop"].as_array().unwrap();
+        for cap in ["AUDIT_WRITE", "SETPCAP"] {
+            assert!(drop.contains(&json!(cap)), "{name} {cap}");
+        }
+    }
+}
+
+#[test]
+fn compose_read_only_keeps_a_declared_tmp() {
+    let mut bundle = compose_bundle();
+    bundle["services"]["web"]["tmpfs"] = json!("/tmp:size=1m");
+    let mut plan = limited_plan(&bundle).unwrap();
+    plan.secure_exposed(None, true).unwrap();
+    let tmpfs = plan.file["services"]["web"]["tmpfs"].as_array().unwrap();
+    assert_eq!(tmpfs.len(), 1);
+    assert!(tmpfs[0].as_str().unwrap().starts_with("/tmp:"));
+}
+
+#[test]
 fn compose_plan_forces_pids_and_caps() {
     let mut bundle = compose_bundle();
     bundle["services"]["api"]["cap_drop"] = json!(["SYS_CHROOT"]);

@@ -9,12 +9,13 @@
 //! source en v0.1) ; le domaine, tant qu'aucun n'est configure.
 
 use api_types::project_overview::{
-    OverviewMetrics, ProjectOverview, ServiceActionAccepted, Sparkline,
+    OverviewMetrics, ProjectOverview, ServiceActionAccepted, Sparkline, UpdateService,
 };
-use axum::extract::{Path, State};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use shared::error::ApiError;
 use uuid::Uuid;
@@ -34,8 +35,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/projects/{id}/overview", get(overview))
         .route("/api/projects/{id}/services", get(list))
+        .route("/api/projects/{id}/services/{sid}", patch(update))
         .route("/api/projects/{id}/services/{sid}/restart", post(restart))
         .route("/api/projects/{id}/services/{sid}/stop", post(stop))
+        .layer(DefaultBodyLimit::max(4 * 1024))
 }
 
 fn not_found() -> ApiError {
@@ -189,6 +192,57 @@ async fn service_action(
         }),
     )
         .into_response())
+}
+
+/// `PATCH /api/projects/{id}/services/{sid}` : reglages de securite.
+async fn update(
+    State(state): State<AppState>,
+    auth: Require<res::Projects, lvl::Write>,
+    Path((id, sid)): Path<(String, String)>,
+    body: Result<Json<UpdateService>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let missing = || ApiError::new(404, "not_found", "Service introuvable.");
+    let project = Uuid::parse_str(&id).map_err(|_| missing())?;
+    let service = Uuid::parse_str(&sid).map_err(|_| missing())?;
+    let Json(body) =
+        body.map_err(|_| ApiError::new(422, "validation_failed", "Corps de requête invalide."))?;
+    let run_as = body.run_as.as_deref().filter(|u| !u.is_empty());
+    if let Some(u) = run_as
+        && !proto::valid_run_as(u)
+    {
+        return Err(ApiError::new(
+            422,
+            "validation_failed",
+            "Utilisateur invalide : un uid numérique, ou uid:gid (par exemple 1000:1000).",
+        ));
+    }
+    let mut conn = state
+        .db
+        .acquire()
+        .await
+        .map_err(|e| internal("connexion a la base", e))?;
+    let found = services::update_security(
+        &mut conn,
+        auth.user.id,
+        project,
+        service,
+        run_as,
+        body.read_only_rootfs,
+    )
+    .await
+    .map_err(|e| internal("reglages du service", e))?;
+    if !found {
+        return Err(missing());
+    }
+    let services = services::list(&state, &mut conn, project)
+        .await
+        .map_err(|e| internal("lecture des services", e))?
+        .ok_or_else(missing)?;
+    let service = services
+        .into_iter()
+        .find(|s| Uuid::parse_str(&s.id).ok() == Some(service))
+        .ok_or_else(missing)?;
+    Ok(Json(service).into_response())
 }
 
 /// `POST /api/projects/{id}/services/{sid}/restart`

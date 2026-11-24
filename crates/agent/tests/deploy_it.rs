@@ -496,3 +496,98 @@ async fn real_compose_restart_leaves_previous_deployments_stopped() {
         Health::Stopped
     );
 }
+
+fn cache_app(project: ProjectId, service: ServiceId) -> DeploySpec {
+    DeploySpec {
+        internal_port: None,
+        compose: None,
+        ..app(project, service, CACHE_IMAGE, 10)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel : job agent-docker de la CI"]
+async fn container_runs_as_requested_uid() {
+    pull(CACHE_IMAGE).await;
+    let mut bench = Bench::new();
+    let (project, service) = (ProjectId::new(), ServiceId::new());
+    bench.networks.push(docker::project_network(project));
+    let spec = DeploySpec {
+        run_as: Some("1000:1000".into()),
+        read_only_rootfs: true,
+        ..cache_app(project, service)
+    };
+    let name = format!("ciphera-d-{}", spec.deployment_id);
+    bench.containers.push(name.clone());
+    let (result, stages) = bench.deploy(&spec).await;
+    result.unwrap_or_else(|e| panic!("deploiement : {e} ({stages:?})"));
+
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    let info = api.inspect_container(&name, None).await.unwrap();
+    assert_eq!(info.config.unwrap().user.as_deref(), Some("1000:1000"));
+    let host = info.host_config.unwrap();
+    assert_eq!(host.readonly_rootfs, Some(true));
+    assert_eq!(
+        host.tmpfs.unwrap().get("/tmp").map(String::as_str),
+        Some("rw,nosuid,nodev,size=64m")
+    );
+    let dropped = host.cap_drop.unwrap();
+    for cap in ["NET_RAW", "MKNOD", "AUDIT_WRITE", "SETPCAP"] {
+        assert!(
+            dropped.iter().any(|c| c.ends_with(cap)),
+            "{cap} : {dropped:?}"
+        );
+    }
+    // Le processus tourne bien sous l'uid demande.
+    let top = api.top_processes(&name, None).await.unwrap();
+    let user_column = top
+        .titles
+        .unwrap()
+        .iter()
+        .position(|t| t == "UID" || t == "USER")
+        .expect("colonne utilisateur");
+    for process in top.processes.unwrap() {
+        assert_eq!(process[user_column], "1000", "{process:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel : job agent-docker de la CI"]
+async fn root_reported_in_state() {
+    pull(CACHE_IMAGE).await;
+    let mut bench = Bench::new();
+    let (project, service) = (ProjectId::new(), ServiceId::new());
+    bench.networks.push(docker::project_network(project));
+    // Sans reglage : l'utilisateur de l'image (root pour redis), signale.
+    let plain = cache_app(project, service);
+    bench
+        .containers
+        .push(format!("ciphera-d-{}", plain.deployment_id));
+    let (result, stages) = bench.deploy(&plain).await;
+    result.unwrap_or_else(|e| panic!("deploiement : {e} ({stages:?})"));
+    let record = bench.db.record(plain.deployment_id).unwrap().unwrap();
+    assert!(record.deployment.runs_as_root);
+    let state = ciphera_agent::reconcile::snapshot(bench.docker.as_ref(), &bench.db).await;
+    let reported = state
+        .iter()
+        .find(|d| d.deployment_id == plain.deployment_id)
+        .unwrap();
+    assert!(reported.runs_as_root);
+
+    // Avec un uid numerique non nul : plus root.
+    let user = DeploySpec {
+        run_as: Some("1000".into()),
+        ..cache_app(project, service)
+    };
+    bench
+        .containers
+        .push(format!("ciphera-d-{}", user.deployment_id));
+    let (result, stages) = bench.deploy(&user).await;
+    result.unwrap_or_else(|e| panic!("deploiement : {e} ({stages:?})"));
+    let state = ciphera_agent::reconcile::snapshot(bench.docker.as_ref(), &bench.db).await;
+    let reported = state
+        .iter()
+        .find(|d| d.deployment_id == user.deployment_id)
+        .unwrap();
+    assert!(!reported.runs_as_root);
+}

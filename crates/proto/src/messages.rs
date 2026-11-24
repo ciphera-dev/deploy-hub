@@ -80,6 +80,16 @@ pub struct DeploySpec {
     pub read_only_rootfs: bool,
 }
 
+/// `DeploySpec::run_as` valide : `^[0-9]{1,10}(:[0-9]{1,10})?$` (uid, ou
+/// uid:gid, numeriques). Point unique du plan de controle et de l'agent.
+pub fn valid_run_as(run_as: &str) -> bool {
+    let id = |s: &str| (1..=10).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
+    match run_as.split_once(':') {
+        Some((uid, gid)) => id(uid) && id(gid),
+        None => id(run_as),
+    }
+}
+
 /// Une variable d'environnement d'un deploiement.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvVar {

@@ -180,7 +180,7 @@ it("logs de build d'un déploiement : flux du déploiement dans un bloc de code"
 });
 
 it("conteneurs : un par service, en marche selon l'état calculé par le serveur, CPU et mémoire de l'agent", () => {
-  const service = (over: Partial<ProjectService>): ProjectService => ({ id: "s1", name: "web", environment: "production", state: "running", deployment_number: 42, replicas: { running: 1, desired: 1 }, ...over });
+  const service = (over: Partial<ProjectService>): ProjectService => ({ id: "s1", name: "web", environment: "production", state: "running", deployment_number: 42, replicas: { running: 1, desired: 1 }, run_as: null, read_only_rootfs: false, runs_as_root: false, ...over });
   expect(containersOf([service({ cpu_percent: 12.5, memory_bytes: 256 * 1024 * 1024 }), service({ id: "s2", name: "worker", state: "stopped" }), service({ id: "s3", name: "api", state: "none", deployment_number: null })])).toEqual([
     { id: "web", service: "s1", img: "web:42", st: "ok", col: CONTAINER_COLORS[0], cpu: 12.5, mem: 256 * 1024 * 1024 },
     { id: "worker", service: "s2", img: "worker:42", st: "off", col: CONTAINER_COLORS[1], cpu: null, mem: null },

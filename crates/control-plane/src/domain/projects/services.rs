@@ -80,6 +80,9 @@ struct Row {
     number: Option<i64>,
     image: Option<String>,
     container_running: Option<bool>,
+    run_as: Option<String>,
+    read_only_rootfs: bool,
+    runs_as_root: Option<bool>,
     active: bool,
     last_failed: bool,
 }
@@ -100,14 +103,14 @@ pub async fn list(
     }
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT s.id, s.name, e.name AS environment, s.internal_port, s.stopped_deployment, \
-                cur.id AS serving, cur.server_id, cur.number, cur.image, cur.container_running, \
+                cur.id AS serving, cur.server_id, cur.number, cur.image, cur.container_running, \n                s.run_as, s.read_only_rootfs, cur.runs_as_root, \
                 EXISTS (SELECT 1 FROM deployments a WHERE a.environment_id = e.id \
                         AND a.status IN ('queued', 'running')) AS active, \
                 COALESCE((SELECT l.status = 'failed' FROM deployments l WHERE l.environment_id = e.id \
                           AND l.status IN ('success', 'failed') \
                           ORDER BY l.finished_at DESC NULLS LAST, l.number DESC LIMIT 1), false) AS last_failed \
          FROM services s JOIN environments e ON e.id = s.environment_id \
-         LEFT JOIN LATERAL (SELECT c.id, c.server_id, c.number, c.image, c.container_running FROM deployments c \
+         LEFT JOIN LATERAL (SELECT c.id, c.server_id, c.number, c.image, c.container_running, c.runs_as_root FROM deployments c \
               WHERE c.environment_id = e.id AND c.status = 'success' \
               ORDER BY c.finished_at DESC, c.number DESC LIMIT 1) cur ON true \
          WHERE e.project_id = $1 ORDER BY e.created_at, e.name, s.name",
@@ -148,10 +151,53 @@ pub async fn list(
                     },
                     cpu_percent: usage.map(|u| u.0),
                     memory_bytes: usage.map(|u| u.1),
+                    run_as: r.run_as,
+                    read_only_rootfs: r.read_only_rootfs,
+                    runs_as_root: running && r.runs_as_root == Some(true),
                 }
             })
             .collect(),
     ))
+}
+
+/// Enregistre les reglages de securite du service (utilisateur du conteneur
+/// et racine en lecture seule), audites. Ils valent pour les prochains
+/// deploiements. `false` : service introuvable dans ce projet.
+pub async fn update_security(
+    conn: &mut PgConnection,
+    actor: Uuid,
+    project: Uuid,
+    service: Uuid,
+    run_as: Option<&str>,
+    read_only_rootfs: bool,
+) -> sqlx::Result<bool> {
+    let updated = sqlx::query(
+        "UPDATE services s SET run_as = $3, read_only_rootfs = $4 FROM environments e \
+         WHERE s.id = $1 AND e.id = s.environment_id AND e.project_id = $2",
+    )
+    .bind(service)
+    .bind(project)
+    .bind(run_as)
+    .bind(read_only_rootfs)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    if updated == 0 {
+        return Ok(false);
+    }
+    sqlx::query(
+        "INSERT INTO audit_events (id, actor_id, action, target, detail) \
+         VALUES ($1, $2, 'service.security', 'service', $3)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(actor)
+    .bind(json!({
+        "project_id": project, "service_id": service,
+        "run_as": run_as, "read_only_rootfs": read_only_rootfs,
+    }))
+    .execute(&mut *conn)
+    .await?;
+    Ok(true)
 }
 
 /// Deploiement servi d'un environnement et son serveur (s'il en a un).

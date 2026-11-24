@@ -20,6 +20,25 @@ export async function fetchServices(projectId: string): Promise<ProjectService[]
   return unwrap(await api.GET("/api/projects/{id}/services", { params: { path: { id: projectId } } }));
 }
 
+/** Format de `run_as` : `uid` ou `uid:gid` numériques (comme le serveur). */
+export const RUN_AS_RE = /^[0-9]{1,10}(:[0-9]{1,10})?$/;
+
+/** PATCH /api/projects/{id}/services/{sid} : utilisateur et racine en lecture seule (developer et plus). */
+export async function updateServiceSecurity(projectId: string, serviceId: string, body: { run_as: string | null; read_only_rootfs: boolean }): Promise<{ ok: true; data: ProjectService } | { ok: false; message: string }> {
+  let result;
+  try {
+    result = await api.PATCH("/api/projects/{id}/services/{sid}", { params: { path: { id: projectId, sid: serviceId } }, body });
+  } catch {
+    return { ok: false, message: "Serveur injoignable. Réessayez." };
+  }
+  if (result.data) return { ok: true, data: result.data };
+  const { status } = result.response;
+  const message = (result.error as { error?: { message?: unknown } } | undefined)?.error?.message;
+  if (status === 403) return { ok: false, message: "Accès refusé : cette action demande le rôle développeur." };
+  if ((status === 404 || status === 422) && typeof message === "string") return { ok: false, message };
+  return { ok: false, message: "Enregistrement impossible pour le moment. Réessayez." };
+}
+
 export type ServiceAction = "restart" | "stop";
 
 /** POST /api/projects/{id}/services/{sid}/{restart,stop} (developer et plus). */
