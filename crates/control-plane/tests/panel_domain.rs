@@ -581,6 +581,8 @@ async fn panel_confirmed_never_dns_error() {
     env.dns.set(HOST, &[NODE_IP]);
     let r = send(&env.state, &owner, "POST", &format!("{PATH}/recheck"), None).await;
     assert_eq!(r.status, 202, "{}", r.raw);
+    // La reponse reflete l'etat frais : l'ancienne erreur n'y figure plus.
+    assert!(r.json()["error"].is_null(), "{}", r.raw);
     run_check(&mut env, SystemTime::now(), true).await;
     let r = send(&env.state, &owner, "GET", PATH, None).await;
     assert_eq!(r.json()["status"], "active", "{}", r.raw);
@@ -647,6 +649,15 @@ async fn recheck_owner_only() {
     .await
     .unwrap();
     assert_eq!(audit, 1);
+    // Au plus 5 revérifications par quart d'heure et par proprietaire (deux
+    // deja comptees) : la sixieme est refusee.
+    for _ in 0..3 {
+        let r = send(&env.state, &owner, "POST", &recheck, None).await;
+        assert_eq!(r.status, 202, "{}", r.raw);
+    }
+    let r = send(&env.state, &owner, "POST", &recheck, None).await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+    assert_eq!(r.code(), "rate_limited");
     while env.agent.try_recv().is_ok() {}
 }
 

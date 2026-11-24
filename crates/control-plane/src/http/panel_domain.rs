@@ -33,8 +33,8 @@ use shared::error::ApiError;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::auth::internal;
 use crate::auth::webauthn::request_host;
+use crate::auth::{internal, rate_limit};
 use crate::connectors::github;
 use crate::domain::domains::{self, acme, dns, panel};
 use crate::http::settings::{Admin, owner_only};
@@ -105,19 +105,19 @@ async fn lock(conn: &mut PgConnection) -> Result<(), ApiError> {
 /// Valide la transaction **et** l'etat en memoire sous le meme verrou
 /// d'ecriture : l'etat est pose avant le commit (le verrou consultatif ne
 /// tombe qu'au commit, donc aucune autre ecriture ne s'intercale), et remis
-/// tel qu'il etait si le commit echoue.
+/// tel qu'il etait si le commit echoue. La sequence est detachee de la
+/// requete (voir [`panel::PanelSwitch::commit_with`]) : une deconnexion du
+/// client pendant le commit ne laisse pas l'etat en memoire faux.
 async fn commit_with(
     state: &AppState,
-    tx: sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: sqlx::Transaction<'static, sqlx::Postgres>,
     next: Option<panel::Panel>,
 ) -> Result<(), ApiError> {
-    let previous = state.panel.current();
-    state.panel.set(next);
-    if let Err(e) = tx.commit().await {
-        state.panel.set(previous);
-        return Err(db("transaction")(e));
-    }
-    Ok(())
+    state
+        .panel
+        .commit_with(next, async move { tx.commit().await })
+        .await
+        .map_err(db("transaction"))
 }
 
 /// Requete arrivee par le proxy du noeud (pair en boucle locale, HTTPS)
@@ -495,6 +495,26 @@ async fn recheck(State(state): State<AppState>, auth: Owner) -> Result<Response,
     let Some(panel) = state.panel.current() else {
         return Err(not_found());
     };
+    // Resolution DNS et verrou : au plus 5 revérifications par quart d'heure
+    // et par proprietaire (espace separe des connexions).
+    if let rate_limit::Admission::Limited(retry_after) = rate_limit::admit(
+        &state.db,
+        &rate_limit::IpKey::user_action("panel-recheck", actor),
+        &rate_limit::email_key("panel-recheck"),
+    )
+    .await
+    .map_err(db("limitation de debit"))?
+    {
+        let mut res = ApiError::new(
+            429,
+            "rate_limited",
+            "Trop de revérifications. Réessayez dans quelques minutes.",
+        )
+        .into_response();
+        res.headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, retry_after.into());
+        return Ok(res);
+    }
     let (v4, v6) = state.cfg.node_ips();
     if v4.is_none() && v6.is_none() {
         return Err(ApiError::new(

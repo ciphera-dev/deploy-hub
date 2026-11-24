@@ -127,6 +127,15 @@ pub async fn recheck(conn: &mut PgConnection, id: Uuid, now: i64) -> sqlx::Resul
     if !request(&mut *conn, id, now).await? {
         check(&mut *conn, id).await?;
     }
+    // DNS confirme bon : une erreur de verification plus ancienne sur un
+    // certificat encore actif n'est plus d'actualite.
+    sqlx::query(
+        "UPDATE domains SET cert_error = NULL, updated_at = now() \
+         WHERE id = $1 AND cert_status = 'active' AND cert_error IS NOT NULL",
+    )
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
     sqlx::query(
         "UPDATE jobs SET run_at = now()          WHERE dedupe_key = $1 AND status = 'queued' AND run_at > now()",
     )
@@ -328,11 +337,7 @@ pub async fn issue(state: &AppState, job: Job) -> Result<(), HandlerError> {
             // Verdict negatif : le domaine ne bouge qu'apres
             // `DNS_NEGATIVE_VERDICTS` verdicts d'affilee, espaces par le
             // delai croissant de la tache.
-            let negatives = count_negative(state, id).await?;
-            if negatives >= DNS_NEGATIVE_VERDICTS {
-                return dns_moved(state, id, &t.host, now, &why).await;
-            }
-            return failed(state, &job, id, &t.host, now, failures, &clean(&why)).await;
+            return negative_verdict(state, &job, id, &t.host, now, failures, &why).await;
         }
         Ok(None) => reset_negatives(state, id).await?,
     }
@@ -571,16 +576,52 @@ async fn installed(
     Ok(())
 }
 
-/// Compte un verdict DNS negatif de plus ; renvoie le total consecutif.
-async fn count_negative(state: &AppState, id: Uuid) -> Result<i16, HandlerError> {
+/// Compte un verdict DNS negatif de plus (dans la transaction de la suite
+/// donnee au verdict) ; renvoie le total consecutif.
+async fn count_negative(conn: &mut PgConnection, id: Uuid) -> Result<i16, HandlerError> {
     sqlx::query_scalar(
-        "UPDATE domains SET dns_failures = LEAST(dns_failures + 1, 100) WHERE id = $1          RETURNING dns_failures",
+        "UPDATE domains SET dns_failures = LEAST(dns_failures + 1, 100) WHERE id = $1 \
+         RETURNING dns_failures",
     )
     .bind(id)
-    .fetch_optional(&state.db)
+    .fetch_optional(conn)
     .await
     .map(|n| n.unwrap_or(0))
     .map_err(|e| db_error("verdicts DNS du domaine", e))
+}
+
+/// Verdict DNS negatif d'un domaine (hors panneau confirme) : le compteur et
+/// la suite (reprise avec delai croissant, ou erreur DNS au
+/// [`DNS_NEGATIVE_VERDICTS`]-ieme verdict) sont ecrits dans une seule
+/// transaction.
+async fn negative_verdict(
+    state: &AppState,
+    job: &Job,
+    id: Uuid,
+    host: &str,
+    now: i64,
+    failures: u32,
+    why: &str,
+) -> Result<(), HandlerError> {
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| db_error("connexion a la base", e))?;
+    if count_negative(&mut tx, id).await? >= DNS_NEGATIVE_VERDICTS {
+        dns_moved(&mut tx, id, now, why).await?;
+        tx.commit()
+            .await
+            .map_err(|e| db_error("verification du domaine", e))?;
+        tracing::warn!(%host, "DNS plus correct : emission arretee ({why})");
+        super::push_routes(state).await;
+        return Ok(());
+    }
+    failed_in(state, &mut tx, job, id, host, now, failures, &clean(why)).await?;
+    tx.commit()
+        .await
+        .map_err(|e| db_error("erreur du certificat", e))?;
+    Ok(())
 }
 
 /// Verdict positif : le compteur de verdicts negatifs repart de zero.
@@ -596,34 +637,24 @@ async fn reset_negatives(state: &AppState, id: Uuid) -> Result<(), HandlerError>
 /// Le DNS ne pointe plus vers le noeud : erreur DNS visible, route retiree,
 /// aucune reprise (un certificat encore valide reste affiche actif).
 async fn dns_moved(
-    state: &AppState,
+    conn: &mut PgConnection,
     id: Uuid,
-    host: &str,
     now: i64,
     why: &str,
 ) -> Result<(), HandlerError> {
-    {
-        let mut conn = state
-            .db
-            .acquire()
-            .await
-            .map_err(|e| db_error("connexion a la base", e))?;
-        sqlx::query(
-            "UPDATE domains SET dns_status = 'error', dns_error = $2, dns_checked_at = now(), \
-             cert_status = CASE WHEN cert_expires_at > to_timestamp($3::float8) \
-               THEN 'active' ELSE 'none' END, \
-             cert_error = NULL, updated_at = now() WHERE id = $1",
-        )
-        .bind(id)
-        .bind(clean(why))
-        .bind(now as f64)
-        .execute(&mut *conn)
-        .await
-        .map_err(|e| db_error("verification du domaine", e))?;
-    }
-    tracing::warn!(%host, "DNS plus correct : emission arretee ({why})");
-    super::push_routes(state).await;
-    Ok(())
+    sqlx::query(
+        "UPDATE domains SET dns_status = 'error', dns_error = $2, dns_checked_at = now(), \
+         cert_status = CASE WHEN cert_expires_at > to_timestamp($3::float8) \
+           THEN 'active' ELSE 'none' END, \
+         cert_error = NULL, updated_at = now() WHERE id = $1",
+    )
+    .bind(id)
+    .bind(clean(why))
+    .bind(now as f64)
+    .execute(conn)
+    .await
+    .map(|_| ())
+    .map_err(|e| db_error("verification du domaine", e))
 }
 
 /// Notification d'un echec : expiration a moins de 7 jours (une fois par
@@ -669,6 +700,24 @@ async fn failed(
         .begin()
         .await
         .map_err(|e| db_error("connexion a la base", e))?;
+    failed_in(state, &mut tx, job, id, host, now, failures, reason).await?;
+    tx.commit()
+        .await
+        .map_err(|e| db_error("erreur du certificat", e))
+}
+
+/// [`failed`] dans la transaction de l'appelant (qui la valide).
+#[allow(clippy::too_many_arguments)]
+async fn failed_in(
+    state: &AppState,
+    tx: &mut PgConnection,
+    job: &Job,
+    id: Uuid,
+    host: &str,
+    now: i64,
+    failures: u32,
+    reason: &str,
+) -> Result<(), HandlerError> {
     // Fin de validite du certificat encore valide (renouvellement en echec).
     let valid_until: Option<Option<i64>> = sqlx::query_scalar(
         "UPDATE domains SET cert_error = $2, \
@@ -684,15 +733,12 @@ async fn failed(
     .await
     .map_err(|e| db_error("erreur du certificat", e))?;
     if let Some(event) = failure_notice(id, job, now, failures, valid_until.flatten()) {
-        notifications::enqueue(&mut tx, state, event)
+        notifications::enqueue(&mut *tx, state, event)
             .await
             .map_err(|e| db_error("notification du certificat", e))?;
     }
     let next = now + retry_delay(failures);
-    schedule_next(&mut tx, job, id, next, failures.saturating_add(1)).await?;
-    tx.commit()
-        .await
-        .map_err(|e| db_error("erreur du certificat", e))?;
+    schedule_next(&mut *tx, job, id, next, failures.saturating_add(1)).await?;
     tracing::warn!(%host, next, "emission du certificat en echec : {reason}");
     Ok(())
 }

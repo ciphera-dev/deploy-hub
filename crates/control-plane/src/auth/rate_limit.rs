@@ -55,6 +55,11 @@ impl IpKey {
         Self(format!("hook:{}", bucket(ip)))
     }
 
+    /// Actions d'un utilisateur connecte limitees par compte (espace separe).
+    pub fn user_action(action: &str, user: uuid::Uuid) -> Self {
+        Self(format!("{action}:{user}"))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

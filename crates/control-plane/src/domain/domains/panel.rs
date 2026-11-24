@@ -68,7 +68,8 @@ impl PanelSwitch {
         Ok(Self::with(read(&mut conn).await?))
     }
 
-    /// Remplace l'etat (apres une ecriture validee en base).
+    /// Remplace l'etat en memoire. Les ecritures du domaine passent par
+    /// [`PanelSwitch::commit_with`] : l'etat suit la base.
     pub fn set(&self, panel: Option<Panel>) {
         let open = !panel.as_ref().is_some_and(|p| p.confirmed);
         *self.0.current.write().unwrap_or_else(|e| e.into_inner()) = panel;
@@ -77,6 +78,32 @@ impl PanelSwitch {
             *v = open;
             changed
         });
+    }
+
+    /// Pose `next` puis attend `commit` (validation de la transaction, verrou
+    /// consultatif encore tenu) ; si `commit` echoue, l'etat precedent est
+    /// remis. Le tout tourne dans une tache detachee : si l'appelant est
+    /// abandonne (client deconnecte) pendant le commit, la sequence va
+    /// quand meme a son terme et l'etat ne diverge pas de la base.
+    pub async fn commit_with<E, F>(&self, next: Option<Panel>, commit: F) -> Result<(), E>
+    where
+        E: Send + 'static,
+        F: std::future::Future<Output = Result<(), E>> + Send + 'static,
+    {
+        let switch = self.clone();
+        let task = tokio::spawn(async move {
+            let previous = switch.current();
+            switch.set(next);
+            let done = commit.await;
+            if done.is_err() {
+                switch.set(previous);
+            }
+            done
+        });
+        match task.await {
+            Ok(done) => done,
+            Err(e) => std::panic::resume_unwind(e.into_panic()),
+        }
     }
 
     pub fn current(&self) -> Option<Panel> {
@@ -321,6 +348,64 @@ mod tests {
         );
         assert_eq!(s(false, "ok", "issuing").0, PanelDomainStatus::Issuing);
         assert_eq!(s(false, "ok", "none").0, PanelDomainStatus::Issuing);
+    }
+
+    fn panel(confirmed: bool) -> Panel {
+        Panel {
+            id: Uuid::new_v4(),
+            host: "panel.example.org".into(),
+            confirmed,
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_failure_restores_the_previous_state() {
+        let switch = PanelSwitch::default();
+        let r: Result<(), &str> = switch
+            .commit_with(Some(panel(true)), async { Err("commit") })
+            .await;
+        assert_eq!(r, Err("commit"));
+        assert_eq!(switch.current(), None);
+        assert!(switch.listens_8443());
+        let ok: Result<(), &str> = switch
+            .commit_with(Some(panel(true)), async { Ok(()) })
+            .await;
+        assert_eq!(ok, Ok(()));
+        assert!(!switch.listens_8443());
+    }
+
+    /// L'appelant est abandonne pendant le commit : la sequence va a son
+    /// terme (etat pose si le commit reussit, restaure s'il echoue).
+    #[tokio::test]
+    async fn dropping_the_caller_mid_commit_never_leaves_a_wrong_state() {
+        for commit_ok in [true, false] {
+            let switch = PanelSwitch::default();
+            let release = Arc::new(tokio::sync::Notify::new());
+            let started = Arc::new(tokio::sync::Notify::new());
+            let (r, s) = (release.clone(), started.clone());
+            let s2 = switch.clone();
+            let caller = tokio::spawn(async move {
+                s2.commit_with(Some(panel(true)), async move {
+                    s.notify_one();
+                    r.notified().await;
+                    if commit_ok { Ok(()) } else { Err(()) }
+                })
+                .await
+            });
+            started.notified().await;
+            // Etat pose avant le commit ; le client se deconnecte.
+            assert!(!switch.listens_8443());
+            caller.abort();
+            let _ = caller.await;
+            release.notify_one();
+            for _ in 0..200 {
+                if switch.listens_8443() != commit_ok {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert_eq!(!switch.listens_8443(), commit_ok, "commit_ok={commit_ok}");
+        }
     }
 
     #[test]
