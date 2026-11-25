@@ -385,3 +385,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 09:10 — Session v0.1-sdd — claude-code (orchestrateur) — Task R30 : PKI et lien agent
 - fait : renew-certs limité au serveur local et à la CA, révocation d'agent, retry QUIC, écriture atomique de la paire avec verrou, CA:false, vérification côté agent
 - résultat : TERMINÉ (relecture approuvée, 1 tour)
+
+## 2026-11-25 10:15 — Session v0.1-sdd — claude-code (orchestrateur) — Task fix/ci-panel-witness : CI : témoin du panneau sondé avant son démarrage
+- fait : panel_up avant les sondes de sortie dans run-docker-host.sh
+- résultat : TERMINÉ

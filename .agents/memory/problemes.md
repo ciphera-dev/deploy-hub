@@ -173,3 +173,8 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 - Correction (fail-closed) : ligne en attente envoyée seulement sur une fin propre d'une lecture sans suivi d'un conteneur sorti (même exécution avant/après) ; sinon « [ligne incomplète ignorée] » ; toute lecture réelle (`Tail(n)` qui demande n+1, `Beginning`) remplace la première ligne de chaque flux par ce repère ; fin d'un suivi : ligne en attente toujours écartée ; conteneur TTY ou illisible : `timestamps: false` (heure de réception).
 - Limites acceptées : première ligne d'une lecture perdue (repère) ; sur un TTY, une ligne qui commence par un horodatage RFC 3339 `Z` le perd (sans fuite, à corriger : sauter `strip_timestamp`/`split_log_chunk` quand les horodatages sont désactivés).
 - Statut : Résolu (reste le défaut mineur ci-dessus).
+
+## 2026-11-25 — CI rouge (install-docker) après R30 : témoin du panneau sondé trop tôt
+- Symptôme : « (a) temoin (pont par defaut) : panneau de l'hote joignable » en échec deux fois sur 0f4d8a6 (connexion refusée sur <ip>:8443), le reste du test vert.
+- Cause : les sondes de sortie passaient avant le premier `panel_up` du script ; le panneau était prêt à temps par hasard jusque-là. Un refus pendant le démarrage faussait aussi les cas « bloqué » (BuildKit, ciphera-prepare).
+- Correction : `check "(a) panneau joignable avant les sondes de sortie" panel_up` avant les sondes (fix/ci-panel-witness).
