@@ -31,7 +31,10 @@
 //! configuration a change : nouvelle image construite, par exemple). Le
 //! service expose tourne dans un projet Compose propre au deploiement
 //! (`ciphera-d-<deployment_id>`) : le nouveau demarre a cote de l'ancien,
-//! passe son healthcheck, puis les routes basculent (voir `deploy`).
+//! passe son healthcheck, puis les routes basculent (voir `deploy`). Avant
+//! le healthcheck, seuls les services nouveaux et ceux dont le service
+//! expose depend (`exposed_needs`) sont relances ; les autres le sont apres
+//! sa reussite, juste avant la bascule.
 //!
 //! `docker compose` est lance sans shell : binaire fixe, arguments valides
 //! (`argv`).
@@ -73,6 +76,9 @@ pub struct ComposePlan {
     pub exposed: ValidatedArg,
     /// Services non exposes, dans l'ordre de `depends_on`.
     pub order: Vec<ValidatedArg>,
+    /// Services dont le service expose depend (`depends_on`, directement
+    /// ou non).
+    pub exposed_needs: BTreeSet<String>,
     /// Fichier a donner a `docker compose` (JSON).
     pub file: Value,
 }
@@ -322,6 +328,23 @@ fn depends_on(svc: &Value) -> Result<Vec<String>, String> {
     }
 }
 
+/// Dependances directes et indirectes du service `name` (`depends_on`).
+fn dependencies(services: &Map<String, Value>, name: &str) -> Result<BTreeSet<String>, String> {
+    let mut out = BTreeSet::new();
+    let mut todo = vec![name.to_string()];
+    while let Some(next) = todo.pop() {
+        let Some(svc) = services.get(&next) else {
+            continue;
+        };
+        for dep in depends_on(svc)? {
+            if out.insert(dep.clone()) {
+                todo.push(dep);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Ordre de demarrage (dependances d'abord ; a egalite, ordre alphabetique).
 /// Dependance inconnue ou cycle : refuse.
 pub fn start_order(services: &Map<String, Value>) -> Result<Vec<String>, String> {
@@ -425,6 +448,7 @@ impl ComposePlan {
             return Err(format!("service expose {exposed:?} absent de l'ensemble"));
         }
         let order = start_order(services)?;
+        let exposed_needs = dependencies(services, exposed)?;
         for (name, svc) in services.iter_mut() {
             let svc = svc
                 .as_object_mut()
@@ -492,6 +516,7 @@ impl ComposePlan {
             exposed_project,
             exposed: exposed_arg,
             order,
+            exposed_needs,
             file,
         })
     }

@@ -3181,6 +3181,233 @@ async fn failed_first_compose_deploy_removes_its_unexposed_services() {
     );
 }
 
+/// Ensemble Compose a quatre services : `web` (expose) depend de `api`, qui
+/// depend de `cache` ; `worker` (sans lien avec `web`) depend de `cache`.
+/// Avec `mailer`, un service de plus, sans dependance.
+fn worker_bundle(mailer: bool) -> Value {
+    let mut bundle = compose_bundle();
+    let services = bundle["services"].as_object_mut().unwrap();
+    services.insert(
+        "worker".into(),
+        json!({
+            "image": "ciphera/shop-production/worker:x",
+            "depends_on": {"cache": {"condition": "service_started", "required": true}},
+            "networks": {"default": null}
+        }),
+    );
+    if mailer {
+        services.insert(
+            "mailer".into(),
+            json!({
+                "image": "docker.io/library/busybox:1.37",
+                "networks": {"default": null}
+            }),
+        );
+    }
+    bundle
+}
+
+/// Deploiement Compose de `bundle` sous un nouvel identifiant ; renvoie
+/// sa spec.
+fn compose_spec_with(
+    bench: &Bench,
+    project: ProjectId,
+    web: ServiceId,
+    bundle: &Value,
+) -> DeploySpec {
+    let id = DeploymentId::new();
+    bench.db.put_bundle(id, &bundle.to_string()).unwrap();
+    compose_deploy_spec(project, web, id)
+}
+
+fn log_lines(messages: &[AgentToControl]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|m| match m {
+            AgentToControl::LogLine(l) => Some(l.line.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Appels `up` depuis le rang `from` (services du deploiement suivant).
+fn ups_since(bench: &Bench, from: usize) -> Vec<(String, String)> {
+    bench.compose.ups.lock().unwrap()[from..].to_vec()
+}
+
+/// Projet Compose deja servi (premier deploiement sain), puis un
+/// deploiement dont la sonde echoue : seuls les services nouveaux et les
+/// dependances du service expose sont lances avant la sonde ; `worker`
+/// n'est jamais touche, `mailer` (nouveau) est retire, et le journal nomme
+/// les services deja en place qui ont ete mis a jour.
+#[tokio::test(start_paused = true)]
+async fn compose_failed_probe_leaves_unrelated_services_unchanged() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.com", Some(web))])
+        .await
+        .unwrap();
+    for n in 100..110 {
+        bench.probe.answer(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let first = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    bench.deploy(&first).await.0.unwrap();
+    let worker = "cid-shop-production-worker-1";
+    assert!(bench.docker.container(worker).is_some());
+    let served = bench.upstreams("shop.example.com");
+
+    *bench.probe.fail_first.lock().unwrap() = 1000;
+    let from = bench.compose.ups.lock().unwrap().len();
+    let second = compose_spec_with(&bench, project, web, &worker_bundle(true));
+    let (result, messages) = bench.deploy(&second).await;
+    assert!(result.is_err());
+    let stable = "shop-production".to_string();
+    assert_eq!(
+        ups_since(&bench, from),
+        vec![
+            (stable.clone(), "cache".to_string()),
+            (stable.clone(), "mailer".to_string()),
+            (stable.clone(), "api".to_string()),
+            (
+                format!("ciphera-d-{}", second.deployment_id),
+                "web".to_string()
+            ),
+        ]
+    );
+    assert!(bench.docker.container(worker).is_some());
+    assert!(
+        bench
+            .docker
+            .container("cid-shop-production-mailer-1")
+            .is_none(),
+        "service nouveau retire"
+    );
+    assert!(
+        bench
+            .docker
+            .container("cid-shop-production-api-1")
+            .is_some()
+    );
+    assert_eq!(bench.upstreams("shop.example.com"), served);
+    let logs = log_lines(&messages);
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("mis a jour") && l.contains("api") && l.contains("cache")),
+        "{logs:?}"
+    );
+}
+
+/// Sonde reussie : les autres services sont mis a jour apres la sonde,
+/// avant la bascule.
+#[tokio::test(start_paused = true)]
+async fn compose_other_services_are_updated_after_the_probe() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.com", Some(web))])
+        .await
+        .unwrap();
+    for n in 100..120 {
+        bench.probe.answer(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let first = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    bench.deploy(&first).await.0.unwrap();
+    let from = bench.compose.ups.lock().unwrap().len();
+    let second = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    let (result, messages) = bench.deploy(&second).await;
+    result.unwrap();
+    let stable = "shop-production".to_string();
+    assert_eq!(
+        ups_since(&bench, from),
+        vec![
+            (stable.clone(), "cache".to_string()),
+            (stable.clone(), "api".to_string()),
+            (
+                format!("ciphera-d-{}", second.deployment_id),
+                "web".to_string()
+            ),
+            (stable.clone(), "worker".to_string()),
+        ]
+    );
+    // Mise a jour de `worker` entre la sonde et la bascule.
+    let st = stages(&messages);
+    assert_eq!(st.last(), Some(&(Stage::Switch, StageStatus::Succeeded)));
+}
+
+/// Annulation pendant la sonde d'un deploiement Compose : les services
+/// nouveaux sont retires, ceux deja en place restent.
+#[tokio::test(start_paused = true)]
+async fn compose_cancel_during_probe_removes_new_services() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.com", Some(web))])
+        .await
+        .unwrap();
+    for n in 100..105 {
+        bench.probe.answer(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let first = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    bench.deploy(&first).await.0.unwrap();
+    for n in 105..120 {
+        bench
+            .probe
+            .hang
+            .lock()
+            .unwrap()
+            .insert(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let tries = bench.probe.tries.lock().unwrap().len();
+    let mut second = compose_spec_with(&bench, project, web, &worker_bundle(true));
+    second.healthcheck.interval_secs = 1;
+    let (tx, mut rx) = mpsc::channel(1024);
+    bench.deployer.spawn_deploy(second.clone(), tx.clone());
+    wait_until("sonde en cours", || {
+        bench.probe.tries.lock().unwrap().len() > tries
+    })
+    .await;
+    assert!(
+        bench
+            .docker
+            .container("cid-shop-production-mailer-1")
+            .is_some()
+    );
+
+    bench.deployer.stop(second.deployment_id, &tx).await;
+
+    assert!(
+        bench
+            .docker
+            .container("cid-shop-production-mailer-1")
+            .is_none(),
+        "service nouveau retire"
+    );
+    for kept in ["worker", "api", "cache"] {
+        assert!(
+            bench
+                .docker
+                .container(&format!("cid-shop-production-{kept}-1"))
+                .is_some(),
+            "{kept}"
+        );
+    }
+    let messages = drain(&mut rx).await;
+    assert_eq!(
+        stages(&messages).last(),
+        Some(&(Stage::Start, StageStatus::Cancelled))
+    );
+    let logs = log_lines(&messages);
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("mis a jour") && l.contains("api")),
+        "{logs:?}"
+    );
+}
+
 /// Balayage : reseau de projet vide d'un projet inconnu supprime ; ceux d'un
 /// projet deploye, d'un projet qui a encore un conteneur, et les autres
 /// reseaux restent.

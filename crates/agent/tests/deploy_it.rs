@@ -13,7 +13,7 @@ use bollard::Docker;
 use bollard::query_parameters::{CreateImageOptions, RemoveContainerOptions};
 use ciphera_agent::build::ProgressSink;
 use ciphera_agent::build::local::LocalBackend;
-use ciphera_agent::deploy::compose::{COMPOSE_PROJECT_LABEL, CliCompose};
+use ciphera_agent::deploy::compose::{COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL, CliCompose};
 use ciphera_agent::deploy::probe::{HttpProbe, TcpProbe};
 use ciphera_agent::deploy::{DeployConfig, Deployer};
 use ciphera_agent::docker::{self, BollardDocker, DockerOps, Health};
@@ -123,6 +123,32 @@ impl Bench {
             }
         }
         (result, stages)
+    }
+
+    /// Comme `deploy`, avec les lignes du journal du deploiement.
+    async fn deploy_logged(
+        &self,
+        spec: &DeploySpec,
+    ) -> (Result<(), String>, Vec<(Stage, StageStatus)>, Vec<String>) {
+        let (tx, mut rx) = mpsc::channel(100_000);
+        let sink = ProgressSink::new(spec.deployment_id, tx);
+        let result = self
+            .deployer
+            .run(spec, &sink)
+            .await
+            .map_err(|e| e.to_string());
+        drop(sink);
+        let (mut stages, mut lines) = (Vec::new(), Vec::new());
+        while let Some(m) = rx.recv().await {
+            match m {
+                AgentToControl::DeployProgress { stage, status, .. } => {
+                    stages.push((stage, status))
+                }
+                AgentToControl::LogLine(l) => lines.push(l.line),
+                _ => {}
+            }
+        }
+        (result, stages, lines)
     }
 
     async fn cleanup(&self) {
@@ -880,5 +906,220 @@ async fn orphan_labeled_container_swept() {
             .await
             .is_ok(),
         "deploiement enregistre intact"
+    );
+}
+
+/// Ensemble Compose du projet Compose `stable` : service expose `web`
+/// (image `web_image`) qui depend de `cache` ; `worker` sans lien avec
+/// `web` ; avec `extra`, un service de plus. `version` change la
+/// configuration de `cache` et de `worker` (Compose les recree s'ils sont
+/// relances).
+fn worker_bundle(stable: &str, web_image: &str, version: &str, extra: bool) -> serde_json::Value {
+    let mut bundle = json!({
+        "name": stable,
+        "services": {
+            "web": {
+                "image": web_image,
+                "depends_on": {"cache": {"condition": "service_started", "required": true}},
+                "networks": {"default": null}
+            },
+            "cache": {
+                "image": CACHE_IMAGE,
+                "networks": {"default": null},
+                "environment": {"CACHE_VERSION": version}
+            },
+            "worker": {
+                "image": CACHE_IMAGE,
+                "networks": {"default": null},
+                "environment": {"WORKER_VERSION": version}
+            }
+        },
+        "networks": {"default": {"name": format!("{stable}_default")}}
+    });
+    if extra {
+        bundle["services"]["extra"] = json!({
+            "image": CACHE_IMAGE,
+            "networks": {"default": null}
+        });
+    }
+    bundle
+}
+
+/// Deploiement Compose de `bundle` (ensemble garde sous le nouveau
+/// deploiement), `tries` essais du healthcheck.
+fn compose_spec(
+    bench: &mut Bench,
+    project: ProjectId,
+    web: ServiceId,
+    bundle: &serde_json::Value,
+    tries: u8,
+) -> DeploySpec {
+    let deployment = DeploymentId::new();
+    bench
+        .compose_projects
+        .push(format!("ciphera-d-{deployment}"));
+    bench
+        .db
+        .put_bundle(deployment, &bundle.to_string())
+        .unwrap();
+    DeploySpec {
+        deployment_id: deployment,
+        service_id: web,
+        image: ImageRef(APP_IMAGE.into()),
+        internal_port: Some(80),
+        project_id: project,
+        healthcheck: Healthcheck {
+            path: "/".into(),
+            tries,
+            interval_secs: 1,
+        },
+        compose: Some(ComposeDeploy {
+            service: "web".into(),
+            bundle: deployment,
+        }),
+        service_name: Some("web".into()),
+        env: Vec::new(),
+        environment_id: None,
+        run_as: None,
+        read_only_rootfs: false,
+    }
+}
+
+/// Conteneur du service non expose `service` du projet Compose `stable`.
+async fn service_container(bench: &Bench, stable: &str, service: &str) -> Option<String> {
+    bench
+        .docker
+        .list_managed(&[
+            (COMPOSE_PROJECT_LABEL, stable),
+            (COMPOSE_SERVICE_LABEL, service),
+        ])
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .map(|c| c.id.0)
+}
+
+/// Projet Compose servi, puis un deploiement dont la sonde echoue (service
+/// expose qui ne demarre jamais) : `worker`, sans lien avec le service
+/// expose, n'est pas touche (meme conteneur, toujours en marche) bien que
+/// sa configuration ait change ; `extra`, nouveau, est retire.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et docker compose : job agent-docker de la CI"]
+async fn failed_probe_leaves_unrelated_services_unchanged() {
+    for image in [APP_IMAGE, BROKEN_IMAGE, CACHE_IMAGE] {
+        pull(image).await;
+    }
+    let mut bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    let stable = format!("it{}-production", &DeploymentId::new().to_string()[..8]);
+    bench.networks.push(docker::project_network(project));
+    bench.compose_projects.push(stable.clone());
+    bench
+        .deployer
+        .apply_routes(vec![route("worker.example.test", web)])
+        .await
+        .unwrap();
+    let v1 = compose_spec(
+        &mut bench,
+        project,
+        web,
+        &worker_bundle(&stable, APP_IMAGE, "1", false),
+        30,
+    );
+    let (result, stages) = bench.deploy(&v1).await;
+    result.unwrap_or_else(|e| panic!("v1 : {e} ({stages:?})"));
+    let served = bench.routes.upstreams("worker.example.test");
+    let worker = service_container(&bench, &stable, "worker")
+        .await
+        .expect("worker demarre");
+
+    let v2 = compose_spec(
+        &mut bench,
+        project,
+        web,
+        &worker_bundle(&stable, BROKEN_IMAGE, "2", true),
+        3,
+    );
+    let (result, stages) = bench.deploy(&v2).await;
+    assert!(result.is_err(), "{stages:?}");
+    assert!(
+        matches!(
+            stages.last(),
+            Some((Stage::Healthcheck, StageStatus::Failed { .. }))
+        ),
+        "{stages:?}"
+    );
+    assert_eq!(
+        service_container(&bench, &stable, "worker").await,
+        Some(worker.clone()),
+        "worker jamais relance avant la sonde"
+    );
+    assert_ne!(
+        bench
+            .docker
+            .health(&docker::ContainerId(worker))
+            .await
+            .unwrap(),
+        Health::Stopped
+    );
+    assert_eq!(
+        service_container(&bench, &stable, "extra").await,
+        None,
+        "service nouveau retire"
+    );
+    assert_eq!(bench.routes.upstreams("worker.example.test"), served);
+}
+
+/// Sonde en echec apres la mise a jour d'une dependance du service expose
+/// (`cache`, configuration changee) : le journal du deploiement le dit.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et docker compose : job agent-docker de la CI"]
+async fn dependency_updated_before_probe_is_logged() {
+    for image in [APP_IMAGE, BROKEN_IMAGE, CACHE_IMAGE] {
+        pull(image).await;
+    }
+    let mut bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    let stable = format!("it{}-production", &DeploymentId::new().to_string()[..8]);
+    bench.networks.push(docker::project_network(project));
+    bench.compose_projects.push(stable.clone());
+    bench
+        .deployer
+        .apply_routes(vec![route("dep.example.test", web)])
+        .await
+        .unwrap();
+    let v1 = compose_spec(
+        &mut bench,
+        project,
+        web,
+        &worker_bundle(&stable, APP_IMAGE, "1", false),
+        30,
+    );
+    let (result, stages) = bench.deploy(&v1).await;
+    result.unwrap_or_else(|e| panic!("v1 : {e} ({stages:?})"));
+    let cache = service_container(&bench, &stable, "cache")
+        .await
+        .expect("cache demarre");
+
+    let v2 = compose_spec(
+        &mut bench,
+        project,
+        web,
+        &worker_bundle(&stable, BROKEN_IMAGE, "2", false),
+        3,
+    );
+    let (result, stages, lines) = bench.deploy_logged(&v2).await;
+    assert!(result.is_err(), "{stages:?}");
+    // Dependance relancee avant la sonde : nouvelle configuration.
+    assert_ne!(
+        service_container(&bench, &stable, "cache").await,
+        Some(cache)
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("mis a jour") && l.contains("cache") && !l.contains("worker")),
+        "{lines:?}"
     );
 }

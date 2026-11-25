@@ -17,6 +17,19 @@
 //! conteneur ; l'ancien continue de servir, les routes ne changent pas, et
 //! l'etape est rapportee `Failed`.
 //!
+//! Projet Compose, dans cet ordre :
+//! 1. `Start` lance les services nouveaux (sans conteneur dans le projet
+//!    Compose stable) et ceux dont le service expose depend (`depends_on`),
+//!    dans l'ordre de `depends_on`, puis le service expose ;
+//! 2. `Healthcheck` sonde le service expose ;
+//! 3. sonde reussie : `Switch` met a jour les autres services, puis bascule.
+//!
+//! Sonde en echec, autre echec ou annulation avant la bascule : les
+//! services nouveaux lances par ce deploiement sont retires, et le journal
+//! du deploiement nomme les services deja en place qu'il a mis a jour (ils
+//! ne sont pas restaures). Les services sans lien avec le service expose ne
+//! sont jamais touches avant la reussite de la sonde.
+//!
 //! La bascule exige une table de routes du plan de controle recue depuis le
 //! demarrage (sinon `Switch` echoue, « routes not synced ») : l'ancien
 //! deploiement n'est jamais arrete sans que la table qui contient le nouvel
@@ -42,10 +55,8 @@
 //! builds et deploiements en cours sont annules et nettoyes, puis ses
 //! conteneurs (etiquette `dev.ciphera.project`), son etat local, ses images
 //! de deploiement, avec `purge_volumes` ses volumes Compose, et son reseau
-//! `ciphera-p-<id>` sont supprimes. Le premier deploiement Compose d'un
-//! service qui echoue retire aussi les services non exposes qu'il a
-//! demarres. Un balayage horaire retire les reseaux de projet sans
-//! conteneur dont le projet n'est plus connu de l'agent.
+//! `ciphera-p-<id>` sont supprimes. Un balayage horaire retire les reseaux
+//! de projet sans conteneur dont le projet n'est plus connu de l'agent.
 //!
 //! Livraison au moins une fois : l'issue definitive de chaque build et
 //! deploiement est gardee dans l'etat local ; un ordre rejoue pour un
@@ -60,7 +71,7 @@
 pub mod compose;
 pub mod probe;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -170,6 +181,22 @@ struct Started {
     container: ContainerId,
 }
 
+/// Deploiement Compose en cours : ce qu'il reste a mettre a jour apres la
+/// sonde, et ce qu'il a deja touche (retire ou signale s'il echoue ou est
+/// annule avant la bascule).
+struct ComposeRun {
+    project: ProjectId,
+    stable: ValidatedArg,
+    file: ValidatedArg,
+    dir: ValidatedArg,
+    /// Services deja en place a mettre a jour apres la sonde.
+    later: Vec<ValidatedArg>,
+    /// Services nouveaux lances par ce deploiement.
+    created: Vec<String>,
+    /// Services deja en place relances par ce deploiement.
+    updated: Vec<String>,
+}
+
 /// Supprime un dossier s'il existe (sans suivre un lien symbolique).
 fn remove_path(path: &Path) {
     match std::fs::symlink_metadata(path) {
@@ -231,6 +258,8 @@ pub struct Deployer<D, P, C, S: RouteSink> {
     /// operation n'y est lancee. Verrou tenu pendant l'inscription d'une
     /// operation, si bien qu'un retrait voit toutes celles deja lancees.
     removed: Mutex<HashSet<ProjectId>>,
+    /// Deploiements Compose en cours, de `Start` a la bascule.
+    compose_runs: Mutex<HashMap<DeploymentId, ComposeRun>>,
 }
 
 impl<D, P, C, S> Deployer<D, P, C, S>
@@ -257,11 +286,16 @@ where
             cfg,
             ops: Operations::default(),
             removed: Mutex::new(HashSet::new()),
+            compose_runs: Mutex::new(HashMap::new()),
         }
     }
 
     fn removed(&self) -> std::sync::MutexGuard<'_, HashSet<ProjectId>> {
         self.removed.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn compose_runs(&self) -> std::sync::MutexGuard<'_, HashMap<DeploymentId, ComposeRun>> {
+        self.compose_runs.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Lance l'operation `id`, sauf pour un projet retire (`None`).
@@ -525,6 +559,10 @@ where
         sink.stage(Stage::Healthcheck, StageStatus::Succeeded).await;
 
         sink.stage(Stage::Switch, StageStatus::Started).await;
+        // Sonde reussie : les autres services Compose, puis la bascule.
+        if let Err(e) = self.update_later_services(id, &spec.env, sink).await {
+            return self.fail(spec, Stage::Switch, e, sink).await;
+        }
         // A partir d'ici, plus d'interruption : un `Stop` attend l'issue.
         if let Some(t) = &ticket
             && !t.enter_switch()
@@ -536,6 +574,9 @@ where
             Ok(p) => p,
             Err(e) => return self.fail(spec, Stage::Switch, e, sink).await,
         };
+        // Services Compose acquis au deploiement servi.
+        self.compose_runs().remove(&id);
+        remove_path(Path::new(&self.deploy_dir(id)));
         // Issue gardee avant de rendre la main (un `Stop` en attente la lit).
         let record = || {
             self.db
@@ -562,7 +603,8 @@ where
         Ok(())
     }
 
-    /// Echec d'une etape : nouveau conteneur supprime, routes inchangees.
+    /// Echec d'une etape : nouveau conteneur et services Compose nouveaux
+    /// supprimes, routes inchangees.
     async fn fail(
         &self,
         spec: &DeploySpec,
@@ -571,7 +613,8 @@ where
         sink: &ProgressSink,
     ) -> Result<(), DeployError> {
         self.discard(spec.deployment_id).await;
-        self.discard_first_compose_stack(spec).await;
+        self.undo_compose(spec.deployment_id, Some(sink)).await;
+        remove_path(Path::new(&self.deploy_dir(spec.deployment_id)));
         sink.stage(
             stage,
             StageStatus::Failed {
@@ -622,11 +665,9 @@ where
                 }
                 self.docker.run(&app).await?
             }
-            Some(c) => {
-                let result = self.start_compose(spec, &c.service, c.bundle, sink).await;
-                remove_path(Path::new(&self.deploy_dir(spec.deployment_id)));
-                result?
-            }
+            // Dossier du fichier Compose garde jusqu'a la bascule (mise a
+            // jour des autres services) ; retire par la bascule ou l'echec.
+            Some(c) => self.start_compose(spec, &c.service, c.bundle, sink).await?,
         };
         let runs_as_root = self.docker.runs_as_root(&container).await.unwrap_or(false);
         self.db.put_record(&DeploymentRecord {
@@ -679,12 +720,29 @@ where
         let json =
             serde_json::to_vec(&plan.file).map_err(|e| DeployError::Compose(e.to_string()))?;
         write_private(&file, &json).map_err(|e| DeployError::Workdir(e.to_string()))?;
-        // Services non exposes d'abord, dans l'ordre de depends_on.
-        for svc in &plan.order {
-            self.compose
-                .up(&plan.stable, &file_arg, svc, &dir_arg, &spec.env, sink)
-                .await
-                .map_err(DeployError::Compose)?;
+        // Avant la sonde : services nouveaux et dependances du service
+        // expose, dans l'ordre de depends_on ; les autres apres la sonde.
+        let existing = self.compose_services(&plan.stable, spec.project_id).await?;
+        let (now, later): (Vec<ValidatedArg>, Vec<ValidatedArg>) =
+            plan.order.iter().cloned().partition(|s| {
+                !existing.contains(s.as_str()) || plan.exposed_needs.contains(s.as_str())
+            });
+        let id = spec.deployment_id;
+        self.compose_runs().insert(
+            id,
+            ComposeRun {
+                project: spec.project_id,
+                stable: plan.stable.clone(),
+                file: file_arg.clone(),
+                dir: dir_arg.clone(),
+                later,
+                created: Vec::new(),
+                updated: Vec::new(),
+            },
+        );
+        for svc in &now {
+            self.up_tracked(id, svc, existing.contains(svc.as_str()), &spec.env, sink)
+                .await?;
         }
         self.compose
             .up(
@@ -788,58 +846,125 @@ where
         }
     }
 
-    /// Premier deploiement Compose d'un service en echec (aucun deploiement
-    /// servi pour ce service) : les services non exposes qu'il a demarres
-    /// (projet Compose stable de l'ensemble, projet du deploiement, sans
-    /// deploiement) sont retires ; plus rien ne les retirerait. Avec un
-    /// deploiement servi, ils restent : ce sont les siens.
-    async fn discard_first_compose_stack(&self, spec: &DeploySpec) {
-        let Some(compose) = &spec.compose else {
-            return;
-        };
-        // Etat illisible : rien n'est retire (prudence).
-        let served = self.db.serving().map_or(true, |list| {
-            list.iter()
-                .any(|r| r.deployment.service_id == spec.service_id)
-        });
-        if served {
-            return;
+    /// Conteneurs des services non exposes du projet Compose stable `stable`
+    /// du projet `project` (sans deploiement), `service` seul si donne.
+    async fn compose_service_containers(
+        &self,
+        stable: &str,
+        project: ProjectId,
+        service: Option<&str>,
+    ) -> Result<Vec<crate::docker::ManagedContainer>, DockerError> {
+        let project = project.to_string();
+        let mut labels = vec![(COMPOSE_LABEL, stable), (PROJECT_LABEL, project.as_str())];
+        if let Some(s) = service {
+            labels.push((COMPOSE_SERVICE_LABEL, s));
         }
-        let Some(stable) = self
-            .db
-            .bundle(compose.bundle)
-            .ok()
-            .flatten()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|v| v.get("name")?.as_str().map(String::from))
-            .filter(|s| !s.is_empty())
-        else {
+        let list = self.docker.list_managed(&labels).await?;
+        Ok(list
+            .into_iter()
+            .filter(|c| c.labels.get(DEPLOYMENT_LABEL).is_none_or(String::is_empty))
+            .collect())
+    }
+
+    /// Services non exposes qui ont deja un conteneur (en marche ou non)
+    /// dans le projet Compose stable `stable`.
+    async fn compose_services(
+        &self,
+        stable: &ValidatedArg,
+        project: ProjectId,
+    ) -> Result<HashSet<String>, DeployError> {
+        Ok(self
+            .compose_service_containers(stable.as_str(), project, None)
+            .await?
+            .into_iter()
+            .filter_map(|c| c.labels.get(COMPOSE_SERVICE_LABEL).cloned())
+            .collect())
+    }
+
+    /// `docker compose up` d'un service non expose du deploiement Compose
+    /// `id`, note avant le lancement (une annulation pendant `up` le
+    /// retrouve) : mis a jour s'il etait `existing`, sinon nouveau.
+    async fn up_tracked(
+        &self,
+        id: DeploymentId,
+        service: &ValidatedArg,
+        existing: bool,
+        env: &[proto::EnvVar],
+        sink: &ProgressSink,
+    ) -> Result<(), DeployError> {
+        let (stable, file, dir) = {
+            let mut runs = self.compose_runs();
+            let run = runs
+                .get_mut(&id)
+                .ok_or_else(|| DeployError::Compose("deploiement Compose inconnu".into()))?;
+            let name = service.as_str().to_string();
+            let list = if existing {
+                &mut run.updated
+            } else {
+                &mut run.created
+            };
+            if !list.contains(&name) {
+                list.push(name);
+            }
+            (run.stable.clone(), run.file.clone(), run.dir.clone())
+        };
+        self.compose
+            .up(&stable, &file, service, &dir, env, sink)
+            .await
+            .map_err(DeployError::Compose)
+    }
+
+    /// Apres la sonde : mise a jour des services non exposes que `Start`
+    /// n'a pas relances, dans l'ordre de `depends_on` (rien hors Compose).
+    async fn update_later_services(
+        &self,
+        id: DeploymentId,
+        env: &[proto::EnvVar],
+        sink: &ProgressSink,
+    ) -> Result<(), DeployError> {
+        let later = match self.compose_runs().get(&id) {
+            Some(run) => run.later.clone(),
+            None => return Ok(()),
+        };
+        for svc in &later {
+            self.up_tracked(id, svc, true, env, sink).await?;
+        }
+        Ok(())
+    }
+
+    /// Deploiement Compose `id` en echec ou annule avant la bascule : les
+    /// services nouveaux qu'il a lances sont retires ; ceux deja en place
+    /// qu'il a relances sont nommes dans son journal (`sink`), non
+    /// restaures.
+    async fn undo_compose(&self, id: DeploymentId, sink: Option<&ProgressSink>) {
+        let Some(run) = self.compose_runs().remove(&id) else {
             return;
         };
-        let project = spec.project_id.to_string();
-        let list = match self
-            .docker
-            .list_managed(&[
-                (COMPOSE_LABEL, stable.as_str()),
-                (PROJECT_LABEL, project.as_str()),
-            ])
-            .await
-        {
-            Ok(list) => list,
-            Err(e) => {
-                tracing::warn!(
-                    "deploiement {} : services Compose illisibles : {e}",
-                    spec.deployment_id
-                );
-                return;
+        for service in &run.created {
+            let list = match self
+                .compose_service_containers(run.stable.as_str(), run.project, Some(service))
+                .await
+            {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::warn!("deploiement {id} : service Compose {service} illisible : {e}");
+                    continue;
+                }
+            };
+            for c in list {
+                if let Err(e) = self.docker.remove(&c.id).await {
+                    tracing::warn!("service Compose {} : suppression : {e}", c.name);
+                }
             }
-        };
-        for c in list
-            .iter()
-            .filter(|c| c.labels.get(DEPLOYMENT_LABEL).is_none_or(String::is_empty))
-        {
-            if let Err(e) = self.docker.remove(&c.id).await {
-                tracing::warn!("service Compose {} : suppression : {e}", c.name);
+        }
+        if !run.updated.is_empty() {
+            let message = format!(
+                "services Compose deja en place mis a jour par ce deploiement, non restaures : {}",
+                run.updated.join(", ")
+            );
+            tracing::warn!("deploiement {id} : {message}");
+            if let Some(sink) = sink {
+                sink.log(LogStream::Stderr, &message).await;
             }
         }
     }
@@ -898,6 +1023,7 @@ where
                 sink.stage(o.stage, o.status).await;
             }
             Cancel::Cancelled(kind, None) => {
+                self.undo_compose(id, Some(&sink)).await;
                 self.cleanup(id).await;
                 sink.stage(kind.stage(), StageStatus::Cancelled).await;
                 tracing::info!("deploiement {id} annule");
@@ -928,6 +1054,7 @@ where
     /// (nouveau conteneur, bac a sable de `railpack prepare`), images,
     /// dossiers du build et du deploiement, ensemble Compose.
     async fn cleanup(&self, id: DeploymentId) {
+        self.undo_compose(id, None).await;
         self.discard(id).await;
         if let Err(e) = self.docker.remove_deployment_images(id).await {
             tracing::warn!("deploiement {id} : images : {e}");
@@ -948,6 +1075,7 @@ where
     /// la suppression.
     pub async fn remove(&self, id: DeploymentId) -> bool {
         let _ = self.ops.cancel(id, |_| ()).await;
+        self.undo_compose(id, None).await;
         let serving = self.is_serving(id);
         let label = id.to_string();
         let containers = match self
