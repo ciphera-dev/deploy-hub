@@ -11,13 +11,16 @@
 //! devient active aussitot (l'attente expire apres 5 s si la tache n'a pas
 //! demarre). En HTTPS, elle attend sa poignee de main TLS, bornee par
 //! `HandshakeDeadline` (10 s, au lieu des 60 s fixes de Pingora) : passe ce
-//! delai, la connexion est coupee. Une poignee de main ratee n'a aucun
-//! rappel qui la libere : l'admission expire apres le delai de poignee de
-//! main plus 1 s (11 s). Ces attentes TLS ont leur propre plafond global
-//! (`max_pending_tls`, 1024) et par IP (`max_pending_tls_per_ip`, 32), et ne
-//! consomment pas la capacite des connexions actives : un flot de poignees
-//! de main ratees ne bloque jamais le port 80, et ne bloque une IP (un NAT)
-//! que pour ses nouvelles connexions TLS et pendant 11 s au plus.
+//! delai, la connexion est coupee. Une poignee de main ratee avant rustls
+//! (client parti ou reinitialise avant son ClientHello, ClientHello
+//! illisible ou sans nom) rend sa place aussitot ; une poignee de main
+//! ratee dans rustls n'a aucun rappel qui la libere : l'admission expire
+//! apres le delai de poignee de main plus 1 s (11 s). Ces attentes TLS ont
+//! leur propre plafond global (`max_pending_tls`, 1024) et par IP
+//! (`max_pending_tls_per_ip`, 32), et ne consomment pas la capacite des
+//! connexions actives : un flot de poignees de main ratees ne bloque jamais
+//! le port 80, et ne bloque une IP (un NAT) que pour ses nouvelles
+//! connexions TLS et pendant 11 s au plus.
 //!
 //! Comptage par source : une IPv4 compte pour elle-meme, une IPv6 pour son
 //! /64 (64 connexions au plus, actives et en attente) ; les /64 d'un meme
@@ -436,13 +439,14 @@ impl ConnLimiter {
     /// delai, `socket` (un double du descripteur) est coupe dans les deux
     /// sens, ce qui fait echouer la poignee de main en cours.
     /// `peer` : adresse de la source (cle de son admission, absente si le
-    /// filtre n'a rien compte).
+    /// filtre n'a rien compte). Renvoie le numero de serie de la
+    /// surveillance (pour `handshake_failed`).
     fn watch_handshake(
         self: &Arc<Self>,
         id: UniqueIDType,
         socket: std::net::TcpStream,
         peer: Option<IpAddr>,
-    ) {
+    ) -> u64 {
         let (tx, rx) = oneshot::channel();
         let socket = Arc::new(socket);
         let serial = {
@@ -480,6 +484,7 @@ impl ConnLimiter {
                 }
             }
         });
+        serial
     }
 
     /// Coupe la plus ancienne poignee de main surveillee ; renvoie la cle
@@ -495,6 +500,38 @@ impl ConnLimiter {
     fn handshake_done(&self, id: UniqueIDType) {
         if let Some(h) = self.watches().take(id) {
             let _ = h.done.send(());
+        }
+    }
+
+    /// Poignee de main de la connexion `id` (surveillance `serial`) echouee
+    /// avant rustls (client parti, ClientHello illisible ou refuse) : plus
+    /// d'echeance, le double du descripteur est ferme et l'admission de la
+    /// source est rendue aussitot, au lieu d'attendre l'expiration (11 s).
+    /// Rien n'est rendu si la surveillance n'est plus la (echeance passee
+    /// ou eviction : l'admission a deja ete retiree ou expirera seule) :
+    /// une admission n'est jamais rendue deux fois.
+    fn handshake_failed(&self, id: UniqueIDType, serial: u64) {
+        let taken = {
+            let mut w = self.watches();
+            if w.handshakes.get(&id).is_some_and(|h| h.serial == serial) {
+                w.take(id)
+            } else {
+                None
+            }
+        };
+        let Some(h) = taken else { return };
+        let _ = h.done.send(());
+        let Some(key) = h.key else { return };
+        let mut guard = self.lock();
+        let st = &mut *guard;
+        if let Some(c) = st.per_ip.get_mut(&key) {
+            if c.tls.pop_front().is_some() {
+                st.pending_tls -= 1;
+                shrink_wide(&mut st.per_56, key, 1);
+            }
+            if c.total() == 0 {
+                st.per_ip.remove(&key);
+            }
         }
     }
 
@@ -624,14 +661,28 @@ impl PreTlsProcess for HandshakeDeadline {
         let peer = stream
             .get_socket_digest()
             .and_then(|d| d.peer_addr().and_then(|a| a.as_inet()).map(|a| a.ip()));
-        match borrowed.try_clone_to_owned() {
-            Ok(owned) => {
-                self.limiter
-                    .watch_handshake(stream.id(), std::net::TcpStream::from(owned), peer)
+        let id = stream.id();
+        let serial = match borrowed.try_clone_to_owned() {
+            Ok(owned) => Some(self.limiter.watch_handshake(
+                id,
+                std::net::TcpStream::from(owned),
+                peer,
+            )),
+            Err(e) => {
+                tracing::warn!("poignee de main TLS non bornee : {e}");
+                None
             }
-            Err(e) => tracing::warn!("poignee de main TLS non bornee : {e}"),
+        };
+        let result = refuse_nameless(stream).await;
+        // Echec (client parti, reinitialise, ClientHello refuse) : Pingora
+        // abandonne la connexion sans aucun rappel ; sa place est rendue ici
+        // plutot que gardee jusqu'a l'expiration.
+        if result.is_err()
+            && let Some(serial) = serial
+        {
+            self.limiter.handshake_failed(id, serial);
         }
-        refuse_nameless(stream).await
+        result
     }
 }
 
@@ -1089,11 +1140,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_reset_connection_is_still_watched_and_evictable() {
+    async fn a_reset_connection_gives_its_place_back() {
         use pingora::protocols::{GetSocketDigest, SocketDigest};
         // Client qui se connecte puis reinitialise aussitot (RST) :
         // `getpeername` echoue ensuite (ENOTCONN), mais l'adresse gardee a
-        // `accept` (digest de Pingora) suffit a surveiller la poignee de main.
+        // `accept` (digest de Pingora) suffit a retrouver son admission.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
             .await
@@ -1113,13 +1164,46 @@ mod tests {
         let digest = SocketDigest::from_raw_fd(stream.as_raw_fd());
         digest.peer_addr.set(Some(peer.into())).unwrap();
         stream.set_socket_digest(digest);
-        HandshakeDeadline { limiter: l.clone() }
+        assert_eq!(l.pending_tls(), 1);
+        // Aucun ClientHello lisible : la poignee de main echoue (Pingora
+        // abandonne alors la connexion) et sa place est rendue aussitot,
+        // sans attendre l'expiration ni une eviction.
+        let result = HandshakeDeadline { limiter: l.clone() }
             .process(&mut stream)
-            .await
-            .unwrap();
-        // Plafond plein : la poignee de main reinitialisee cede sa place.
+            .await;
+        assert!(result.is_err(), "connexion reinitialisee : echec attendu");
+        assert_eq!(l.count(peer.ip()), 0, "admission rendue");
+        assert_eq!(l.pending_tls(), 0);
+        {
+            let w = l.watches();
+            assert!(
+                w.handshakes.is_empty() && w.order.is_empty(),
+                "plus de surveillance"
+            );
+        }
+        // Plafond (1) libre : une autre source est admise.
         assert!(l.admit(ip("198.51.100.9"), Tls), "place rendue");
-        assert_eq!(l.count(peer.ip()), 0);
+        assert_eq!(l.pending_tls(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_handshake_never_gives_a_place_back_twice() {
+        // Surveillance deja retiree (echeance passee, eviction, ou numero de
+        // serie d'une autre connexion sur le meme descripteur) : rien n'est
+        // rendu, l'admission d'une autre connexion de la source reste.
+        let l = Arc::new(ConnLimiter::new(ConnLimits::default()));
+        let src = ip("203.0.113.4");
+        assert!(l.admit(src, Tls));
+        assert!(l.admit(src, Tls));
+        let (server, _client) = socket_pair();
+        let serial = l.watch_handshake(3000, server.try_clone().unwrap(), Some(src));
+        l.handshake_failed(3000, serial + 1);
+        assert_eq!(l.count(src), 2, "autre surveillance : rien rendu");
+        l.handshake_failed(3000, serial);
+        assert_eq!(l.count(src), 1, "une place rendue");
+        assert_eq!(l.pending_tls(), 1);
+        l.handshake_failed(3000, serial);
+        assert_eq!(l.count(src), 1, "jamais deux fois");
         assert_eq!(l.pending_tls(), 1);
     }
 }
