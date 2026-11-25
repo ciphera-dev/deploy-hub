@@ -110,6 +110,8 @@ pub enum IdentityError {
     Pem(&'static str),
     /// Certificat sans SAN `urn:ciphera:agent:<id>`.
     NoAgentId,
+    /// `agent.key` accessible au groupe ou aux autres (mode lu).
+    KeyMode(u32),
 }
 
 impl fmt::Display for IdentityError {
@@ -118,19 +120,53 @@ impl fmt::Display for IdentityError {
             Self::Read(file, e) => write!(f, "lecture de {file} : {e}"),
             Self::Pem(file) => write!(f, "{file} illisible (PEM attendu)"),
             Self::NoAgentId => write!(f, "{CERT_FILE} ne porte pas d'identifiant d'agent"),
+            Self::KeyMode(mode) => write!(
+                f,
+                "{KEY_FILE} en mode {mode:o} : accessible au groupe ou aux autres (attendu 0600)"
+            ),
         }
     }
 }
 
 impl std::error::Error for IdentityError {}
 
+/// Mode admis pour `agent.key` : aucun bit pour le groupe ni les autres.
+pub fn key_mode_ok(mode: u32) -> bool {
+    mode & 0o077 == 0
+}
+
+/// Lit `agent.key` ; sous Unix, refusee si son mode donne un acces au
+/// groupe ou aux autres (mode lu sur le fichier ouvert).
+fn read_key(path: &Path) -> Result<Vec<u8>, IdentityError> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|e| IdentityError::Read(KEY_FILE, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = file
+            .metadata()
+            .map_err(|e| IdentityError::Read(KEY_FILE, e))?
+            .permissions()
+            .mode()
+            & 0o7777;
+        if !key_mode_ok(mode) {
+            return Err(IdentityError::KeyMode(mode));
+        }
+    }
+    let mut key = Vec::new();
+    file.read_to_end(&mut key)
+        .map_err(|e| IdentityError::Read(KEY_FILE, e))?;
+    Ok(key)
+}
+
 impl Identity {
-    /// Lit l'identite dans `dir` (fichiers ecrits par `ciphera init`).
+    /// Lit l'identite dans `dir` (fichiers ecrits par `ciphera init`) ;
+    /// `agent.key` doit etre en 0600 (ou plus strict).
     pub fn load(dir: &Path) -> Result<Self, IdentityError> {
         let read = |file: &'static str| {
             std::fs::read(dir.join(file)).map_err(|e| IdentityError::Read(file, e))
         };
-        let key = read(KEY_FILE)?;
+        let key = read_key(&dir.join(KEY_FILE))?;
         Self::from_pem(&read(CERT_FILE)?, &key, &read(CA_FILE)?)
     }
 
@@ -160,9 +196,10 @@ impl Identity {
     }
 
     /// Certificat renouvele `cert_pem` (envoye par le plan de controle) :
-    /// accepte seulement s'il porte le meme identifiant et la meme cle
-    /// publique que le certificat actuel et n'est pas lui-meme a
-    /// renouveler a `now` (secondes Unix). Renvoie son DER.
+    /// accepte seulement s'il est signe par la CA de l'instance (`ca.crt`),
+    /// porte le meme identifiant et la meme cle publique que le certificat
+    /// actuel et n'est pas lui-meme a renouveler a `now` (secondes Unix).
+    /// Renvoie son DER ; rien n'est ecrit ici.
     pub fn check_renewed(
         &self,
         cert_pem: &str,
@@ -170,6 +207,9 @@ impl Identity {
     ) -> Result<CertificateDer<'static>, &'static str> {
         let cert = CertificateDer::from_pem_slice(cert_pem.as_bytes())
             .map_err(|_| "certificat illisible")?;
+        if !pki::issued_by(&self.ca, &cert) {
+            return Err("certificat non emis par la CA de l'instance");
+        }
         if pki::agent_id_from_cert(&cert) != Some(self.agent_id) {
             return Err("identifiant d'agent different");
         }
@@ -300,6 +340,65 @@ mod tests {
         .unwrap();
         assert_eq!(identity.agent_id, id);
         assert!(!format!("{identity:?}").contains("key"));
+    }
+
+    /// Certificat renouvele emis par une autre CA (meme identifiant, meme
+    /// cle publique) : refuse avant toute ecriture.
+    #[test]
+    fn agent_rejects_renewed_cert_from_other_ca() {
+        let ca = pki::Ca::generate("instance").unwrap();
+        let other = pki::Ca::generate("instance").unwrap();
+        let key = pki::AgentKey::generate().unwrap();
+        let id = ServerId::new();
+        let cert = ca.issue_agent_cert(id, key.public_key_der()).unwrap();
+        let identity = Identity::from_pem(
+            cert.cert_pem.as_bytes(),
+            key.key_pem().as_bytes(),
+            ca.cert_pem().as_bytes(),
+        )
+        .unwrap();
+        let now = pki::validity_unix(&identity.cert).unwrap().0 + 86_400;
+        let foreign = other.issue_agent_cert(id, key.public_key_der()).unwrap();
+        assert_eq!(
+            identity.check_renewed(&foreign.cert_pem, now).unwrap_err(),
+            "certificat non emis par la CA de l'instance"
+        );
+        let renewed = ca.issue_agent_cert(id, key.public_key_der()).unwrap();
+        assert!(identity.check_renewed(&renewed.cert_pem, now).is_ok());
+    }
+
+    /// `agent.key` lisible par le groupe ou les autres : identite refusee.
+    #[test]
+    fn agent_key_mode_checked() {
+        assert!(key_mode_ok(0o600));
+        assert!(key_mode_ok(0o400));
+        for bad in [0o640, 0o604, 0o644, 0o660, 0o700 | 0o001] {
+            assert!(!key_mode_ok(bad), "{bad:o}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ca = pki::Ca::generate("t").unwrap();
+            let key = pki::AgentKey::generate().unwrap();
+            let cert = ca
+                .issue_agent_cert(ServerId::new(), key.public_key_der())
+                .unwrap();
+            let dir = std::env::temp_dir().join(format!("ciphera-key-mode-{}", ServerId::new()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(CERT_FILE), &cert.cert_pem).unwrap();
+            std::fs::write(dir.join(CA_FILE), ca.cert_pem()).unwrap();
+            std::fs::write(dir.join(KEY_FILE), key.key_pem()).unwrap();
+            let set = |mode| {
+                std::fs::set_permissions(dir.join(KEY_FILE), std::fs::Permissions::from_mode(mode))
+                    .unwrap()
+            };
+            set(0o640);
+            let err = Identity::load(&dir).unwrap_err();
+            assert!(matches!(err, IdentityError::KeyMode(0o640)), "{err}");
+            set(0o600);
+            assert!(Identity::load(&dir).is_ok());
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     #[test]
