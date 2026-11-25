@@ -612,7 +612,10 @@ mod tests {
             let mailer = Mailer::from_settings(&settings(), Arc::new(dns)).unwrap();
             let e = mailer.send(mail()).await.unwrap_err();
             assert!(!e.to_string().contains("envoi SMTP"), "{why} : {e}");
-            assert!(e.is_connection(), "{why} : refus des reglages = connexion : {e}");
+            assert!(
+                e.is_connection(),
+                "{why} : refus des reglages = connexion : {e}"
+            );
         }
     }
 
@@ -701,11 +704,9 @@ mod tests {
             s.host = "127.0.0.1".into();
             s.port = port;
             s.tls = tls;
-            let mailer = Mailer::from_settings(
-                &s,
-                Arc::new(Fixed(Ok(vec!["127.0.0.1".parse().unwrap()]))),
-            )
-            .unwrap();
+            let mailer =
+                Mailer::from_settings(&s, Arc::new(Fixed(Ok(vec!["127.0.0.1".parse().unwrap()]))))
+                    .unwrap();
             let err = mailer
                 .send(OutgoingMail {
                     to: "nora@example.com".into(),
