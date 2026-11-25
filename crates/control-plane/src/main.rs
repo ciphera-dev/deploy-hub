@@ -681,6 +681,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Redirection HTTP facultative (CIPHERA_HTTP_PORT) : le port 80 appartient
     // au proxy du noeud, qui redirige deja les hotes IP vers le panneau.
     let panel_port = cfg.panel_port;
+    let reserved = cfg.reserved_hosts();
     let http = async move {
         let Some(addr) = http_addr else {
             return Ok(());
@@ -693,7 +694,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         listener::plain(addr, Hardening::PUBLIC, limits)
             .handle(handle)
             .serve(
-                listener::with_idle_tracking(redirect::router(panel_port, panel))
+                listener::with_idle_tracking(redirect::router(panel_port, panel, reserved))
                     .into_make_service_with_connect_info::<SocketAddr>(),
             )
             .await

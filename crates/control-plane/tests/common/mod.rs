@@ -260,19 +260,23 @@ pub async fn serve_https(state: AppState, cert: &Cert) -> (SocketAddr, Handle<So
 
 /// Lance l'ecouteur de redirection sur un port libre.
 pub async fn serve_redirect(https_port: u16) -> (SocketAddr, Handle<SocketAddr>) {
-    serve_redirect_with(https_port, Default::default()).await
+    serve_redirect_with(https_port, Default::default(), Vec::new()).await
 }
 
-/// Ecouteur de redirection qui suit le domaine du panneau `panel`.
+/// Ecouteur de redirection qui suit le domaine du panneau `panel` ;
+/// `reserved` : noms reserves au panneau (`Config::reserved_hosts`).
 #[allow(dead_code)]
 pub async fn serve_redirect_with(
     https_port: u16,
     panel: control_plane::domain::domains::panel::PanelSwitch,
+    reserved: Vec<String>,
 ) -> (SocketAddr, Handle<SocketAddr>) {
     let handle = Handle::new();
     let server = axum_server::bind("127.0.0.1:0".parse().unwrap())
         .handle(handle.clone())
-        .serve(control_plane::http::redirect::router(https_port, panel).into_make_service());
+        .serve(
+            control_plane::http::redirect::router(https_port, panel, reserved).into_make_service(),
+        );
     tokio::spawn(server);
     let addr = handle.listening().await.expect("adresse d'ecoute");
     (addr, handle)

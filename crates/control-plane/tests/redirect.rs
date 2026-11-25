@@ -41,7 +41,8 @@ async fn redirect_goes_to_the_confirmed_panel_domain_once_8443_is_closed() {
         host: "panel.example.org".into(),
         confirmed: false,
     };
-    let (addr, _h) = serve_redirect_with(8443, switch.clone()).await;
+    let (addr, _h) =
+        serve_redirect_with(8443, switch.clone(), vec!["admin.example.net".into()]).await;
     // Domaine pas encore confirme : 8443 reste la cible.
     switch.set(Some(panel.clone()));
     let r = plain_get(addr, "203.0.113.7", "/projects?x=1").await;
@@ -49,13 +50,19 @@ async fn redirect_goes_to_the_confirmed_panel_domain_once_8443_is_closed() {
         r.header("location"),
         Some("https://203.0.113.7:8443/projects?x=1")
     );
-    // Confirme : 8443 est ferme, un hote nomme va vers le domaine du
-    // panneau ; un hote IP recoit 404, sans `Location` ni nom.
+    // Confirme : 8443 est ferme. Seuls le domaine du panneau et les noms
+    // reserves au panneau sont renvoyes vers le domaine ; tout autre hote
+    // (nom quelconque ou IP) recoit 404, sans `Location` ni nom.
     switch.set(Some(Panel {
         confirmed: true,
         ..panel
     }));
-    for host in ["panel.example.org", "panel.example.com:80"] {
+    for host in [
+        "panel.example.org",
+        "Panel.Example.ORG:80",
+        "admin.example.net",
+        "ADMIN.example.net:8080",
+    ] {
         let r = plain_get(addr, host, "/projects?x=1").await;
         assert_eq!(r.status, 301, "{host}");
         assert_eq!(
@@ -65,6 +72,9 @@ async fn redirect_goes_to_the_confirmed_panel_domain_once_8443_is_closed() {
         );
     }
     for host in [
+        "unknown.example",
+        "panel.example.com",
+        "panel.example.org.evil.com",
         "203.0.113.7",
         "203.0.113.7:80",
         "[2001:db8::1]",

@@ -1,14 +1,16 @@
 //! Ecouteur HTTP : redirige tout vers HTTPS (301, corps vide). Une fois le
-//! domaine du panneau confirme (acces 8443 ferme), la cible est
-//! `https://<domaine du panneau>` pour un hote nomme ; un hote IP recoit
-//! alors un 404 sans `Location` (le domaine n'est jamais revele a qui
-//! balaie les adresses IP).
+//! domaine du panneau confirme (acces 8443 ferme), seuls le domaine du
+//! panneau et les noms reserves au panneau (`Config::reserved_hosts`) sont
+//! renvoyes vers `https://<domaine du panneau>` ; tout autre hote, nom ou
+//! adresse IP, recoit un 404 sans `Location` (le domaine n'est jamais
+//! revele a qui ne le connait pas deja).
 
 use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use std::net::Ipv6Addr;
+use std::sync::Arc;
 
 use super::security_headers;
 use crate::domain::domains::panel::PanelSwitch;
@@ -17,15 +19,18 @@ use crate::domain::domains::panel::PanelSwitch;
 struct Target {
     https_port: u16,
     panel: PanelSwitch,
+    /// Noms reserves au panneau, normalises (minuscules, sans point final).
+    reserved: Arc<[String]>,
 }
 
 /// Routeur de redirection vers `https://<hote>:<https_port>`, ou vers le
-/// domaine confirme du panneau.
-pub fn router(https_port: u16, panel: PanelSwitch) -> Router {
+/// domaine confirme du panneau. `reserved` : `Config::reserved_hosts`.
+pub fn router(https_port: u16, panel: PanelSwitch, reserved: Vec<String>) -> Router {
     security_headers::apply(
         Router::new().fallback(redirect).with_state(Target {
             https_port,
             panel: panel.clone(),
+            reserved: reserved.into(),
         }),
         panel,
     )
@@ -42,10 +47,18 @@ async fn redirect(State(target): State<Target>, headers: HeaderMap, uri: Uri) ->
     };
     let path = uri.path_and_query().map_or("/", |p| p.as_str());
     let authority = match target.panel.current() {
-        Some(panel) if panel.confirmed && is_ip(&host) => {
-            return StatusCode::NOT_FOUND.into_response();
+        Some(panel) if panel.confirmed => {
+            let name = bare_name(&host);
+            let known = name.eq_ignore_ascii_case(&panel.host)
+                || target
+                    .reserved
+                    .iter()
+                    .any(|r| r.eq_ignore_ascii_case(&name));
+            if !known {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            panel.host
         }
-        Some(panel) if panel.confirmed => panel.host,
         _ if https_port == 443 => host,
         _ => format!("{host}:{https_port}"),
     };
@@ -56,13 +69,10 @@ async fn redirect(State(target): State<Target>, headers: HeaderMap, uri: Uri) ->
     }
 }
 
-/// Hote IP, sous sa forme d'URL (IPv6 entre crochets).
-fn is_ip(host: &str) -> bool {
-    host.strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host)
-        .parse::<std::net::IpAddr>()
-        .is_ok()
+/// Nom d'un hote deja nettoye par [`clean_host`] (sans port), sans point
+/// final ; une adresse IPv6 garde ses crochets (jamais un nom reserve).
+fn bare_name(host: &str) -> String {
+    host.trim_end_matches('.').to_string()
 }
 
 /// Retire le port de l'en-tete Host et valide le reste (nom d'hote DNS,
