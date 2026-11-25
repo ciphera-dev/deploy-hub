@@ -181,7 +181,8 @@ pub async fn issue(
                          WHERE lower(email) = lower($1) AND email_verified_at IS NOT NULL \
                            AND NOT EXISTS (SELECT 1 FROM password_resets r \
                                            WHERE r.user_id = users.id AND r.origin = 'forgot' \
-                                             AND $6::float8 > 0 \n                                             AND r.created_at > to_timestamp($4) - make_interval(secs => $6))), \
+                                             AND $6::float8 > 0 \
+                                             AND r.created_at > to_timestamp($4) - make_interval(secs => $6))), \
               superseded AS (DELETE FROM password_resets \
                              WHERE used_at IS NULL AND user_id IN (SELECT id FROM target) \
                                AND (origin = 'forgot' OR $7::text <> 'forgot')), \
@@ -556,6 +557,18 @@ async fn member_reset_mfa(
         .begin()
         .await
         .map_err(|e| internal("transaction de remise a zero du second facteur", e))?;
+    // Rang relu dans la transaction, ligne verrouillee : un changement de role
+    // survenu pendant la verification du mot de passe est pris en compte.
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| internal("lecture du membre", e))?;
+    let current = current.ok_or_else(member_not_found)?;
+    if !Role::parse(&current).is_some_and(|role| auth.role.can_manage(role)) {
+        return Err(forbidden());
+    }
     let mut removed = [0_u64; 3];
     for (slot, (context, sql)) in [
         ("TOTP", "DELETE FROM user_totp WHERE user_id = $1"),

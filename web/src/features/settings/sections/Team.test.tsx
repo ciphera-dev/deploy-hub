@@ -206,3 +206,11 @@ it("réinitialise le 2FA après confirmation par mot de passe", async () => {
   await waitFor(() => expect(calls).toContainEqual({ method: "POST", path: `reset-mfa:${ID(2)}`, body: { password: "bon" } }));
   expect(await screen.findByText("2FA de Bruno réinitialisé")).toBeInTheDocument();
 });
+
+it("ne propose pas la réinitialisation du 2FA à un membre sans second facteur", async () => {
+  mount();
+  await screen.findByText("Chloe");
+  fireEvent.keyDown(screen.getByRole("button", { name: "Actions de Chloe" }), { key: "ArrowDown" });
+  expect(await screen.findByRole("menuitem", { name: "Lien de réinitialisation" })).toBeInTheDocument();
+  expect(screen.queryByRole("menuitem", { name: "Réinitialiser le 2FA" })).not.toBeInTheDocument();
+});

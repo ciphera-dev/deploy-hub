@@ -317,7 +317,7 @@ function MembersView({ me, members, invitations }: { me: { id: string; role: str
             ? [removal]
             : [
                 { icon: "KeyRound", label: "Lien de réinitialisation", onSelect: () => void resetLink(m) },
-                { icon: "ShieldX", label: "Réinitialiser le 2FA", onSelect: () => setDialog({ kind: "reset-mfa", member: m }) },
+                ...(m.two_factor ? [{ icon: "ShieldX", label: "Réinitialiser le 2FA", onSelect: () => setDialog({ kind: "reset-mfa", member: m }) } as MenuItem] : []),
                 "separator",
                 removal,
               ];
