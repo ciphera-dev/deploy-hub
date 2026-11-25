@@ -429,3 +429,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 13:08 — Session v0.1-sdd — claude-code (orchestrateur) — Task R4 : Réglages SMTP réservés au propriétaire
 - fait : Propriétaire seul, adresses privées contrôlées à chaque connexion, refus classés en erreur de connexion, essai de 3 adresses
 - résultat : TERMINÉ (relecture approuvée)
+
+## 2026-11-25 13:20 — Session v0.1-sdd — claude-code (orchestrateur) — Task R38 : Hooks de déploiement, expiration, plafonds de domaines
+- fait : Jeton par en-tête, expiration 90 j (plafond 365 j), mot de passe pour créer et rallonger, 20/100 domaines
+- résultat : TERMINÉ (relecture approuvée, 1 tour)

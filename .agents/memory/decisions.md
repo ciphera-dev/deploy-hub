@@ -1208,3 +1208,10 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Ruling : un refus des réglages (adresse interdite) est classé en erreur de connexion, comme un serveur injoignable — même traitement par les lots de notifications (arrêt au premier échec) et pas d'indice supplémentaire sur la cause.
 - Le contournement des adresses privées n'existe que dans les tests unitaires (`#[cfg(test)]`), jamais en release ni dans les tests d'intégration.
 - Laissés : test du passage à l'adresse suivante qui lie 127.0.0.2 (indisponible par défaut sous macOS) et assertion sur le texte d'erreur sensible aux fins de ligne du source ; port supposé fermé sur 127.0.0.1 (risque très faible).
+
+## 2026-11-25 — Task R38 : hooks de déploiement (jeton par en-tête, expiration), plafonds de domaines
+- Décision R38 : jeton du hook transmis par l'en-tête `X-Ciphera-Hook-Token` (alias `X-Deploy-Hook-Token` ; `?token=` encore accepté mais déprécié ; un en-tête vide vaut absent) ; l'URL renvoyée à la création ne contient plus de jeton (changement de contrat) ; comparaison sha256 puis temps constant, hook inconnu, expiré ou faux → même 404.
+- Expiration : migration 0038 `deploy_hooks.expires_at` (nullable, les hooks existants n'expirent pas) ; 90 jours par défaut, plafond 365 jours à la création et à la modification (422) ; `null` refusé en PATCH ; rallonger une date ou faire revivre un hook expiré exige le mot de passe, raccourcir non.
+- Création d'un hook : ré-authentification par mot de passe (le step-up à second facteur de R37 n'existait pas encore : R37 doit rebrancher la création et la rallonge sur son assistant) ; validations (projet, date, plafond) avant l'essai de mot de passe.
+- Domaines : 20 par projet et 100 par instance (domaine du panneau exclu ; `www` compte pour 2), sous verrou consultatif dans la transaction ; badge « HTTP, non chiffré ».
+- Laissés : argon2 exécuté sous le verrou de ligne (durée bornée) ; pas de test dédié à l'exclusion du domaine du panneau ; hooks expirés comptés dans le plafond de 20 ; horloge du navigateur pour la date proposée (option « 1 an » = 364 jours).

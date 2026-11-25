@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-25 13:08
+# État courant — mis à jour le 2026-11-25 13:20
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R4 : Réglages SMTP réservés au propriétaire — statut : TERMINÉ (TERMINÉ (relecture approuvée))
+Task R38 : Hooks de déploiement, expiration, plafonds de domaines — statut : TERMINÉ (TERMINÉ (relecture approuvée, 1 tour))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R38 : Hooks de déploiement, expiration, plafonds de domaines
 - Task R4 : Réglages SMTP réservés au propriétaire
 - Task R48 : Signataire de la CA séparé (root)
 - Task R35 : Variables globales : portée explicite des secrets
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R34 : Écoute HTTP du panneau : SPA, en-têtes, santé, délais
 - Task R36 : Autorisations par objet, contraintes de schéma, OpenAPI
 - Task fix/csp-fonts : CSP : polices servies en fichiers
-- Task R47 : Lien agent limité à la boucle locale, ADR 0004
 
 ## Prochaine étape exacte
-R38, R51 en correction ; R49 en cours ; puis R37, R39, R50
+R51 en correction ; R49 en cours ; puis R37, R50, R39
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,8 +32,10 @@ R38, R51 en correction ; R49 en cours ; puis R37, R39, R50
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/control-plane/src/mail.rs`
-- `crates/control-plane/src/http`
+- `crates/control-plane/src/http/deploy_hooks.rs`
+- `crates/control-plane/src/domain/domains`
+- `crates/control-plane/migrations`
+- `web/src`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
