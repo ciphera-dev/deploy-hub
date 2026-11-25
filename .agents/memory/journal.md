@@ -397,3 +397,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 10:17 — Session v0.1-sdd — claude-code (orchestrateur) — Task R33 : Panneau web : journaux, CSP des styles, copie, 401, jetons d'URL
 - fait : Pas de reconnexion sur 1008, sonde /api/me, nonce CSP par réponse, Copié seulement si réussi, 401 distingués, jetons retirés par le routeur
 - résultat : TERMINÉ (relecture approuvée, 1 tour)
+
+## 2026-11-25 10:19 — Session v0.1-sdd — claude-code (orchestrateur) — Task R47 : Lien agent limité à la boucle locale, ADR 0004
+- fait : Refus au chargement de la config hors boucle locale, ADR de l'enrôlement distant v0.2
+- résultat : TERMINÉ (relecture approuvée)

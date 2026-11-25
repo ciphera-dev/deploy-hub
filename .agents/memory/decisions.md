@@ -1169,3 +1169,8 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Jetons d'URL : retirés par le routeur (navigation `replace` vers /reset, /invite, /verify-email sans jeton), jeton gardé en mémoire ; anciens liens des e-mails valables ; page sans jeton : « Lien expiré ou déjà utilisé ».
 - « Copié » seulement après une copie réussie (CopyButton ou `copyText`).
 - Laissés : jeton gardé en mémoire après usage ; test de vérification d'e-mail peu strict sur le titre ; vue des journaux d'un déploiement sans état fermé ; étape Playwright de l'invité liée à l'URL publique de l'instance.
+
+## 2026-11-25 — Task R47 : lien agent limité à la boucle locale, ADR de l'enrôlement distant
+- Décision R47 : au chargement de la config, `CIPHERA_AGENT_LINK_BIND` hors boucle locale (IPv4 127/8 ou ::1) est refusé avec une erreur explicite ; `::ffff:127.0.0.1` et `localhost` sont refusés ; aucun moyen de l'ouvrir sans enrôlement.
+- ADR 0004 (v0.2) : jeton de jonction 256 bits haché, usage unique, 1 h, créé par le propriétaire avec step-up (R37) ; l'agent génère sa clé et présente jeton + CSR en HTTPS au panneau (empreinte épinglée) ; signature par le signataire séparé (R48) ; révocation (R30). La règle ne sera levée qu'avec cette implémentation.
+- Laissés : pas de second contrôle dans main.rs ; `::1` et `127.0.0.2` acceptés alors que l'agent vise 127.0.0.1 ; ordre jeton consommé / CSR signée à trancher en v0.2.
