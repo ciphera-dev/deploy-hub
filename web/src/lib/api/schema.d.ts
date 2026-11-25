@@ -2324,7 +2324,10 @@ export interface components {
         };
         /** @description Corps de `POST /api/projects/{id}/deploy-hooks`. */
         NewDeployHook: {
-            /** @description RFC 3339, dans le futur. Absent : 90 jours apres la creation. */
+            /**
+             * @description RFC 3339, dans le futur et dans les 365 jours. Absent : 90 jours apres
+             *     la creation.
+             */
             expires_at?: string | null;
             /** @description 1 a 64 caracteres, sans caractere de controle. */
             name: string;
@@ -3008,8 +3011,17 @@ export interface components {
         };
         /** @description Corps de `PATCH /api/projects/{id}/deploy-hooks/{hookId}`. */
         UpdateDeployHook: {
-            /** @description RFC 3339, dans le futur. */
+            /**
+             * @description RFC 3339, dans le futur et dans les 365 jours. Pas de valeur nulle :
+             *     un hook n'est jamais sans expiration.
+             */
             expires_at: string;
+            /**
+             * Format: password
+             * @description Mot de passe du compte : exige pour rallonger l'expiration ou
+             *     reactiver un hook expire ; inutile pour la raccourcir.
+             */
+            password?: string | null;
         };
         /** @description Corps de `PATCH /api/settings/deployments`. */
         UpdateDeploySettings: {
@@ -6110,6 +6122,13 @@ export interface operations {
                     "application/json": components["schemas"]["DeployHook"];
                 };
             };
+            /** @description `invalid_credentials` : mot de passe absent ou incorrect pour une extension */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Role insuffisant, ou jeton CSRF absent ou invalide */
             403: {
                 headers: {
@@ -6124,8 +6143,15 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Date invalide ou passee */
+            /** @description Date invalide, passee ou au-dela de 365 jours */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives de mot de passe */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

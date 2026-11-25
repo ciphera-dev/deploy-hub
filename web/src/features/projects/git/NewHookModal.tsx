@@ -12,7 +12,7 @@ export const LIFETIMES = [
   { days: 30, label: "30 jours" },
   { days: 90, label: "90 jours (par défaut)" },
   { days: 180, label: "180 jours" },
-  { days: 365, label: "1 an" },
+  { days: 364, label: "1 an" },
 ] as const;
 
 const fld: CSSProperties = { height: 36, padding: "0 12px", borderRadius: 10, border: "1px solid var(--border-default)", background: "var(--surface-raised)", color: "var(--text-strong)", font: "400 13px/1 var(--font-sans)", outline: "none", width: "100%", boxSizing: "border-box" };

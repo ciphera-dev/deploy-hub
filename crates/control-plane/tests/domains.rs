@@ -1957,3 +1957,35 @@ async fn domain_cap_per_instance() {
     assert_eq!(r.status, 422, "{}", r.raw);
     assert!(r.raw.contains("100"), "{}", r.raw);
 }
+
+#[tokio::test]
+async fn concurrent_adds_at_the_cap_let_only_one_through() {
+    let env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let p = project(&env.state, &dev, "race").await;
+    for i in 0..19 {
+        add_ok(&env.state, &dev, p, &format!("d{i}.race.example")).await;
+    }
+    let (a, b) = tokio::join!(
+        add(
+            &env.state,
+            &dev,
+            p,
+            json!({ "host": "a.race.example", "internal_port": 3000 })
+        ),
+        add(
+            &env.state,
+            &dev,
+            p,
+            json!({ "host": "b.race.example", "internal_port": 3000 })
+        ),
+    );
+    let mut statuses = [a.status, b.status];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [201, 422], "{} / {}", a.raw, b.raw);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM domains WHERE NOT generated")
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 20);
+}

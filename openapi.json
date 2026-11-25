@@ -3188,6 +3188,9 @@
               }
             }
           },
+          "401": {
+            "description": "`invalid_credentials` : mot de passe absent ou incorrect pour une extension"
+          },
           "403": {
             "description": "Role insuffisant, ou jeton CSRF absent ou invalide"
           },
@@ -3195,7 +3198,10 @@
             "description": "Projet ou deploy hook introuvable"
           },
           "422": {
-            "description": "Date invalide ou passee"
+            "description": "Date invalide, passee ou au-dela de 365 jours"
+          },
+          "429": {
+            "description": "Trop de tentatives de mot de passe"
           }
         },
         "security": [
@@ -7327,7 +7333,7 @@
               "string",
               "null"
             ],
-            "description": "RFC 3339, dans le futur. Absent : 90 jours apres la creation."
+            "description": "RFC 3339, dans le futur et dans les 365 jours. Absent : 90 jours apres\nla creation."
           },
           "name": {
             "type": "string",
@@ -9013,7 +9019,16 @@
         "properties": {
           "expires_at": {
             "type": "string",
-            "description": "RFC 3339, dans le futur."
+            "description": "RFC 3339, dans le futur et dans les 365 jours. Pas de valeur nulle :\nun hook n'est jamais sans expiration."
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Mot de passe du compte : exige pour rallonger l'expiration ou\nreactiver un hook expire ; inutile pour la raccourcir.",
+            "maxLength": 1024
           }
         },
         "additionalProperties": false

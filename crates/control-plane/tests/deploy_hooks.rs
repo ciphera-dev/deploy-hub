@@ -132,6 +132,17 @@ async fn trigger_with_header(state: &AppState, path: &str, token: &str, peer: &s
     .await
 }
 
+/// Date RFC 3339 dans `days` jours (calculee par la base).
+async fn in_days(state: &AppState, days: i32) -> String {
+    sqlx::query_scalar(
+        "SELECT to_char((now() + make_interval(days => $1)) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')",
+    )
+    .bind(days)
+    .fetch_one(&state.db)
+    .await
+    .unwrap()
+}
+
 async fn count(state: &AppState, sql: &str) -> i64 {
     sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_string()))
         .fetch_one(&state.db)
@@ -302,12 +313,14 @@ async fn hook_expires_after_90_days_by_default_and_is_editable() {
     )
     .await;
     assert_eq!(past.status, 422, "{}", past.raw);
+    // Raccourcir ne demande pas le mot de passe.
+    let soon = in_days(&state, 30).await;
     let ok = send(
         &state,
         &admin,
         "PATCH",
         &path,
-        Some(json!({ "expires_at": "2099-01-01T00:00:00Z" })),
+        Some(json!({ "expires_at": soon })),
     )
     .await;
     assert_eq!(ok.status, 200, "{}", ok.raw);
@@ -315,20 +328,19 @@ async fn hook_expires_after_90_days_by_default_and_is_editable() {
         ok.json()["expires_at"]
             .as_str()
             .unwrap()
-            .starts_with("2099-01-01"),
+            .starts_with(&soon[..10]),
         "{}",
         ok.raw
     );
 
     // A la creation aussi, avec une date choisie.
+    let chosen = in_days(&state, 200).await;
     let r = send(
         &state,
         &admin,
         "POST",
         &format!("/api/projects/{project}/deploy-hooks"),
-        Some(
-            json!({ "name": "court", "password": PASSWORD, "expires_at": "2098-06-01T12:00:00Z" }),
-        ),
+        Some(json!({ "name": "court", "password": PASSWORD, "expires_at": chosen })),
     )
     .await;
     assert_eq!(r.status, 201, "{}", r.raw);
@@ -336,10 +348,242 @@ async fn hook_expires_after_90_days_by_default_and_is_editable() {
         r.json()["hook"]["expires_at"]
             .as_str()
             .unwrap()
-            .starts_with("2098-06-01T12:00:00"),
+            .starts_with(&chosen[..16]),
         "{}",
         r.raw
     );
+}
+
+#[tokio::test]
+async fn hook_expiry_is_capped_at_365_days() {
+    let (state, _pg) = common::state().await;
+    let (project, _) = git_project(&state, "web").await;
+    let admin = login(&state, "admin").await;
+    let url = format!("/api/projects/{project}/deploy-hooks");
+    let far = in_days(&state, 400).await;
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        &url,
+        Some(json!({ "name": "long", "password": PASSWORD, "expires_at": far })),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    assert_eq!(count(&state, "SELECT count(*) FROM deploy_hooks").await, 0);
+
+    let created = create_hook(&state, project).await;
+    let hook_id = created["hook"]["id"].as_str().unwrap();
+    let p = send(
+        &state,
+        &admin,
+        "PATCH",
+        &format!("{url}/{hook_id}"),
+        Some(json!({ "expires_at": far, "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(p.status, 422, "{}", p.raw);
+    // « N'expire jamais » (null) n'existe pas.
+    let never = send(
+        &state,
+        &admin,
+        "PATCH",
+        &format!("{url}/{hook_id}"),
+        Some(json!({ "expires_at": null, "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(never.status, 422, "{}", never.raw);
+}
+
+#[tokio::test]
+async fn extending_a_hook_requires_the_password() {
+    let (state, _pg) = common::state().await;
+    let (project, _) = git_project(&state, "web").await;
+    let admin = login(&state, "admin").await;
+    let created = create_hook(&state, project).await;
+    let hook_id = created["hook"]["id"].as_str().unwrap();
+    let path = format!("/api/projects/{project}/deploy-hooks/{hook_id}");
+    let later = in_days(&state, 200).await;
+
+    // Rallonger (90 -> 200 jours) : mot de passe exige.
+    let none = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": later })),
+    )
+    .await;
+    assert_eq!(none.status, 401, "{}", none.raw);
+    let wrong = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": later, "password": "mauvais mot de passe" })),
+    )
+    .await;
+    assert_eq!(wrong.status, 401, "{}", wrong.raw);
+    let ok = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": later, "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(ok.status, 200, "{}", ok.raw);
+
+    // Raccourcir : sans mot de passe.
+    let sooner = in_days(&state, 10).await;
+    let short = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": sooner })),
+    )
+    .await;
+    assert_eq!(short.status, 200, "{}", short.raw);
+
+    // Reactiver un hook expire : mot de passe exige.
+    sqlx::query("UPDATE deploy_hooks SET expires_at = now() - interval '1 day'")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let revive = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": sooner })),
+    )
+    .await;
+    assert_eq!(revive.status, 401, "{}", revive.raw);
+    let revived = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": sooner, "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(revived.status, 200, "{}", revived.raw);
+}
+
+#[tokio::test]
+async fn refused_creation_does_not_burn_a_password_attempt() {
+    let (state, _pg) = common::state().await;
+    let (project, _) = git_project(&state, "web").await;
+    let admin = login(&state, "admin").await;
+    let url = format!("/api/projects/{project}/deploy-hooks");
+    let attempts = || count(&state, "SELECT count(*) FROM mfa_attempts");
+    let before = attempts().await;
+
+    // Date refusee, projet inconnu, plafond atteint : le mot de passe n'est pas essaye.
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        &url,
+        Some(json!({ "name": "x", "password": PASSWORD, "expires_at": "2020-01-01T00:00:00Z" })),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        &format!("/api/projects/{}/deploy-hooks", Uuid::new_v4()),
+        Some(json!({ "name": "x", "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, 404, "{}", r.raw);
+    for i in 0..20u8 {
+        sqlx::query(
+            "INSERT INTO deploy_hooks (id, project_id, name, token_hash) VALUES ($1, $2, 'h', $3)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(project)
+        .bind(vec![i + 100; 32])
+        .execute(&state.db)
+        .await
+        .unwrap();
+    }
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        &url,
+        Some(json!({ "name": "x", "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(attempts().await, before);
+}
+
+#[tokio::test]
+async fn token_header_aliases_priority_and_empty_header() {
+    let (state, _pg) = common::state().await;
+    let (project, _) = git_project(&state, "web").await;
+    let created = create_hook(&state, project).await;
+    let path = created["url_path"].as_str().unwrap();
+    let token = created["token"].as_str().unwrap().to_string();
+    let wrong = format!("dh_{}", "E".repeat(43));
+    let call_with =
+        |headers: Vec<(&'static str, String)>, query: Option<&str>, peer: &'static str| {
+            let state = state.clone();
+            let url = match query {
+                Some(q) => format!("{path}?token={q}"),
+                None => path.to_string(),
+            };
+            async move {
+                call(
+                    &state,
+                    "POST",
+                    &url,
+                    Req {
+                        peer: Some(peer),
+                        headers,
+                        ..Req::default()
+                    },
+                )
+                .await
+            }
+        };
+
+    // Ancien nom de l'en-tete : accepte.
+    let legacy = call_with(
+        vec![("x-deploy-hook-token", token.clone())],
+        None,
+        "198.51.100.40:1000",
+    )
+    .await;
+    assert_eq!(legacy.status, 202, "{}", legacy.raw);
+    // L'en-tete prime sur la requete : mauvais en-tete + bon `?token=` = refuse.
+    let header_wins = call_with(
+        vec![("x-ciphera-hook-token", wrong.clone())],
+        Some(&token),
+        "198.51.100.41:1000",
+    )
+    .await;
+    assert_eq!(header_wins.status, 404, "{}", header_wins.raw);
+    // Bon en-tete + mauvais `?token=` = accepte.
+    let header_ok = call_with(
+        vec![("x-ciphera-hook-token", token.clone())],
+        Some(&wrong),
+        "198.51.100.42:1000",
+    )
+    .await;
+    assert_eq!(header_ok.status, 202, "{}", header_ok.raw);
+    // Un en-tete vide ne masque pas `?token=`.
+    let empty = call_with(
+        vec![("x-ciphera-hook-token", String::new())],
+        Some(&token),
+        "198.51.100.43:1000",
+    )
+    .await;
+    assert_eq!(empty.status, 202, "{}", empty.raw);
 }
 
 #[tokio::test]

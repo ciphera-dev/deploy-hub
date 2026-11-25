@@ -468,7 +468,8 @@ async fn check_quota(conn: &mut PgConnection, project: Uuid, adding: i64) -> Res
         .execute(&mut *conn)
         .await?;
     let (in_project, in_instance): (i64, i64) = sqlx::query_as(
-        "SELECT count(*) FILTER (WHERE project_id = $1), count(*)          FROM domains WHERE NOT generated",
+        "SELECT count(*) FILTER (WHERE project_id = $1), count(*) \
+         FROM domains WHERE NOT generated AND NOT panel",
     )
     .bind(project)
     .fetch_one(conn)

@@ -148,20 +148,6 @@ async fn create(
     };
     let Json(input) = body.map_err(|_| invalid())?;
     let name = hooks::clean_name(&input.name).ok_or_else(invalid)?;
-    // Re-authentification : un hook declenche des deploiements sans session.
-    let attempt = match reauthenticate(
-        &state,
-        &auth.user,
-        &ip.to_string(),
-        input.password,
-        "deploy_hook.create.failure",
-    )
-    .await?
-    {
-        Reauth::Verified(attempt, _) => attempt,
-        Reauth::Limited(response) => return Ok(response),
-    };
-    let token = hooks::generate().map_err(|e| internal("generateur aleatoire", e))?;
     let mut tx = state
         .db
         .begin()
@@ -181,6 +167,21 @@ async fn create(
             "20 deploy hooks au plus par projet.",
         ));
     }
+    // Re-authentification : un hook declenche des deploiements sans session.
+    // Apres les controles ci-dessus : une demande refusee ne coute aucun essai.
+    let attempt = match reauthenticate(
+        &state,
+        &auth.user,
+        &ip.to_string(),
+        input.password,
+        "deploy_hook.create.failure",
+    )
+    .await?
+    {
+        Reauth::Verified(attempt, _) => attempt,
+        Reauth::Limited(response) => return Ok(response),
+    };
+    let token = hooks::generate().map_err(|e| internal("generateur aleatoire", e))?;
     let hook = hooks::insert(
         &mut tx,
         id,
@@ -226,7 +227,7 @@ async fn check_expiry(conn: &mut PgConnection, value: &str) -> Result<(), ApiErr
         hooks::ExpiryError::Invalid => ApiError::new(
             422,
             "validation_failed",
-            "Date d'expiration invalide : RFC 3339 dans le futur attendue.",
+            "Date d'expiration invalide : RFC 3339, dans le futur et dans les 365 jours.",
         ),
         hooks::ExpiryError::Db(e) => internal("date d'expiration du deploy hook", e),
     })
@@ -236,6 +237,7 @@ async fn check_expiry(conn: &mut PgConnection, value: &str) -> Result<(), ApiErr
 async fn update(
     State(state): State<AppState>,
     auth: Require<res::Projects, lvl::Admin>,
+    ClientIp(ip): ClientIp,
     Path((id, hook)): Path<(String, String)>,
     body: Result<Json<UpdateDeployHook>, JsonRejection>,
 ) -> Result<Response, ApiError> {
@@ -250,6 +252,39 @@ async fn update(
         .map_err(|e| internal("transaction des deploy hooks", e))?;
     project_exists(&mut tx, id).await?;
     check_expiry(&mut tx, &input.expires_at).await?;
+    let extends = hooks::lock_for_expiry(&mut tx, id, hook, &input.expires_at)
+        .await
+        .map_err(|e| internal("expiration du deploy hook", e))?
+        .ok_or_else(hook_not_found)?;
+    // Rallonger ou reactiver un hook expire redonne un secret valide : mot de
+    // passe exige. Raccourcir reste libre.
+    let mut attempt = None;
+    if extends {
+        let Some(password) = input.password.filter(|p| !p.is_empty()) else {
+            return Err(ApiError::new(
+                401,
+                "invalid_credentials",
+                "Saisissez votre mot de passe pour rallonger l'expiration.",
+            ));
+        };
+        match reauthenticate(
+            &state,
+            &auth.user,
+            &ip.to_string(),
+            password,
+            "deploy_hook.update.failure",
+        )
+        .await?
+        {
+            Reauth::Verified(id, _) => attempt = Some(id),
+            Reauth::Limited(response) => return Ok(response),
+        }
+    }
+    if let Some(attempt) = attempt {
+        rate_limit::mark_mfa_success(&mut tx, attempt)
+            .await
+            .map_err(|e| internal("limitation de debit", e))?;
+    }
     if !hooks::set_expiry(&mut tx, id, hook, &input.expires_at)
         .await
         .map_err(|e| internal("expiration du deploy hook", e))?
@@ -311,6 +346,7 @@ async fn trigger(
         headers
             .get(name)
             .and_then(|v| v.to_str().ok())
+            .filter(|v| !v.is_empty())
             .map(str::to_string)
     };
     let token = Zeroizing::new(

@@ -154,6 +154,9 @@ pub async fn insert(
     Ok(id)
 }
 
+/// Duree de vie maximale d'une expiration choisie, en jours.
+pub const MAX_LIFETIME_DAYS: i32 = 365;
+
 /// Date d'expiration refusee.
 #[derive(Debug)]
 pub enum ExpiryError {
@@ -162,16 +165,21 @@ pub enum ExpiryError {
     Db(sqlx::Error),
 }
 
-/// Verifie qu'une date RFC 3339 est valide et dans le futur. La forme est
+/// Verifie qu'une date RFC 3339 est valide, dans le futur et au plus
+/// `MAX_LIFETIME_DAYS` jours plus loin. La forme est
 /// controlee ici, le calendrier par PostgreSQL (jour ou mois impossible).
 pub async fn check_expiry(conn: &mut PgConnection, value: &str) -> Result<(), ExpiryError> {
     if !rfc3339_shape(value) {
         return Err(ExpiryError::Invalid);
     }
-    match sqlx::query_scalar::<_, bool>("SELECT $1::timestamptz > now()")
-        .bind(value)
-        .fetch_one(conn)
-        .await
+    match sqlx::query_scalar::<_, bool>(
+        "SELECT $1::timestamptz > now() \
+            AND $1::timestamptz <= now() + make_interval(days => $2)",
+    )
+    .bind(value)
+    .bind(MAX_LIFETIME_DAYS)
+    .fetch_one(conn)
+    .await
     {
         Ok(true) => Ok(()),
         Ok(false) => Err(ExpiryError::Invalid),
@@ -217,6 +225,26 @@ fn rfc3339_shape(v: &str) -> bool {
         [b'+' | b'-', h1, h2, b':', m1, m2] => [h1, h2, m1, m2].iter().all(|c| c.is_ascii_digit()),
         _ => false,
     }
+}
+
+/// Verrouille le hook et dit si `new` rallonge son expiration (`Some(true)`),
+/// ce qui inclut la reactivation d'un hook expire ; `None` si le hook n'existe
+/// pas. Un hook sans date que l'on borne n'est pas une extension.
+pub async fn lock_for_expiry(
+    conn: &mut PgConnection,
+    project: Uuid,
+    id: Uuid,
+    new: &str,
+) -> sqlx::Result<Option<bool>> {
+    sqlx::query_scalar(
+        "SELECT expires_at IS NOT NULL AND $3::timestamptz > expires_at \
+         FROM deploy_hooks WHERE id = $1 AND project_id = $2 FOR UPDATE",
+    )
+    .bind(id)
+    .bind(project)
+    .bind(new)
+    .fetch_optional(conn)
+    .await
 }
 
 /// Change la date d'expiration ; `false` si le hook n'existe pas.

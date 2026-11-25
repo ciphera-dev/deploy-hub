@@ -72,7 +72,8 @@ pub struct NewDeployHook {
     /// Mot de passe du compte (re-authentification).
     #[schema(value_type = String, format = Password, max_length = 1024)]
     pub password: Zeroizing<String>,
-    /// RFC 3339, dans le futur. Absent : 90 jours apres la creation.
+    /// RFC 3339, dans le futur et dans les 365 jours. Absent : 90 jours apres
+    /// la creation.
     #[serde(default)]
     pub expires_at: Option<String>,
 }
@@ -88,11 +89,26 @@ impl fmt::Debug for NewDeployHook {
 }
 
 /// Corps de `PATCH /api/projects/{id}/deploy-hooks/{hookId}`.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateDeployHook {
-    /// RFC 3339, dans le futur.
+    /// RFC 3339, dans le futur et dans les 365 jours. Pas de valeur nulle :
+    /// un hook n'est jamais sans expiration.
     pub expires_at: String,
+    /// Mot de passe du compte : exige pour rallonger l'expiration ou
+    /// reactiver un hook expire ; inutile pour la raccourcir.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = Password, max_length = 1024)]
+    pub password: Option<Zeroizing<String>>,
+}
+
+impl fmt::Debug for UpdateDeployHook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpdateDeployHook")
+            .field("expires_at", &self.expires_at)
+            .field("password", &self.password.as_ref().map(|_| "<masque>"))
+            .finish()
+    }
 }
 
 /// Reponse de la creation : le secret n'est montre qu'ici, une seule fois.
@@ -215,7 +231,9 @@ pub fn create_deploy_hook() {}
         (status = 200, description = "Deploy hook mis a jour", body = DeployHook),
         (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
         (status = 404, description = "Projet ou deploy hook introuvable"),
-        (status = 422, description = "Date invalide ou passee"),
+        (status = 401, description = "`invalid_credentials` : mot de passe absent ou incorrect pour une extension"),
+        (status = 422, description = "Date invalide, passee ou au-dela de 365 jours"),
+        (status = 429, description = "Trop de tentatives de mot de passe"),
     )
 )]
 #[allow(dead_code)]
