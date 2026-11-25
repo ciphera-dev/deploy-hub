@@ -401,3 +401,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 10:19 — Session v0.1-sdd — claude-code (orchestrateur) — Task R47 : Lien agent limité à la boucle locale, ADR 0004
 - fait : Refus au chargement de la config hors boucle locale, ADR de l'enrôlement distant v0.2
 - résultat : TERMINÉ (relecture approuvée)
+
+## 2026-11-25 10:48 — Session v0.1-sdd — claude-code (orchestrateur) — Task fix/csp-fonts : CSP : polices servies en fichiers
+- fait : assetsInlineLimit sans polices, garde check-dist contre les URI data: hors image
+- résultat : TERMINÉ

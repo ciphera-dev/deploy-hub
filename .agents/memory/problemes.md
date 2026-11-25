@@ -178,3 +178,7 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 - Symptôme : « (a) temoin (pont par defaut) : panneau de l'hote joignable » en échec deux fois sur 0f4d8a6 (connexion refusée sur <ip>:8443), le reste du test vert.
 - Cause : les sondes de sortie passaient avant le premier `panel_up` du script ; le panneau était prêt à temps par hasard jusque-là. Un refus pendant le démarrage faussait aussi les cas « bloqué » (BuildKit, ciphera-prepare).
 - Correction : `check "(a) panneau joignable avant les sondes de sortie" panel_up` avant les sondes (fix/ci-panel-witness).
+
+## 2026-11-25 — CI rouge (e2e-golden-path) : polices en data: refusées par la CSP
+- Symptôme : 15 violations « font-src data » relevées par l'écouteur CSP ajouté en R33 (polices woff/woff2 inlinées par Vite sous `assetsInlineLimit`) ; défaut antérieur à R33, rendu visible par lui.
+- Correction (fix/csp-fonts) : les polices ne sont jamais inlinées (fichiers sous /assets/, servis par embed.rs avec cache immuable) ; `check-dist` échoue sur toute URI data: autre qu'image/* dans le CSS, le JS ou le HTML. La CSP n'est pas élargie.

@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-25 10:19
+# État courant — mis à jour le 2026-11-25 10:48
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R47 : Lien agent limité à la boucle locale, ADR 0004 — statut : TERMINÉ (TERMINÉ (relecture approuvée))
+Task fix/csp-fonts : CSP : polices servies en fichiers — statut : TERMINÉ (TERMINÉ)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task fix/csp-fonts : CSP : polices servies en fichiers
 - Task R47 : Lien agent limité à la boucle locale, ADR 0004
 - Task R33 : Panneau web : journaux, CSP des styles, copie, 401, jetons d'URL
 - Task R32 : Proxy : socket de pilotage, certificats expirés
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R30 : PKI et lien agent
 - Task R31 : Proxy : délais d'écriture et de corps, en-têtes, cibles
 - Task R29 : Hôtes du panneau, X-Forwarded-For, RP ID des passkeys
-- Task R28 : Sortie réseau des applications et des builds, durcissement de l'agent
 
 ## Prochaine étape exacte
-R48 ; R34, R36 en cours ; R4 en rebasage
+Vérifier la CI ; R34, R36 en cours ; R48
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,9 +32,8 @@ R48 ; R34, R36 en cours ; R4 en rebasage
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/shared/src/config.rs`
-- `docs/adr/0004-enrolement-des-agents.md`
-- `docs/security/threat-model.md`
+- `web/scripts/check-dist.mjs`
+- `web/vite.config.ts`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
