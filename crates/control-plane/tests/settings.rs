@@ -727,7 +727,7 @@ async fn export_has_no_secrets() {
         &owner,
         "POST",
         &format!("/api/projects/{id}/deploy-hooks"),
-        Some(json!({ "name": "ci" })),
+        Some(json!({ "name": "ci", "password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 201, "{}", r.raw);

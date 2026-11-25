@@ -15,10 +15,12 @@ export interface TokenCreatedModalProps {
   value: string;
   /** Exemple d'utilisation (ex. commande curl), copiable. */
   example?: string;
+  /** Mise en garde sous l'exemple (ex. voie déconseillée). */
+  note?: string;
   onClose: () => void;
 }
 
-export function TokenCreatedModal({ title, description, label, value, example, onClose }: TokenCreatedModalProps) {
+export function TokenCreatedModal({ title, description, label, value, example, note, onClose }: TokenCreatedModalProps) {
   return (
     <Modal
       title={title}
@@ -48,6 +50,7 @@ export function TokenCreatedModal({ title, description, label, value, example, o
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <span style={{ font: "400 12px/1 var(--font-sans)", color: "var(--text-muted)" }}>Exemple</span>
           <CodeBlock code={example} />
+          {note && <span style={{ font: "400 12px/1.45 var(--font-sans)", color: "var(--text-muted)" }}>{note}</span>}
         </div>
       )}
     </Modal>

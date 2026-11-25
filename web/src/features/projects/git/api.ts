@@ -14,6 +14,8 @@ type Failure = { ok: false; message: string };
 
 function refusal(status: number, error: unknown, fallback: string): string {
   const message = (error as { error?: { message?: unknown } } | undefined)?.error?.message;
+  if (status === 401) return "Mot de passe incorrect.";
+  if (status === 429) return "Trop de tentatives. Patientez avant de réessayer.";
   if (status === 403) return "Accès refusé : votre rôle ne permet pas cette action.";
   if ((status === 409 || status === 422 || status === 404 || status === 503) && typeof message === "string") return message;
   return fallback;
@@ -41,11 +43,11 @@ export async function fetchDeployHooks(projectId: string): Promise<DeployHook[]>
   return unwrap(await api.GET("/api/projects/{id}/deploy-hooks", { params: { path: { id: projectId } } }));
 }
 
-/** POST /api/projects/{id}/deploy-hooks (admin) : le secret n'est renvoye qu'ici, jamais stocke cote navigateur. */
-export async function createDeployHook(projectId: string, name: string): Promise<{ ok: true; created: CreatedDeployHook } | Failure> {
+/** POST /api/projects/{id}/deploy-hooks (admin, mot de passe exige) : le secret n'est renvoye qu'ici, jamais stocke cote navigateur. */
+export async function createDeployHook(projectId: string, name: string, password: string, expiresAt?: string): Promise<{ ok: true; created: CreatedDeployHook } | Failure> {
   let result;
   try {
-    result = await api.POST("/api/projects/{id}/deploy-hooks", { params: { path: { id: projectId } }, body: { name } });
+    result = await api.POST("/api/projects/{id}/deploy-hooks", { params: { path: { id: projectId } }, body: { name, password, ...(expiresAt ? { expires_at: expiresAt } : {}) } });
   } catch {
     return { ok: false, message: "Serveur injoignable. Réessayez." };
   }

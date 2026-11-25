@@ -949,7 +949,8 @@ export interface paths {
         delete: operations["delete_deploy_hook"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Change la date d'expiration d'un deploy hook (admin). */
+        patch: operations["update_deploy_hook"];
         trace?: never;
     };
     "/api/projects/{id}/deployments": {
@@ -1659,8 +1660,8 @@ export interface paths {
         put?: never;
         /**
          * Declenche un deploiement de la production. Route publique : le secret
-         *     passe en `?token=dh_…` ou dans l'en-tete `X-Deploy-Hook-Token`. Hook
-         *     inconnu et secret faux repondent le meme 404 (comparaison a temps
+         *     passe dans l'en-tete `X-Ciphera-Hook-Token` (ou `?token=dh_…`, deconseille). Hook
+         *     inconnu, expire et secret faux repondent le meme 404 (comparaison a temps
          *     constant). Limite : 5 echecs par (IP, hook) et 50 par IP en 15 min.
          */
         post: operations["trigger_deploy_hook"];
@@ -1824,7 +1825,13 @@ export interface components {
             hook: components["schemas"]["DeployHook"];
             /** @description Secret `dh_…` (32 octets aleatoires, base64 URL). */
             token: string;
-            /** @description Chemin complet a appeler en `POST` : `/v1/hooks/deploy/{id}?token=dh_…`. */
+            /** @description Nom de l'en-tete qui porte le secret : `X-Ciphera-Hook-Token`. */
+            token_header: string;
+            /**
+             * @description Chemin a appeler en `POST`, sans le secret : `/v1/hooks/deploy/{id}`.
+             *     Le secret se passe dans l'en-tete `token_header` ; `?token=` reste
+             *     accepte mais est deconseille (URL conservees dans les journaux).
+             */
             url_path: string;
         };
         /** @description Parametres › Zone de danger (proprietaire seulement). */
@@ -1858,6 +1865,11 @@ export interface components {
             created_at: string;
             /** @description Nom de l'auteur. */
             created_by?: string | null;
+            /**
+             * @description RFC 3339 ; au-dela, le hook est refuse comme un secret faux. Absent :
+             *     le hook n'expire pas (hooks crees avant l'expiration).
+             */
+            expires_at?: string | null;
             id: string;
             /** @description RFC 3339 ; dernier appel accepte. */
             last_used_at?: string | null;
@@ -2312,8 +2324,15 @@ export interface components {
         };
         /** @description Corps de `POST /api/projects/{id}/deploy-hooks`. */
         NewDeployHook: {
+            /** @description RFC 3339, dans le futur. Absent : 90 jours apres la creation. */
+            expires_at?: string | null;
             /** @description 1 a 64 caracteres, sans caractere de controle. */
             name: string;
+            /**
+             * Format: password
+             * @description Mot de passe du compte (re-authentification).
+             */
+            password: string;
         };
         /** @description Corps de `POST /api/projects/{id}/deployments`. */
         NewDeployment: {
@@ -2986,6 +3005,11 @@ export interface components {
             otpauth_uri: string;
             /** @description QR code de l'URI, en SVG autonome (a afficher en `img` `data:`). */
             qr_svg: string;
+        };
+        /** @description Corps de `PATCH /api/projects/{id}/deploy-hooks/{hookId}`. */
+        UpdateDeployHook: {
+            /** @description RFC 3339, dans le futur. */
+            expires_at: string;
         };
         /** @description Corps de `PATCH /api/settings/deployments`. */
         UpdateDeploySettings: {
@@ -5972,6 +5996,13 @@ export interface operations {
                     "application/json": components["schemas"]["CreatedDeployHook"];
                 };
             };
+            /** @description `invalid_credentials` : mot de passe incorrect */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Role insuffisant, ou jeton CSRF absent ou invalide */
             403: {
                 headers: {
@@ -5993,8 +6024,15 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Nom invalide */
+            /** @description Nom, mot de passe ou date d'expiration invalide */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives de mot de passe */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6035,6 +6073,59 @@ export interface operations {
             };
             /** @description Projet ou deploy hook introuvable */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_deploy_hook: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Jeton CSRF de la session (obligatoire) */
+                "X-CSRF-Token"?: string | null;
+            };
+            path: {
+                /** @description Identifiant du projet */
+                id: string;
+                /** @description Identifiant du deploy hook */
+                hookId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDeployHook"];
+            };
+        };
+        responses: {
+            /** @description Deploy hook mis a jour */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployHook"];
+                };
+            };
+            /** @description Role insuffisant, ou jeton CSRF absent ou invalide */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Projet ou deploy hook introuvable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Date invalide ou passee */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8170,12 +8261,12 @@ export interface operations {
     trigger_deploy_hook: {
         parameters: {
             query?: {
-                /** @description Secret `dh_…` */
+                /** @description Secret `dh_…` (deconseille : l'URL peut etre journalisee) */
                 token?: string;
             };
             header?: {
-                /** @description Secret `dh_…` (au lieu de `token`) */
-                "X-Deploy-Hook-Token"?: string | null;
+                /** @description Secret `dh_…` (voie conseillee ; `X-Deploy-Hook-Token` reste accepte) */
+                "X-Ciphera-Hook-Token"?: string | null;
             };
             path: {
                 /** @description Identifiant du deploy hook */
@@ -8194,7 +8285,7 @@ export interface operations {
                     "application/json": components["schemas"]["HookTriggered"];
                 };
             };
-            /** @description Hook inconnu ou secret invalide */
+            /** @description Hook inconnu, expire ou secret invalide */
             404: {
                 headers: {
                     [name: string]: unknown;

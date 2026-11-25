@@ -98,13 +98,29 @@ it("deploy hook créé : URL secrète montrée une seule fois, puis la liste san
   expect(await within(hooks).findByText(/CI externe/)).toBeInTheDocument();
   expect(within(hooks).queryByText(/dh_/)).not.toBeInTheDocument();
 
+  // L'URL de la liste ne porte aucun secret ; le hook expire.
+  expect(within(hooks).getByText(/Expire le/)).toBeInTheDocument();
+  expect(within(hooks).queryByText(/\?token=/)).not.toBeInTheDocument();
+
   within(hooks).getByRole("button", { name: "Créer un deploy hook" }).click();
+  // Création : mot de passe redemandé, expiration choisie (90 jours par défaut).
+  const prompt = await screen.findByRole("dialog", { name: "Créer un deploy hook" });
+  fireEvent.change(within(prompt).getByLabelText("Mot de passe du compte"), { target: { value: "correct horse battery staple" } });
+  within(prompt).getByRole("button", { name: "Créer" }).click();
   const dialog = await screen.findByRole("dialog", { name: "Deploy hook créé" });
-  expect(hookPosts).toEqual([{ name: "Hook 2" }]);
+  expect(hookPosts).toHaveLength(1);
+  const posted = hookPosts[0] as { name: string; password: string; expires_at: string };
+  expect(posted.name).toBe("Hook 2");
+  expect(posted.password).toBe("correct horse battery staple");
+  const days = (Date.parse(posted.expires_at) - Date.now()) / 86_400_000;
+  expect(days).toBeGreaterThan(89.9);
+  expect(days).toBeLessThan(90.1);
   const created = createdHook("Hook 2");
-  expect(within(dialog).getByTestId("token-value")).toHaveTextContent(`${location.origin}${created.url_path}`);
+  expect(within(dialog).getByTestId("token-value")).toHaveTextContent(created.token);
   expect(within(dialog).getByRole("alert")).toHaveTextContent("il ne sera plus jamais affiché");
-  expect(within(dialog).getByText(`curl -X POST '${location.origin}${created.url_path}'`)).toBeInTheDocument();
+  // Exemple par en-tête ; ?token= signalé comme déconseillé.
+  expect(within(dialog).getByText(`curl -X POST -H 'X-Ciphera-Hook-Token: ${created.token}' '${location.origin}${created.url_path}'`)).toBeInTheDocument();
+  expect(within(dialog).getByText(/déconseillé/)).toBeInTheDocument();
 
   within(dialog).getByRole("button", { name: "J'ai copié le secret" }).click();
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());

@@ -133,6 +133,11 @@ const MATRIX: &[(&str, &str, Guard)] = &[
     ("GET", "/api/projects/{id}/deploy-hooks", R(Projects, A)),
     ("POST", "/api/projects/{id}/deploy-hooks", R(Projects, A)),
     (
+        "PATCH",
+        "/api/projects/{id}/deploy-hooks/{hookId}",
+        R(Projects, A),
+    ),
+    (
         "DELETE",
         "/api/projects/{id}/deploy-hooks/{hookId}",
         R(Projects, A),

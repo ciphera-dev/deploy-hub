@@ -2,8 +2,11 @@
 //! redeploiement (`/api/projects/{id}/{git,deploy-hooks,restart,redeploy}`,
 //! `POST /v1/hooks/deploy/{hookId}`).
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use zeroize::Zeroizing;
 
 use crate::deployments::Deployment;
 
@@ -55,14 +58,41 @@ pub struct DeployHook {
     pub created_at: String,
     /// RFC 3339 ; dernier appel accepte.
     pub last_used_at: Option<String>,
+    /// RFC 3339 ; au-dela, le hook est refuse comme un secret faux. Absent :
+    /// le hook n'expire pas (hooks crees avant l'expiration).
+    pub expires_at: Option<String>,
 }
 
 /// Corps de `POST /api/projects/{id}/deploy-hooks`.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewDeployHook {
     /// 1 a 64 caracteres, sans caractere de controle.
     pub name: String,
+    /// Mot de passe du compte (re-authentification).
+    #[schema(value_type = String, format = Password, max_length = 1024)]
+    pub password: Zeroizing<String>,
+    /// RFC 3339, dans le futur. Absent : 90 jours apres la creation.
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+impl fmt::Debug for NewDeployHook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewDeployHook")
+            .field("name", &self.name)
+            .field("password", &"<masque>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+/// Corps de `PATCH /api/projects/{id}/deploy-hooks/{hookId}`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateDeployHook {
+    /// RFC 3339, dans le futur.
+    pub expires_at: String,
 }
 
 /// Reponse de la creation : le secret n'est montre qu'ici, une seule fois.
@@ -71,8 +101,12 @@ pub struct CreatedDeployHook {
     pub hook: DeployHook,
     /// Secret `dh_…` (32 octets aleatoires, base64 URL).
     pub token: String,
-    /// Chemin complet a appeler en `POST` : `/v1/hooks/deploy/{id}?token=dh_…`.
+    /// Chemin a appeler en `POST`, sans le secret : `/v1/hooks/deploy/{id}`.
+    /// Le secret se passe dans l'en-tete `token_header` ; `?token=` reste
+    /// accepte mais est deconseille (URL conservees dans les journaux).
     pub url_path: String,
+    /// Nom de l'en-tete qui porte le secret : `X-Ciphera-Hook-Token`.
+    pub token_header: String,
 }
 
 /// Reponse de `POST /v1/hooks/deploy/{hookId}`.
@@ -157,12 +191,35 @@ pub fn list_deploy_hooks() {}
         (status = 201, description = "Deploy hook cree", body = CreatedDeployHook),
         (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
         (status = 404, description = "Projet introuvable"),
+        (status = 401, description = "`invalid_credentials` : mot de passe incorrect"),
         (status = 409, description = "`too_many_hooks` : 20 deploy hooks au plus par projet"),
-        (status = 422, description = "Nom invalide"),
+        (status = 422, description = "Nom, mot de passe ou date d'expiration invalide"),
+        (status = 429, description = "Trop de tentatives de mot de passe"),
     )
 )]
 #[allow(dead_code)]
 pub fn create_deploy_hook() {}
+
+/// Change la date d'expiration d'un deploy hook (admin).
+#[utoipa::path(
+    patch,
+    path = "/api/projects/{id}/deploy-hooks/{hookId}",
+    tag = "projects",
+    request_body = UpdateDeployHook,
+    params(
+        ("id" = String, Path, description = "Identifiant du projet"),
+        ("hookId" = String, Path, description = "Identifiant du deploy hook"),
+        ("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)"),
+    ),
+    responses(
+        (status = 200, description = "Deploy hook mis a jour", body = DeployHook),
+        (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
+        (status = 404, description = "Projet ou deploy hook introuvable"),
+        (status = 422, description = "Date invalide ou passee"),
+    )
+)]
+#[allow(dead_code)]
+pub fn update_deploy_hook() {}
 
 /// Supprime un deploy hook (admin).
 #[utoipa::path(
@@ -184,8 +241,8 @@ pub fn create_deploy_hook() {}
 pub fn delete_deploy_hook() {}
 
 /// Declenche un deploiement de la production. Route publique : le secret
-/// passe en `?token=dh_…` ou dans l'en-tete `X-Deploy-Hook-Token`. Hook
-/// inconnu et secret faux repondent le meme 404 (comparaison a temps
+/// passe dans l'en-tete `X-Ciphera-Hook-Token` (ou `?token=dh_…`, deconseille). Hook
+/// inconnu, expire et secret faux repondent le meme 404 (comparaison a temps
 /// constant). Limite : 5 echecs par (IP, hook) et 50 par IP en 15 min.
 #[utoipa::path(
     post,
@@ -193,12 +250,12 @@ pub fn delete_deploy_hook() {}
     tag = "projects",
     params(
         ("hookId" = String, Path, description = "Identifiant du deploy hook"),
-        ("token" = Option<String>, Query, description = "Secret `dh_…`"),
-        ("X-Deploy-Hook-Token" = Option<String>, Header, description = "Secret `dh_…` (au lieu de `token`)"),
+        ("X-Ciphera-Hook-Token" = Option<String>, Header, description = "Secret `dh_…` (voie conseillee ; `X-Deploy-Hook-Token` reste accepte)"),
+        ("token" = Option<String>, Query, description = "Secret `dh_…` (deconseille : l'URL peut etre journalisee)"),
     ),
     responses(
         (status = 202, description = "Deploiement mis en file", body = HookTriggered),
-        (status = 404, description = "Hook inconnu ou secret invalide"),
+        (status = 404, description = "Hook inconnu, expire ou secret invalide"),
         (status = 429, description = "Trop de tentatives (`Retry-After`), ou `too_many_queued` : 10 deploiements deja en file"),
     )
 )]

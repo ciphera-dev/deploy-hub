@@ -23,6 +23,8 @@ use crate::auth::session::hash_token;
 pub const PREFIX: &str = "dh_";
 /// Deploy hooks par projet.
 pub const MAX_PER_PROJECT: i64 = 20;
+/// Duree de vie d'un hook cree sans date d'expiration, en jours.
+pub const DEFAULT_LIFETIME_DAYS: i32 = 90;
 /// Longueur maximale d'un nom.
 pub const MAX_NAME_CHARS: usize = 64;
 
@@ -72,6 +74,7 @@ struct Row {
     created_by: Option<String>,
     created_at: String,
     last_used_at: Option<String>,
+    expires_at: Option<String>,
 }
 
 impl From<Row> for DeployHook {
@@ -83,6 +86,7 @@ impl From<Row> for DeployHook {
             created_by: r.created_by,
             created_at: r.created_at,
             last_used_at: r.last_used_at,
+            expires_at: r.expires_at,
         }
     }
 }
@@ -91,7 +95,8 @@ fn select() -> String {
     format!(
         "SELECT h.id, h.name, u.name AS created_by, \
                 to_char(h.created_at AT TIME ZONE 'UTC', {TS}) AS created_at, \
-                to_char(h.last_used_at AT TIME ZONE 'UTC', {TS}) AS last_used_at \
+                to_char(h.last_used_at AT TIME ZONE 'UTC', {TS}) AS last_used_at, \
+                to_char(h.expires_at AT TIME ZONE 'UTC', {TS}) AS expires_at \
          FROM deploy_hooks h LEFT JOIN users u ON u.id = h.created_by"
     )
 }
@@ -130,20 +135,107 @@ pub async fn insert(
     name: &str,
     token: &str,
     created_by: Uuid,
+    expires_at: Option<&str>,
 ) -> sqlx::Result<Uuid> {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO deploy_hooks (id, project_id, name, token_hash, created_by) \
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO deploy_hooks (id, project_id, name, token_hash, created_by, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, COALESCE($6::timestamptz, now() + make_interval(days => $7)))",
     )
     .bind(id)
     .bind(project)
     .bind(name)
     .bind(hash_token(token))
     .bind(created_by)
+    .bind(expires_at)
+    .bind(DEFAULT_LIFETIME_DAYS)
     .execute(conn)
     .await?;
     Ok(id)
+}
+
+/// Date d'expiration refusee.
+#[derive(Debug)]
+pub enum ExpiryError {
+    /// Pas une date RFC 3339, ou deja passee.
+    Invalid,
+    Db(sqlx::Error),
+}
+
+/// Verifie qu'une date RFC 3339 est valide et dans le futur. La forme est
+/// controlee ici, le calendrier par PostgreSQL (jour ou mois impossible).
+pub async fn check_expiry(conn: &mut PgConnection, value: &str) -> Result<(), ExpiryError> {
+    if !rfc3339_shape(value) {
+        return Err(ExpiryError::Invalid);
+    }
+    match sqlx::query_scalar::<_, bool>("SELECT $1::timestamptz > now()")
+        .bind(value)
+        .fetch_one(conn)
+        .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ExpiryError::Invalid),
+        // Classe 22 : donnee invalide (calendrier, fuseau).
+        Err(sqlx::Error::Database(e)) if e.code().is_some_and(|c| c.starts_with("22")) => {
+            Err(ExpiryError::Invalid)
+        }
+        Err(e) => Err(ExpiryError::Db(e)),
+    }
+}
+
+/// `AAAA-MM-JJTHH:MM:SS`, fraction facultative, puis `Z` ou `+HH:MM`/`-HH:MM`.
+fn rfc3339_shape(v: &str) -> bool {
+    let b = v.as_bytes();
+    if !v.is_ascii() || b.len() < 20 || b.len() > 40 {
+        return false;
+    }
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    if !(digits(0..4)
+        && b[4] == b'-'
+        && digits(5..7)
+        && b[7] == b'-'
+        && digits(8..10)
+        && b[10] == b'T'
+        && digits(11..13)
+        && b[13] == b':'
+        && digits(14..16)
+        && b[16] == b':'
+        && digits(17..19))
+    {
+        return false;
+    }
+    let mut rest = &v[19..];
+    if let Some(frac) = rest.strip_prefix('.') {
+        let n = frac.bytes().take_while(u8::is_ascii_digit).count();
+        if n == 0 || n > 9 {
+            return false;
+        }
+        rest = &frac[n..];
+    }
+    match rest.as_bytes() {
+        [b'Z'] => true,
+        [b'+' | b'-', h1, h2, b':', m1, m2] => [h1, h2, m1, m2].iter().all(|c| c.is_ascii_digit()),
+        _ => false,
+    }
+}
+
+/// Change la date d'expiration ; `false` si le hook n'existe pas.
+pub async fn set_expiry(
+    conn: &mut PgConnection,
+    project: Uuid,
+    id: Uuid,
+    expires_at: &str,
+) -> sqlx::Result<bool> {
+    Ok(sqlx::query(
+        "UPDATE deploy_hooks SET expires_at = $3::timestamptz WHERE id = $1 AND project_id = $2",
+    )
+    .bind(id)
+    .bind(project)
+    .bind(expires_at)
+    .execute(conn)
+    .await?
+    .rows_affected()
+        == 1)
 }
 
 /// Supprime le hook `id` du projet ; `false` s'il n'existe pas.
@@ -159,12 +251,17 @@ pub async fn delete(conn: &mut PgConnection, project: Uuid, id: Uuid) -> sqlx::R
     )
 }
 
-/// Projet et empreinte du hook `id`.
+/// Projet et empreinte du hook `id`. Un hook expire garde sa ligne mais n'a
+/// plus d'empreinte valable : `verify` le traite comme un secret faux.
 pub async fn lookup(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<(Uuid, Vec<u8>)>> {
-    sqlx::query_as("SELECT project_id, token_hash FROM deploy_hooks WHERE id = $1")
-        .bind(id)
-        .fetch_optional(conn)
-        .await
+    sqlx::query_as(
+        "SELECT project_id, CASE WHEN expires_at IS NOT NULL AND expires_at <= now() \
+                THEN ''::bytea ELSE token_hash END \
+         FROM deploy_hooks WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(conn)
+    .await
 }
 
 pub async fn touch(conn: &mut PgConnection, id: Uuid, now: f64) -> sqlx::Result<()> {
@@ -199,6 +296,28 @@ mod tests {
         // Empreinte nulle (chemin du hook inconnu) : jamais acceptee.
         assert!(!verify(Some(&[0u8; 32]), &token));
         assert!(!verify(Some(&[1u8; 8]), &token));
+    }
+
+    #[test]
+    fn expiry_shape_is_rfc3339() {
+        for ok in [
+            "2099-01-01T00:00:00Z",
+            "2099-01-01T00:00:00.123Z",
+            "2099-01-01T10:00:00+02:00",
+        ] {
+            assert!(rfc3339_shape(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "2099-01-01",
+            "2099-01-01 00:00:00Z",
+            "2099-01-01T00:00:00",
+            "2099-01-01T00:00:00.Z",
+            "2099-01-01T00:00:00+0200",
+            "20990101T000000Z",
+        ] {
+            assert!(!rfc3339_shape(bad), "{bad}");
+        }
     }
 
     #[test]

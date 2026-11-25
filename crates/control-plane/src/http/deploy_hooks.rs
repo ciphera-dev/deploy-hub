@@ -1,6 +1,10 @@
 //! Deploy hooks : `GET|POST /api/projects/{id}/deploy-hooks`,
-//! `DELETE /api/projects/{id}/deploy-hooks/{hookId}` (admin, CSRF, audit) et
-//! la route publique `POST /v1/hooks/deploy/{hookId}`.
+//! `PATCH|DELETE /api/projects/{id}/deploy-hooks/{hookId}` (admin, CSRF,
+//! audit) et la route publique `POST /v1/hooks/deploy/{hookId}`.
+//!
+//! La creation exige le mot de passe du compte (re-authentification, meme
+//! limite que les autres actions sensibles) et fixe une expiration (90 jours
+//! par defaut, modifiable) : un hook expire est refuse comme un secret faux.
 //!
 //! Route publique (hors `/api/`, donc hors CSRF), dans cet ordre :
 //! 0. limite en memoire par IP (`public_limit::HOOK_PER_IP` appels par
@@ -8,9 +12,11 @@
 //! 1. limitation de debit (`rate_limit::admit`, espace `IpKey::hook`) : 5
 //!    echecs par couple (IP, hook) et 50 par IP en 15 min, 429 avec
 //!    `Retry-After` ; un appel accepte remet le compteur du couple a zero ;
-//! 2. secret lu dans `?token=` ou l'en-tete `X-Deploy-Hook-Token`, jamais
-//!    journalise (la requete n'est pas tracee ; le proxy du noeud ne
-//!    journalise que le chemin, sans la chaine de requete) ;
+//! 2. secret lu dans l'en-tete `X-Ciphera-Hook-Token` (voie conseillee,
+//!    `X-Deploy-Hook-Token` accepte aussi) ou dans `?token=` (deconseille :
+//!    une URL se retrouve dans des journaux tiers), jamais journalise (la
+//!    requete n'est pas tracee ; le proxy du noeud ne journalise que le
+//!    chemin, sans la chaine de requete) ;
 //! 3. hook inconnu, identifiant mal forme, secret absent ou faux : le meme
 //!    404, apres la meme comparaison a temps constant (`hooks::verify`) ;
 //! 4. secret valide : au plus `public_limit::HOOK_PER_HOOK` declenchements
@@ -19,12 +25,12 @@
 //!    le redeploiement (`orchestrator::request`), sans doublon : un
 //!    deploiement deja en file est reutilise (`already_queued`).
 
-use api_types::project_git::{CreatedDeployHook, HookTriggered, NewDeployHook};
+use api_types::project_git::{CreatedDeployHook, HookTriggered, NewDeployHook, UpdateDeployHook};
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
@@ -34,6 +40,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::client_ip::ClientIp;
+use super::me::{Reauth, reauthenticate};
 use super::mfa::rate_limited;
 use crate::auth::{internal, rate_limit};
 use crate::authz::{Require, lvl, res};
@@ -43,13 +50,20 @@ use crate::domain::projects::store::PRODUCTION;
 use crate::state::AppState;
 
 const MAX_BODY: usize = 4 * 1024;
-/// En-tete du secret (au lieu de `?token=`).
-pub const TOKEN_HEADER: &str = "x-deploy-hook-token";
+/// En-tete du secret, tel qu'affiche (voie conseillee, au lieu de `?token=`).
+pub const TOKEN_HEADER_NAME: &str = "X-Ciphera-Hook-Token";
+/// Meme en-tete en minuscules, pour la lecture.
+pub const TOKEN_HEADER: &str = "x-ciphera-hook-token";
+/// Ancien nom de l'en-tete, toujours accepte.
+const LEGACY_TOKEN_HEADER: &str = "x-deploy-hook-token";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/projects/{id}/deploy-hooks", get(list).post(create))
-        .route("/api/projects/{id}/deploy-hooks/{hook}", delete(remove))
+        .route(
+            "/api/projects/{id}/deploy-hooks/{hook}",
+            axum::routing::patch(update).delete(remove),
+        )
         .route("/v1/hooks/deploy/{hook}", post(trigger))
         .layer(DefaultBodyLimit::max(MAX_BODY))
 }
@@ -120,6 +134,7 @@ async fn list(
 async fn create(
     State(state): State<AppState>,
     auth: Require<res::Projects, lvl::Admin>,
+    ClientIp(ip): ClientIp,
     Path(id): Path<String>,
     body: Result<Json<NewDeployHook>, JsonRejection>,
 ) -> Result<Response, ApiError> {
@@ -128,11 +143,24 @@ async fn create(
         ApiError::new(
             422,
             "validation_failed",
-            "Nom invalide (1 à 64 caractères).",
+            "Nom invalide (1 à 64 caractères) ou mot de passe absent.",
         )
     };
     let Json(input) = body.map_err(|_| invalid())?;
     let name = hooks::clean_name(&input.name).ok_or_else(invalid)?;
+    // Re-authentification : un hook declenche des deploiements sans session.
+    let attempt = match reauthenticate(
+        &state,
+        &auth.user,
+        &ip.to_string(),
+        input.password,
+        "deploy_hook.create.failure",
+    )
+    .await?
+    {
+        Reauth::Verified(attempt, _) => attempt,
+        Reauth::Limited(response) => return Ok(response),
+    };
     let token = hooks::generate().map_err(|e| internal("generateur aleatoire", e))?;
     let mut tx = state
         .db
@@ -140,6 +168,9 @@ async fn create(
         .await
         .map_err(|e| internal("transaction des deploy hooks", e))?;
     project_exists(&mut tx, id).await?;
+    if let Some(at) = input.expires_at.as_deref() {
+        check_expiry(&mut tx, at).await?;
+    }
     let existing = hooks::count(&mut tx, id)
         .await
         .map_err(|e| internal("compte des deploy hooks", e))?;
@@ -150,9 +181,19 @@ async fn create(
             "20 deploy hooks au plus par projet.",
         ));
     }
-    let hook = hooks::insert(&mut tx, id, &name, &token, auth.user.id)
+    let hook = hooks::insert(
+        &mut tx,
+        id,
+        &name,
+        &token,
+        auth.user.id,
+        input.expires_at.as_deref(),
+    )
+    .await
+    .map_err(|e| internal("creation du deploy hook", e))?;
+    rate_limit::mark_mfa_success(&mut tx, attempt)
         .await
-        .map_err(|e| internal("creation du deploy hook", e))?;
+        .map_err(|e| internal("limitation de debit", e))?;
     audit(&mut tx, auth.user.id, "deploy_hook.create", id, hook).await?;
     let created = hooks::get(&mut tx, hook)
         .await
@@ -161,13 +202,13 @@ async fn create(
     tx.commit()
         .await
         .map_err(|e| internal("transaction des deploy hooks", e))?;
-    let url_path = format!("{}?token={}", hooks::path(hook), token.as_str());
     let mut res = (
         StatusCode::CREATED,
         Json(CreatedDeployHook {
             hook: created,
             token: token.to_string(),
-            url_path,
+            url_path: hooks::path(hook),
+            token_header: TOKEN_HEADER_NAME.to_string(),
         }),
     )
         .into_response();
@@ -177,6 +218,53 @@ async fn create(
         axum::http::HeaderValue::from_static("no-store"),
     );
     Ok(res)
+}
+
+/// Date d'expiration refusee : 422 ; erreur de base : 500.
+async fn check_expiry(conn: &mut PgConnection, value: &str) -> Result<(), ApiError> {
+    hooks::check_expiry(conn, value).await.map_err(|e| match e {
+        hooks::ExpiryError::Invalid => ApiError::new(
+            422,
+            "validation_failed",
+            "Date d'expiration invalide : RFC 3339 dans le futur attendue.",
+        ),
+        hooks::ExpiryError::Db(e) => internal("date d'expiration du deploy hook", e),
+    })
+}
+
+/// `PATCH /api/projects/{id}/deploy-hooks/{hook}` : nouvelle expiration.
+async fn update(
+    State(state): State<AppState>,
+    auth: Require<res::Projects, lvl::Admin>,
+    Path((id, hook)): Path<(String, String)>,
+    body: Result<Json<UpdateDeployHook>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let id = parse(&id, project_not_found)?;
+    let hook = parse(&hook, hook_not_found)?;
+    let Json(input) =
+        body.map_err(|_| ApiError::new(422, "validation_failed", "Date d'expiration requise."))?;
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| internal("transaction des deploy hooks", e))?;
+    project_exists(&mut tx, id).await?;
+    check_expiry(&mut tx, &input.expires_at).await?;
+    if !hooks::set_expiry(&mut tx, id, hook, &input.expires_at)
+        .await
+        .map_err(|e| internal("expiration du deploy hook", e))?
+    {
+        return Err(hook_not_found());
+    }
+    audit(&mut tx, auth.user.id, "deploy_hook.update", id, hook).await?;
+    let updated = hooks::get(&mut tx, hook)
+        .await
+        .map_err(|e| internal("lecture du deploy hook", e))?
+        .ok_or_else(hook_not_found)?;
+    tx.commit()
+        .await
+        .map_err(|e| internal("transaction des deploy hooks", e))?;
+    Ok(Json(updated).into_response())
 }
 
 /// `DELETE /api/projects/{id}/deploy-hooks/{hook}`
@@ -219,16 +307,16 @@ async fn trigger(
     query: Result<Query<TokenQuery>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let from_header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
     let token = Zeroizing::new(
-        query
-            .ok()
-            .and_then(|Query(q)| q.token)
-            .or_else(|| {
-                headers
-                    .get(TOKEN_HEADER)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string)
-            })
+        from_header(TOKEN_HEADER)
+            .or_else(|| from_header(LEGACY_TOKEN_HEADER))
+            .or_else(|| query.ok().and_then(|Query(q)| q.token))
             .unwrap_or_default(),
     );
 

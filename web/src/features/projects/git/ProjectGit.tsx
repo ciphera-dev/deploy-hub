@@ -12,6 +12,7 @@ import { ApiError } from "@/lib/api/errors";
 import type { Project } from "../api";
 import { timeAgo } from "../format";
 import { createDeployHook, deleteDeployHook, fetchDeployHooks, fetchGitSettings, gitQueryKey, hooksQueryKey, panelUrl, saveGitSettings, type CreatedDeployHook, type GitSettings, type UpdateGitSettings } from "./api";
+import { NewHookModal } from "./NewHookModal";
 import { TokenCreatedModal } from "./TokenCreatedModal";
 
 // Port de prototypes/dashboard/ProjectGit.jsx (structure, libellés, tokens).
@@ -22,7 +23,9 @@ import { TokenCreatedModal } from "./TokenCreatedModal";
 // - secret de signature géré par la GitHub App, jamais réaffiché (masqué,
 //   ni révélation ni régénération) ; livraisons non historisées ;
 // - un deploy hook n'affiche son URL secrète qu'une fois (TokenCreatedModal),
-//   la liste montre l'URL sans le secret.
+//   la liste montre l'URL sans le secret, qui passe par l'en-tête
+//   X-Ciphera-Hook-Token (?token= reste accepté mais déconseillé) ;
+// - créer un deploy hook redemande le mot de passe et fixe une expiration.
 
 const hair = "1px solid var(--border-subtle)";
 const lbl: CSSProperties = { font: "400 12px/1 var(--font-sans)", color: "var(--text-subtle)" };
@@ -105,6 +108,20 @@ function patchOf(from: Draft, to: Draft): UpdateGitSettings {
   return p;
 }
 
+const HOOK_HEADER = "X-Ciphera-Hook-Token";
+
+/** Commande curl d'un deploy hook : le secret voyage dans un en-tête, pas dans l'URL. */
+function hookCommand(url: string, secret: string, header: string = HOOK_HEADER): string {
+  return `curl -X POST -H '${header}: ${secret}' '${url}'`;
+}
+
+function expiryLabel(expiresAt: string | null | undefined): string {
+  if (!expiresAt) return "N'expire pas";
+  const at = new Date(expiresAt);
+  const day = at.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+  return at.getTime() <= Date.now() ? `Expiré le ${day}` : `Expire le ${day}`;
+}
+
 export function ProjectGit({ project }: { project: Project }) {
   const settings = useQuery({ queryKey: gitQueryKey(project.id), queryFn: () => fetchGitSettings(project.id) });
   if (settings.isPending) return null;
@@ -125,6 +142,7 @@ function GitForm({ project, saved }: { project: Project; saved: GitSettings }) {
   const [s, setS] = useState<Draft>(init);
   const [saving, setSaving] = useState(false);
   const [created, setCreated] = useState<CreatedDeployHook | null>(null);
+  const [creating, setCreating] = useState(false);
   const busy = useRef(false);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setS((x) => ({ ...x, [k]: v }));
   const dirty = JSON.stringify(s) !== JSON.stringify(init);
@@ -156,17 +174,18 @@ function GitForm({ project, saved }: { project: Project; saved: GitSettings }) {
     }
   };
 
-  const addHook = async () => {
-    if (busy.current) return;
+  const hookName = `Hook ${(hooks.data?.length ?? 0) + 1}`;
+  /** Renvoie le message d'échec (affiché dans la modale), ou null si le hook est créé. */
+  const addHook = async (password: string, expiresAt: string): Promise<string | null> => {
+    if (busy.current) return null;
     busy.current = true;
     try {
-      const result = await createDeployHook(project.id, `Hook ${(hooks.data?.length ?? 0) + 1}`);
-      if (!result.ok) {
-        flash(result.message, 5000);
-        return;
-      }
+      const result = await createDeployHook(project.id, hookName, password, expiresAt);
+      if (!result.ok) return result.message;
+      setCreating(false);
       setCreated(result.created);
       await client.invalidateQueries({ queryKey: hooksQueryKey(project.id) });
+      return null;
     } finally {
       busy.current = false;
     }
@@ -309,14 +328,15 @@ function GitForm({ project, saved }: { project: Project; saved: GitSettings }) {
                   <span style={{ font: "500 13px/1 var(--font-sans)", color: "var(--text-strong)" }}>
                     {h.name} <span style={{ ...lbl, fontWeight: 400 }}>· {saved.branch}</span>
                   </span>
-                  <span style={{ font: "400 11px/1 var(--font-mono)", color: "var(--text-subtle)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{panelUrl(h.path)}?token=••••••••</span>
+                  <span style={{ font: "400 11px/1 var(--font-mono)", color: "var(--text-subtle)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{panelUrl(h.path)}</span>
+                  <span style={{ ...lbl, fontSize: 11 }}>{expiryLabel(h.expires_at)}</span>
                 </div>
-                <CopyButton value={`curl -X POST '${panelUrl(h.path)}?token=<secret>'`} size={28} label={`Copier la commande de ${h.name}`} onCopied={() => flash("Copié")} />
+                <CopyButton value={hookCommand(panelUrl(h.path), "<secret>")} size={28} label={`Copier la commande de ${h.name}`} onCopied={() => flash("Copié")} />
                 <IconButton size={28} variant="ghost" icon="Trash" label={`Supprimer ${h.name}`} onClick={() => void removeHook(h.id)} />
               </div>
             ))}
             <div>
-              <Button icon="Plus" disabled={!hooks.isSuccess} onClick={() => void addHook()}>
+              <Button icon="Plus" disabled={!hooks.isSuccess} onClick={() => setCreating(true)}>
                 Créer un deploy hook
               </Button>
             </div>
@@ -338,13 +358,15 @@ function GitForm({ project, saved }: { project: Project; saved: GitSettings }) {
           </div>
         </div>
       )}
+      {creating && <NewHookModal name={hookName} onSubmit={addHook} onClose={() => setCreating(false)} />}
       {created && (
         <TokenCreatedModal
           title="Deploy hook créé"
           description={`${created.hook.name} déclenche un déploiement de ${project.name} (branche ${saved.branch}).`}
-          label="URL du deploy hook"
-          value={panelUrl(created.url_path)}
-          example={`curl -X POST '${panelUrl(created.url_path)}'`}
+          label="Secret du deploy hook"
+          value={created.token}
+          example={hookCommand(panelUrl(created.url_path), created.token, created.token_header)}
+          note={`Le secret passe dans l'en-tête ${created.token_header}. Le passer dans l'URL (?token=) reste possible mais est déconseillé : les URL sont souvent conservées dans des journaux.`}
           onClose={() => setCreated(null)}
         />
       )}

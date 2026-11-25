@@ -3045,6 +3045,9 @@
               }
             }
           },
+          "401": {
+            "description": "`invalid_credentials` : mot de passe incorrect"
+          },
           "403": {
             "description": "Role insuffisant, ou jeton CSRF absent ou invalide"
           },
@@ -3055,7 +3058,10 @@
             "description": "`too_many_hooks` : 20 deploy hooks au plus par projet"
           },
           "422": {
-            "description": "Nom invalide"
+            "description": "Nom, mot de passe ou date d'expiration invalide"
+          },
+          "429": {
+            "description": "Trop de tentatives de mot de passe"
           }
         },
         "security": [
@@ -3114,6 +3120,82 @@
           },
           "404": {
             "description": "Projet ou deploy hook introuvable"
+          }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Change la date d'expiration d'un deploy hook (admin).",
+        "operationId": "update_deploy_hook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Identifiant du projet",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "hookId",
+            "in": "path",
+            "description": "Identifiant du deploy hook",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "Jeton CSRF de la session (obligatoire)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDeployHook"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Deploy hook mis a jour",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployHook"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Role insuffisant, ou jeton CSRF absent ou invalide"
+          },
+          "404": {
+            "description": "Projet ou deploy hook introuvable"
+          },
+          "422": {
+            "description": "Date invalide ou passee"
           }
         },
         "security": [
@@ -5666,7 +5748,7 @@
         "tags": [
           "projects"
         ],
-        "summary": "Declenche un deploiement de la production. Route publique : le secret\npasse en `?token=dh_…` ou dans l'en-tete `X-Deploy-Hook-Token`. Hook\ninconnu et secret faux repondent le meme 404 (comparaison a temps\nconstant). Limite : 5 echecs par (IP, hook) et 50 par IP en 15 min.",
+        "summary": "Declenche un deploiement de la production. Route publique : le secret\npasse dans l'en-tete `X-Ciphera-Hook-Token` (ou `?token=dh_…`, deconseille). Hook\ninconnu, expire et secret faux repondent le meme 404 (comparaison a temps\nconstant). Limite : 5 echecs par (IP, hook) et 50 par IP en 15 min.",
         "operationId": "trigger_deploy_hook",
         "parameters": [
           {
@@ -5679,24 +5761,24 @@
             }
           },
           {
-            "name": "token",
-            "in": "query",
-            "description": "Secret `dh_…`",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "X-Deploy-Hook-Token",
+            "name": "X-Ciphera-Hook-Token",
             "in": "header",
-            "description": "Secret `dh_…` (au lieu de `token`)",
+            "description": "Secret `dh_…` (voie conseillee ; `X-Deploy-Hook-Token` reste accepte)",
             "required": false,
             "schema": {
               "type": [
                 "string",
                 "null"
               ]
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "description": "Secret `dh_…` (deconseille : l'URL peut etre journalisee)",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -5712,7 +5794,7 @@
             }
           },
           "404": {
-            "description": "Hook inconnu ou secret invalide"
+            "description": "Hook inconnu, expire ou secret invalide"
           },
           "429": {
             "description": "Trop de tentatives (`Retry-After`), ou `too_many_queued` : 10 deploiements deja en file"
@@ -6063,7 +6145,8 @@
         "required": [
           "hook",
           "token",
-          "url_path"
+          "url_path",
+          "token_header"
         ],
         "properties": {
           "hook": {
@@ -6073,9 +6156,13 @@
             "type": "string",
             "description": "Secret `dh_…` (32 octets aleatoires, base64 URL)."
           },
+          "token_header": {
+            "type": "string",
+            "description": "Nom de l'en-tete qui porte le secret : `X-Ciphera-Hook-Token`."
+          },
           "url_path": {
             "type": "string",
-            "description": "Chemin complet a appeler en `POST` : `/v1/hooks/deploy/{id}?token=dh_…`."
+            "description": "Chemin a appeler en `POST`, sans le secret : `/v1/hooks/deploy/{id}`.\nLe secret se passe dans l'en-tete `token_header` ; `?token=` reste\naccepte mais est deconseille (URL conservees dans les journaux)."
           }
         }
       },
@@ -6163,6 +6250,13 @@
               "null"
             ],
             "description": "Nom de l'auteur."
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339 ; au-dela, le hook est refuse comme un secret faux. Absent :\nle hook n'expire pas (hooks crees avant l'expiration)."
           },
           "id": {
             "type": "string"
@@ -7224,12 +7318,26 @@
         "type": "object",
         "description": "Corps de `POST /api/projects/{id}/deploy-hooks`.",
         "required": [
-          "name"
+          "name",
+          "password"
         ],
         "properties": {
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339, dans le futur. Absent : 90 jours apres la creation."
+          },
           "name": {
             "type": "string",
             "description": "1 a 64 caracteres, sans caractere de controle."
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "Mot de passe du compte (re-authentification).",
+            "maxLength": 1024
           }
         },
         "additionalProperties": false
@@ -8895,6 +9003,20 @@
             "description": "QR code de l'URI, en SVG autonome (a afficher en `img` `data:`)."
           }
         }
+      },
+      "UpdateDeployHook": {
+        "type": "object",
+        "description": "Corps de `PATCH /api/projects/{id}/deploy-hooks/{hookId}`.",
+        "required": [
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "description": "RFC 3339, dans le futur."
+          }
+        },
+        "additionalProperties": false
       },
       "UpdateDeploySettings": {
         "type": "object",

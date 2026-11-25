@@ -98,7 +98,7 @@ async fn create_hook(state: &AppState, project: Uuid) -> Value {
         &admin,
         "POST",
         &format!("/api/projects/{project}/deploy-hooks"),
-        Some(json!({ "name": "CI externe" })),
+        Some(json!({ "name": "CI externe", "password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 201, "{}", r.raw);
@@ -112,6 +112,20 @@ async fn trigger(state: &AppState, path: &str, peer: &str) -> Reply {
         path,
         Req {
             peer: Some(peer),
+            ..Req::default()
+        },
+    )
+    .await
+}
+
+async fn trigger_with_header(state: &AppState, path: &str, token: &str, peer: &str) -> Reply {
+    call(
+        state,
+        "POST",
+        path,
+        Req {
+            peer: Some(peer),
+            headers: vec![("x-ciphera-hook-token", token.to_string())],
             ..Req::default()
         },
     )
@@ -137,7 +151,7 @@ async fn deploy_hook_secret_shown_once() {
         &dev,
         "POST",
         &format!("/api/projects/{project}/deploy-hooks"),
-        Some(json!({ "name": "CI" })),
+        Some(json!({ "name": "CI", "password": PASSWORD })),
     )
     .await;
     assert_eq!(refused.status, 403, "{}", refused.raw);
@@ -148,10 +162,9 @@ async fn deploy_hook_secret_shown_once() {
     assert!(token.starts_with("dh_"), "{token}");
     // 32 octets aleatoires en base64 URL sans remplissage : 43 caracteres.
     assert_eq!(token.len(), 3 + 43, "{token}");
-    assert_eq!(
-        created["url_path"],
-        format!("/v1/hooks/deploy/{hook_id}?token={token}")
-    );
+    // L'URL affichee ne porte plus le secret : il passe par l'en-tete.
+    assert_eq!(created["url_path"], format!("/v1/hooks/deploy/{hook_id}"));
+    assert_eq!(created["token_header"], "X-Ciphera-Hook-Token");
     assert_eq!(
         created["hook"]["path"],
         format!("/v1/hooks/deploy/{hook_id}")
@@ -178,9 +191,10 @@ async fn deploy_hook_secret_shown_once() {
     assert_eq!(stored, Sha256::digest(token.as_bytes()).to_vec());
 
     // Le secret declenche un deploiement `hook` de la production.
-    let r = trigger(
+    let r = trigger_with_header(
         &state,
         created["url_path"].as_str().unwrap(),
+        &token,
         common::api::DIRECT,
     )
     .await;
@@ -201,9 +215,10 @@ async fn deploy_hook_secret_shown_once() {
     );
 
     // Un second appel pendant que le premier attend : pas de doublon.
-    let again = trigger(
+    let again = trigger_with_header(
         &state,
         created["url_path"].as_str().unwrap(),
+        &token,
         common::api::DIRECT,
     )
     .await;
@@ -221,13 +236,184 @@ async fn deploy_hook_secret_shown_once() {
     )
     .await;
     assert_eq!(del.status, 204, "{}", del.raw);
-    let gone = trigger(
+    let gone = trigger_with_header(
         &state,
         created["url_path"].as_str().unwrap(),
+        &token,
         common::api::DIRECT,
     )
     .await;
     assert_eq!(gone.status, 404, "{}", gone.raw);
+}
+
+#[tokio::test]
+async fn hook_token_header_accepted() {
+    let (state, _pg) = common::state().await;
+    let (project, _) = git_project(&state, "web").await;
+    let created = create_hook(&state, project).await;
+    let path = created["url_path"].as_str().unwrap();
+    let token = created["token"].as_str().unwrap();
+
+    let r = trigger_with_header(&state, path, token, "198.51.100.10:1000").await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    // Mauvais secret par l'en-tete : le meme 404 que partout.
+    let bad = trigger_with_header(
+        &state,
+        path,
+        &format!("dh_{}", "C".repeat(43)),
+        "198.51.100.11:1000",
+    )
+    .await;
+    assert_eq!(bad.status, 404, "{}", bad.raw);
+    // `?token=` reste accepte (deconseille).
+    let legacy = trigger(
+        &state,
+        &format!("{path}?token={token}"),
+        "198.51.100.12:1000",
+    )
+    .await;
+    assert_eq!(legacy.status, 202, "{}", legacy.raw);
+}
+
+#[tokio::test]
+async fn hook_expires_after_90_days_by_default_and_is_editable() {
+    let (state, _pg) = common::state().await;
+    let (project, _) = git_project(&state, "web").await;
+    let created = create_hook(&state, project).await;
+    let hook_id = created["hook"]["id"].as_str().unwrap().to_string();
+    let days: f64 = sqlx::query_scalar(
+        "SELECT (extract(epoch FROM expires_at - now()) / 86400)::float8 FROM deploy_hooks",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert!((89.9..=90.1).contains(&days), "{days}");
+    assert!(created["hook"]["expires_at"].is_string(), "{created}");
+
+    // Modifiable : une date passee est refusee, une date future acceptee.
+    let admin = login(&state, "admin").await;
+    let path = format!("/api/projects/{project}/deploy-hooks/{hook_id}");
+    let past = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": "2020-01-01T00:00:00Z" })),
+    )
+    .await;
+    assert_eq!(past.status, 422, "{}", past.raw);
+    let ok = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": "2099-01-01T00:00:00Z" })),
+    )
+    .await;
+    assert_eq!(ok.status, 200, "{}", ok.raw);
+    assert!(
+        ok.json()["expires_at"]
+            .as_str()
+            .unwrap()
+            .starts_with("2099-01-01"),
+        "{}",
+        ok.raw
+    );
+
+    // A la creation aussi, avec une date choisie.
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        &format!("/api/projects/{project}/deploy-hooks"),
+        Some(
+            json!({ "name": "court", "password": PASSWORD, "expires_at": "2098-06-01T12:00:00Z" }),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+    assert!(
+        r.json()["hook"]["expires_at"]
+            .as_str()
+            .unwrap()
+            .starts_with("2098-06-01T12:00:00"),
+        "{}",
+        r.raw
+    );
+}
+
+#[tokio::test]
+async fn expired_hook_refused() {
+    let (state, _pg) = common::state().await;
+    let (project, _) = git_project(&state, "web").await;
+    let created = create_hook(&state, project).await;
+    let path = created["url_path"].as_str().unwrap();
+    let token = created["token"].as_str().unwrap();
+    sqlx::query("UPDATE deploy_hooks SET expires_at = now() - interval '1 minute'")
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    let expired = trigger_with_header(&state, path, token, "198.51.100.20:1000").await;
+    let wrong = trigger_with_header(
+        &state,
+        path,
+        &format!("dh_{}", "D".repeat(43)),
+        "198.51.100.21:1000",
+    )
+    .await;
+    assert_eq!(expired.status, 404, "{}", expired.raw);
+    // Indistinguable d'un secret faux.
+    assert_eq!(expired.raw, wrong.raw);
+    assert_eq!(count(&state, "SELECT count(*) FROM deployments").await, 0);
+
+    // Un hook sans date (cree avant la migration) n'expire pas.
+    sqlx::query("UPDATE deploy_hooks SET expires_at = NULL")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let ok = trigger_with_header(&state, path, token, "198.51.100.22:1000").await;
+    assert_eq!(ok.status, 202, "{}", ok.raw);
+}
+
+#[tokio::test]
+async fn hook_creation_requires_step_up() {
+    let (state, _pg) = common::state().await;
+    let (project, _) = git_project(&state, "web").await;
+    let admin = login(&state, "admin").await;
+    let url = format!("/api/projects/{project}/deploy-hooks");
+
+    // Sans mot de passe ou avec un faux : refuse, rien n'est cree.
+    let missing = send(&state, &admin, "POST", &url, Some(json!({ "name": "CI" }))).await;
+    assert_eq!(missing.status, 422, "{}", missing.raw);
+    let wrong = send(
+        &state,
+        &admin,
+        "POST",
+        &url,
+        Some(json!({ "name": "CI", "password": "mauvais mot de passe" })),
+    )
+    .await;
+    assert_eq!(wrong.status, 401, "{}", wrong.raw);
+    assert_eq!(count(&state, "SELECT count(*) FROM deploy_hooks").await, 0);
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM audit_events WHERE action = 'deploy_hook.create.failure'"
+        )
+        .await,
+        1
+    );
+    let ok = send(
+        &state,
+        &admin,
+        "POST",
+        &url,
+        Some(json!({ "name": "CI", "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(ok.status, 201, "{}", ok.raw);
+    assert!(!ok.raw.contains(PASSWORD));
 }
 
 #[tokio::test]
@@ -288,7 +474,11 @@ async fn deploy_hook_rate_limited() {
     let (project, _) = git_project(&state, "web").await;
     let created = create_hook(&state, project).await;
     let hook_id = created["hook"]["id"].as_str().unwrap();
-    let good = created["url_path"].as_str().unwrap();
+    let good = &format!(
+        "{}?token={}",
+        created["url_path"].as_str().unwrap(),
+        created["token"].as_str().unwrap()
+    );
     let bad = format!("/v1/hooks/deploy/{hook_id}?token=dh_{}", "B".repeat(43));
     let attacker = "198.51.100.9:4000";
 
@@ -332,9 +522,10 @@ async fn deploy_hook_does_not_reuse_a_queued_push() {
     .execute(&state.db)
     .await
     .unwrap();
-    let r = trigger(
+    let r = trigger_with_header(
         &state,
         created["url_path"].as_str().unwrap(),
+        created["token"].as_str().unwrap(),
         common::api::DIRECT,
     )
     .await;
@@ -700,7 +891,11 @@ async fn public_routes_are_rate_limited_before_the_database() {
     let (state, _pg) = common::state().await;
     let (project, _) = git_project(&state, "web").await;
     let created = create_hook(&state, project).await;
-    let good = created["url_path"].as_str().unwrap().to_string();
+    let good = format!(
+        "{}?token={}",
+        created["url_path"].as_str().unwrap(),
+        created["token"].as_str().unwrap()
+    );
 
     // Identifiants differents a chaque appel : le plafond (IP, hook) en base
     // n'intervient pas.
