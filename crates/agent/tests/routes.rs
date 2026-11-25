@@ -19,6 +19,7 @@ fn panel_route(upstreams: &[&str]) -> Route {
         redirect_to: None,
         tls: TlsMode::Acme,
         service: None,
+        panel_confirmed: false,
     }
 }
 

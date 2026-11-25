@@ -21,6 +21,7 @@ fn table(host: &str) -> Vec<Route> {
         redirect_to: None,
         tls: TlsMode::Acme,
         service: None,
+        panel_confirmed: false,
     }]
 }
 

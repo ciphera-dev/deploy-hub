@@ -598,7 +598,8 @@ impl ConnectionFilter for LimitFilter {
 }
 
 /// Rappel Pingora appele juste avant la poignee de main TLS : la borne a
-/// `tls_handshake_timeout` (Pingora la borne sinon a 60 s, fixe).
+/// `tls_handshake_timeout` (Pingora la borne sinon a 60 s, fixe), puis
+/// refuse un ClientHello sans nom DNS ([`refuse_nameless`]).
 #[derive(Debug)]
 pub struct HandshakeDeadline {
     pub limiter: Arc<ConnLimiter>,
@@ -630,8 +631,54 @@ impl PreTlsProcess for HandshakeDeadline {
             }
             Err(e) => tracing::warn!("poignee de main TLS non bornee : {e}"),
         }
-        Ok(())
+        refuse_nameless(stream).await
     }
+}
+
+/// Premier enregistrement du client lu (sous l'echeance de la poignee de
+/// main, deja armee) : un ClientHello sans nom DNS (SNI absent ou adresse
+/// IP) recoit l'alerte `unrecognized_name` et la connexion est fermee, sans
+/// qu'aucun certificat ne soit presente. Dans tous les autres cas, les
+/// octets lus sont rendus au flux et rustls conduit la poignee de main (le
+/// choix du certificat refuse aussi une poignee de main sans nom).
+async fn refuse_nameless(stream: &mut L4Stream) -> pingora::Result<()> {
+    use pingora::{Error, ErrorType};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use crate::client_hello::{
+        HelloName, RECORD_HEADER_LEN, UNRECOGNIZED_NAME_ALERT, handshake_record_len, requested_name,
+    };
+
+    let mut record = vec![0u8; RECORD_HEADER_LEN];
+    if let Err(e) = stream.read_exact(&mut record).await {
+        return Err(Error::because(
+            ErrorType::ReadError,
+            "debut de la poignee de main TLS",
+            e,
+        ));
+    }
+    let Some(len) = handshake_record_len(&record) else {
+        stream.rewind(&record);
+        return Ok(());
+    };
+    record.resize(RECORD_HEADER_LEN + len, 0);
+    if let Err(e) = stream.read_exact(&mut record[RECORD_HEADER_LEN..]).await {
+        return Err(Error::because(
+            ErrorType::ReadError,
+            "ClientHello TLS incomplet",
+            e,
+        ));
+    }
+    if requested_name(&record[RECORD_HEADER_LEN..]) != HelloName::None {
+        stream.rewind(&record);
+        return Ok(());
+    }
+    let _ = stream.write_all(&UNRECOGNIZED_NAME_ALERT).await;
+    let _ = AsyncWriteExt::shutdown(stream).await;
+    Err(Error::explain(
+        ErrorType::TLSHandshakeFailure,
+        "poignee de main TLS sans nom DNS (SNI) : refusee",
+    ))
 }
 
 /// Application Pingora enveloppee : compte la connexion pendant tout son

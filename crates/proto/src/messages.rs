@@ -653,9 +653,16 @@ pub struct Route {
     /// Service servi par la route. Sans valeur : redirection seulement, ou,
     /// sans `redirect_to` non plus, route du domaine du panneau (amont :
     /// l'ecoute locale du panneau une fois son certificat actif, sinon
-    /// aucun ; jamais servie en HTTP clair, et cible du repli des hotes IP
-    /// du proxy des qu'elle a un amont).
+    /// aucun ; jamais servie en HTTP clair).
     pub service: Option<ServiceId>,
+    /// Route du domaine du panneau seulement (v6) : domaine confirme, acces
+    /// direct (8443) ferme. Le proxy repond alors 404 aux hotes IP sans
+    /// route, sans nommer le domaine ; avant, il les renvoie vers
+    /// `https://<IP>:<port du panneau>`. Toujours faux pour les autres
+    /// routes. Absent d'une table gardee sur disque par un agent plus
+    /// ancien (JSON) : faux.
+    #[serde(default)]
+    pub panel_confirmed: bool,
 }
 
 /// Reponse du proxy du noeud a `ControlToAgent::ApplyRoutes`,

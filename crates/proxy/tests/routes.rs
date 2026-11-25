@@ -22,6 +22,7 @@ fn route(host: &str, prefix: &str, upstream: &str) -> Route {
         redirect_to: None,
         tls: TlsMode::None,
         service: None,
+        panel_confirmed: false,
     }
 }
 
@@ -726,6 +727,7 @@ ciphera-agent:x:991:989::/var/lib/ciphera:/usr/sbin/nologin
             redirect_to: None,
             tls: TlsMode::Acme,
             service: None,
+            panel_confirmed: false,
         }
     }
 

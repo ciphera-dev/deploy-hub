@@ -380,6 +380,7 @@ fn route(host: &str, service: Option<ServiceId>) -> Route {
         redirect_to: None,
         tls: TlsMode::Acme,
         service,
+        panel_confirmed: false,
     }
 }
 

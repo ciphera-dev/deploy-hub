@@ -2,10 +2,12 @@
 //! routes est poussee par l'agent local sur un socket Unix.
 //!
 //! Pingora et les sockets Unix n'existent que sous Unix : sous Windows, seuls
-//! la table de routes et le masquage des journaux sont compiles (et testes).
+//! la table de routes, le masquage des journaux et la lecture du SNI sont
+//! compiles (et testes).
 
 pub mod access_log;
 pub mod acme;
+pub mod client_hello;
 pub mod routes;
 
 #[cfg(unix)]

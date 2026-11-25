@@ -163,6 +163,7 @@ fn issues_cert_via_pebble_http01() {
             redirect_to: None,
             tls: TlsMode::Acme,
             service: None,
+            panel_confirmed: false,
         };
         let reply = ask(&mut stream, ControlToAgent::ApplyRoutes(vec![route])).await;
         assert_eq!(reply, ProxyReply::Applied { routes: 1 });

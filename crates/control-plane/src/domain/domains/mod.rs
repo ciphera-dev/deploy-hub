@@ -921,9 +921,10 @@ pub async fn route_table(
     .bind(server)
     .fetch_all(&mut *conn)
     .await?;
-    let panel: Option<(String, bool)> = if local_server(conn).await? == Some(server) {
+    let panel: Option<(String, bool, bool)> = if local_server(conn).await? == Some(server) {
         sqlx::query_as(
-            "SELECT host, cert_status = 'active' OR panel_confirmed_at IS NOT NULL FROM domains \
+            "SELECT host, cert_status = 'active' OR panel_confirmed_at IS NOT NULL, \
+             panel_confirmed_at IS NOT NULL FROM domains \
              WHERE panel AND (dns_status = 'ok' OR panel_confirmed_at IS NOT NULL)",
         )
         .fetch_optional(&mut *conn)
@@ -933,8 +934,9 @@ pub async fn route_table(
     };
     // Avant le certificat, la route n'a pas d'amont : elle permet l'emission
     // (le proxy n'emet que pour une route HTTPS, le defi HTTP-01 passe avant
-    // la table) sans jamais servir le panneau en HTTP clair.
-    let panel = panel.map(|(host, served)| Route {
+    // la table) sans jamais servir le panneau en HTTP clair. Confirme : le
+    // proxy ne renvoie plus les hotes IP vers l'acces direct.
+    let panel = panel.map(|(host, served, confirmed)| Route {
         host,
         path_prefix: "/".into(),
         upstreams: if served {
@@ -948,6 +950,7 @@ pub async fn route_table(
         redirect_to: None,
         tls: TlsMode::Acme,
         service: None,
+        panel_confirmed: confirmed,
     });
     Ok(rows
         .into_iter()
@@ -972,6 +975,7 @@ pub async fn route_table(
                     redirect_to: Some(format!("https://{primary}")),
                     tls,
                     service: None,
+                    panel_confirmed: false,
                 });
             }
             r.internal_port?;
@@ -982,6 +986,7 @@ pub async fn route_table(
                 redirect_to: None,
                 tls,
                 service: Some(ServiceId(r.service_id?)),
+                panel_confirmed: false,
             })
         })
         .chain(panel)

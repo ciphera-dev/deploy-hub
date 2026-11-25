@@ -16,7 +16,7 @@ pub use messages::*;
 /// `RemoveProject`, `DeploymentRemoved`, `ProjectRemoved`, identifiants de
 /// projet et d'environnement dans `BuildSpec` et `DeploySpec`, `run_as` et
 /// `read_only_rootfs` dans `DeploySpec`, `runs_as_root` dans
-/// `RunningDeployment`.
+/// `RunningDeployment`, `panel_confirmed` dans `Route`.
 ///
 /// Regle : tout changement de `messages` (meme un ajout) incremente cette
 /// version. Plan de controle, agent et proxy sont livres et mis a jour

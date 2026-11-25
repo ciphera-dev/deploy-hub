@@ -156,6 +156,7 @@ fn upstream_route(host: &str) -> Route {
         redirect_to: None,
         tls: TlsMode::Acme,
         service: Some(ServiceId::new()),
+        panel_confirmed: false,
     }
 }
 
@@ -610,6 +611,11 @@ fn tls_get(host: &str, root: &[u8]) -> Result<String, String> {
 
 /// Comme `tls_get`, avec un SNI (`sni`) et un en-tete `Host` distincts.
 fn tls_request(sni: &str, host: &str, root: &[u8]) -> Result<String, String> {
+    tls_request_at(harness().https, sni, host, root)
+}
+
+/// Comme `tls_request`, vers le proxy ecoutant en HTTPS sur `addr`.
+fn tls_request_at(addr: SocketAddr, sni: &str, host: &str, root: &[u8]) -> Result<String, String> {
     use pingora::tls::{ClientConfig, RootCertStore, ServerName, TlsConnector};
     use rustls::pki_types::CertificateDer;
     use rustls::pki_types::pem::PemObject;
@@ -627,9 +633,7 @@ fn tls_request(sni: &str, host: &str, root: &[u8]) -> Result<String, String> {
         let config = ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
-        let tcp = tokio::net::TcpStream::connect(harness().https)
-            .await
-            .unwrap();
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
         let name = ServerName::try_from(sni.to_string()).unwrap();
         let mut tls = tokio::time::timeout(
             Duration::from_secs(5),
@@ -732,16 +736,26 @@ fn panel_route(host: &str, upstreams: Vec<SocketAddr>) -> Route {
         redirect_to: None,
         tls: TlsMode::Acme,
         service: None,
+        panel_confirmed: false,
     }
 }
 
-#[test]
-fn panel_route_is_never_served_in_clear_and_takes_over_the_ip_fallback() {
-    // Serveur a part : la route du panneau change le repli des hotes IP.
-    let table = Arc::new(RouteTable::new());
-    let tls = TlsAssets::memory();
-    let (http, _) = start_server(table.clone(), &tls, ConnLimits::default());
-    let get_at = |host: &str, target: &str| {
+/// Route du domaine du panneau confirme (acces direct ferme).
+fn confirmed_panel_route(host: &str, upstreams: Vec<SocketAddr>) -> Route {
+    Route {
+        panel_confirmed: true,
+        ..panel_route(host, upstreams)
+    }
+}
+
+/// Serveur a part (la route du panneau change le repli des hotes IP) :
+/// adresse HTTPS et `GET` brut en HTTP clair.
+fn panel_server(
+    table: &Arc<RouteTable>,
+    tls: &TlsAssets,
+) -> (SocketAddr, impl Fn(&str, &str) -> Response) {
+    let (http, https) = start_server(table.clone(), tls, ConnLimits::default());
+    let get_at = move |host: &str, target: &str| {
         send_to(
             http,
             format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")
@@ -749,6 +763,14 @@ fn panel_route_is_never_served_in_clear_and_takes_over_the_ip_fallback() {
             Duration::from_secs(10),
         )
     };
+    (https, get_at)
+}
+
+#[test]
+fn panel_route_is_never_served_in_clear_and_keeps_the_ip_fallback_until_confirmed() {
+    let table = Arc::new(RouteTable::new());
+    let tls = TlsAssets::memory();
+    let (_, get_at) = panel_server(&table, &tls);
     let host = "panel.switch.example";
 
     // Avant le certificat : route sans amont (pour l'emission ACME). Le
@@ -773,17 +795,15 @@ fn panel_route_is_never_served_in_clear_and_takes_over_the_ip_fallback() {
     assert_eq!(r.status, 503, "{}", r.body_text());
     assert!(!r.body_text().to_lowercase().contains("get /login"));
 
-    // Panneau servi sur son domaine : les hotes IP et l'ancien nom y sont
-    // renvoyes, plus jamais vers 8443.
+    // Servi sur son domaine mais pas encore confirme : l'acces direct reste
+    // ouvert, les hotes IP et l'hote configure y sont renvoyes, sans jamais
+    // nommer le domaine.
     for (h, want) in [
-        (
-            "203.0.113.7:80",
-            "https://panel.switch.example/setup?step=2",
-        ),
-        ("[2001:db8::1]", "https://panel.switch.example/setup?step=2"),
+        ("203.0.113.7:80", "https://203.0.113.7:8443/setup?step=2"),
+        ("[2001:db8::1]", "https://[2001:db8::1]:8443/setup?step=2"),
         (
             "panel.example.com",
-            "https://panel.switch.example/setup?step=2",
+            "https://panel.example.com:8443/setup?step=2",
         ),
     ] {
         let r = get_at(h, "/setup?step=2");
@@ -791,6 +811,18 @@ fn panel_route_is_never_served_in_clear_and_takes_over_the_ip_fallback() {
         assert_eq!(r.header("location"), Some(want), "{h}");
         assert!(r.body.is_empty(), "{h}");
     }
+
+    // Confirme : l'hote du panneau configure (deja un nom) est renvoye vers
+    // le domaine.
+    table
+        .apply(vec![confirmed_panel_route(host, vec![harness().upstream])])
+        .unwrap();
+    let r = get_at("panel.example.com", "/setup?step=2");
+    assert_eq!(r.status, 301);
+    assert_eq!(
+        r.header("location"),
+        Some("https://panel.switch.example/setup?step=2")
+    );
 
     // Certificat installe : 308 vers HTTPS (defis exclus).
     let ck = rcgen::generate_simple_self_signed(vec![host.to_string()]).unwrap();
@@ -803,6 +835,145 @@ fn panel_route_is_never_served_in_clear_and_takes_over_the_ip_fallback() {
         r.header("location"),
         Some("https://panel.switch.example/login?x=1")
     );
+}
+
+/// Domaine du panneau confirme : une requete HTTP ou HTTPS vers un hote IP
+/// sans route recoit un 404 neutre, sans `Location` et sans le nom du
+/// domaine.
+#[test]
+fn ip_host_after_confirm_no_panel_name() {
+    let table = Arc::new(RouteTable::new());
+    let tls = TlsAssets::memory();
+    let (https, get_at) = panel_server(&table, &tls);
+    let host = "panel.hidden.example";
+    table
+        .apply(vec![confirmed_panel_route(host, vec![harness().upstream])])
+        .unwrap();
+    let ck = rcgen::generate_simple_self_signed(vec![host.to_string()]).unwrap();
+    let cert_pem = ck.cert.pem();
+    tls.certs
+        .install(host, &cert_pem, &ck.signing_key.serialize_pem())
+        .unwrap();
+
+    let leaks = |r: &Response| {
+        let all = format!("{:?} {}", r.headers, r.body_text()).to_lowercase();
+        all.contains("hidden") || all.contains("8443")
+    };
+    for h in [
+        "203.0.113.7",
+        "203.0.113.7:80",
+        "[2001:db8::1]",
+        "[2001:db8::1]:8080",
+    ] {
+        let r = get_at(h, "/setup?step=2");
+        assert_eq!(r.status, 404, "{h}");
+        assert_eq!(r.header("location"), None, "{h}");
+        assert!(!leaks(&r), "{h} : {:?} {}", r.headers, r.body_text());
+    }
+    // HTTPS : SNI du domaine (certificat valide), `Host` IP.
+    let reply = tls_request_at(https, host, "203.0.113.7", cert_pem.as_bytes())
+        .expect("poignee de main TLS");
+    assert!(reply.starts_with("HTTP/1.1 404"), "{reply}");
+    let (head, body) = reply.split_once("\r\n\r\n").unwrap_or((&reply, ""));
+    assert!(!head.to_lowercase().contains("location"), "{reply}");
+    assert!(!body.contains("hidden"), "{reply}");
+
+    // Retire (ou jamais confirme) : de nouveau l'acces direct.
+    table
+        .apply(vec![panel_route(host, vec![harness().upstream])])
+        .unwrap();
+    let r = get_at("203.0.113.7", "/");
+    assert_eq!(r.status, 301);
+    assert_eq!(r.header("location"), Some("https://203.0.113.7:8443/"));
+}
+
+/// Erreur rustls d'une poignee de main ratee cote client.
+fn rustls_error(e: &std::io::Error) -> Option<&rustls::Error> {
+    e.get_ref()
+        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+}
+
+/// Poignee de main vers `addr` : `name` sert a verifier le certificat ;
+/// `sni` faux : aucun SNI envoye. Renvoie le certificat presente ou
+/// l'erreur.
+fn handshake_at(
+    addr: SocketAddr,
+    name: rustls::pki_types::ServerName<'static>,
+    sni: bool,
+    root: &[u8],
+) -> Result<Vec<u8>, std::io::Error> {
+    use pingora::tls::{ClientConfig, RootCertStore, TlsConnector};
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        pingora::tls::install_default_crypto_provider();
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(CertificateDer::from_pem_slice(root).unwrap())
+            .unwrap();
+        let mut config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        config.enable_sni = sni;
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let tls = tokio::time::timeout(
+            Duration::from_secs(5),
+            TlsConnector::from(Arc::new(config)).connect(name, tcp),
+        )
+        .await
+        .expect("reponse rapide")?;
+        let presented = tls
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(|c| c.first())
+            .map(|c| c.as_ref().to_vec())
+            .unwrap_or_default();
+        Ok(presented)
+    })
+}
+
+/// Sans SNI, ou avec une adresse IP pour nom (rustls n'envoie alors aucun
+/// SNI), le certificat du panneau n'est jamais presente : alerte
+/// `unrecognized_name`, et le proxy reste disponible.
+#[test]
+fn no_sni_handshake_no_panel_cert() {
+    use rustls::pki_types::ServerName;
+    let table = Arc::new(RouteTable::new());
+    let tls = TlsAssets::memory();
+    let (https, get_at) = panel_server(&table, &tls);
+    let host = "panel.nosni.example";
+    table
+        .apply(vec![confirmed_panel_route(host, vec![harness().upstream])])
+        .unwrap();
+    let ck = rcgen::generate_simple_self_signed(vec![host.to_string()]).unwrap();
+    let cert_pem = ck.cert.pem();
+    tls.certs
+        .install(host, &cert_pem, &ck.signing_key.serialize_pem())
+        .unwrap();
+    let name = || ServerName::try_from(host.to_string()).unwrap();
+
+    // Temoin : avec SNI, le certificat du panneau est presente.
+    let presented = handshake_at(https, name(), true, cert_pem.as_bytes()).expect("avec SNI");
+    assert_eq!(presented, ck.cert.der().to_vec());
+
+    let unrecognized = rustls::Error::AlertReceived(rustls::AlertDescription::UnrecognisedName);
+    let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    for (what, server_name, sni) in [
+        ("sans SNI", name(), false),
+        ("IP pour nom", ServerName::IpAddress(ip.into()), true),
+    ] {
+        let e = handshake_at(https, server_name, sni, cert_pem.as_bytes()).expect_err(what);
+        assert_eq!(rustls_error(&e), Some(&unrecognized), "{what} : {e}");
+    }
+    // Le proxy reste disponible.
+    assert_eq!(get_at("unknown.nosni.example", "/").status, 404);
+    let presented = handshake_at(https, name(), true, cert_pem.as_bytes()).expect("avec SNI");
+    assert!(!presented.is_empty());
 }
 
 /// Le SNI de la poignee de main et l'en-tete `Host` doivent designer le

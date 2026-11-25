@@ -211,6 +211,7 @@ fn route(host: &str, service: ServiceId) -> Route {
         redirect_to: None,
         tls: TlsMode::None,
         service: Some(service),
+        panel_confirmed: false,
     }
 }
 

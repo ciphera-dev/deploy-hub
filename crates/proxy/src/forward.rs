@@ -14,7 +14,10 @@
 //!   sinon transfert a un amont ;
 //! - aucune route : un hote IP litteral (ou l'hote du panneau configure)
 //!   recoit 301 vers `https://<hote>:<port du panneau>` + chemin et requete,
-//!   corps vide (panneau avant domaine) ; tout autre hote recoit un 404 sobre.
+//!   corps vide, tant que le domaine du panneau n'est pas confirme. Une fois
+//!   confirme (`Route::panel_confirmed`), un hote IP recoit le 404 sobre,
+//!   sans `Location` ni nom, et l'hote du panneau configure est renvoye vers
+//!   le domaine ; tout autre hote recoit le 404 sobre.
 //!
 //! Vers l'amont, `X-Forwarded-For`, `Forwarded`, `X-Real-IP`,
 //! `X-Forwarded-*` et les en-tetes d'IP de CDN (`True-Client-IP`,
@@ -29,8 +32,10 @@
 //! de Pingora, fixee a `standard` (seul le passage a WebSocket est transmis).
 //!
 //! Port 443 : le certificat est choisi par SNI parmi ceux emis par ACME
-//! (`acme::CertResolver`). Sans certificat pour le nom, la poignee de main
-//! echoue proprement ; une route `TlsMode::Acme` reste servie en HTTP tant
+//! (`acme::CertResolver`). Sans SNI, ou avec une adresse IP en SNI, aucun
+//! certificat n'est presente (alerte `unrecognized_name`, voir
+//! `conn_limit::HandshakeDeadline`) ; sans certificat pour le nom, la poignee
+//! de main echoue proprement ; une route `TlsMode::Acme` reste servie en HTTP tant
 //! que son certificat n'existe pas. Une requete dont l'hote a une route
 //! doit porter le meme nom que le SNI de la poignee de main (casse et point
 //! final ignores) : sinon 421, jamais transmise (un certificat obtenu pour
@@ -147,7 +152,8 @@ pub struct ProxyConfig {
     /// Adresses HTTPS (certificats ACME choisis par SNI).
     pub https: Vec<String>,
     /// Hote du panneau (sans port) redirige vers le panneau s'il n'a pas de
-    /// route ; les hotes IP le sont toujours.
+    /// route ; les hotes IP le sont tant que le domaine du panneau n'est pas
+    /// confirme.
     pub panel_host: Option<String>,
     /// Port HTTPS du panneau.
     pub panel_port: u16,
@@ -459,14 +465,23 @@ impl ProxyHttp for Forwarder {
                 }
             }
             None if self.is_panel_host(&host) => {
-                // Panneau servi sur son domaine (route avec amont) : l'acces
-                // direct du port du panneau peut etre ferme, on y renvoie.
-                let location = match table
+                // Domaine du panneau confirme (acces direct ferme) : un hote
+                // IP recoit un 404 neutre, jamais le nom du domaine (qui
+                // balaie les adresses IP ne l'apprend pas) ; l'hote du
+                // panneau configure, deja un nom, y est renvoye. Avant la
+                // confirmation : l'acces direct, sous le meme hote.
+                let confirmed = table
                     .routes()
-                    .find(|r| is_panel_route(r) && !r.upstreams.is_empty())
-                {
-                    Some(panel) => format!("https://{}{pq}", panel.host),
-                    None => format!("https://{}:{}{pq}", host.url_authority(), self.panel_port),
+                    .find(|r| is_panel_route(r) && r.panel_confirmed);
+                let location = match confirmed {
+                    Some(_) if host.ip.is_some() => {
+                        respond(session, 404, None, Bytes::from_static(NOT_FOUND_BODY)).await?;
+                        return Ok(true);
+                    }
+                    Some(panel) if !panel.upstreams.is_empty() => {
+                        format!("https://{}{pq}", panel.host)
+                    }
+                    _ => format!("https://{}:{}{pq}", host.url_authority(), self.panel_port),
                 };
                 respond(session, 301, Some(&location), Bytes::new()).await?;
                 Ok(true)

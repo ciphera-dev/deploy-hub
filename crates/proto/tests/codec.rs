@@ -77,6 +77,7 @@ fn control_messages() -> Vec<ControlToAgent> {
                 redirect_to: None,
                 tls: TlsMode::Acme,
                 service: Some(service_id),
+                panel_confirmed: false,
             },
             Route {
                 host: "example.com".into(),
@@ -85,6 +86,7 @@ fn control_messages() -> Vec<ControlToAgent> {
                 redirect_to: Some("https://www.example.com".into()),
                 tls: TlsMode::None,
                 service: None,
+                panel_confirmed: false,
             },
         ]),
         ControlToAgent::ApplyRoutes(Vec::new()),
