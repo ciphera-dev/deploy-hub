@@ -7,6 +7,7 @@ import { useDeploymentActions } from "@/features/deployments/useDeploymentAction
 import type { Project } from "@/features/projects/api";
 import { timeAgo } from "@/features/projects/format";
 import { ApiError } from "@/lib/api/errors";
+import { copyText } from "@/lib/clipboard";
 
 import { bulkProjectVariables, deleteProjectVariable, download, envLabel, fetchProjectVariables, fetchVariablesStatus, projectVariablesQueryKey, putProjectVariable, shortSecretKeys, shortSecretNotice, variablesStatusQueryKey, type ProjectVariable } from "./api";
 import { dotenvLine } from "./dotenv";
@@ -119,8 +120,7 @@ function VarRow({ r, env, canEdit, onEdit, onDelete, reveal, setReveal, flash }:
             icon="Copy"
             label="Copier"
             onClick={() => {
-              void navigator.clipboard?.writeText(r.key + "=" + value);
-              flash("Copié");
+              void copyText(r.key + "=" + value).then((ok) => flash(ok ? "Copié" : "Copie impossible"));
             }}
           />
         )}

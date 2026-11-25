@@ -3,6 +3,7 @@ import { useState, type CSSProperties } from "react";
 
 import { Button, Icon, Menu, useToast, type IconName } from "@/design-system";
 import { timeAgo } from "@/features/projects/format";
+import { copyText } from "@/lib/clipboard";
 
 import { isActive, type Deployment, type DeploymentStatus } from "./api";
 import { Author, RollbackModal } from "./DeploymentDetail";
@@ -133,8 +134,7 @@ export function DeployRow({ deployment: d, open, onToggle, actions }: { deployme
                 label: "Copier le SHA",
                 disabled: !d.commit_sha,
                 onSelect: () => {
-                  if (d.commit_sha) void navigator.clipboard?.writeText(d.commit_sha);
-                  flash("SHA copié");
+                  if (d.commit_sha) void copyText(d.commit_sha).then((ok) => flash(ok ? "SHA copié" : "Copie impossible"));
                 },
               },
             ]}

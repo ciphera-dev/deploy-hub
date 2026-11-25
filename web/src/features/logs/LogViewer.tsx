@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 
 import { Button, CodeBlock, Icon, Select, StatusDot, type CodeBlockLine } from "@/design-system";
 
+import { copyText } from "@/lib/clipboard";
+
 import { useLogStream, type LogLevel, type LogLine, type LogSource } from "./useLogStream";
 import "./logs.css";
 
@@ -117,10 +119,6 @@ function useFlash() {
   return { toast, flash };
 }
 
-function copyText(text: string) {
-  void navigator.clipboard?.writeText(text);
-}
-
 function saveFile(href: string, name?: string) {
   const a = document.createElement("a");
   a.href = href;
@@ -177,8 +175,7 @@ function ProjectLogViewer({ project, containers }: { project: string; containers
     flash(shown.length + " lignes téléchargées");
   };
   const copyAll = () => {
-    copyText(shown.map(line).join("\n"));
-    flash(shown.length + " lignes copiées");
+    void copyText(shown.map(line).join("\n")).then((ok) => flash(ok ? shown.length + " lignes copiées" : "Copie impossible"));
   };
   const counts = { info: 0, warn: 0, error: 0, debug: 0 };
   scoped.forEach((l) => counts[l.lv]++);
@@ -326,8 +323,7 @@ function ProjectLogViewer({ project, containers }: { project: string; containers
                 hl={hl}
                 col={colOf(l.c)}
                 onCopy={(x) => {
-                  copyText(line(x));
-                  flash("Ligne copiée");
+                  void copyText(line(x)).then((ok) => flash(ok ? "Ligne copiée" : "Copie impossible"));
                 }}
               />
             ))}

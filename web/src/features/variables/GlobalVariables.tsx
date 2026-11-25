@@ -5,6 +5,7 @@ import { Button, Icon, IconButton, Modal, Switch, TextField, useToast, type Icon
 import { fetchMe, ME_QUERY_KEY, MFA_PENDING } from "@/features/auth/api";
 import { fetchProjects, PROJECTS_QUERY_KEY, type ProjectSummary } from "@/features/projects/api";
 import { timeAgo } from "@/features/projects/format";
+import { copyText } from "@/lib/clipboard";
 
 import { createGlobalVariable, deleteGlobalVariable, download, ENVIRONMENTS, envLabel, exportGlobalVariables, fetchGlobalVariables, GLOBAL_VARIABLES_QUERY_KEY, parseDotenv, shortSecretKeys, shortSecretNotice, updateGlobalVariable, type GlobalVariable } from "./api";
 
@@ -343,8 +344,7 @@ function GlobalVariables() {
             toggle={() => setReveal((x) => ({ ...x, [r.id]: !x[r.id] }))}
             edit={() => setModal({ type: "edit", row: r })}
             copy={() => {
-              void navigator.clipboard?.writeText(r.key + "=" + (r.value ?? ""));
-              flash("Copié");
+              void copyText(r.key + "=" + (r.value ?? "")).then((ok) => flash(ok ? "Copié" : "Copie impossible"));
             }}
             del={() => void del(r)}
             used={r.all_projects ? projects.length : r.projects.length}
