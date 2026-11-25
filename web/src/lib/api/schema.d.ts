@@ -579,7 +579,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Sonde de sante (sans authentification). */
+        /** Sonde de sante (sans authentification ; la version est reservee au pair local ou a une session). */
         get: operations["health"];
         put?: never;
         post?: never;
