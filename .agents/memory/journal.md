@@ -381,3 +381,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 09:07 — Session v0.1-sdd — claude-code (orchestrateur) — Task R31 : Proxy : délais d'écriture et de corps, en-têtes, cibles
 - fait : Délai d'écriture 30 s, corps 300 s et 1 Kio/s, WebSocket exempté, amonts locaux refusés sur IP canonique, en-têtes d'identité retirés, Host normalisé
 - résultat : TERMINÉ (relecture approuvée, 1 tour ; forward.rs compilé pour la première fois en CI)
+
+## 2026-11-25 09:10 — Session v0.1-sdd — claude-code (orchestrateur) — Task R30 : PKI et lien agent
+- fait : renew-certs limité au serveur local et à la CA, révocation d'agent, retry QUIC, écriture atomique de la paire avec verrou, CA:false, vérification côté agent
+- résultat : TERMINÉ (relecture approuvée, 1 tour)
