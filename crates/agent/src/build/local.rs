@@ -27,11 +27,11 @@ use super::argv::AllowedBin;
 use super::sandbox::{self, PrepareContainer, PrepareOutput};
 use super::{BuildBackend, BuildError, MAX_LOG_LINE, ProgressSink};
 use crate::buildkit::{BuildkitLease, ProductionBuildkit};
-use crate::docker::{assemble_logs, check_managed};
+use crate::docker::{LogStart, assemble_logs, check_managed};
 
 /// Lignes de journal de `railpack prepare` transmises au plus (les
 /// dernieres).
-const PREPARE_LOG_TAIL: &str = "2000";
+const PREPARE_LOG_TAIL: LogStart = LogStart::Tail(2000);
 /// Delai de chaque echange avec l'API d'archive (dossier de sortie, lecture
 /// d'un fichier de sortie).
 const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -557,14 +557,15 @@ impl LocalBackend {
             stderr: true,
             // L'assembleur retire l'horodatage de chaque message partiel.
             timestamps: true,
-            tail: PREPARE_LOG_TAIL.to_string(),
+            tail: PREPARE_LOG_TAIL.docker_tail(),
             ..Default::default()
         };
         // Les messages partiels de Docker (16 Kio) sont rassembles avant
         // l'envoi : le plan de controle masque la ligne entiere.
         let mut lines = assemble_logs(
             self.docker.logs(id, Some(options)),
-            std::future::ready(exited),
+            PREPARE_LOG_TAIL.window(false),
+            move |_| std::future::ready(exited),
         );
         while let Some(line) = lines.next().await {
             sink.log(line.stream, &line.line).await;

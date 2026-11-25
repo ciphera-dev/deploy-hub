@@ -1123,13 +1123,14 @@ pub trait DockerOps: Send + Sync + 'static {
         id: &ContainerId,
     ) -> impl Future<Output = Result<bool, DockerError>> + Send;
     /// Journaux du conteneur (les `tail` dernieres lignes, puis la suite si
-    /// `follow`). Le flux s'arrete a la premiere erreur ; une ligne encore
-    /// incomplete (erreur, conteneur en marche) n'est jamais envoyee
-    /// (`assemble_logs`).
+    /// `follow`) ; `LogStart::Beginning` pour un conteneur lu depuis sa
+    /// creation. Le flux s'arrete a la premiere erreur ; une ligne peut-etre
+    /// incomplete (erreur, conteneur en marche, fenetre `tail` ouverte sur la
+    /// suite d'une ligne) n'est jamais envoyee (`assemble_logs`).
     fn logs(
         &self,
         id: &ContainerId,
-        tail: u32,
+        start: LogStart,
         follow: bool,
     ) -> impl Future<Output = BoxStream<'static, ContainerLog>> + Send;
     /// Metriques du noeud (sans les conteneurs : voir `container_usage`).
@@ -1656,7 +1657,7 @@ impl DockerOps for BollardDocker {
     async fn logs(
         &self,
         id: &ContainerId,
-        tail: u32,
+        start: LogStart,
         follow: bool,
     ) -> BoxStream<'static, ContainerLog> {
         if check_name(&id.0).is_err() {
@@ -1667,27 +1668,24 @@ impl DockerOps for BollardDocker {
             stdout: true,
             stderr: true,
             timestamps: true,
-            tail: tail.to_string(),
+            tail: start.docker_tail(),
             ..Default::default()
         };
         // La ligne en attente a la fin du flux n'est complete que si le
-        // conteneur est sorti : en suivi, a la fin du flux ; sans suivi,
-        // deja avant la lecture (meme execution avant et apres).
-        let before = if follow {
-            None
-        } else {
-            Some(exit_mark(&self.docker, &id.0).await)
-        };
+        // conteneur est sorti (`log_complete`) : execution relevee avant la
+        // lecture, comparee a celle d'apres.
+        let before = run_mark(&self.docker, &id.0).await;
         let docker = self.docker.clone();
         let name = id.0.clone();
-        let exited = async move {
-            let after = exit_mark(&docker, &name).await;
-            match before {
-                None => after.is_some(),
-                Some(before) => before.is_some() && before == after,
-            }
+        let exited = move |last_ts: Option<i64>| async move {
+            let after = run_mark(&docker, &name).await;
+            log_complete(before.as_ref(), after.as_ref(), follow, last_ts)
         };
-        assemble_logs(self.docker.logs(&id.0, Some(options)), exited)
+        assemble_logs(
+            self.docker.logs(&id.0, Some(options)),
+            start.window(follow),
+            exited,
+        )
     }
 
     async fn stats(&self) -> Result<NodeMetrics, DockerError> {
@@ -2252,44 +2250,204 @@ impl LogAssembler {
         }
         out
     }
+}
 
-    /// Ajoute une sortie de `docker logs` ; renvoie les lignes terminees.
-    fn push_output(&mut self, out: bollard::container::LogOutput) -> Vec<ContainerLog> {
-        use bollard::container::LogOutput;
-        match out {
-            LogOutput::StdErr { message } => self.push(LogStream::Stderr, &message),
-            LogOutput::StdOut { message } | LogOutput::Console { message } => {
-                self.push(LogStream::Stdout, &message)
-            }
-            LogOutput::StdIn { .. } => Vec::new(),
+/// Remplace une ligne ecartee, sans aucune donnee : ligne en attente
+/// (`LogAssembler::discard`) ou premiere ligne d'une fenetre peut-etre
+/// coupee (`LogWindow`).
+pub const INCOMPLETE_LINE: &str = "[ligne incomplète ignorée]";
+
+/// Debut d'une lecture de journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogStart {
+    /// Les `n` derniers messages (puis la suite, en suivi).
+    Tail(u32),
+    /// Depuis la creation du conteneur (conteneur neuf) : rien n'est coupe.
+    Beginning,
+}
+
+impl fmt::Display for LogStart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tail(n) => write!(f, "{n}"),
+            Self::Beginning => f.write_str("all"),
         }
     }
 }
 
-/// Remplace une ligne en attente ecartee (`LogAssembler::discard`).
-pub const INCOMPLETE_LINE: &str = "[ligne incomplète ignorée]";
+impl LogStart {
+    /// Valeur `tail` demandee a Docker : un message de plus que les `n`
+    /// voulus, celui qui peut porter le debut d'une ligne coupee par la
+    /// fenetre (voir `LogWindow`).
+    pub fn docker_tail(self) -> String {
+        match self {
+            Self::Tail(n) => (u64::from(n) + 1).to_string(),
+            Self::Beginning => "all".to_string(),
+        }
+    }
 
-/// Lignes rassemblees du flux `docker logs` `frames`, arrete a la premiere
-/// erreur. Sur une fin propre, `exited` dit si le conteneur etait sorti
-/// (journal complet) : la ligne en attente part alors (`finish`). Apres une
+    /// Debut de la fenetre lue avec `docker_tail`.
+    pub fn window(self, follow: bool) -> LogWindow {
+        match self {
+            Self::Beginning => LogWindow::Beginning,
+            Self::Tail(_) if follow => LogWindow::Cut,
+            Self::Tail(n) => LogWindow::CutIfFull(u64::from(n) + 1),
+        }
+    }
+}
+
+/// Debut de la fenetre d'une lecture. `tail` compte les messages de Docker,
+/// trames partielles comprises : une fenetre qui ne part pas du debut du
+/// journal peut s'ouvrir sur la suite d'une ligne, qui commencerait par la
+/// fin d'un secret jamais masque (`redact_line` ne masque que des valeurs
+/// entieres). Fenetre coupee, la premiere ligne de chaque flux est donc
+/// remplacee par `INCOMPLETE_LINE` ; celle faite de la seule premiere trame
+/// (le message demande en plus) est simplement ecartee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogWindow {
+    /// Debut du journal : rien n'est ecarte.
+    Beginning,
+    /// Peut-etre coupee (suivi : l'historique et la suite ne se distinguent
+    /// pas).
+    Cut,
+    /// Coupee si Docker a rendu les `n` messages demandes ; moins, il a rendu
+    /// le journal entier. Les lignes attendent la decision (`n` trames ou fin
+    /// du flux).
+    CutIfFull(u64),
+}
+
+/// Filtre de la premiere ligne de chaque flux selon `LogWindow`.
+struct WindowFilter {
+    window: LogWindow,
+    /// Fenetre coupee ? `None` tant que ce n'est pas decide.
+    cut: Option<bool>,
+    /// Lignes en attente de la decision : (ligne, premiere de son flux,
+    /// faite de la seule premiere trame).
+    held: Vec<(ContainerLog, bool, bool)>,
+    frames: u64,
+    seen: [bool; 2],
+    /// Horodatage de la derniere trame recue.
+    last_ts: Option<i64>,
+}
+
+impl WindowFilter {
+    fn new(window: LogWindow) -> Self {
+        Self {
+            window,
+            cut: match window {
+                LogWindow::Beginning => Some(false),
+                LogWindow::Cut => Some(true),
+                LogWindow::CutIfFull(_) => None,
+            },
+            held: Vec::new(),
+            frames: 0,
+            seen: [false; 2],
+            last_ts: None,
+        }
+    }
+
+    /// Trame `bytes` du flux `stream` ; renvoie les lignes a envoyer.
+    fn frame(
+        &mut self,
+        assembler: &mut LogAssembler,
+        stream: LogStream,
+        bytes: &[u8],
+    ) -> Vec<ContainerLog> {
+        let first_frame = self.frames == 0;
+        self.frames += 1;
+        if let Some(ts) = leading_timestamp(bytes) {
+            self.last_ts = Some(ts);
+        }
+        for (k, line) in assembler.push(stream, bytes).into_iter().enumerate() {
+            self.tag(line, first_frame && k == 0);
+        }
+        if let LogWindow::CutIfFull(n) = self.window
+            && self.cut.is_none()
+            && self.frames >= n
+        {
+            self.cut = Some(true);
+        }
+        self.release()
+    }
+
+    fn tag(&mut self, line: ContainerLog, only_first_frame: bool) {
+        let i = LogAssembler::slot(line.stream);
+        let first = !self.seen[i];
+        self.seen[i] = true;
+        self.held.push((line, first, only_first_frame));
+    }
+
+    /// Fin du flux : `lines` de l'assembleur (`finish`, ou repères de
+    /// `discard` si `markers`).
+    fn end(&mut self, lines: Vec<ContainerLog>, markers: bool) -> Vec<ContainerLog> {
+        // Moins de trames que demande : le journal entier a ete lu.
+        self.cut.get_or_insert(false);
+        for line in lines {
+            if markers {
+                self.held.push((line, false, false));
+            } else {
+                self.tag(line, false);
+            }
+        }
+        self.release()
+    }
+
+    fn release(&mut self) -> Vec<ContainerLog> {
+        let Some(cut) = self.cut else {
+            return Vec::new();
+        };
+        self.held
+            .drain(..)
+            .filter_map(|(mut line, first, only_first_frame)| {
+                if !(cut && first) {
+                    Some(line)
+                } else if only_first_frame {
+                    None
+                } else {
+                    line.line = INCOMPLETE_LINE.to_string();
+                    Some(line)
+                }
+            })
+            .collect()
+    }
+}
+
+/// Horodatage Docker de tete d'une trame, s'il en a un.
+fn leading_timestamp(bytes: &[u8]) -> Option<i64> {
+    let space = bytes.iter().take(64).position(|b| *b == b' ')?;
+    parse_rfc3339_ms(std::str::from_utf8(&bytes[..space]).ok()?)
+}
+
+/// Lignes rassemblees du flux `docker logs` `frames` (lu avec la fenetre
+/// `window`), arrete a la premiere erreur. Sur une fin propre, `exited`
+/// (horodatage de la derniere trame recue) dit si le journal est complet,
+/// conteneur sorti : la ligne en attente part alors (`finish`). Apres une
 /// erreur, ou conteneur encore en marche, elle est ecartee (`discard`) :
 /// echec ferme.
-pub fn assemble_logs<S, E, F>(frames: S, exited: F) -> BoxStream<'static, ContainerLog>
+pub fn assemble_logs<S, E, X, F>(
+    frames: S,
+    window: LogWindow,
+    exited: X,
+) -> BoxStream<'static, ContainerLog>
 where
     S: futures_util::Stream<Item = Result<bollard::container::LogOutput, E>> + Send + 'static,
     E: Send + 'static,
+    X: FnOnce(Option<i64>) -> F + Send + 'static,
     F: Future<Output = bool> + Send + 'static,
 {
-    struct State<S, F> {
+    use bollard::container::LogOutput;
+    struct State<S, X> {
         frames: Option<std::pin::Pin<Box<S>>>,
-        exited: Option<std::pin::Pin<Box<F>>>,
+        exited: Option<X>,
         assembler: LogAssembler,
+        filter: WindowFilter,
         ready: std::collections::VecDeque<ContainerLog>,
     }
     let state = State {
         frames: Some(Box::pin(frames)),
-        exited: Some(Box::pin(exited)),
+        exited: Some(exited),
         assembler: LogAssembler::default(),
+        filter: WindowFilter::new(window),
         ready: Default::default(),
     };
     stream::unfold(state, |mut st| async move {
@@ -2298,45 +2456,83 @@ where
                 return Some((line, st));
             }
             let frames = st.frames.as_mut()?;
-            match frames.next().await {
-                Some(Ok(out)) => {
-                    let lines = st.assembler.push_output(out);
-                    st.ready.extend(lines);
+            let lines = match frames.next().await {
+                Some(Ok(LogOutput::StdErr { message })) => {
+                    st.filter
+                        .frame(&mut st.assembler, LogStream::Stderr, &message)
                 }
+                Some(Ok(LogOutput::StdOut { message } | LogOutput::Console { message })) => st
+                    .filter
+                    .frame(&mut st.assembler, LogStream::Stdout, &message),
+                Some(Ok(LogOutput::StdIn { .. })) => Vec::new(),
                 Some(Err(_)) => {
                     st.frames = None;
-                    let lines = st.assembler.discard();
-                    st.ready.extend(lines);
+                    let discarded = st.assembler.discard();
+                    st.filter.end(discarded, true)
                 }
                 None => {
                     st.frames = None;
                     let complete = match st.exited.take() {
-                        Some(exited) => exited.await,
+                        Some(exited) => exited(st.filter.last_ts).await,
                         None => false,
                     };
-                    let lines = if complete {
-                        st.assembler.finish()
+                    if complete {
+                        let finished = st.assembler.finish();
+                        st.filter.end(finished, false)
                     } else {
-                        st.assembler.discard()
-                    };
-                    st.ready.extend(lines);
+                        let discarded = st.assembler.discard();
+                        st.filter.end(discarded, true)
+                    }
                 }
-            }
+            };
+            st.ready.extend(lines);
         }
     })
     .boxed()
 }
 
-/// Execution terminee du conteneur (`exited` ou `dead`) : son debut et sa
-/// fin ; `None` s'il tourne, redemarre, est en pause ou reste illisible.
-async fn exit_mark(docker: &Docker, name: &str) -> Option<(String, String)> {
+/// Etat d'une execution du conteneur.
+#[derive(PartialEq)]
+struct RunMark {
+    /// `exited` ou `dead`.
+    exited: bool,
+    started_at: String,
+    finished_at: String,
+}
+
+/// Execution courante du conteneur ; `None` s'il reste illisible.
+async fn run_mark(docker: &Docker, name: &str) -> Option<RunMark> {
     let state = docker.inspect_container(name, None).await.ok()?.state?;
-    match state.status {
-        Some(ContainerStateStatusEnum::EXITED | ContainerStateStatusEnum::DEAD) => Some((
-            state.started_at.unwrap_or_default(),
-            state.finished_at.unwrap_or_default(),
-        )),
-        _ => None,
+    Some(RunMark {
+        exited: matches!(
+            state.status,
+            Some(ContainerStateStatusEnum::EXITED | ContainerStateStatusEnum::DEAD)
+        ),
+        started_at: state.started_at.unwrap_or_default(),
+        finished_at: state.finished_at.unwrap_or_default(),
+    })
+}
+
+/// Journal complet a la fin propre d'une lecture : meme execution qu'avant
+/// la lecture (`before`), sortie depuis. Sans suivi, deja sortie avant la
+/// lecture ; en suivi, sortie apres la derniere trame recue (`last_ts`).
+fn log_complete(
+    before: Option<&RunMark>,
+    after: Option<&RunMark>,
+    follow: bool,
+    last_ts: Option<i64>,
+) -> bool {
+    let (Some(before), Some(after)) = (before, after) else {
+        return false;
+    };
+    if !after.exited || after.started_at != before.started_at {
+        return false;
+    }
+    if follow {
+        let finished = parse_rfc3339_ms(&after.finished_at);
+        last_ts.is_none_or(|ts| finished.is_some_and(|f| f >= ts))
+    } else {
+        before == after
     }
 }
 
@@ -2696,9 +2892,11 @@ mod tests {
             stdout(frames[1].clone()),
             stdout(frames[2].clone()),
         ];
-        let lines: Vec<_> = assemble_logs(stream::iter(items), async { true })
-            .collect()
-            .await;
+        let lines: Vec<_> = assemble_logs(stream::iter(items), LogWindow::Beginning, |_| async {
+            true
+        })
+        .collect()
+        .await;
         assert!(!leaks(&lines, secret), "debut du secret envoye");
         let shown: Vec<_> = lines.iter().map(|l| l.line.as_str()).collect();
         assert_eq!(shown, ["avant", INCOMPLETE_LINE]);
@@ -2711,9 +2909,11 @@ mod tests {
         // Lecture sans suivi pendant l'ecriture : fin propre du flux apres
         // deux trames, conteneur encore en marche.
         let items = vec![stdout(frames[0].clone()), stdout(frames[1].clone())];
-        let lines: Vec<_> = assemble_logs(stream::iter(items), async { false })
-            .collect()
-            .await;
+        let lines: Vec<_> = assemble_logs(stream::iter(items), LogWindow::Beginning, |_| async {
+            false
+        })
+        .collect()
+        .await;
         assert!(!leaks(&lines, secret), "ligne partielle envoyee");
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].line, INCOMPLETE_LINE);
@@ -2726,11 +2926,106 @@ mod tests {
         let mut items: Vec<_> = frames.into_iter().map(stdout).collect();
         // Derniere ligne sans `\n` : complete, le conteneur est sorti.
         items.push(stdout(b"2026-11-21T10:20:40Z fin".as_slice().into()));
-        let lines: Vec<_> = assemble_logs(stream::iter(items), async { true })
-            .collect()
-            .await;
+        let lines: Vec<_> = assemble_logs(stream::iter(items), LogWindow::Beginning, |_| async {
+            true
+        })
+        .collect()
+        .await;
         let shown: Vec<_> = lines.iter().map(|l| l.line.as_str()).collect();
         assert_eq!(shown, [line.as_str(), "fin"]);
+    }
+
+    fn stderr(message: &'static [u8]) -> Result<bollard::container::LogOutput, &'static str> {
+        Ok(bollard::container::LogOutput::StdErr {
+            message: message.into(),
+        })
+    }
+
+    async fn assembled(
+        items: Vec<Result<bollard::container::LogOutput, &'static str>>,
+        window: LogWindow,
+    ) -> Vec<ContainerLog> {
+        assemble_logs(stream::iter(items), window, |_| async { true })
+            .collect()
+            .await
+    }
+
+    /// Fenetre `tail` ouverte sur la suite d'une ligne (trame qui commence
+    /// par la fin du secret) : ni lecture simple ni suivi ne l'envoient.
+    #[tokio::test]
+    async fn tail_read_starting_on_a_continuation_frame_never_sends_a_secret_suffix() {
+        let secret = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+        let (_, frames) = straddling_frames(secret);
+        // `LogStart::Tail(3)` : 4 messages demandes et rendus. Le premier
+        // (le message en plus) est une ligne entiere de l'autre flux.
+        let items = || {
+            vec![
+                stderr(b"2026-11-21T10:20:29Z err\n"),
+                stdout(frames[1].clone()),
+                stdout(frames[2].clone()),
+                stdout(b"2026-11-21T10:20:40Z suivante\n".as_slice().into()),
+            ]
+        };
+        for follow in [false, true] {
+            let window = LogStart::Tail(3).window(follow);
+            let lines = assembled(items(), window).await;
+            assert!(!leaks(&lines, secret), "fin du secret envoyee ({window:?})");
+            let shown: Vec<_> = lines.iter().map(|l| l.line.as_str()).collect();
+            assert_eq!(shown, [INCOMPLETE_LINE, "suivante"], "{window:?}");
+        }
+    }
+
+    /// Moins de messages que demande : le journal entier a ete lu, la
+    /// premiere ligne est entiere et part.
+    #[tokio::test]
+    async fn short_tail_read_is_the_whole_log_and_keeps_its_first_line() {
+        let secret = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+        let (line, frames) = straddling_frames(secret);
+        let items = frames.into_iter().map(stdout).collect();
+        let lines = assembled(items, LogStart::Tail(100).window(false)).await;
+        let shown: Vec<_> = lines.iter().map(|l| l.line.as_str()).collect();
+        assert_eq!(shown, [line.as_str()]);
+    }
+
+    /// Conteneur neuf lu depuis sa creation (bascule) : rien n'est ecarte.
+    #[tokio::test]
+    async fn fresh_container_read_keeps_its_first_line() {
+        assert_eq!(LogStart::Beginning.docker_tail(), "all");
+        assert_eq!(LogStart::Tail(5).docker_tail(), "6");
+        let items = vec![
+            stdout(b"2026-11-21T10:20:29Z premiere\n".as_slice().into()),
+            stderr(b"2026-11-21T10:20:30Z err\n"),
+            stdout(b"2026-11-21T10:20:31Z deuxieme\n".as_slice().into()),
+        ];
+        let lines = assembled(items, LogStart::Beginning.window(true)).await;
+        let shown: Vec<_> = lines.iter().map(|l| l.line.as_str()).collect();
+        assert_eq!(shown, ["premiere", "err", "deuxieme"]);
+    }
+
+    #[test]
+    fn pending_line_is_complete_only_for_the_same_run_exited_after_the_last_frame() {
+        let run = |exited: bool, started: &str, finished: &str| RunMark {
+            exited,
+            started_at: started.to_string(),
+            finished_at: finished.to_string(),
+        };
+        let start = "2026-11-21T10:00:00Z";
+        let running = run(false, start, "0001-01-01T00:00:00Z");
+        let done = run(true, start, "2026-11-21T10:20:31.5Z");
+        let last = parse_rfc3339_ms("2026-11-21T10:20:31Z");
+        // Suivi : sortie apres la derniere trame, meme execution.
+        assert!(log_complete(Some(&running), Some(&done), true, last));
+        // Sortie avant la derniere trame recue : le flux a fini plus tot.
+        let early = parse_rfc3339_ms("2026-11-21T10:20:32Z");
+        assert!(!log_complete(Some(&running), Some(&done), true, early));
+        // Autre execution (redemarrage), ou conteneur encore en marche.
+        let other = run(true, "2026-11-21T10:10:00Z", "2026-11-21T10:20:31.5Z");
+        assert!(!log_complete(Some(&running), Some(&other), true, last));
+        assert!(!log_complete(Some(&running), Some(&running), true, last));
+        // Sans suivi : deja sorti avant la lecture, inchange apres.
+        assert!(log_complete(Some(&done), Some(&done), false, last));
+        assert!(!log_complete(Some(&running), Some(&done), false, last));
+        assert!(!log_complete(None, Some(&done), false, last));
     }
 
     #[test]

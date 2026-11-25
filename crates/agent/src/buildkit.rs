@@ -477,7 +477,10 @@ impl<D: DockerOps, F: ProjectFs> BuildkitManager<D, F> {
             },
         );
         let mut lines: Vec<String> = Vec::new();
-        let mut logs = self.docker.logs(id, 40, false).await;
+        let mut logs = self
+            .docker
+            .logs(id, crate::docker::LogStart::Tail(40), false)
+            .await;
         while let Some(l) = logs.next().await {
             lines.push(l.line.chars().take(MAX_LOG_CHARS).collect::<String>());
         }

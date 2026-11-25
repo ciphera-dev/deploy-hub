@@ -17,7 +17,7 @@ use proto::{AgentToControl, LogTarget};
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
-use crate::docker::{ContainerId, DockerOps};
+use crate::docker::{ContainerId, DockerOps, LogStart};
 use crate::state::StateDb;
 
 struct Follow {
@@ -107,10 +107,10 @@ impl<D: DockerOps> LogFollows<D> {
         let this = self.clone();
         let task = tokio::spawn(async move {
             let mut container = container;
-            let mut tail = tail;
+            let mut start = LogStart::Tail(tail);
             let mut dropped = 0u64;
             loop {
-                let mut lines = this.inner.docker.logs(&container, tail, follow).await;
+                let mut lines = this.inner.docker.logs(&container, start, follow).await;
                 while let Some(line) = lines.next().await {
                     match outbox.try_send(AgentToControl::LogLine(line.into_line(target))) {
                         Ok(()) => {}
@@ -119,8 +119,9 @@ impl<D: DockerOps> LogFollows<D> {
                     }
                 }
                 // Fin du flux d'un service suivi : un nouveau deploiement le
-                // sert (bascule) ? Le suivi continue sur son conteneur, sans
-                // relire son passe.
+                // sert (bascule) ? Le suivi continue sur son conteneur, neuf,
+                // lu depuis sa creation : aucune fenetre ne coupe une ligne,
+                // aucune premiere ligne n'est perdue.
                 let next = match target {
                     LogTarget::Service(_) if follow && !outbox.is_closed() => {
                         this.container(target)
@@ -130,7 +131,7 @@ impl<D: DockerOps> LogFollows<D> {
                 match next {
                     Some(next) if next != container => {
                         container = next;
-                        tail = 0;
+                        start = LogStart::Beginning;
                     }
                     _ => break,
                 }

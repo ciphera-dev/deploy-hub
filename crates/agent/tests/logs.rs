@@ -195,7 +195,7 @@ async fn service_follow_moves_to_the_new_serving_container() {
     assert_eq!((got.target, got.line.as_str()), (target, "nouveau"));
     assert_eq!(
         env.log_calls(),
-        vec!["logs:c-web:0:true", "logs:c-web-2:0:true"]
+        vec!["logs:c-web:0:true", "logs:c-web-2:all:true"]
     );
     assert_eq!(env.follows.active(), 1);
     env.follows.stop(target);

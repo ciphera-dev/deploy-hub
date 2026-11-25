@@ -22,7 +22,7 @@ use bollard::query_parameters::{
 use ciphera_agent::buildkit::{BuildkitManager, DockerFs};
 use ciphera_agent::docker::{
     self, BUILD_NETWORK, BollardDocker, ContainerId, ContainerSpec, DockerError, DockerOps, Health,
-    INFRA_NETWORK, MANAGED_LABEL,
+    INFRA_NETWORK, LogStart, MANAGED_LABEL,
 };
 use ciphera_agent::infra::{self, BuildkitAccount, InfraConfig, SubIds};
 use futures_util::StreamExt;
@@ -645,7 +645,11 @@ async fn long_log_line_is_reassembled_with_the_secret_contiguous() {
         "sortie du conteneur : {exit:?}"
     );
     let id = ContainerId(name.clone());
-    let lines: Vec<_> = docker.logs(&id, 100, false).await.collect().await;
+    let lines: Vec<_> = docker
+        .logs(&id, LogStart::Tail(100), false)
+        .await
+        .collect()
+        .await;
     remove_container(&api, &name).await;
     let found = lines
         .iter()
@@ -710,7 +714,11 @@ async fn bollard_runs_reports_health_logs_and_stops_an_app() {
 
     let start = Instant::now();
     loop {
-        let lines: Vec<_> = docker.logs(&id, 100, false).await.collect().await;
+        let lines: Vec<_> = docker
+            .logs(&id, LogStart::Tail(100), false)
+            .await
+            .collect()
+            .await;
         if lines.iter().any(|l| l.line.contains("start")) {
             assert!(lines.iter().all(|l| l.timestamp_ms > 1_700_000_000_000));
             break;

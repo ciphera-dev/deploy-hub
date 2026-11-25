@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use bollard::models::ContainerCreateBody;
 use ciphera_agent::docker::{
     COMPOSE_PROJECT_KEY, ContainerId, ContainerLog, ContainerSnapshot, ContainerSpec,
-    DEPLOYMENT_LABEL, DockerError, DockerOps, Health, MANAGED_LABEL, ManagedContainer,
+    DEPLOYMENT_LABEL, DockerError, DockerOps, Health, LogStart, MANAGED_LABEL, ManagedContainer,
     PREPARE_ROLE, PROJECT_LABEL, ROLE_LABEL, compose_project_prefix, is_prepare_volume,
     is_project_volume, network_project,
 };
@@ -278,13 +278,13 @@ impl DockerOps for FakeDocker {
     async fn logs(
         &self,
         id: &ContainerId,
-        tail: u32,
+        start: LogStart,
         follow: bool,
     ) -> BoxStream<'static, ContainerLog> {
         self.calls
             .lock()
             .unwrap()
-            .push(format!("logs:{}:{tail}:{follow}", id.0));
+            .push(format!("logs:{}:{start}:{follow}", id.0));
         match self.log_feeds.lock().unwrap().remove(&id.0) {
             Some(rx) => stream::unfold(rx, |mut rx| async move {
                 rx.recv().await.map(|line| (line, rx))
