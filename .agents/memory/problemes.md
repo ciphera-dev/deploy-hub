@@ -186,3 +186,9 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 ## 2026-11-25 — CI rouge (test) après R36 : hooks de test à empreinte identique
 - Symptôme : `team::removed_member_hooks_deleted` échoue sur la contrainte `deploy_hooks_token_hash_key` (migration 0037, R36) : le test insérait trois hooks avec la même empreinte.
 - Correction (fix/ci-team-hooks) : empreintes distinctes par hook dans le test ; aucun changement de production.
+
+## 2026-11-25 — CI rouge (e2e-golden-path) après R34 : création de l'App GitHub bloquée par la CSP
+- Symptôme : après « Autoriser sur GitHub », la page reste sur /connectors au lieu d'aller sur github.com/settings/apps/new (golden-path.spec.ts:210). Masqué plusieurs commits car les CI suivantes étaient annulées par les nouveaux pushs.
+- Cause : R34 a ajouté `form-action 'self'` ; le flux manifeste de l'App GitHub soumet un formulaire POST vers `https://github.com/settings/apps/new`.
+- Résolu : `form-action 'self' https://github.com` (aucun joker, aucun autre hôte), épinglé par tests/headers.rs. Seul formulaire externe du panneau : web/src/features/connectors/api.ts.
+- Leçon : vérifier le résultat CI de chaque commit de main, pas seulement le dernier (une exécution annulée ne prouve rien).
