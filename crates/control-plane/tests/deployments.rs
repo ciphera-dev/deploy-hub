@@ -1623,6 +1623,38 @@ fn fill_outbox(env: &Env) {
     {}
 }
 
+/// Annulation demandee entre la fin du build et l'envoi de `Deploy` (file
+/// d'envoi pleine, `Deploy` remis en file) : la tache qui reprend l'envoi
+/// relit la demande sous verrou, n'envoie rien et termine en `cancelled`.
+#[tokio::test]
+async fn cancel_between_build_and_deploy_finishes_cancelled() {
+    let mut env = Env::new().await;
+    let (p, _) = image_project(&env.state, "web").await;
+    let dev = login(&env.state, "developer").await;
+    let id = deploy(&env.state, p).await;
+    env.run_jobs().await;
+    env.orders();
+    fill_outbox(&env);
+    env.build_ok(id).await;
+    assert_eq!(env.status(id).await, "running");
+    let r = send(
+        &env.state,
+        &dev,
+        "POST",
+        &format!("/api/deployments/{id}/cancel"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    env.orders();
+    env.run_jobs().await;
+    assert!(
+        deploys(&env.orders()).is_empty(),
+        "aucun Deploy apres l'annulation"
+    );
+    assert_eq!(env.status(id).await, "cancelled");
+}
+
 /// Reconnexion avec la file d'envoi pleine : le premier ordre d'un
 /// deploiement jamais envoye n'est pas seulement journalise, une tache le
 /// renvoie.

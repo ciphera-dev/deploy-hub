@@ -1276,7 +1276,8 @@ async fn fail_running(state: &AppState, id: Uuid, message: &str) -> Result<(), H
 /// Issue de l'envoi de `Deploy`.
 #[derive(Debug, PartialEq, Eq)]
 enum DeploySent {
-    /// Parti (ou deploiement termine faute d'image ou de service).
+    /// Parti (ou deploiement termine : annule, ou faute d'image ou de
+    /// service).
     Done,
     /// Agent absent : rien n'est note, l'ordre partira a sa reconnexion.
     Waiting,
@@ -1370,6 +1371,17 @@ async fn send_deploy(
         run_as: info.run_as.clone(),
         read_only_rootfs: info.read_only_rootfs.unwrap_or(false),
     };
+    // Annulation relue juste avant l'envoi (ligne verrouillee par
+    // l'appelant) : une annulation arrivee entre la fin du build et cet envoi
+    // (file de l'agent pleine, `Deploy` remis en file) l'emporte.
+    let cancel: bool = sqlx::query_scalar("SELECT cancel_requested FROM deployments WHERE id = $1")
+        .bind(info.id)
+        .fetch_one(&mut *conn)
+        .await?;
+    if cancel {
+        finish(conn, state, info.id, info.environment_id, Finish::Cancelled).await?;
+        return Ok(DeploySent::Done);
+    }
     // Table complete des routes (domaines) : elle part avant chaque `Deploy`
     // (l'agent refuse de basculer sans table), meme vide.
     let table = domains::route_table(conn, &state.cfg, server).await?;
