@@ -433,3 +433,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 13:20 — Session v0.1-sdd — claude-code (orchestrateur) — Task R38 : Hooks de déploiement, expiration, plafonds de domaines
 - fait : Jeton par en-tête, expiration 90 j (plafond 365 j), mot de passe pour créer et rallonger, 20/100 domaines
 - résultat : TERMINÉ (relecture approuvée, 1 tour)
+
+## 2026-11-25 14:01 — Session v0.1-sdd — claude-code (orchestrateur) — Task R51 : Nom du panneau caché, HSTS des sous-domaines
+- fait : 404 par IP après confirmation, alerte unrecognized_name, HSTS selon la PSL avec option apex, psl 2.1.263
+- résultat : TERMINÉ (relecture approuvée, 3 tours)
