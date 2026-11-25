@@ -416,11 +416,14 @@ async fn signer_sets_aside_what_it_cannot_remove() {
     assert!(again.signed.is_empty() && again.refused.is_empty() && again.set_aside.is_empty());
 }
 
-/// Nom non UTF-8 en `.json` : jamais converti (la suppression du nom
-/// converti ne toucherait rien) ; mis de cote, le `.path` ne boucle pas.
+/// Noms non UTF-8 en `.json` : jamais convertis (la suppression du nom
+/// converti ne toucherait rien). Un fichier est supprime par son nom exact ;
+/// un dossier non vide est mis de cote ; dans les deux cas le `.path` ne
+/// trouve plus rien.
 #[cfg(unix)]
 #[tokio::test]
 async fn signer_sets_aside_non_utf8_names() {
+    use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
     let (db, _guard) = common::database().await;
     let ca = Ca::generate("instance").unwrap();
@@ -429,20 +432,41 @@ async fn signer_sets_aside_non_utf8_names() {
     let data = common::TempDir::new();
     let requests = data.0.join(signer::REQUESTS_DIR);
     std::fs::create_dir_all(&requests).unwrap();
-    let odd = requests.join(std::ffi::OsStr::from_bytes(b"\xff\xfe.json"));
-    std::fs::write(&odd, "{}").unwrap();
-    assert!(signer::has_requests(&data.0).unwrap());
+    let rejected = data.0.join(signer::REJECTED_DIR);
 
+    // Fichier ordinaire au nom non UTF-8 : supprime par son nom exact.
+    let odd_file = requests.join(OsStr::from_bytes(b"\xff\xfe.json"));
+    std::fs::write(&odd_file, "{}").unwrap();
+    assert!(signer::has_requests(&data.0).unwrap());
     let report = signer::sign_requests(&db, &dir.0, &data.0).await.unwrap();
-    assert_eq!(report.set_aside.len(), 1, "{:?}", report);
-    assert!(!odd.exists());
-    assert!(!signer::has_requests(&data.0).unwrap());
-    assert_eq!(
-        std::fs::read_dir(data.0.join(signer::REJECTED_DIR))
-            .unwrap()
-            .count(),
-        1
+    assert!(report.set_aside.is_empty(), "{report:?}");
+    assert!(
+        report.signed.is_empty() && report.refused.is_empty(),
+        "{report:?}"
     );
+    assert!(!odd_file.exists());
+    assert!(
+        !signer::has_requests(&data.0).unwrap(),
+        "plus rien pour le .path"
+    );
+    assert!(!rejected.exists(), "rien a mettre de cote");
+
+    // Dossier non vide au nom non UTF-8 : impossible a supprimer, mis de cote.
+    let odd_dir = requests.join(OsStr::from_bytes(b"\xfd.json"));
+    std::fs::create_dir(&odd_dir).unwrap();
+    std::fs::write(odd_dir.join("x"), "x").unwrap();
+    assert!(signer::has_requests(&data.0).unwrap());
+    let report = signer::sign_requests(&db, &dir.0, &data.0).await.unwrap();
+    assert_eq!(report.set_aside.len(), 1, "{report:?}");
+    assert!(!odd_dir.exists());
+    assert!(
+        !signer::has_requests(&data.0).unwrap(),
+        "plus rien pour le .path"
+    );
+    assert_eq!(std::fs::read_dir(&rejected).unwrap().count(), 1);
+    // Une seule fois dans le journal : le passage suivant ne voit plus rien.
+    let again = signer::sign_requests(&db, &dir.0, &data.0).await.unwrap();
+    assert!(again.set_aside.is_empty(), "{again:?}");
 }
 
 /// Reponse d'une autre demande (course : ancienne reponse restee sur

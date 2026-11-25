@@ -726,13 +726,16 @@ mod fsio {
         pub fn harden_self(&self, mode: u32) -> io::Result<bool> {
             let st = rustix::fs::fstat(&self.fd)?;
             let mut changed = false;
+            // Droits d'abord, proprietaire ensuite : jamais d'instant ou le
+            // dossier est a root avec des droits encore a resserrer (ni ou
+            // le groupe du service perd sa lecture).
+            if st.st_mode & 0o7777 != mode {
+                rustix::fs::fchmod(&self.fd, Mode::from_raw_mode(mode))?;
+                changed = true;
+            }
             if st.st_uid != euid() {
                 let file = File::from(self.fd.try_clone()?);
                 std::os::unix::fs::fchown(&file, Some(euid()), None)?;
-                changed = true;
-            }
-            if st.st_mode & 0o7777 != mode {
-                rustix::fs::fchmod(&self.fd, Mode::from_raw_mode(mode))?;
                 changed = true;
             }
             Ok(changed)
@@ -793,14 +796,16 @@ mod fsio {
             }
             let meta = file.metadata()?;
             let mut changed = false;
+            // Droits d'abord (resserres, sans bit setid), proprietaire
+            // ensuite : aucune fenetre de lecture elargie ni refusee.
+            if meta.mode() & 0o7777 != mode {
+                rustix::fs::fchmod(file.as_fd(), Mode::from_raw_mode(mode))?;
+                changed = true;
+            }
             let uid = euid();
             let gid = own_group.then(|| rustix::process::getegid().as_raw());
             if meta.uid() != uid || gid.is_some_and(|g| g != meta.gid()) {
                 std::os::unix::fs::fchown(&file, Some(uid), gid)?;
-                changed = true;
-            }
-            if meta.mode() & 0o7777 != mode {
-                rustix::fs::fchmod(file.as_fd(), Mode::from_raw_mode(mode))?;
                 changed = true;
             }
             Ok(changed)

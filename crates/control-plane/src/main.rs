@@ -289,6 +289,18 @@ async fn run_sign_requests() -> i32 {
         Ok(false) => {}
         Err(e) => {
             eprintln!("erreur : dossier de la CA non protege : {e}");
+            // Rien n'est signe ; les demandes sont retirees quand meme, sinon
+            // le `.path` relancerait le signataire sans fin (limites de
+            // demarrage de systemd, puis plus aucun renouvellement).
+            match signer::discard_requests(&cfg.data_dir) {
+                Ok((n, report)) => {
+                    print_set_aside(&report);
+                    if n > 0 {
+                        eprintln!("{n} demande(s) abandonnee(s) : dossier de la CA a corriger");
+                    }
+                }
+                Err(e) => eprintln!("erreur : demandes non supprimees : {e}"),
+            }
             return 1;
         }
     }
