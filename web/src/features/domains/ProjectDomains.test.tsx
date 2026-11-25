@@ -198,3 +198,16 @@ it("menu : « Renouveler » absent pour un certificat valide à plus de 30 jours
   fireEvent.keyDown(within(nearRow).getByRole("button", { name: "Actions pour near.ciphera.dev" }), { key: "Enter" });
   expect(await screen.findByRole("menuitem", { name: /Renouveler/ })).toBeInTheDocument();
 });
+
+it("domaine généré : badge HTTP retiré une fois le certificat émis", async () => {
+  const issued = {
+    ...WEB_DOMAINS,
+    domains: WEB_DOMAINS.domains.map((x) => (x.generated ? { ...x, cert_status: "active" as const, cert_issuer: "Let's Encrypt R11", cert_expires_at: "2027-02-13T10:00:00.000Z" } : x)),
+  };
+  server.use(http.get("*/api/domains", () => HttpResponse.json(issued)));
+  mount(`/projects/${WEB.id}/domains`);
+  const generated = await screen.findByTestId("domain-ciphera-web.203.0.113.10.sslip.io", {}, { timeout: 5000 });
+  expect(within(generated).getByText("Généré")).toBeInTheDocument();
+  expect(within(generated).getByText("HTTPS actif")).toBeInTheDocument();
+  expect(within(generated).queryByText("HTTP, non chiffré")).not.toBeInTheDocument();
+});

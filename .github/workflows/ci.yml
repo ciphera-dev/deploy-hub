@@ -73,7 +73,7 @@ jobs:
       - run: cargo test --workspace
       # Tests Linux-only marques #[ignore] (ceux de l'agent : job agent-docker ;
       # emission ACME contre Pebble : job acme-pebble)
-      - run: cargo test --workspace --exclude ciphera-agent -- --ignored --skip issues_cert_via_pebble_http01
+      - run: cargo test --workspace --exclude ciphera-agent -- --ignored --skip _via_pebble
 
   # Agent contre le Docker reel du runner (bollard, images epinglees,
   # isolement des reseaux) : tests #[ignore] de crates/agent/tests/docker_it.rs.
@@ -174,7 +174,12 @@ jobs:
           done
           docker logs pebble
           exit 1
-      - run: cargo test -p ciphera-proxy --test acme -- --ignored issues_cert_via_pebble_http01
+      # Un processus par test : chacun garde le port HTTP-01 de Pebble.
+      - run: cargo test -p ciphera-proxy --test acme -- --ignored --exact issues_cert_via_pebble_http01
+        env:
+          CIPHERA_TEST_ACME_DIRECTORY: https://localhost:14000/dir
+          CIPHERA_TEST_ACME_CA_FILE: ${{ runner.temp }}/pebble.minica.pem
+      - run: cargo test -p ciphera-proxy --test acme -- --ignored --exact generated_domain_https_via_pebble
         env:
           CIPHERA_TEST_ACME_DIRECTORY: https://localhost:14000/dir
           CIPHERA_TEST_ACME_CA_FILE: ${{ runner.temp }}/pebble.minica.pem

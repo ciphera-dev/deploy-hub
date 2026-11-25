@@ -210,11 +210,13 @@ async fn update(
     audit(&mut tx, auth.user.id, "project.update", id, &draft.name).await?;
     // Renomme : le domaine genere suit le nom.
     let renamed = draft.name != old_name;
-    if renamed {
+    let stale = if renamed {
         crate::domain::domains::regenerate(&mut tx, &state.cfg, id)
             .await
-            .map_err(|e| internal("domaine genere", e))?;
-    }
+            .map_err(|e| internal("domaine genere", e))?
+    } else {
+        Vec::new()
+    };
     let project = store::get(&mut tx, &state.agents, id)
         .await
         .map_err(|e| internal("lecture du projet", e))?
@@ -223,6 +225,7 @@ async fn update(
         .await
         .map_err(|e| internal("transaction des projets", e))?;
     if renamed {
+        crate::domain::domains::remove_certificates(&state, &stale);
         crate::domain::domains::push_routes(&state).await;
     }
     Ok(Json(project).into_response())

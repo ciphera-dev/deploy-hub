@@ -659,28 +659,49 @@ pub async fn ensure_generated(
         },
     )
     .await?;
-    if inserted.is_none() {
-        tracing::warn!(%project, "domaine genere deja pris : non cree");
+    match inserted {
+        // Une tentative d'emission des la creation : en cas d'echec (limite
+        // de debit, proxy injoignable), le domaine reste servi en HTTP et la
+        // tache reessaie une fois par jour (`acme`). Aucun certificat
+        // existant : l'heure n'entre pas en compte.
+        Some(id) => {
+            acme::request(conn, id, 0).await?;
+        }
+        None => tracing::warn!(%project, "domaine genere deja pris : non cree"),
     }
     Ok(())
 }
 
-/// Recree le domaine genere (projet renomme).
-pub async fn regenerate(conn: &mut PgConnection, cfg: &Config, project: Uuid) -> sqlx::Result<()> {
-    sqlx::query("DELETE FROM domains WHERE project_id = $1 AND generated")
+/// Supprime le domaine genere du projet ; renvoie son hote, dont le
+/// certificat est a retirer du proxy une fois la transaction validee
+/// ([`remove_certificates`]).
+async fn delete_generated(conn: &mut PgConnection, project: Uuid) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar("DELETE FROM domains WHERE project_id = $1 AND generated RETURNING host")
         .bind(project)
-        .execute(&mut *conn)
-        .await?;
-    ensure_generated(conn, cfg, project).await
+        .fetch_all(conn)
+        .await
 }
 
-/// Active ou desactive le domaine genere du projet.
+/// Recree le domaine genere (projet renomme) ; renvoie les hotes supprimes,
+/// dont les certificats sont a retirer.
+pub async fn regenerate(
+    conn: &mut PgConnection,
+    cfg: &Config,
+    project: Uuid,
+) -> sqlx::Result<Vec<String>> {
+    let removed = delete_generated(conn, project).await?;
+    ensure_generated(conn, cfg, project).await?;
+    Ok(removed)
+}
+
+/// Active ou desactive le domaine genere du projet ; renvoie les hotes
+/// supprimes, dont les certificats sont a retirer.
 pub async fn set_generated(
     conn: &mut PgConnection,
     cfg: &Config,
     project: Uuid,
     enabled: bool,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     production(conn, project).await?;
     if enabled && cfg.public_ip.is_none() {
         return Err(DomainError::NoNodeIp);
@@ -692,13 +713,10 @@ pub async fn set_generated(
         .await?;
     if enabled {
         ensure_generated(conn, cfg, project).await?;
+        Ok(Vec::new())
     } else {
-        sqlx::query("DELETE FROM domains WHERE project_id = $1 AND generated")
-            .bind(project)
-            .execute(&mut *conn)
-            .await?;
+        Ok(delete_generated(conn, project).await?)
     }
-    Ok(())
 }
 
 /// Le domaine (verrouille avec son environnement).
@@ -885,7 +903,6 @@ pub async fn record_dns(
 struct RouteRow {
     host: String,
     path_prefix: String,
-    generated: bool,
     redirect: bool,
     service_id: Option<Uuid>,
     internal_port: Option<i32>,
@@ -895,8 +912,8 @@ struct RouteRow {
 /// Table complete des routes du proxy du serveur `server` : domaines au DNS
 /// verifie des environnements deployes sur ce serveur (ou pas encore
 /// deployes). Un domaine servant un service exige son port interne ; une
-/// redirection exige un principal en ligne (DNS verifie). Domaines personnalises en HTTPS (ACME),
-/// domaine genere en HTTP seulement. Le domaine du panneau, sur le serveur
+/// redirection exige un principal en ligne (DNS verifie). Tous les domaines sont en HTTPS (ACME) :
+/// le domaine genere reste servi en HTTP tant que son certificat manque. Le domaine du panneau, sur le serveur
 /// local seulement, mene a l'ecoute HTTP locale du panneau une fois son
 /// certificat actif (DNS verifie, ou deja confirme : une erreur DNS
 /// passagere ne coupe pas le panneau).
@@ -906,7 +923,7 @@ pub async fn route_table(
     server: Uuid,
 ) -> sqlx::Result<Vec<Route>> {
     let rows: Vec<RouteRow> = sqlx::query_as(
-        "SELECT d.host, d.path_prefix, d.generated, d.redirect, d.service_id, s.internal_port, \
+        "SELECT d.host, d.path_prefix, d.redirect, d.service_id, s.internal_port, \
            (SELECT p.host FROM domains p WHERE p.environment_id = d.environment_id \
               AND p.is_primary AND p.id <> d.id \
               AND p.dns_status = 'ok' AND NOT p.generated) AS primary_host \
@@ -961,11 +978,9 @@ pub async fn route_table(
                 tracing::warn!(host = %r.host, "domaine de projet reserve au panneau : route retiree");
                 return None;
             }
-            let tls = if r.generated {
-                TlsMode::None
-            } else {
-                TlsMode::Acme
-            };
+            // Domaine genere compris : HTTPS des que le certificat existe,
+            // HTTP d'ici la (le proxy ne redirige qu'avec un certificat).
+            let tls = TlsMode::Acme;
             if r.redirect {
                 let primary = r.primary_host?;
                 return Some(Route {
@@ -1087,6 +1102,19 @@ mod tests {
         ] {
             assert!(normalize_host(bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// sslip.io n'est PAS dans la Public Suffix List (psl 2.1.263, sections
+    /// privees comprises) : son domaine enregistrable est `sslip.io` lui-meme,
+    /// donc tous les noms generes partagent la limite de certificats par
+    /// domaine enregistrable de l'autorite (decision R50). Si ce test casse,
+    /// la liste a ete mise a jour : reevaluer la limite.
+    #[test]
+    fn sslip_io_is_not_a_public_suffix() {
+        assert_eq!(
+            psl::domain_str("shop.203.0.113.7.sslip.io"),
+            Some("sslip.io")
+        );
     }
 
     #[test]

@@ -32,6 +32,16 @@
 //! Un echec met en file une notification e-mail (`domain::notifications`) :
 //! premier echec d'une chaine, puis expiration a moins de 7 jours.
 //!
+//! Le domaine genere (`<projet>.<ip>.sslip.io`) suit la meme chaine, avec
+//! trois differences : son DNS joker n'est pas reverifie (il resout vers le
+//! noeud par construction), un echec (limite de debit de l'autorite, qui
+//! compte par domaine enregistrable, ou autre) est repris une fois par jour
+//! au plus, et il n'envoie aucune notification. Sans certificat, il reste
+//! servi en HTTP (badge « HTTP, non chiffre » du panneau) ; une fois le
+//! certificat obtenu, le proxy redirige vers HTTPS (308). Tant que sa route
+//! n'existe pas (service sans port interne), rien n'est demande au proxy et
+//! la tache attend [`NO_ROUTE_SECS`].
+//!
 //! Une panne passagere (aucun serveur, file de l'agent pleine) replanifie la
 //! tache une minute plus tard sans compter d'echec. Une chaine qui s'arrete
 //! malgre tout (tentatives epuisees) apparait comme erreur du certificat
@@ -71,6 +81,12 @@ const RETRY_MAX_SECS: i64 = 86_400;
 /// Delai avant un nouvel essai apres une panne passagere (aucun serveur,
 /// file de l'agent pleine).
 pub const TRANSIENT_SECS: i64 = 60;
+/// Delai avant un nouvel essai du domaine genere, apres un echec : une
+/// tentative par jour au plus (limites de debit de l'autorite).
+pub const GENERATED_RETRY_SECS: i64 = 86_400;
+/// Delai avant de reverifier si la route d'un domaine genere existe (service
+/// sans port interne : rien a servir, rien a emettre).
+pub const NO_ROUTE_SECS: i64 = 300;
 const MAX_TEXT: usize = 300;
 /// Verdicts DNS negatifs consecutifs avant l'erreur DNS d'un domaine.
 pub const DNS_NEGATIVE_VERDICTS: i16 = 3;
@@ -297,12 +313,12 @@ pub async fn issue(state: &AppState, job: Job) -> Result<(), HandlerError> {
         .and_then(Value::as_u64)
         .map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
     let now = state.clock.unix_secs() as i64;
-    // Domaine supprime, genere (HTTP seulement) ou DNS en erreur : rien a
-    // faire, la chaine s'arrete (une nouvelle verification la relance).
+    // Domaine supprime ou DNS en erreur : rien a faire, la chaine s'arrete
+    // (une nouvelle verification la relance).
     let Some(t) = target(state, id).await? else {
         return Ok(());
     };
-    if t.generated || !t.dns_ok {
+    if !t.dns_ok {
         return Ok(());
     }
     // Certificat encore valide : on demande seulement au proxy s'il le
@@ -311,7 +327,10 @@ pub async fn issue(state: &AppState, job: Job) -> Result<(), HandlerError> {
 
     // DNS reverifie avant tout appel au proxy (hors connexion a la base).
     let (v4, v6) = state.cfg.node_ips();
-    let checked = if v4.is_none() && v6.is_none() {
+    let checked = if t.generated {
+        // Joker public : resout vers le noeud par construction.
+        Ok(None)
+    } else if v4.is_none() && v6.is_none() {
         Ok(Some(
             "IP publique du nœud inconnue : définissez CIPHERA_PUBLIC_IP.".to_string(),
         ))
@@ -365,6 +384,11 @@ pub async fn issue(state: &AppState, job: Job) -> Result<(), HandlerError> {
     let Some((server, routes)) = placed else {
         return later(state, &job, id, now, failures, &t.host, "aucun serveur").await;
     };
+    // Domaine genere sans route (service sans port interne) : le proxy
+    // refuserait l'emission ; on reverifie plus tard, sans echec compte.
+    if t.generated && !routes.iter().any(|r| r.host == t.host) {
+        return wait_route(state, &job, id, now, failures, &t.host).await;
+    }
 
     if checking {
         let order = ControlToAgent::CheckCertificate {
@@ -516,6 +540,36 @@ async fn later(
         .await
         .map_err(|e| db_error("planification du certificat", e))?;
     tracing::info!(%host, "certificat : {why}, nouvel essai dans une minute");
+    Ok(())
+}
+
+/// Domaine genere sans route : nouvel essai dans [`NO_ROUTE_SECS`], sans
+/// echec compte ni tentative consommee.
+async fn wait_route(
+    state: &AppState,
+    job: &Job,
+    id: Uuid,
+    now: i64,
+    failures: u32,
+    host: &str,
+) -> Result<(), HandlerError> {
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| db_error("connexion a la base", e))?;
+    schedule_next(
+        &mut tx,
+        job,
+        id,
+        now.saturating_add(NO_ROUTE_SECS),
+        failures,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|e| db_error("planification du certificat", e))?;
+    tracing::info!(%host, "domaine genere sans route : emission differee");
     Ok(())
 }
 
@@ -726,12 +780,12 @@ async fn failed_in(
     reason: &str,
 ) -> Result<(), HandlerError> {
     // Fin de validite du certificat encore valide (renouvellement en echec).
-    let valid_until: Option<Option<i64>> = sqlx::query_scalar(
+    let noted: Option<(Option<i64>, bool)> = sqlx::query_as(
         "UPDATE domains SET cert_error = $2, \
          cert_status = CASE WHEN cert_expires_at > to_timestamp($3::float8) THEN 'active' ELSE 'error' END, \
          updated_at = now() WHERE id = $1 \
          RETURNING CASE WHEN cert_expires_at > to_timestamp($3::float8) \
-           THEN extract(epoch FROM cert_expires_at)::bigint END",
+           THEN extract(epoch FROM cert_expires_at)::bigint END, generated",
     )
     .bind(id)
     .bind(reason)
@@ -739,12 +793,20 @@ async fn failed_in(
     .fetch_optional(&mut *tx)
     .await
     .map_err(|e| db_error("erreur du certificat", e))?;
-    if let Some(event) = failure_notice(id, job, now, failures, valid_until.flatten()) {
+    let (valid_until, generated) = noted.unwrap_or((None, false));
+    // Domaine genere : pas de courriel (l'erreur reste visible dans le
+    // panneau), une tentative par jour au plus.
+    if !generated && let Some(event) = failure_notice(id, job, now, failures, valid_until) {
         notifications::enqueue(&mut *tx, state, event)
             .await
             .map_err(|e| db_error("notification du certificat", e))?;
     }
-    let next = now.saturating_add(retry_delay(failures));
+    let delay = if generated {
+        GENERATED_RETRY_SECS
+    } else {
+        retry_delay(failures)
+    };
+    let next = now.saturating_add(delay);
     schedule_next(&mut *tx, job, id, next, failures.saturating_add(1)).await?;
     tracing::warn!(%host, next, "emission du certificat en echec : {reason}");
     Ok(())

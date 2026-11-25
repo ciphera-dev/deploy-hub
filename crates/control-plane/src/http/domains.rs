@@ -216,7 +216,7 @@ async fn update_project(
     let project = project_id(query)?;
     let Json(input) = body.map_err(|_| unprocessable("Corps de requête invalide."))?;
     let mut tx = begin(&state).await?;
-    domains::set_generated(&mut tx, &state.cfg, project, input.generated_domain)
+    let removed = domains::set_generated(&mut tx, &state.cfg, project, input.generated_domain)
         .await
         .map_err(domain_error)?;
     audit(
@@ -228,6 +228,7 @@ async fn update_project(
     .await?;
     let list = project_domains(&state, &mut tx, project).await?;
     tx.commit().await.map_err(db("transaction des domaines"))?;
+    domains::remove_certificates(&state, &removed);
     domains::push_routes(&state).await;
     Ok(Json(list).into_response())
 }
@@ -374,7 +375,7 @@ async fn renew(
         return Err(ApiError::new(
             409,
             "conflict",
-            "Le domaine généré est servi en HTTP, sans certificat.",
+            "Le certificat du domaine généré est géré automatiquement : une tentative par jour au plus.",
         ));
     }
     if found.domain.dns_status != api_types::domains::DnsStatus::Ok {

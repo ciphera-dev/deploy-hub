@@ -81,6 +81,8 @@ function DnsTable({ host, nodeIp, nodeIp6, dns }: { host: string; nodeIp: string
 }
 
 function tlsState(d: Domain): { status: "ok" | "error" | "pending"; label: string } {
+  // Domaine généré : HTTPS dès que le certificat est émis, sinon servi en HTTP (nouvelle tentative chaque jour).
+  if (d.generated && d.cert_status === "active") return { status: "ok", label: "HTTPS actif" };
   if (d.generated) return d.dns_status === "ok" && d.internal_port ? { status: "ok", label: "HTTP (domaine généré)" } : { status: "pending", label: "En attente du port" };
   // DNS devenu incorrect (revérifié avant chaque émission) : domaine hors ligne, même avec un certificat encore valide.
   if (d.dns_status === "error") return { status: "error", label: "DNS incorrect" };
@@ -105,7 +107,8 @@ function DomainRow({ d, nodeIp, nodeIp6, open, onToggle, act, busy, canWrite }: 
   const days = daysLeft(d.cert_expires_at);
   const pct = days != null ? Math.max(4, Math.min(100, (days / 90) * 100)) : 0;
   const icon: IconName = d.redirect ? "CornerDownRight" : d.generated ? "Sparkles" : d.path_prefix !== "/" ? "Route" : "Globe";
-  const scheme = d.generated ? "http://" : "https://";
+  const httpOnly = d.generated && d.cert_status !== "active";
+  const scheme = httpOnly ? "http://" : "https://";
   const items: MenuItem[] = [
     { icon: "ExternalLink", label: "Ouvrir", onSelect: () => window.open(scheme + d.host + (d.path_prefix === "/" ? "" : d.path_prefix), "_blank", "noopener,noreferrer") },
   ];
@@ -135,7 +138,7 @@ function DomainRow({ d, nodeIp, nodeIp6, open, onToggle, act, busy, canWrite }: 
               </span>
               {d.primary && <Badge>Principal</Badge>}
               {d.generated && <Badge>Généré</Badge>}
-              {d.generated && <HttpOnlyBadge />}
+              {httpOnly && <HttpOnlyBadge />}
             </div>
             <span style={{ ...lbl, fontSize: 11 }}>
               {d.redirect ? (
@@ -161,7 +164,7 @@ function DomainRow({ d, nodeIp, nodeIp6, open, onToggle, act, busy, canWrite }: 
             </span>
           )}
         </div>
-        <span style={{ ...lbl, fontSize: 11 }}>{d.cert_expires_at && days != null ? "Renouv. auto · " + days + " j" : d.cert_status === "issuing" ? "ACME HTTP-01…" : d.generated ? "—" : "Vérification DNS"}</span>
+        <span style={{ ...lbl, fontSize: 11 }}>{d.cert_expires_at && days != null ? "Renouv. auto · " + days + " j" : d.cert_status === "issuing" ? "ACME HTTP-01…" : d.generated ? "Nouvelle tentative chaque jour" : "Vérification DNS"}</span>
         <div style={{ display: "flex", gap: 2, justifyContent: "flex-end" }} onClick={(e) => e.stopPropagation()}>
           {canWrite && !d.generated && <IconButton size={28} variant="ghost" icon={busy ? "Loader" : "RefreshCw"} label="Vérifier" disabled={busy} onClick={() => act("verify", d)} style={busy ? { animation: "spin 1s linear infinite" } : undefined} />}
           <Menu items={items} label={`Actions pour ${d.host}`} width={230} />
@@ -182,8 +185,8 @@ function DomainRow({ d, nodeIp, nodeIp6, open, onToggle, act, busy, canWrite }: 
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {[
                 ["Émetteur", d.cert_status === "active" || d.cert_expires_at ? (d.cert_issuer ?? "—") : "—"],
-                ["Géré par", d.generated ? "Aucun (HTTP)" : "Proxy Ciphera (ACME)"],
-                ["Protocoles", d.generated ? "HTTP/1.1" : "TLS 1.2 · TLS 1.3"],
+                ["Géré par", httpOnly ? "Aucun (HTTP)" : "Proxy Ciphera (ACME)"],
+                ["Protocoles", httpOnly ? "HTTP/1.1" : "TLS 1.2 · TLS 1.3"],
                 ["HSTS", "Désactivé"],
               ].map(([k, v]) => (
                 <div key={k} style={{ display: "flex", justifyContent: "space-between", font: "400 12px/1 var(--font-sans)" }}>

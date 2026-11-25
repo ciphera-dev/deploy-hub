@@ -206,7 +206,23 @@ async fn send(
     .await
 }
 
+/// Projet dont les taches `acme_issue` du domaine genere sont mises de cote :
+/// les tests des domaines personnalises prennent ainsi la leur (la file est
+/// partagee). Les tests du domaine genere utilisent [`project_raw`].
 async fn project(state: &AppState, s: &Session, name: &str) -> Uuid {
+    let id = project_raw(state, s, name).await;
+    sqlx::query(
+        "UPDATE jobs SET status = 'done', dedupe_key = NULL WHERE kind = 'acme_issue' \
+         AND payload->>'domain_id' IN (SELECT id::text FROM domains WHERE generated)",
+    )
+    .execute(&state.db)
+    .await
+    .unwrap();
+    id
+}
+
+/// Projet tel que cree, avec la tache d'emission de son domaine genere.
+async fn project_raw(state: &AppState, s: &Session, name: &str) -> Uuid {
     let r = send(
         state,
         s,
@@ -535,10 +551,12 @@ async fn verify_dns_reports_wrong_ip() {
         why.contains("198.51.100.9") && why.contains(NODE_IP),
         "{why}"
     );
-    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'acme_issue'")
-        .fetch_one(&env.state.db)
-        .await
-        .unwrap();
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind = 'acme_issue' AND status = 'queued'",
+    )
+    .fetch_one(&env.state.db)
+    .await
+    .unwrap();
     assert_eq!(queued, 0, "aucun certificat sans DNS correct");
 
     // Aucun enregistrement : erreur explicite.
@@ -1988,4 +2006,184 @@ async fn concurrent_adds_at_the_cap_let_only_one_through() {
         .await
         .unwrap();
     assert_eq!(count, 20);
+}
+
+/// Domaine genere du projet (id) apres creation du projet.
+async fn generated_id(env: &Env, dev: &Session, p: Uuid, host: &str) -> String {
+    domain(&list(&env.state, dev, p).await, host)["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Port interne du service du projet : la route du domaine genere existe.
+async fn open_port(state: &AppState) {
+    sqlx::query("UPDATE services SET internal_port = 3000")
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn generated_domain_requests_cert() {
+    let mut env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let host = "gen.203.0.113.7.sslip.io";
+    let p = project_raw(&env.state, &dev, "gen").await;
+    open_port(&env.state).await;
+    let id = generated_id(&env, &dev, p, host).await;
+    // Une tentative d'emission est en file des la creation.
+    assert_eq!(acme_jobs(&env.state, &id).await, 1);
+    let d = domain(&list(&env.state, &dev, p).await, host).clone();
+    assert_eq!(d["cert_status"], "issuing", "{d}");
+
+    // La route est HTTPS (ACME) ; le DNS joker n'est pas reverifie.
+    let job = claim_acme(&env.state, SystemTime::now()).await;
+    let job_id = job.id;
+    let state = env.state.clone();
+    let handler = tokio::spawn(async move { domains::acme::issue(&state, job).await });
+    let routes = env.next_routes().await;
+    let route = routes.iter().find(|r| r.host == host).expect("route");
+    assert_eq!(route.tls, TlsMode::Acme);
+    let ordered = answer(
+        &mut env,
+        CertificateOutcome::Issued {
+            not_after: unix(SystemTime::now()) + 90 * 86_400,
+            issuer: "R11".into(),
+        },
+    )
+    .await;
+    assert_eq!(ordered, host);
+    handler.await.unwrap().expect("emission reussie");
+    assert!(
+        jobs::complete(&env.state.db, &Clock::system(), job_id, "test-worker")
+            .await
+            .unwrap()
+    );
+    let d = domain(&list(&env.state, &dev, p).await, host).clone();
+    assert_eq!(d["cert_status"], "active", "{d}");
+    assert_eq!(d["cert_issuer"], "R11");
+    assert!(d["cert_error"].is_null(), "{d}");
+    // Renouvellement planifie.
+    assert_eq!(acme_jobs(&env.state, &id).await, 1);
+}
+
+#[tokio::test]
+async fn rate_limited_generated_domain_stays_http_and_retries() {
+    let mut env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let host = "slow.203.0.113.7.sslip.io";
+    let p = project_raw(&env.state, &dev, "slow").await;
+    open_port(&env.state).await;
+    let id = generated_id(&env, &dev, p, host).await;
+
+    let now = unix(SystemTime::now()) + 1;
+    acme_at(
+        &mut env,
+        now,
+        CertificateOutcome::Failed {
+            reason: "too many certificates already issued".into(),
+        },
+    )
+    .await;
+    // Pas de certificat : le domaine reste servi (route inchangee, en HTTP
+    // tant que le proxy n'a pas de certificat), l'erreur est visible, aucun
+    // courriel n'est envoye.
+    let d = domain(&list(&env.state, &dev, p).await, host).clone();
+    assert_eq!(d["cert_status"], "error", "{d}");
+    assert!(d["cert_expires_at"].is_null(), "{d}");
+    assert!(
+        d["cert_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("too many")),
+        "{d}"
+    );
+    assert!(cert_notices(&env.state).await.is_empty());
+    let routes = domains::route_table(
+        &mut *env.state.db.acquire().await.unwrap(),
+        &env.state.cfg,
+        env.server,
+    )
+    .await
+    .unwrap();
+    assert!(
+        routes
+            .iter()
+            .any(|r| r.host == host && r.tls == TlsMode::Acme)
+    );
+
+    // Une nouvelle tentative par jour au plus, puis le certificat arrive.
+    let (run_at, failures, _) = queued_job(&env.state, &id).await;
+    assert!((run_at - (now + 86_400)).abs() <= 2, "{run_at}");
+    assert_eq!(failures.as_deref(), Some("1"));
+    let early = UNIX_EPOCH + Duration::from_secs((now + 86_400 - 3600) as u64);
+    let clock = Clock::from_fn(move || early);
+    assert!(
+        jobs::claim(&env.state.db, &clock, "test-worker")
+            .await
+            .unwrap()
+            .is_none(),
+        "pas de nouvelle tentative avant un jour"
+    );
+    acme_at(
+        &mut env,
+        now + 86_401,
+        CertificateOutcome::Issued {
+            not_after: now + 90 * 86_400,
+            issuer: "R11".into(),
+        },
+    )
+    .await;
+    let d = domain(&list(&env.state, &dev, p).await, host).clone();
+    assert_eq!(d["cert_status"], "active", "{d}");
+    assert!(d["cert_error"].is_null(), "{d}");
+}
+
+#[tokio::test]
+async fn generated_domain_without_a_route_waits_without_asking_the_proxy() {
+    let mut env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let host = "wait.203.0.113.7.sslip.io";
+    let p = project_raw(&env.state, &dev, "wait").await;
+    let id = generated_id(&env, &dev, p, host).await;
+    // Sans port interne, aucune route : rien n'est demande au proxy et la
+    // tache est replanifiee, sans echec ni tentative comptes.
+    let before = unix(SystemTime::now());
+    let asked = run_acme(&mut env, vec![]).await;
+    assert!(asked.is_empty());
+    assert!(drain(&mut env).iter().all(|m| !matches!(
+        m,
+        ControlToAgent::IssueCertificate { .. } | ControlToAgent::CheckCertificate { .. }
+    )));
+    let (run_at, failures, attempts) = queued_job(&env.state, &id).await;
+    assert!(run_at > before + 60, "{run_at}");
+    assert_eq!(failures.as_deref(), Some("0"));
+    assert_eq!(attempts, 0);
+    let d = domain(&list(&env.state, &dev, p).await, host).clone();
+    assert!(d["cert_error"].is_null(), "{d}");
+}
+
+#[tokio::test]
+async fn disabling_the_generated_domain_removes_its_certificate() {
+    let mut env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let host = "off.203.0.113.7.sslip.io";
+    let p = project(&env.state, &dev, "off").await;
+    drain(&mut env);
+    let r = send(
+        &env.state,
+        &dev,
+        "PATCH",
+        &format!("/api/domains?project={p}"),
+        Some(json!({ "generated_domain": false })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let orders = drain(&mut env);
+    assert!(
+        orders
+            .iter()
+            .any(|m| matches!(m, ControlToAgent::RemoveCertificate { host: h } if h == host)),
+        "{orders:?}"
+    );
 }

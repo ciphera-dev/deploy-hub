@@ -70,13 +70,26 @@ async fn ask(stream: &mut tokio::net::UnixStream, msg: ControlToAgent) -> ProxyR
 #[test]
 #[ignore = "Pebble requis (CIPHERA_TEST_ACME_DIRECTORY, CIPHERA_TEST_ACME_CA_FILE) : job CI acme-pebble"]
 fn issues_cert_via_pebble_http01() {
+    issue_and_redirect("app.ciphera-pebble.org");
+}
+
+/// Domaine genere `<projet>.<ip>.sslip.io` : meme route `TlsMode::Acme` que
+/// les domaines personnalises ; certificat emis, puis 308 vers HTTPS.
+/// (Le serveur du test reste lie au port HTTP-01 : un processus par test,
+/// voir le job CI `acme-pebble`.)
+#[test]
+#[ignore = "Pebble requis (CIPHERA_TEST_ACME_DIRECTORY, CIPHERA_TEST_ACME_CA_FILE) : job CI acme-pebble"]
+fn generated_domain_https_via_pebble() {
+    issue_and_redirect("shop.203.0.113.7.sslip.io");
+}
+
+fn issue_and_redirect(host: &str) {
     let directory = var("CIPHERA_TEST_ACME_DIRECTORY");
     let ca_file = var("CIPHERA_TEST_ACME_CA_FILE");
     let http_port: u16 = std::env::var("CIPHERA_TEST_ACME_HTTP_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(5002);
-    let host = "app.ciphera-pebble.org";
 
     // Dossier d'etat cree par le proxy (0700), comme StateDirectoryMode=0700 :
     // celui de `tempdir()` suit le umask (0755 sur les runners) et serait
