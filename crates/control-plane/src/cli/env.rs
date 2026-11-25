@@ -124,7 +124,7 @@ pub fn read_env_file(path: &Path) -> io::Result<Option<String>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        check_owner_and_mode(meta.uid(), meta.mode()).map_err(refused)?;
+        check_owner_and_mode(meta.uid(), meta.mode()).map_err(|why| refused(&why))?;
     }
     let mut text = String::new();
     (&file).take(MAX_ENV_FILE_BYTES).read_to_string(&mut text)?;

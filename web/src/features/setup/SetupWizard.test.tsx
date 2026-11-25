@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vite
 
 import { AppProviders, createAppQueryClient } from "@/app/providers";
 import { createAppRouter } from "@/app/router";
-import { clearHeldTokens } from "@/lib/url-token";
+import { clearHeldTokens, heldToken } from "@/lib/url-token";
 
 const PASSWORD = "correct horse battery";
 const CHECKS = [
@@ -99,6 +99,8 @@ it("la soumission appelle /api/setup/complete avec le jeton puis redirige vers /
   });
   // Le jeton accompagne les verifications et la creation.
   expect(seen.tokens).toEqual(["tok-123", "tok-123"]);
+  // Consommé : il ne reste pas en mémoire.
+  expect(heldToken("setup")).toBeUndefined();
 });
 
 it("le jeton est retire de la barre d'adresse et n'est stocke nulle part", async () => {

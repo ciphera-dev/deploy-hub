@@ -544,8 +544,9 @@ write_egress_config() {
 	chmod 0644 "$EGRESS_CONFIG"
 }
 
-# Configuration de ciphera-cli updater (root) : jamais /etc/ciphera/ciphera.env,
-# modifiable par le compte ciphera. Dossier root 0755, fichier root 0600,
+# Configuration de ciphera-cli updater (root) : jamais /etc/ciphera/ciphera.env
+# (fichier du service, dans un dossier du service : il ne doit jamais pouvoir
+# donner root). Dossier root 0755, fichier root 0600,
 # cles lues par l'updater lui-meme (toute autre cle est ignoree). Un fichier
 # existant (reglages de l'administrateur) est garde, droits remis.
 write_updater_config() {
@@ -916,11 +917,14 @@ init_instance() {
 
 # Surcharges du service (/etc/ciphera/ciphera.env), lues par systemd pour
 # ciphera.service et par les commandes root `ciphera admin` (qui refusent un
-# fichier qui n'est pas a root ou qui est modifiable par le groupe) :
-# root:ciphera 0640. Le fichier est refait dans un dossier root, puis mis en
-# place par renommage : aucun chown ni chmod sur un chemin du dossier du
-# service. Contenu repris seulement d'un fichier ordinaire de root (lu sans
-# suivre de lien) ; sinon fichier ecarte, avec un avertissement.
+# fichier qui n'est pas a root ou qui est modifiable par le groupe ou les
+# autres) : root:ciphera 0640. Le fichier est refait dans un dossier root,
+# puis mis en place par renommage : aucun chown ni chmod sur un chemin du
+# dossier du service. Contenu repris seulement d'un fichier ordinaire de root
+# a un seul lien, non modifiable par le groupe ni les autres (meme regle que
+# la CLI), lu sans suivre de lien ; sinon fichier ecarte (root 0600), avec un
+# avertissement repete en fin d'installation.
+env_notice=
 protect_env_file() {
 	env_file=$CONFIG_DIR/ciphera.env
 	stage=$(mktemp -d /etc/.ciphera-env.XXXXXX) || die "dossier temporaire impossible dans /etc"
@@ -931,21 +935,35 @@ protect_env_file() {
 	fi
 	: >"$stage/ciphera.env"
 	if [ -e "$env_file" ] || [ -L "$env_file" ]; then
-		if [ ! -L "$env_file" ] && [ -f "$env_file" ] && [ "$(stat -c %u:%h "$env_file")" = 0:1 ]; then
+		env_stat=$(stat -c %u:%h:%a "$env_file" 2>/dev/null) || env_stat=
+		env_mode=${env_stat##*:}
+		if [ ! -L "$env_file" ] && [ -f "$env_file" ] && [ "${env_stat%:*}" = 0:1 ] &&
+			[ -n "$env_mode" ] && [ $((0$env_mode & 022)) -eq 0 ]; then
 			dd if="$env_file" of="$stage/ciphera.env" iflag=nofollow,nonblock bs=65536 count=1 status=none 2>/dev/null ||
-				die "lecture de $env_file impossible"
+				stage_failed "lecture de $env_file impossible"
 		else
 			set_aside=$env_file.ecarte-$(date +%Y%m%d%H%M%S)
-			mv -fT "$env_file" "$set_aside" || die "$env_file inutilisable et impossible a ecarter"
-			warn "$env_file ecarte ($set_aside) : pas un fichier ordinaire de root ; relire son contenu avant de le reprendre"
+			mv -fT "$env_file" "$set_aside" || stage_failed "$env_file inutilisable et impossible a ecarter"
+			# Contenu non fiable : garde pour relecture par root seulement.
+			chown -h root:root "$set_aside" 2>/dev/null || true
+			if [ ! -L "$set_aside" ]; then
+				chmod 0600 "$set_aside" 2>/dev/null || true
+			fi
+			env_notice="$env_file ecarte ($set_aside, root 0600) : pas un fichier de root protege en ecriture ; le service demarre sans ces reglages. Relire son contenu, le reprendre dans $env_file (root:ciphera 0640), puis redemarrer ciphera."
+			warn "$env_notice"
 		fi
 	fi
 	if ! { chown root:ciphera "$stage/ciphera.env" && chmod 0640 "$stage/ciphera.env" &&
 		mv -fT "$stage/ciphera.env" "$env_file"; }; then
-		rm -rf "$stage"
-		die "mise en place de $env_file impossible"
+		stage_failed "mise en place de $env_file impossible"
 	fi
 	rmdir "$stage"
+}
+
+# Echec de protect_env_file : dossier temporaire retire, puis arret.
+stage_failed() {
+	rm -rf "$stage"
+	die "$1"
 }
 
 # Cle de la CA absente, ou a root sans droit pour le groupe ni les autres.
@@ -1062,6 +1080,9 @@ main() {
 	say "Ciphera $version est installe et demarre."
 	if [ -n "$init_report" ]; then
 		printf '\n%s\n' "$init_report"
+	fi
+	if [ -n "$env_notice" ]; then
+		warn "$env_notice"
 	fi
 }
 

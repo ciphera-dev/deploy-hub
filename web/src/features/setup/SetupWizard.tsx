@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { CipheraLogo, Icon } from "@/design-system";
 import { ApiError } from "@/lib/api/errors";
+import { forgetToken } from "@/lib/url-token";
 
 import { fetchStatus, rejectionMessage, submitSetup, type SetupPayload } from "./api";
 import { ChecksStep } from "./ChecksStep";
@@ -47,6 +48,8 @@ export function SetupWizard({ token }: SetupWizardProps) {
     mutationFn: (body: SetupPayload) => submitSetup(token!, body),
     onSuccess: (result) => {
       if ("created" in result) {
+        // Jeton consommé : il ne reste pas en mémoire.
+        forgetToken("setup");
         setAdmin(EMPTY_ADMIN);
         void navigate({ to: "/" });
       } else if (result.rejected === 410) goLogin();

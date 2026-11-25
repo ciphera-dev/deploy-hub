@@ -4,7 +4,11 @@
 //! `ciphera admin setup-token`, voir `crate::setup_token`) est a usage unique
 //! et expire 24 heures apres son emission (401 `setup_token_expired`). Il
 //! cesse d'etre valable des qu'un compte existe, meme si le fichier traine
-//! encore, et le fichier est supprime apres la creation du proprietaire. La creation est une transaction SERIALIZABLE gardee par
+//! encore (le compte en base fait foi). Le fichier est supprime apres la
+//! creation du proprietaire quand le service peut ecrire dans son dossier de
+//! configuration ; sinon (bac a sable en lecture seule) il reste, mort, et
+//! `ciphera admin setup-token` (root) le retire. La creation est une
+//! transaction SERIALIZABLE gardee par
 //! `INSERT ... WHERE NOT EXISTS (SELECT 1 FROM users)` : en cas de course,
 //! un seul appel gagne, les autres recoivent 410.
 //!
@@ -468,11 +472,23 @@ async fn complete(
         }
     };
 
-    // Le compte existe deja : meme si la suppression echoue, le jeton est mort.
-    if let Err(e) = tokio::fs::remove_file(state.cfg.config_dir.join(TOKEN_FILE)).await
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(error = %e, "suppression du jeton de setup");
+    // Le compte existe deja : meme si la suppression echoue, le jeton est mort
+    // (`authorize` verifie les comptes avant le fichier).
+    match tokio::fs::remove_file(state.cfg.config_dir.join(TOKEN_FILE)).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        // Dossier de configuration en lecture seule pour le service.
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ReadOnlyFilesystem | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            tracing::info!(
+                "jeton de setup laisse en place (dossier en lecture seule) : sans effet, un compte existe ; `ciphera admin setup-token` le retire"
+            );
+        }
+        Err(e) => tracing::warn!(error = %e, "suppression du jeton de setup"),
     }
 
     let body = SetupCompleted {

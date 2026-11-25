@@ -284,32 +284,58 @@ pub async fn clear_ip_allowlist(db: &PgPool) -> Result<u64, AdminError> {
 /// compte n'existe ; le precedent cesse aussitot d'etre valable. Le fichier
 /// est donne a `owner` (uid, gid du compte du service) s'il est fourni.
 /// Audite, sans le jeton.
+///
+/// Si un compte existe (avant, ou cree pendant l'ecriture), le fichier
+/// `setup_token` restant est supprime : il ne vaut plus rien (l'assistant
+/// verifie les comptes d'abord), et le service, qui ne peut pas toujours
+/// ecrire dans son dossier de configuration, a pu le laisser.
 pub async fn setup_token(
     db: &PgPool,
     config_dir: &Path,
     owner: Option<(u32, u32)>,
 ) -> Result<Zeroizing<String>, AdminError> {
-    let accounts: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users)")
-        .fetch_one(db)
-        .await
-        .map_err(database)?;
-    if accounts {
-        return Err(AdminError(
+    let closed = || {
+        AdminError(
             "un compte existe deja : l'assistant d'installation est ferme (connexion ou reset-password)"
                 .into(),
-        ));
+        )
+    };
+    if has_accounts(db).await? {
+        remove_stale_setup_token(config_dir)?;
+        return Err(closed());
     }
     let token = setup_token::replace(config_dir, owner, setup_token::unix_now())
         .map_err(|e| AdminError(format!("ecriture du jeton : {e}")))?;
+    // Assistant termine pendant l'ecriture : ce jeton neuf est deja mort.
+    if has_accounts(db).await? {
+        remove_stale_setup_token(config_dir)?;
+        return Err(closed());
+    }
     sqlx::query(
-        "INSERT INTO audit_events (id, actor_id, action, target, detail) \
-         VALUES ($1, NULL, 'setup.token.cli', 'instance', '{}'::jsonb)",
+        "INSERT INTO audit_events (id, actor_id, action, target, detail)          VALUES ($1, NULL, 'setup.token.cli', 'instance', '{}'::jsonb)",
     )
     .bind(uuid::Uuid::new_v4())
     .execute(db)
     .await
     .map_err(database)?;
     Ok(token)
+}
+
+async fn has_accounts(db: &PgPool) -> Result<bool, AdminError> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(db)
+        .await
+        .map_err(database)
+}
+
+/// Supprime `<config_dir>/setup_token` s'il existe.
+fn remove_stale_setup_token(config_dir: &Path) -> Result<(), AdminError> {
+    match std::fs::remove_file(config_dir.join(setup_token::FILE)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(AdminError(format!(
+            "suppression de l'ancien jeton d'installation : {e}"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// Issue de `revoke-agent`.

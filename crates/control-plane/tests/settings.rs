@@ -1178,6 +1178,24 @@ fn totp_now(totp: &totp_rs::Totp) -> String {
     totp.generate(unix_now()).to_string()
 }
 
+/// Code a 6 chiffres sur d'aucune fenetre acceptee (precedente, courante,
+/// suivante) : le code courant, chiffres decales jusqu'a sortir de ces trois.
+fn wrong_code(totp: &totp_rs::Totp) -> String {
+    let now = unix_now();
+    let valid: Vec<String> = [now - 30, now, now + 30]
+        .iter()
+        .map(|t| totp.generate(*t).to_string())
+        .collect();
+    let mut code = totp_now(totp);
+    while valid.contains(&code) {
+        code = code
+            .chars()
+            .map(|c| char::from_digit((c.to_digit(10).unwrap() + 1) % 10, 10).unwrap())
+            .collect();
+    }
+    code
+}
+
 /// Evite de calculer un code juste avant un changement de fenetre de 30 s.
 async fn away_from_step_boundary() {
     let into = unix_now() % 30;
@@ -1199,13 +1217,10 @@ async fn org_delete_requires_second_factor() {
     assert_eq!(r.status, 401, "{}", r.raw);
     assert_eq!(r.code(), "second_factor_required");
     // Code faux : refuse et audite.
-    let r = delete(json!({ "password": PASSWORD, "code": "000000", "confirm": "SUPPRIMER" })).await;
-    let r = if r.code() == "invalid_code" {
-        r
-    } else {
-        // 000000 etait le bon code (une chance sur un million) : un autre.
-        delete(json!({ "password": PASSWORD, "code": "999999", "confirm": "SUPPRIMER" })).await
-    };
+    away_from_step_boundary().await;
+    let r =
+        delete(json!({ "password": PASSWORD, "code": wrong_code(&totp), "confirm": "SUPPRIMER" }))
+            .await;
     assert_eq!(r.status, 401, "{}", r.raw);
     assert_eq!(r.code(), "invalid_code");
     // Bon code mais mauvais mot de passe : refuse.
@@ -1244,6 +1259,117 @@ async fn org_delete_requires_second_factor() {
         .await,
         1
     );
+}
+
+/// Un code deja consomme (ici par la creation d'un deploy hook) est refuse
+/// avant toute suppression : projets et comptes restent.
+#[tokio::test]
+async fn org_delete_replayed_code_deletes_nothing() {
+    let (state, _pg) = common::state().await;
+    instance(&state).await;
+    let (_, owner) = login(&state, "owner").await;
+    let (owner, totp, codes) = enrol_totp(&state, &owner).await;
+    let (project_id, _) = project(&state, &owner, "web").await;
+    login(&state, "developer").await;
+    away_from_step_boundary().await;
+    let code = totp_now(&totp);
+    let hook = send(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/projects/{project_id}/deploy-hooks"),
+        Some(json!({ "name": "CI", "password": PASSWORD, "code": code })),
+    )
+    .await;
+    assert_eq!(hook.status, 201, "{}", hook.raw);
+
+    let r = send(
+        &state,
+        &owner,
+        "DELETE",
+        "/api/organization",
+        Some(json!({ "password": PASSWORD, "code": code, "confirm": "SUPPRIMER" })),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_code");
+    assert_eq!(count(&state, "SELECT count(*) FROM projects").await, 1);
+    assert_eq!(count(&state, "SELECT count(*) FROM users").await, 2);
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM audit_events WHERE action = 'organization.delete'"
+        )
+        .await,
+        0
+    );
+
+    // Un code neuf (code de secours) : supprimee.
+    let r = send(
+        &state,
+        &owner,
+        "DELETE",
+        "/api/organization",
+        Some(json!({ "password": PASSWORD, "code": codes[0], "confirm": "SUPPRIMER" })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(count(&state, "SELECT count(*) FROM projects").await, 0);
+}
+
+/// Deux demandes simultanees avec le meme code : une seule supprime.
+#[tokio::test]
+async fn org_delete_same_code_twice_concurrently_runs_once() {
+    let (state, _pg) = common::state().await;
+    instance(&state).await;
+    let (_, owner) = login(&state, "owner").await;
+    let (owner, totp, _) = enrol_totp(&state, &owner).await;
+    away_from_step_boundary().await;
+    let body = json!({ "password": PASSWORD, "code": totp_now(&totp), "confirm": "SUPPRIMER" });
+    let (a, b) = tokio::join!(
+        send(
+            &state,
+            &owner,
+            "DELETE",
+            "/api/organization",
+            Some(body.clone())
+        ),
+        send(&state, &owner, "DELETE", "/api/organization", Some(body)),
+    );
+    let ok = [a.status, b.status].iter().filter(|s| **s == 200).count();
+    assert_eq!(ok, 1, "{} / {}", a.raw, b.raw);
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM audit_events WHERE action = 'organization.delete'"
+        )
+        .await,
+        1
+    );
+}
+
+/// Passkey seule, sans code de secours : aucun code possible, 409.
+#[tokio::test]
+async fn org_delete_second_factor_unavailable() {
+    let (state, _pg) = common::state().await;
+    instance(&state).await;
+    let (owner_id, owner) = login(&state, "owner").await;
+    sqlx::query(
+        "INSERT INTO webauthn_credentials (id, user_id, credential_id, passkey, name)          VALUES ($1, $2, $3, '{}'::jsonb, 'cle')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(owner_id)
+    .bind(Uuid::new_v4().as_bytes().to_vec())
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let delete = |body: Value| send(&state, &owner, "DELETE", "/api/organization", Some(body));
+    let r = delete(json!({ "password": PASSWORD, "confirm": "SUPPRIMER" })).await;
+    assert_eq!(r.code(), "second_factor_required", "{}", r.raw);
+    let r = delete(json!({ "password": PASSWORD, "code": "123456", "confirm": "SUPPRIMER" })).await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "second_factor_unavailable");
+    assert_eq!(count(&state, "SELECT count(*) FROM users").await, 1);
 }
 
 #[tokio::test]

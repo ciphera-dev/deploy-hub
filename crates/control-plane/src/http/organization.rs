@@ -6,8 +6,9 @@
 //! - `DELETE /api/organization { password, code?, confirm: "SUPPRIMER" }` :
 //!   refusee (409 `other_owners`) tant qu'un autre proprietaire existe (a
 //!   retirer d'abord par Equipe) ; puis step-up (`auth::step_up` : mot de
-//!   passe, plus le code du second facteur si le compte en a un), puis
-//!   suppression de chaque projet comme
+//!   passe, plus le code du second facteur si le compte en a un ; code
+//!   consomme avant toute suppression, sous le verrou des proprietaires),
+//!   puis suppression de chaque projet comme
 //!   `DELETE /api/projects/{id}` (conteneurs et images retires des agents,
 //!   routes et certificats), des variables globales, des taches et metriques
 //!   orphelines, des invitations, de tous les autres comptes (aucun n'est
@@ -44,17 +45,34 @@ use crate::state::AppState;
 
 const MAX_BODY: usize = 8 * 1024;
 
-/// Un autre proprietaire que `actor`, s'il en existe (verrouille dans une
-/// transaction).
-async fn other_owner<'c>(
-    conn: impl sqlx::PgExecutor<'c>,
-    actor: Uuid,
-) -> Result<Option<Uuid>, ApiError> {
-    sqlx::query_scalar("SELECT id FROM users WHERE role = 'owner' AND id <> $1 LIMIT 1 FOR UPDATE")
+/// Un autre proprietaire que `actor` existe-t-il ? Lecture simple, hors
+/// transaction (refus rapide, avant toute verification).
+async fn has_other_owner(db: &sqlx::PgPool, actor: Uuid) -> Result<bool, ApiError> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE role = 'owner' AND id <> $1)")
         .bind(actor)
-        .fetch_optional(conn)
+        .fetch_one(db)
         .await
         .map_err(|e| internal("lecture des proprietaires", e))
+}
+
+/// Verrou de la suppression, puis tous les proprietaires verrouilles comme
+/// dans Equipe (`team.rs`, `ORDER BY id FOR UPDATE`) : un changement de role
+/// concurrent attend la fin de la transaction. Refus si un autre que `actor`
+/// est proprietaire.
+async fn lock_sole_owner(tx: &mut sqlx::PgConnection, actor: Uuid) -> Result<(), ApiError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('ciphera.organization_delete'))")
+        .execute(&mut *tx)
+        .await
+        .map_err(db("verrou de la suppression"))?;
+    let owners: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE role = 'owner' ORDER BY id FOR UPDATE")
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| internal("verrou des proprietaires", e))?;
+    if owners.iter().any(|id| *id != actor) {
+        return Err(other_owners_refused());
+    }
+    Ok(())
 }
 
 fn other_owners_refused() -> ApiError {
@@ -236,7 +254,7 @@ async fn remove(
     // Les autres proprietaires ne sont jamais supprimes avec l'organisation :
     // ils sont retires d'abord (Parametres > Equipe). Avant le step-up :
     // aucun essai n'est consomme.
-    if other_owner(&state.db, actor).await?.is_some() {
+    if has_other_owner(&state.db, actor).await? {
         return Err(other_owners_refused());
     }
     let proof = match step_up::verify(
@@ -253,6 +271,14 @@ async fn remove(
         StepUp::Limited(response) => return Ok(response),
     };
     let ip = ip.to_string();
+
+    // 0. Code consomme et tentatives validees avant toute suppression : un
+    // meme code rejoue (ou deux demandes simultanees) est refuse ici, sans
+    // rien detruire. Si la suite echoue, le code reste consomme.
+    let mut tx = state.db.begin().await.map_err(db("transaction"))?;
+    lock_sole_owner(&mut tx, actor).await?;
+    proof.commit(&mut tx).await?;
+    tx.commit().await.map_err(db("transaction"))?;
 
     // 1. Projets, un par un (chacun dans sa transaction : ce qui est fait le
     // reste si la suite echoue, et une nouvelle demande reprend le reste).
@@ -284,16 +310,8 @@ async fn remove(
 
     // 2. Le reste de l'organisation, en une transaction.
     let mut tx = state.db.begin().await.map_err(db("transaction"))?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('ciphera.organization_delete'))")
-        .execute(&mut *tx)
-        .await
-        .map_err(db("verrou de la suppression"))?;
-    // Code consomme et tentatives validees avec la suppression des comptes.
-    proof.commit(&mut tx).await?;
     // Proprietaire nomme entre-temps : aucun compte n'est supprime.
-    if other_owner(&mut *tx, actor).await?.is_some() {
-        return Err(other_owners_refused());
-    }
+    lock_sole_owner(&mut tx, actor).await?;
     for (context, sql) in [
         ("variables globales", "DELETE FROM global_variables"),
         ("invitations", "DELETE FROM invitations"),
@@ -321,12 +339,17 @@ async fn remove(
             .await
             .map_err(db(context))?;
     }
-    let users = sqlx::query("DELETE FROM users WHERE id <> $1")
+    // Nouvelle lecture (READ COMMITTED) : un proprietaire apparu malgre le
+    // verrou annule tout (transaction abandonnee).
+    let roles: Vec<String> = sqlx::query_scalar("DELETE FROM users WHERE id <> $1 RETURNING role")
         .bind(actor)
-        .execute(&mut *tx)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(db("suppression des comptes"))?
-        .rows_affected();
+        .map_err(db("suppression des comptes"))?;
+    if roles.iter().any(|r| r == "owner") {
+        return Err(other_owners_refused());
+    }
+    let users = roles.len() as u64;
     let github: Option<(String, String)> =
         sqlx::query_as("DELETE FROM github_app RETURNING name, html_url")
             .fetch_optional(&mut *tx)

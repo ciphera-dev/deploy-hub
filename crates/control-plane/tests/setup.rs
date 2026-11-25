@@ -356,6 +356,19 @@ async fn setup_token_regenerated_by_cli() {
         .unwrap_err();
     assert!(err.to_string().contains("compte"), "{err}");
     assert!(!file.exists());
+
+    // Fichier reste en place (service sans droit d'ecriture sur son dossier) :
+    // la commande le supprime et refuse toujours.
+    std::fs::write(
+        &file,
+        control_plane::setup_token::render("x", u64::MAX).as_str(),
+    )
+    .unwrap();
+    let err = control_plane::cli::admin::setup_token(&env.state.db, &env.config.0, None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("compte"), "{err}");
+    assert!(!file.exists());
 }
 
 #[tokio::test]

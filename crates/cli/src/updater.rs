@@ -48,8 +48,8 @@
 //! n'est valide.
 //!
 //! Configuration : `/etc/ciphera-updater/updater.env` (root, voir
-//! [`config`]), jamais `/etc/ciphera/ciphera.env` (modifiable par le compte
-//! `ciphera`). Programmes lances par chemin absolu, environnement vide.
+//! [`config`]), jamais `/etc/ciphera/ciphera.env` (fichier du service, dans
+//! un dossier du service). Programmes lances par chemin absolu, environnement vide.
 //!
 //! Les appels au systeme (telechargement, pg_dump, systemctl, healthcheck)
 //! passent par [`System`] : [`host::Host`] en production, un systeme simule

@@ -2,8 +2,8 @@
 //! par `install.sh` (dossier root 0755, fichier root 0600).
 //!
 //! L'updater tourne en root : il ne lit jamais `/etc/ciphera/ciphera.env`,
-//! que le compte `ciphera` peut modifier (`PATH`, `LD_PRELOAD`, mode de test,
-//! cle ou origine des releases y donneraient root). Seules les cles
+//! fichier du service range dans un dossier du service (`PATH`, `LD_PRELOAD`,
+//! mode de test, cle ou origine des releases y donneraient root). Seules les cles
 //! ci-dessous sont lues, par l'updater lui-meme (pas d'`EnvironmentFile=`) ;
 //! toute autre cle est ignoree et signalee. Le fichier et son dossier
 //! doivent appartenir a root et n'etre modifiables par personne d'autre.

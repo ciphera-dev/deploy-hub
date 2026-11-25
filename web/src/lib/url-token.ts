@@ -19,7 +19,12 @@ export function heldToken(kind: TokenKind): string | undefined {
   return held.get(kind);
 }
 
-/** Oublie le jeton (tests). */
+/** Oublie le jeton d'un lien, une fois utilisé. */
+export function forgetToken(kind: TokenKind): void {
+  held.delete(kind);
+}
+
+/** Oublie tous les jetons (tests). */
 export function clearHeldTokens(): void {
   held.clear();
 }
