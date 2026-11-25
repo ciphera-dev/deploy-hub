@@ -1029,6 +1029,15 @@ pub enum ControlToAgent {
         project_id: ProjectId,
         purge_volumes: bool,
     },
+    /// CA de l'instance auxquelles l'agent se fie (PEM, un ou deux
+    /// certificats : courante, et suivante pendant une rotation de la CA),
+    /// envoyees a chaque connexion. L'agent les adopte (`ca.crt`) si chaque
+    /// certificat est une CA racine et si le certificat du lien de cette
+    /// connexion est emis par l'une d'elles ; sinon il garde les siennes.
+    /// Ajoute apres `RemoveProject`, en dernier (v6).
+    TrustedCas {
+        ca_pem: String,
+    },
 }
 
 /// Agent -> plan de controle.

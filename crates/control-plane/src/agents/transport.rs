@@ -1,5 +1,6 @@
 //! Ecoute QUIC des agents. Un agent n'est accepte que si :
-//! 1. son certificat client chaine vers la CA de l'instance (seule racine ;
+//! 1. son certificat client chaine vers la CA de l'instance (seules racines :
+//!    `ca/ca.crt` et, pendant une rotation de la CA, `ca/ca-next.crt` ;
 //!    certificat client obligatoire, verifie par rustls) ;
 //! 2. ce certificat porte un SAN `urn:ciphera:agent:<id>` ;
 //! 3. son empreinte correspond a une ligne `servers` non revoquee de cet id ;
@@ -12,6 +13,13 @@
 //! agent deja connecte dont le serveur est revoque ensuite est deconnecte
 //! en quelques secondes ([`watch_revocations`]).
 //!
+//! A chaque connexion (avec le dossier de configuration, voir
+//! [`serve_with_renewal`]), l'agent recoit les CA de confiance
+//! (`ControlToAgent::TrustedCas`) et la CA emettrice de son certificat est
+//! notee (`servers.cert_issuer_fingerprint`, suivi de la rotation). Quand
+//! les CA de confiance changent sur disque (`ciphera admin rotate-ca`), le
+//! lien est recharge et les agents reconnectes ([`apply_trust_change`]).
+//!
 //! Livraison : `State` est un instantane complet de l'agent, renvoye a
 //! chaque connexion (idempotent) ; `DeployProgress` et `LogLine` sont livres
 //! au moins une fois (doublon possible apres une coupure) : les abonnes du
@@ -20,6 +28,7 @@
 //! mesure) ; une mesure peut manquer ou, rarement, etre repetee.
 
 use std::fmt;
+use std::io;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -43,6 +52,9 @@ use super::servers;
 
 /// Certificat CA de l'instance, relatif au dossier de configuration.
 pub const CA_CRT: &str = "ca/ca.crt";
+/// Certificat de la CA suivante, present seulement pendant une rotation de
+/// la CA (`ciphera admin rotate-ca`).
+pub const CA_NEXT_CRT: &str = "ca/ca-next.crt";
 /// Certificat serveur du lien QUIC (emis par la CA de l'instance).
 pub const LINK_CRT: &str = "tls/link.crt";
 pub const LINK_KEY: &str = "tls/link.key";
@@ -52,6 +64,7 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Materiel TLS du lien (PEM).
 pub struct LinkTls {
+    /// CA de confiance : une ou plusieurs (rotation), a la suite.
     pub ca_cert_pem: String,
     pub cert_pem: String,
     pub key_pem: Zeroizing<String>,
@@ -75,27 +88,118 @@ impl fmt::Display for TlsError {
 impl std::error::Error for TlsError {}
 
 impl LinkTls {
-    /// Lit `ca/ca.crt`, `tls/link.crt` et `tls/link.key` (ecrits par `ciphera init`).
+    /// Lit les CA de confiance ([`TrustedCas`]), `tls/link.crt` et
+    /// `tls/link.key` (ecrits par `ciphera init`).
     pub fn load(config_dir: &Path) -> std::io::Result<Self> {
         let read = |rel: &str| std::fs::read_to_string(config_dir.join(rel));
         Ok(Self {
-            ca_cert_pem: read(CA_CRT)?,
+            ca_cert_pem: TrustedCas::load(config_dir)?.pem(),
             cert_pem: read(LINK_CRT)?,
             key_pem: Zeroizing::new(read(LINK_KEY)?),
         })
     }
 }
 
+/// CA de confiance du lien, lues sur disque : `ca/ca.crt` (courante) et,
+/// pendant une rotation, `ca/ca-next.crt` (suivante, qui signe les
+/// nouveaux certificats d'agent).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustedCas {
+    current_pem: String,
+    current: Vec<u8>,
+    next: Option<(String, Vec<u8>)>,
+}
+
+impl TrustedCas {
+    /// `ca/ca.crt` (obligatoire) et `ca/ca-next.crt` (s'il existe ; ignore
+    /// s'il est identique a la courante : fin de rotation interrompue).
+    pub fn load(config_dir: &Path) -> io::Result<Self> {
+        let read = |rel: &str| -> io::Result<(String, Vec<u8>)> {
+            let pem = std::fs::read_to_string(config_dir.join(rel))?;
+            let der = pki::der_from_pem(&pem)
+                .ok_or_else(|| io::Error::other(format!("{rel} illisible")))?;
+            Ok((pem, der))
+        };
+        let (current_pem, current) = read(CA_CRT)?;
+        let next = match read(CA_NEXT_CRT) {
+            Ok((_, der)) if der == current => None,
+            Ok(next) => Some(next),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        Ok(Self {
+            current_pem,
+            current,
+            next,
+        })
+    }
+
+    /// CA courante (DER).
+    pub fn current(&self) -> &[u8] {
+        &self.current
+    }
+
+    /// CA suivante (DER), pendant une rotation.
+    pub fn next(&self) -> Option<&[u8]> {
+        self.next.as_ref().map(|(_, der)| der.as_slice())
+    }
+
+    /// CA qui signe les certificats d'agent : la suivante pendant une
+    /// rotation, sinon la courante.
+    pub fn active(&self) -> &[u8] {
+        self.next().unwrap_or(&self.current)
+    }
+
+    /// Toutes les CA de confiance (DER), courante d'abord.
+    pub fn ders(&self) -> Vec<Vec<u8>> {
+        let mut out = vec![self.current.clone()];
+        out.extend(self.next().map(<[u8]>::to_vec));
+        out
+    }
+
+    /// Toutes les CA de confiance (PEM a la suite), courante d'abord.
+    pub fn pem(&self) -> String {
+        let mut out = self.current_pem.clone();
+        if let Some((pem, _)) = &self.next {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(pem);
+        }
+        out
+    }
+
+    /// CA de confiance qui a emis le certificat DER `leaf`.
+    pub fn issuer_of(&self, leaf: &[u8]) -> Option<&[u8]> {
+        [Some(self.current.as_slice()), self.next()]
+            .into_iter()
+            .flatten()
+            .find(|ca| pki::issued_by(ca, leaf))
+    }
+
+    /// Empreinte du jeu (change au debut et a la fin d'une rotation).
+    pub fn fingerprint(&self) -> String {
+        pki::fingerprint_sha256(&self.ders().concat())
+    }
+}
+
 /// Configuration serveur : TLS 1.3, ALPN `ciphera/1`, certificat client
-/// obligatoire et verifie contre la seule CA de l'instance.
+/// obligatoire et verifie contre les seules CA de l'instance
+/// (`tls.ca_cert_pem`).
 pub fn server_config(tls: &LinkTls) -> Result<quinn::ServerConfig, TlsError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let ca = CertificateDer::from_pem_slice(tls.ca_cert_pem.as_bytes())
+    let cas = CertificateDer::pem_slice_iter(tls.ca_cert_pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|_| TlsError("certificat de la CA illisible"))?;
+    if cas.is_empty() {
+        return Err(TlsError("certificat de la CA illisible"));
+    }
     let mut roots = RootCertStore::empty();
-    roots
-        .add(ca)
-        .map_err(|_| TlsError("certificat de la CA refuse"))?;
+    for ca in cas {
+        roots
+            .add(ca)
+            .map_err(|_| TlsError("certificat de la CA refuse"))?;
+    }
     let verifier = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
         .build()
         .map_err(|_| TlsError("verificateur des certificats clients"))?;
@@ -261,6 +365,63 @@ pub async fn watch_revocations(db: PgPool, registry: AgentRegistry) {
     }
 }
 
+/// Recharge le lien a chaud : CA de confiance et certificat du lien relus
+/// sur disque. Les connexions en cours gardent l'ancienne configuration.
+pub fn reload_link(endpoint: &Endpoint, config_dir: &Path) -> Result<(), String> {
+    let tls = LinkTls::load(config_dir).map_err(|e| e.to_string())?;
+    let server = server_config(&tls).map_err(|e| e.to_string())?;
+    endpoint.set_server_config(Some(server));
+    Ok(())
+}
+
+/// Suivi des CA de confiance sur disque (debut et fin d'une rotation de la
+/// CA, `ciphera admin rotate-ca`).
+#[derive(Debug)]
+pub struct TrustWatch {
+    config_dir: std::path::PathBuf,
+    last: Option<String>,
+}
+
+impl TrustWatch {
+    /// Etat actuel pris comme reference.
+    pub fn new(config_dir: &Path) -> Self {
+        Self {
+            config_dir: config_dir.to_path_buf(),
+            last: TrustedCas::load(config_dir).ok().map(|t| t.fingerprint()),
+        }
+    }
+
+    /// Vrai si les CA de confiance ont change depuis le dernier appel (un
+    /// jeu illisible ne compte pas : il sera relu).
+    pub fn changed(&mut self) -> bool {
+        let Ok(now) = TrustedCas::load(&self.config_dir).map(|t| t.fingerprint()) else {
+            return false;
+        };
+        if self.last.as_deref() == Some(now.as_str()) {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
+/// CA de confiance changees : lien recharge (CA et certificat), puis
+/// agents connectes deconnectes. Ils se reconnectent aussitot, recoivent les
+/// nouvelles CA (`TrustedCas`) et, pendant une rotation, un certificat de la
+/// CA suivante. Renvoie les agents deconnectes.
+pub fn apply_trust_change(
+    endpoint: &Endpoint,
+    config_dir: &Path,
+    registry: &AgentRegistry,
+) -> Result<Vec<ServerId>, String> {
+    reload_link(endpoint, config_dir)?;
+    let connected = registry.connected();
+    for id in &connected {
+        registry.disconnect(*id);
+    }
+    Ok(connected)
+}
+
 fn close(conn: &Connection, code: u32, reason: &str) {
     conn.close(VarInt::from_u32(code), reason.as_bytes());
 }
@@ -402,9 +563,32 @@ async fn handle(
         }
     }
     tracing::info!("lien agents : agent {id} connecte ({remote})");
+    // CA de confiance envoyees avant tout certificat renouvele (emis, pendant
+    // une rotation, par la CA suivante).
+    let trusted = renewals.map(certs::Renewals::trusted_cas);
+    match &trusted {
+        Some(Ok(trusted)) => {
+            let msg = ControlToAgent::TrustedCas {
+                ca_pem: trusted.pem(),
+            };
+            if let Err(e) = registry.send(id, msg) {
+                tracing::warn!("lien agents : CA de confiance non envoyees a {id} : {e}");
+            }
+        }
+        Some(Err(e)) => tracing::error!("lien agents : CA de confiance illisibles : {e}"),
+        None => {}
+    }
     // Certificat renouvele presente pour la premiere fois : il remplace
     // l'ancien. Sinon, certificat a renouveler : demande au signataire.
-    match servers::promote_next_cert(db, id, &fingerprint).await {
+    let promoted = servers::promote_next_cert(db, id, &fingerprint).await;
+    // CA emettrice du certificat presente (suivi de la rotation).
+    if let Some(Ok(trusted)) = &trusted
+        && let Some(issuer) = trusted.issuer_of(&leaf)
+        && let Err(e) = servers::set_issuer(db, id, &fingerprint, &pki::sha256(issuer)).await
+    {
+        tracing::error!("lien agents : CA emettrice de {id} non notee : {e}");
+    }
+    match promoted {
         Ok(true) => tracing::info!("lien agents : agent {id}, certificat renouvele en service"),
         Ok(false) => {
             if let Some(renewals) = renewals {

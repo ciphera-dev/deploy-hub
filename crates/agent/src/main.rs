@@ -391,5 +391,6 @@ fn kind(msg: &ControlToAgent) -> &'static str {
         ControlToAgent::RequestState => "request-state",
         ControlToAgent::RenewedCertificate { .. } => "renewed-certificate",
         ControlToAgent::RemoveProject { .. } => "remove-project",
+        ControlToAgent::TrustedCas { .. } => "trusted-cas",
     }
 }

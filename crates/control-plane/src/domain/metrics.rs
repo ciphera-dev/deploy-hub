@@ -227,7 +227,8 @@ pub fn register(handlers: Handlers, state: AppState) -> Handlers {
 /// Tache horaire d'entretien : elle balaie aussi les notifications
 /// ([`crate::domain::notifications::sweep`]), purge les envois anciens
 /// ([`crate::domain::notifications::purge`]) et les taches terminees depuis
-/// plus de 7 jours ([`jobs::purge_finished`]).
+/// plus de 7 jours ([`jobs::purge_finished`]), et verifie l'expiration de
+/// la CA de l'instance ([`crate::domain::notifications::check_ca_expiry`]).
 pub async fn run_rollup(state: &AppState, _job: Job) -> Result<(), HandlerError> {
     let now = state.clock.unix_secs();
     // Purge au mieux, avant l'agregation : un echec de celle-ci ne l'arrete
@@ -245,6 +246,9 @@ pub async fn run_rollup(state: &AppState, _job: Job) -> Result<(), HandlerError>
     };
     if let Err(e) = crate::http::email_verification::purge_pending(&state.db).await {
         tracing::warn!(error = %e, "purge des comptes en attente impossible");
+    }
+    if let Err(e) = crate::domain::notifications::check_ca_expiry(state).await {
+        tracing::warn!(error = %e, "expiration de la CA de l'instance non verifiee");
     }
     notifications.await.map_err(|e| {
         tracing::error!(error = %e, "entretien des notifications impossible");

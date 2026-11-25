@@ -1,6 +1,7 @@
 //! Notifications e-mail du Profil › Notifications : deploiement reussi ou en
 //! echec, emission ou renouvellement de certificat en echec, certificat
-//! proche de l'expiration.
+//! proche de l'expiration, CA de l'instance a moins d'un an de son
+//! expiration (proprietaire seul, [`check_ca_expiry`]).
 //!
 //! - **Mise en file a la transition** : [`enqueue`] est appele dans la
 //!   transaction qui change le statut (deploiement, certificat). Rien n'est
@@ -59,6 +60,9 @@ const WINDOW_SECS: f64 = 3600.0;
 /// Un certificat qui expire dans moins de 7 jours sans renouvellement
 /// reussi est signale.
 pub const EXPIRING_SOON_SECS: i64 = 7 * 86_400;
+/// La CA de l'instance est signalee au proprietaire quand il lui reste
+/// moins d'un an (le temps d'une rotation : `ciphera admin rotate-ca`).
+pub const CA_EXPIRING_SECS: i64 = 365 * 86_400;
 /// Tentatives de la tache (envois en echec repris, 15 s doublees).
 const MAX_ATTEMPTS: i32 = 6;
 /// Duree de conservation des envois (bien au-dela des reprises).
@@ -94,6 +98,11 @@ pub enum Event {
     Digest {
         user_id: Uuid,
     },
+    /// CA de l'instance qui expire a `expires_at` (secondes Unix), dans
+    /// moins de [`CA_EXPIRING_SECS`] : proprietaire seulement.
+    CaExpiring {
+        expires_at: i64,
+    },
 }
 
 impl Event {
@@ -110,6 +119,7 @@ impl Event {
                 expires_at,
             } => format!("cert:{domain_id}:expiring:{expires_at}"),
             Event::Digest { user_id } => format!("digest:{user_id}"),
+            Event::CaExpiring { expires_at } => format!("ca:expiring:{expires_at}"),
         }
     }
 
@@ -167,6 +177,44 @@ async fn queue(conn: &mut PgConnection, event: &Event, run_at: Option<f64>) -> s
     Ok(())
 }
 
+/// Verification de la tache horaire d'entretien (`metrics::run_rollup`) :
+/// CA de l'instance (`<config_dir>/ca/ca.crt`) a moins d'un an de son
+/// expiration, sans rotation en cours (`ca/ca-next.crt`) et sans envoi deja
+/// fait pour elle (les envois de plus de 30 jours etant purges, le rappel
+/// revient chaque mois). Vrai si la notification a ete mise en file.
+pub async fn check_ca_expiry(state: &AppState) -> sqlx::Result<bool> {
+    use crate::agents::transport::{CA_CRT, CA_NEXT_CRT};
+    let dir = &state.cfg.config_dir;
+    if std::fs::symlink_metadata(dir.join(CA_NEXT_CRT)).is_ok() {
+        return Ok(false);
+    }
+    let Some(expires_at) = std::fs::read_to_string(dir.join(CA_CRT))
+        .ok()
+        .and_then(|pem| pki::der_from_pem(&pem))
+        .and_then(|der| pki::validity_unix(&der))
+        .map(|(_, to)| to)
+    else {
+        return Ok(false);
+    };
+    let now = state.clock.unix_secs() as i64;
+    if expires_at - now >= CA_EXPIRING_SECS {
+        return Ok(false);
+    }
+    let event = Event::CaExpiring { expires_at };
+    let notified: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM notification_deliveries WHERE event_key = $1)",
+    )
+    .bind(event.key())
+    .fetch_one(&state.db)
+    .await?;
+    if notified {
+        return Ok(false);
+    }
+    let mut conn = state.db.acquire().await?;
+    enqueue(&mut conn, state, event).await?;
+    Ok(true)
+}
+
 /// Reservation `pending` plus vieille que ce delai : sa tache s'est arretee
 /// sur sa derniere tentative (6 tentatives, quelques minutes au plus).
 const ORPHAN_SECS: f64 = 3600.0;
@@ -220,10 +268,15 @@ struct Notice {
     level: Level,
     /// Date d'expiration a afficher dans le fuseau du destinataire.
     expires_at: Option<i64>,
+    /// Reserve au proprietaire de l'instance.
+    owner_only: bool,
 }
 
 impl Notice {
     fn allows(&self, role: &str) -> bool {
+        if self.owner_only && role != "owner" {
+            return false;
+        }
         Role::parse(role).is_some_and(|role| authz::allowed(role, self.resource, self.level))
     }
 }
@@ -246,7 +299,7 @@ impl Recipient {
         let wanted = match event {
             Event::DeployFailed { .. } => self.deploy_failed.unwrap_or(d.deploy_failed),
             Event::DeploySucceeded { .. } => self.deploy_succeeded.unwrap_or(d.deploy_succeeded),
-            Event::CertFailed { .. } | Event::CertExpiring { .. } => {
+            Event::CertFailed { .. } | Event::CertExpiring { .. } | Event::CaExpiring { .. } => {
                 self.certificates.unwrap_or(d.certificates)
             }
             Event::Digest { .. } => true,
@@ -715,9 +768,23 @@ async fn notice(db: &PgPool, event: &Event) -> sqlx::Result<Option<Notice>> {
                 resource: Resource::Deployments,
                 level: Level::Read,
                 expires_at: None,
+                owner_only: false,
             }))
         }
         Event::Digest { .. } => Ok(None),
+        Event::CaExpiring { expires_at } => Ok(Some(Notice {
+            subject: "La CA de l'instance Ciphera expire bientôt".into(),
+            body: "La CA de l'instance (certificats des agents, du lien et de l'accès direct \
+                   au panneau) expire le {expiry}. Lancez sa rotation sur le serveur : \
+                   sudo ciphera admin rotate-ca, puis suivez la procédure de \
+                   docs/operations/certificats.md. Paramètres du panneau :"
+                .into(),
+            path: "/settings".into(),
+            resource: Resource::Settings,
+            level: Level::Admin,
+            expires_at: Some(*expires_at),
+            owner_only: true,
+        })),
         Event::CertFailed { domain_id, .. } | Event::CertExpiring { domain_id, .. } => {
             let row: Option<(String, bool, Option<Uuid>, Option<i64>)> = sqlx::query_as(
                 "SELECT host, panel, project_id, extract(epoch FROM cert_expires_at)::bigint \
@@ -783,6 +850,7 @@ async fn notice(db: &PgPool, event: &Event) -> sqlx::Result<Option<Notice>> {
                 resource,
                 level,
                 expires_at,
+                owner_only: false,
             }))
         }
     }
@@ -842,6 +910,7 @@ mod tests {
                 domain_id: id,
                 expires_at: 1,
             },
+            Event::CaExpiring { expires_at: 1 },
         ];
         let keys: std::collections::HashSet<_> = events.iter().map(Event::key).collect();
         assert_eq!(keys.len(), events.len());
@@ -862,6 +931,7 @@ Bcc: x@example.com"
             resource: Resource::Deployments,
             level: Level::Read,
             expires_at: None,
+            owner_only: false,
         };
         let mail = compose(
             &notice,

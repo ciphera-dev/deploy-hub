@@ -19,6 +19,13 @@
 //!   signataire, voir `docs/operations/certificats.md` ; seul le certificat
 //!   du serveur local enregistre, emis par la CA de l'instance, est re-signe.
 //!
+//! Rotation de la CA (`ciphera admin rotate-ca`, `agents::rotation`) : tant
+//! que `ca/ca-next.crt` existe, un certificat d'agent qui n'est pas emis par
+//! la CA suivante est redemande a la connexion (le signataire le signe avec
+//! elle) ; le lien et le panneau restent a la CA courante jusqu'a la fin de
+//! la rotation, puis tout certificat emis par une CA qui n'est plus de
+//! confiance est redemande.
+//!
 //! Un certificat est remplace sous le verrou des paires ([`lock_pairs`]) ;
 //! une paire certificat + cle interrompue ([`replace_pair`] : fichiers
 //! prepares, manifeste, renommages) est reprise avant toute lecture
@@ -36,7 +43,7 @@ use sqlx::PgPool;
 
 use super::servers;
 use super::signer::{self, CertRequest, Usage};
-use super::transport::{CA_CRT, LINK_CRT, LINK_KEY};
+use super::transport::{LINK_CRT, LINK_KEY, TrustedCas};
 
 /// Cle privee de la CA (relative au dossier de configuration) : root 0600,
 /// lue par le seul signataire root.
@@ -385,6 +392,19 @@ pub fn recover_pairs(config_dir: &Path) -> io::Result<()> {
 pub fn renew_server(
     config_dir: &Path,
     ca: &pki::Ca,
+    pair: (&str, &str),
+    now: i64,
+    force: bool,
+) -> io::Result<bool> {
+    renew_server_with(config_dir, ca, &[ca], pair, now, force)
+}
+
+/// Comme [`renew_server`] : certificat en place emis par l'une des CA
+/// `trusted`, re-signe par `ca` (rotation de la CA : fin de rotation).
+pub fn renew_server_with(
+    config_dir: &Path,
+    ca: &pki::Ca,
+    trusted: &[&pki::Ca],
     (crt, key): (&str, &str),
     now: i64,
     force: bool,
@@ -404,7 +424,7 @@ pub fn renew_server(
     if !due && !force {
         return Ok(false);
     }
-    let bundle = signer::sign_server(ca, &pem).map_err(io::Error::other)?;
+    let bundle = signer::sign_server_with(ca, trusted, &pem).map_err(io::Error::other)?;
     replace_file(&config_dir.join(crt), bundle.cert_pem.as_bytes())?;
     Ok(true)
 }
@@ -478,11 +498,22 @@ impl Renewals {
         Ok(true)
     }
 
+    /// CA de confiance (`ca/ca.crt` et, pendant une rotation,
+    /// `ca/ca-next.crt`).
+    pub fn trusted_cas(&self) -> io::Result<TrustedCas> {
+        TrustedCas::load(&self.config_dir)
+    }
+
     /// Agent `id` connecte avec le certificat `leaf` : demande de
-    /// renouvellement s'il a passe les deux tiers de sa validite. Vrai si
-    /// une demande a ete ecrite.
+    /// renouvellement s'il a passe les deux tiers de sa validite, ou s'il
+    /// n'est pas emis par la CA qui signe les agents (la suivante pendant
+    /// une rotation). Vrai si une demande a ete ecrite.
     pub fn request_agent(&self, id: ServerId, leaf: &[u8], now: i64) -> io::Result<bool> {
-        if pki::renewal_due(leaf, now) != Some(true) {
+        let due = pki::renewal_due(leaf, now) == Some(true);
+        let stale = self
+            .trusted_cas()
+            .is_ok_and(|cas| !pki::issued_by(cas.active(), leaf));
+        if !due && !stale {
             return Ok(false);
         }
         let request = CertRequest::agent(id, leaf)
@@ -514,10 +545,18 @@ impl Renewals {
 
     fn request_one(&self, usage: Usage, crt: &str, now: i64) -> io::Result<bool> {
         let pem = fs::read_to_string(self.config_dir.join(crt))?;
-        let due = pki::der_from_pem(&pem)
-            .and_then(|der| pki::renewal_due(&der, now))
+        let der = pki::der_from_pem(&pem);
+        let due = der
+            .as_deref()
+            .and_then(|der| pki::renewal_due(der, now))
             .unwrap_or(true);
-        if !due {
+        // Fin de rotation de la CA : certificat d'une CA qui n'est plus de
+        // confiance.
+        let stale = match (self.ca_ders(), der.as_deref()) {
+            (Some(cas), Some(der)) => !pki::issued_by_any(&cas, der),
+            _ => false,
+        };
+        if !due && !stale {
             return Ok(false);
         }
         let request = CertRequest::own(usage, &pem)
@@ -557,10 +596,9 @@ impl Renewals {
         None
     }
 
-    fn ca_der(&self) -> Option<Vec<u8>> {
-        fs::read_to_string(self.config_dir.join(CA_CRT))
-            .ok()
-            .and_then(|pem| pki::der_from_pem(&pem))
+    /// CA de confiance (DER) ; `None` si illisibles.
+    fn ca_ders(&self) -> Option<Vec<Vec<u8>>> {
+        self.trusted_cas().ok().map(|cas| cas.ders())
     }
 
     /// Certificats d'agents signes : `(serveur, PEM)` a envoyer, verifies
@@ -568,7 +606,7 @@ impl Renewals {
     /// d'agents absents de `connected` sont abandonnees (redemandees a leur
     /// prochaine connexion).
     pub fn agent_responses(&self, now: i64, connected: &[ServerId]) -> Vec<(ServerId, String)> {
-        let ca_der = self.ca_der();
+        let ca_ders = self.ca_ders();
         let mut out = Vec::new();
         let mut pending = self.pending();
         pending.retain(|name, p| {
@@ -587,7 +625,9 @@ impl Renewals {
             };
             let leaf = p.leaf.as_deref().unwrap_or_default();
             let ok = pki::der_from_pem(&pem).is_some_and(|der| {
-                ca_der.as_deref().is_some_and(|ca| pki::issued_by(ca, &der))
+                ca_ders
+                    .as_deref()
+                    .is_some_and(|cas| pki::issued_by_any(cas, &der))
                     && pki::agent_id_from_cert(&der) == Some(id)
                     && pki::public_key_der(&der).is_some()
                     && pki::public_key_der(&der) == pki::public_key_der(leaf)
@@ -607,7 +647,7 @@ impl Renewals {
     /// verifiee sous le verrou des paires). Renvoie les certificats
     /// installes, a recharger.
     pub fn install_own_responses(&self, now: i64) -> Vec<&'static str> {
-        let ca_der = self.ca_der();
+        let ca_ders = self.ca_ders();
         let mut installed = Vec::new();
         let mut pending = self.pending();
         for (usage, (crt, key)) in [Usage::Link, Usage::Panel].into_iter().zip(OWN_CERTS) {
@@ -622,7 +662,7 @@ impl Renewals {
                 continue;
             };
             pending.remove(name);
-            match self.install_own(ca_der.as_deref(), (crt, key), &pem, now) {
+            match self.install_own(ca_ders.as_deref(), (crt, key), &pem, now) {
                 Ok(()) => {
                     tracing::info!("certificat {crt} renouvele");
                     installed.push(crt);
@@ -635,13 +675,13 @@ impl Renewals {
 
     fn install_own(
         &self,
-        ca_der: Option<&[u8]>,
+        ca_ders: Option<&[Vec<u8>]>,
         (crt, key): (&str, &str),
         pem: &str,
         now: i64,
     ) -> io::Result<()> {
         let der = pki::der_from_pem(pem).ok_or_else(|| io::Error::other("illisible"))?;
-        if !ca_der.is_some_and(|ca| pki::issued_by(ca, &der)) {
+        if !ca_ders.is_some_and(|cas| pki::issued_by_any(cas, &der)) {
             return Err(io::Error::other("non emis par la CA de l'instance"));
         }
         if pki::renewal_due(&der, now) != Some(false) {
@@ -684,28 +724,39 @@ pub async fn renew_all(
     config_dir: &Path,
     agent_dir: &Path,
 ) -> Result<RenewAll, Box<dyn std::error::Error>> {
-    // Installation anterieure : dossier et cle de la CA remis a root d'abord.
+    // Installation anterieure : dossiers de configuration et de la CA, et
+    // cle de la CA, remis a root d'abord.
+    if signer::harden_config_dir(config_dir)
+        .map_err(|e| format!("{} : {e}", config_dir.display()))?
+    {
+        eprintln!(
+            "{} remis a root (groupe conserve, 0750)",
+            config_dir.display()
+        );
+    }
     if signer::harden_ca(config_dir).map_err(|e| format!("ca/ : {e}"))? {
         eprintln!("ca/ remis a root (cle 0600, certificat 0640, dossier 0750)");
     }
-    let ca = load_ca(config_dir).map_err(|e| format!("CA de l'instance illisible : {e}"))?;
+    let cas =
+        signer::load_cas(config_dir).map_err(|e| format!("CA de l'instance illisible : {e}"))?;
     recover_pairs(config_dir)
         .map_err(|e| format!("reprise d'un renouvellement interrompu : {e}"))?;
     let agent_crt = agent_dir.join(AGENT_CRT);
     let local_agent = match fs::read_to_string(&agent_crt) {
-        Ok(pem) => Some(local_agent_cert(db, &ca, config_dir, &pem).await?),
+        Ok(pem) => Some(local_agent_cert(db, &cas, config_dir, &pem).await?),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(format!("{} : {e}", agent_crt.display()).into()),
     };
     let now = now_unix();
     let mut server_certs = Vec::new();
     for pair in OWN_CERTS {
-        renew_server(config_dir, &ca, pair, now, true).map_err(|e| format!("{} : {e}", pair.0))?;
+        renew_server_with(config_dir, &cas.current, &cas.trusted(), pair, now, true)
+            .map_err(|e| format!("{} : {e}", pair.0))?;
         server_certs.push(pair.0);
     }
     let agent = match local_agent {
         Some((id, known, der)) => {
-            let bundle = signer::sign_agent(&ca, &der, id)?;
+            let bundle = cas.sign_agent(&der, id)?;
             // Empreinte connue : la meme qu'au controle (atomique). Base
             // restauree (`known` vide) : identifiant et ligne locale.
             let noted = sqlx::query(
@@ -744,7 +795,8 @@ pub async fn renew_all(
 }
 
 /// Certificat PEM de l'agent local accepte pour `renew-certs` : emis par
-/// la CA de l'instance, avec l'identifiant du serveur local non revoque,
+/// une CA de l'instance (courante, ou suivante pendant une rotation), avec
+/// l'identifiant du serveur local non revoque,
 /// et :
 /// - soit d'empreinte enregistree (actuelle ou suivante) pour ce serveur ;
 /// - soit, empreinte inconnue de la base (base restauree depuis une
@@ -755,13 +807,12 @@ pub async fn renew_all(
 /// cas) et le DER.
 async fn local_agent_cert(
     db: &PgPool,
-    ca: &pki::Ca,
+    cas: &signer::Cas,
     config_dir: &Path,
     pem: &str,
 ) -> Result<(ServerId, Option<String>, Vec<u8>), Box<dyn std::error::Error>> {
     let der = pki::der_from_pem(pem).ok_or("certificat de l'agent illisible")?;
-    let ca_der = pki::der_from_pem(ca.cert_pem()).ok_or("certificat de la CA illisible")?;
-    if !pki::issued_by(&ca_der, &der) {
+    if !cas.issued(&der) {
         return Err(
             "certificat de l'agent local non emis par la CA de l'instance : agent non renouvele"
                 .into(),

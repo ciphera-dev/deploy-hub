@@ -335,6 +335,18 @@ fn renewed_certificate_is_appended_after_request_state() {
 }
 
 #[test]
+fn trusted_cas_is_appended_after_remove_project() {
+    // Rang postcard 18, apres `RemoveProject` (17) ; version inchangee (v6).
+    let msg = ControlToAgent::TrustedCas {
+        ca_pem: "-----BEGIN CERTIFICATE-----".into(),
+    };
+    let frame = codec::encode(&msg).unwrap();
+    assert_eq!(frame[4], 18);
+    assert_eq!(codec::decode::<ControlToAgent>(&frame).unwrap(), msg);
+    assert_eq!(proto::PROTO_VERSION, 6);
+}
+
+#[test]
 fn deploy_without_service_name_from_an_older_peer_still_decodes() {
     // Champ ajoute en fin de `DeploySpec` (dernier champ de `Deploy`) : une
     // trame d'avant ce champ se lit avec `service_name: None`.

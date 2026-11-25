@@ -35,4 +35,4 @@ La règle de refus hors boucle locale n'est levée qu'une fois ces éléments li
 
 - v0.1 : aucune exposition réseau du lien agent, quelle que soit la configuration.
 - v0.2 : un jeton volé ne sert qu'une fois et pendant 1 h ; une clé d'agent n'est jamais transmise ; la CA n'est plus dans le processus exposé.
-- Reste hors périmètre de cette ADR : rotation de la clé d'un agent enrôlé et renouvellement de la CA.
+- Reste hors périmètre de cette ADR : rotation de la clé d'un agent enrôlé. La rotation de la CA (`ciphera admin rotate-ca`) est décrite dans `docs/operations/certificats.md` : l'agent reçoit les CA de confiance sur le lien (`TrustedCas`) et le lien ne passe à la nouvelle CA qu'une fois tous les agents passés à elle.

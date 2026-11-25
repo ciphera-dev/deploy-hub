@@ -91,6 +91,18 @@ enum AdminCommand {
     /// la CA remise a root (0600), puis demandes du service signees (meme
     /// cle publique, serveur enregistre et non revoque) ou refusees.
     SignRequests,
+    /// Rotation de la CA de l'instance, en root : sans option, cree la CA
+    /// suivante (les agents passent a elle d'eux-memes) ; `--status` suit
+    /// leur passage ; `--finish` remplace l'ancienne CA quand tous les
+    /// serveurs non revoques presentent un certificat de la suivante.
+    RotateCa {
+        /// Termine la rotation (ancienne CA retiree).
+        #[arg(long, conflicts_with = "status")]
+        finish: bool,
+        /// Affiche l'etat de la rotation, sans rien changer.
+        #[arg(long)]
+        status: bool,
+    },
 }
 
 #[derive(Args)]
@@ -147,6 +159,9 @@ async fn main() {
         }
         Some(Command::Admin(AdminCommand::SignRequests)) => {
             std::process::exit(run_sign_requests().await)
+        }
+        Some(Command::Admin(AdminCommand::RotateCa { finish, status })) => {
+            std::process::exit(run_rotate_ca(finish, status).await)
         }
         Some(Command::Serve) | None => {}
     }
@@ -276,6 +291,73 @@ async fn run_renew_certs(agent_dir: &std::path::Path) -> i32 {
     }
 }
 
+/// Rotation de la CA ; messages sur la sortie d'erreur.
+async fn run_rotate_ca(finish: bool, status: bool) -> i32 {
+    use control_plane::agents::rotation::{self, Start};
+    if !running_as_root() {
+        eprintln!("erreur : ciphera admin rotate-ca se lance en root");
+        return 1;
+    }
+    let result = async {
+        let cfg = control_plane::cli::env::admin_config()?;
+        if !finish && !status {
+            return Ok::<_, Box<dyn std::error::Error>>(
+                match rotation::start(&cfg.config_dir)? {
+                    Start::Started(fp) => format!(
+                        "CA suivante creee ({fp}) : les agents connectes passent a elle d'eux-memes                          en quelques minutes ; suivre avec ciphera admin rotate-ca --status, puis                          terminer avec ciphera admin rotate-ca --finish"
+                    ),
+                    Start::InProgress(fp) => format!(
+                        "rotation deja en cours (CA suivante {fp}) : ciphera admin rotate-ca --status"
+                    ),
+                },
+            );
+        }
+        let db = admin_db(&cfg).await?;
+        if status {
+            let st = rotation::status(&db, &cfg.config_dir).await?;
+            let mut out = format!("CA courante : {}", st.current);
+            match &st.next {
+                None => out.push_str("
+aucune rotation en cours"),
+                Some(next) => {
+                    out.push_str(&format!(
+                        "
+CA suivante : {next}
+{} serveur(s) restant(s)",
+                        st.remaining.len()
+                    ));
+                    for p in &st.remaining {
+                        out.push_str(&format!("
+  {} ({})", p.name, p.id));
+                    }
+                    if st.remaining.is_empty() {
+                        out.push_str("
+pret : ciphera admin rotate-ca --finish");
+                    }
+                }
+            }
+            return Ok(out);
+        }
+        let done = rotation::finish(&db, &cfg.config_dir).await?;
+        Ok(format!(
+            "rotation terminee : CA de l'instance {} ; {} re-signes ; le service recharge le lien              et reconnecte les agents en quelques secondes",
+            done.fingerprint,
+            done.server_certs.join(", ")
+        ))
+    }
+    .await;
+    match result {
+        Ok(message) => {
+            eprintln!("{message}");
+            0
+        }
+        Err(e) => {
+            eprintln!("erreur : {e}");
+            1
+        }
+    }
+}
+
 /// Signataire root : messages sur la sortie d'erreur (journal de
 /// ciphera-certsign.service). Sans demande, la base n'est pas ouverte.
 async fn run_sign_requests() -> i32 {
@@ -293,6 +375,15 @@ async fn run_sign_requests() -> i32 {
             return 1;
         }
     };
+    // Dossier de configuration au compte du service (installation
+    // anterieure) : remis a root par install.sh, renew-certs ou rotate-ca ;
+    // ici en lecture seule (ProtectSystem=strict), simple avertissement.
+    if let Err(e) = signer::harden_config_dir(&cfg.config_dir) {
+        eprintln!(
+            "attention : {} pas a root en 0750 ({e}) : relancer install.sh ou ciphera admin renew-certs",
+            cfg.config_dir.display()
+        );
+    }
     // Echec : la cle de la CA n'est pas protegee (ou plus lisible par le
     // signataire) ; seul cas, avec une CA ou des dossiers inutilisables, ou
     // la commande echoue (une demande refusee n'est pas une panne).
@@ -616,6 +707,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         cfg.clone(),
         renewals,
         agent_link.clone(),
+        agents.clone(),
         tls_config.clone(),
     ));
 
@@ -844,31 +936,45 @@ async fn serve_direct(
 
 /// Toutes les 12 h : certificats du lien et du panneau demandes au
 /// signataire s'ils ont passe les deux tiers de leur validite ; toutes les
-/// 2 s : certificats signes installes, puis recharges a chaud.
+/// 2 s : certificats signes installes, puis recharges a chaud, et CA de
+/// confiance relues (rotation de la CA : lien et panneau recharges, agents
+/// reconnectes, certificats d'une CA retiree redemandes).
 async fn renew_certs_periodically(
     cfg: Arc<Config>,
     renewals: Arc<agents::certs::Renewals>,
     link: Option<quinn::Endpoint>,
+    registry: AgentRegistry,
     panel: axum_server::tls_rustls::RustlsConfig,
 ) {
     let mut checked = std::time::Instant::now();
+    let mut trust = agents::transport::TrustWatch::new(&cfg.config_dir);
     loop {
         tokio::time::sleep(agents::certs::RESPONSE_POLL).await;
-        if checked.elapsed() >= agents::certs::CHECK_EVERY {
+        let trust_changed = trust.changed();
+        if trust_changed || checked.elapsed() >= agents::certs::CHECK_EVERY {
             checked = std::time::Instant::now();
             renewals.request_own(agents::certs::now_unix());
         }
-        let renewed = renewals.install_own_responses(agents::certs::now_unix());
+        let mut renewed = renewals.install_own_responses(agents::certs::now_unix());
+        if trust_changed {
+            tracing::warn!("CA de l'instance changees (rotation) : lien et panneau recharges");
+            if let Some(endpoint) = &link {
+                match agents::transport::apply_trust_change(endpoint, &cfg.config_dir, &registry) {
+                    Ok(ids) => tracing::info!(
+                        "lien agents : {} agent(s) reconnecte(s) pour les nouvelles CA",
+                        ids.len()
+                    ),
+                    Err(e) => tracing::error!("lien agents : nouvelles CA non chargees : {e}"),
+                }
+            }
+            renewed.retain(|crt| *crt != agents::transport::LINK_CRT);
+            renewed.push(agents::certs::PANEL_CRT);
+        }
         if renewed.contains(&agents::transport::LINK_CRT)
             && let Some(endpoint) = &link
+            && let Err(e) = agents::transport::reload_link(endpoint, &cfg.config_dir)
         {
-            match agents::transport::LinkTls::load(&cfg.config_dir)
-                .map_err(|e| e.to_string())
-                .and_then(|tls| agents::transport::server_config(&tls).map_err(|e| e.to_string()))
-            {
-                Ok(server) => endpoint.set_server_config(Some(server)),
-                Err(e) => tracing::error!("lien agents : nouveau certificat non charge : {e}"),
-            }
+            tracing::error!("lien agents : nouveau certificat non charge : {e}");
         }
         if renewed.contains(&agents::certs::PANEL_CRT) {
             let (crt, key) = tls::panel_paths(&cfg);

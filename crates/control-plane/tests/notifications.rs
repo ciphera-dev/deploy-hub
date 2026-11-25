@@ -786,3 +786,67 @@ async fn notify_job_duration_is_bounded() {
     assert_eq!(env.recipients(), HashSet::from([fast]));
     assert_eq!(pending(&env).await, 0, "reservation rendue");
 }
+
+/// CA de l'instance a moins d'un an de son expiration (verification de la
+/// tache horaire d'entretien) : le proprietaire seul est prevenu, une fois,
+/// avec la commande de rotation ; rien plus d'un an avant, ni pendant une
+/// rotation.
+#[tokio::test]
+async fn ca_expiry_notification() {
+    let mut env = Env::new().await;
+    env.smtp(true).await;
+    let all = Some((true, true, true, true));
+    let owner = env.user("owner", all).await;
+    env.user("admin", all).await;
+    env.user("developer", all).await;
+    let dir = common::TempDir::new();
+    std::fs::create_dir_all(dir.0.join("ca")).unwrap();
+    let ca = pki::Ca::generate("Ciphera CA").unwrap();
+    std::fs::write(dir.0.join("ca/ca.crt"), ca.cert_pem()).unwrap();
+    let config_dir = dir.0.to_string_lossy().into_owned();
+    env.state.cfg = Arc::new(
+        Config::from_lookup(|name| match name {
+            "CIPHERA_DATABASE_URL" => Some("postgres://u:p@127.0.0.1/c".to_string()),
+            "CIPHERA_PUBLIC_URL" => Some(PUBLIC_URL.to_string()),
+            "CIPHERA_CONFIG_DIR" => Some(config_dir.clone()),
+            _ => None,
+        })
+        .unwrap(),
+    );
+
+    // Dix ans de validite : rien a signaler.
+    assert!(!notifications::check_ca_expiry(&env.state).await.unwrap());
+    assert_eq!(env.notify_jobs().await, 0);
+
+    // 300 jours restants.
+    env.advance_clock(Duration::from_secs((3650 - 300) * 86_400));
+    assert!(notifications::check_ca_expiry(&env.state).await.unwrap());
+    env.run().await;
+    assert_eq!(env.recipients(), HashSet::from([owner]));
+    let mail = &env.sent()[0];
+    assert!(mail.subject.contains("CA"), "{}", mail.subject);
+    assert!(
+        mail.text.contains("ciphera admin rotate-ca"),
+        "{}",
+        mail.text
+    );
+    assert!(
+        mail.text.contains(&format!("{PUBLIC_URL}/settings")),
+        "{}",
+        mail.text
+    );
+
+    // Deja prevenu : rien de plus a l'heure suivante.
+    assert!(!notifications::check_ca_expiry(&env.state).await.unwrap());
+    env.run().await;
+    assert_eq!(env.sent().len(), 1);
+
+    // Rotation en cours : rien (meme envois oublies).
+    sqlx::query("DELETE FROM notification_deliveries")
+        .execute(&env.state.db)
+        .await
+        .unwrap();
+    let next = pki::Ca::generate("Ciphera CA 2").unwrap();
+    std::fs::write(dir.0.join("ca/ca-next.crt"), next.cert_pem()).unwrap();
+    assert!(!notifications::check_ca_expiry(&env.state).await.unwrap());
+}

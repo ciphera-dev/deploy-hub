@@ -91,6 +91,25 @@ pub async fn promote_next_cert(
     Ok(n == 1)
 }
 
+/// Note la CA emettrice (`issuer` : SHA-256 de son certificat DER) du
+/// certificat presente par `id`, s'il est toujours son certificat actuel.
+pub async fn set_issuer(
+    db: &PgPool,
+    id: ServerId,
+    fingerprint: &str,
+    issuer: &[u8],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE servers SET cert_issuer_fingerprint = $3          WHERE id = $1 AND cert_fingerprint = $2 AND revoked_at IS NULL          AND cert_issuer_fingerprint IS DISTINCT FROM $3",
+    )
+    .bind(id)
+    .bind(fingerprint)
+    .bind(issuer)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 /// Enregistre le serveur local d'apres le certificat PEM de son agent.
 /// Idempotent : une ligne existante (meme revoquee) n'est jamais modifiee.
 pub async fn register_local(db: &PgPool, cert_pem: &str) -> Result<ServerId, RegisterError> {

@@ -956,3 +956,182 @@ async fn renewed_cert_with_another_key_is_refused_by_the_agent() {
         .unwrap();
     assert!(identity.check_renewed(&other_id.cert_pem, now).is_err());
 }
+
+/// Attente (30 s au plus) d'une condition asynchrone.
+async fn wait_for_async<F, Fut>(what: &str, mut cond: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !cond().await {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what} : delai depasse"));
+}
+
+async fn issuer_of(db: &PgPool, id: ServerId) -> Option<Vec<u8>> {
+    sqlx::query_scalar("SELECT cert_issuer_fingerprint FROM servers WHERE id = $1")
+        .bind(id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// Rotation de la CA (`ciphera admin rotate-ca`), plan de controle et agent
+/// en memoire, signataire root et relecture des CA comme le service :
+/// avant, l'agent presente un certificat de l'ancienne CA ; pendant, il
+/// recoit les deux CA puis un certificat de la nouvelle (meme cle) et reste
+/// connecte ; apres `--finish`, le lien est re-signe par la nouvelle CA,
+/// l'agent ne garde qu'elle et reste connecte ; un certificat de l'ancienne
+/// CA n'ouvre plus le lien.
+#[tokio::test]
+async fn rotation_keeps_agent_connected() {
+    use control_plane::agents::{certs, rotation};
+    let (db, _guard) = common::database().await;
+    let ca = Ca::generate("Ciphera CA").unwrap();
+    // Dossier de configuration commun au service et au signataire (root).
+    let config = common::TempDir::new();
+    for sub in ["ca", "tls", "agents"] {
+        std::fs::create_dir_all(config.0.join(sub)).unwrap();
+    }
+    std::fs::write(config.0.join(transport::CA_CRT), ca.cert_pem()).unwrap();
+    let key_path = config.0.join(certs::CA_KEY);
+    std::fs::write(&key_path, ca.key_pem().as_bytes()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    for (crt, key) in certs::OWN_CERTS {
+        let mut b = ca.issue_server_cert(&["localhost".into()]).unwrap();
+        std::fs::write(config.0.join(crt), &b.cert_pem).unwrap();
+        std::fs::write(config.0.join(key), b.key_pem.take().unwrap().as_bytes()).unwrap();
+    }
+    let data = common::TempDir::new();
+    let endpoint = transport::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        transport::server_config(&transport::LinkTls::load(&config.0).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let registry = AgentRegistry::new();
+    let renewals = Arc::new(Renewals::new(&config.0, &data.0));
+    tokio::spawn(transport::serve_with_renewal(
+        endpoint.clone(),
+        registry.clone(),
+        db.clone(),
+        Some(renewals),
+    ));
+    // Signataire root (le `.path` en vrai) et relecture des CA (boucle de
+    // renouvellement du service).
+    let (signer_db, signer_config, signer_data) = (db.clone(), config.0.clone(), data.0.clone());
+    let signer_task = tokio::spawn(async move {
+        loop {
+            let _ = signer::sign_requests(&signer_db, &signer_config, &signer_data).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+    let (watch_endpoint, watch_registry, watch_config) =
+        (endpoint.clone(), registry.clone(), config.0.clone());
+    let watch_task = tokio::spawn(async move {
+        let mut trust = transport::TrustWatch::new(&watch_config);
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if trust.changed() {
+                transport::apply_trust_change(&watch_endpoint, &watch_config, &watch_registry)
+                    .unwrap();
+            }
+        }
+    });
+    let link = Link {
+        addr: endpoint.local_addr().unwrap(),
+        registry,
+        endpoint,
+    };
+
+    let id = ServerId::new();
+    let key = pki::AgentKey::generate().unwrap();
+    let cert = ca.issue_agent_cert(id, key.public_key_der()).unwrap();
+    servers::register_local(&db, &cert.cert_pem).await.unwrap();
+    let agent_dir = common::TempDir::new();
+    std::fs::write(agent_dir.0.join("agent.crt"), &cert.cert_pem).unwrap();
+    std::fs::write(agent_dir.0.join("ca.crt"), ca.cert_pem()).unwrap();
+    let identity = Identity::from_pem(
+        cert.cert_pem.as_bytes(),
+        key.key_pem().as_bytes(),
+        ca.cert_pem().as_bytes(),
+    )
+    .unwrap();
+    let mut cfg = agent_config(link.addr);
+    cfg.dir = agent_dir.0.clone();
+    let mut agent = Agent::new(&cfg, &identity, fixed_state(running())).unwrap();
+    agent.retry = Duration::from_millis(50);
+    let (inbox_tx, _inbox) = mpsc::channel(8);
+    let (_outbox_tx, outbox) = mpsc::channel(8);
+    let running_agent = tokio::spawn(async move { agent.run(inbox_tx, outbox).await });
+    let der = |pem: &str| pki::der_from_pem(pem).unwrap();
+    let agent_file = |name: &str| std::fs::read_to_string(agent_dir.0.join(name)).unwrap();
+
+    // Avant : certificat de l'ancienne CA, note a la connexion.
+    let old_sha = pki::sha256(&der(ca.cert_pem()));
+    wait_for_async("agent connecte (ancienne CA)", || async {
+        link.registry.is_connected(id) && issuer_of(&db, id).await.as_ref() == Some(&old_sha)
+    })
+    .await;
+
+    // Pendant : nouvelle CA, l'agent passe a elle de lui-meme.
+    rotation::start(&config.0).unwrap();
+    let next_pem = std::fs::read_to_string(config.0.join(transport::CA_NEXT_CRT)).unwrap();
+    let next_der = der(&next_pem);
+    let next_sha = pki::sha256(&next_der);
+    wait_for_async("certificat de la nouvelle CA presente", || async {
+        link.registry.is_connected(id) && issuer_of(&db, id).await.as_ref() == Some(&next_sha)
+    })
+    .await;
+    let renewed = der(&agent_file("agent.crt"));
+    assert!(pki::issued_by(&next_der, &renewed));
+    assert_eq!(pki::public_key_der(&renewed).unwrap(), key.public_key_der());
+    assert_eq!(
+        pki::ders_from_pem(&agent_file("ca.crt")),
+        vec![der(ca.cert_pem()), next_der.clone()],
+        "l'agent se fie aux deux CA"
+    );
+    assert!(
+        rotation::status(&db, &config.0)
+            .await
+            .unwrap()
+            .remaining
+            .is_empty()
+    );
+
+    // Apres `--finish` : la nouvelle CA seule, des deux cotes.
+    rotation::finish(&db, &config.0).await.unwrap();
+    wait_for_async("agent sur la nouvelle CA seule", || async {
+        link.registry.is_connected(id)
+            && std::fs::read_to_string(agent_dir.0.join("ca.crt"))
+                .is_ok_and(|pem| pki::ders_from_pem(&pem) == vec![next_der.clone()])
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(config.0.join(transport::CA_CRT)).unwrap(),
+        next_pem
+    );
+    assert!(pki::issued_by(
+        &next_der,
+        &der(&std::fs::read_to_string(config.0.join(transport::LINK_CRT)).unwrap())
+    ));
+    // Un certificat de l'ancienne CA n'ouvre plus le lien (refus TLS).
+    let stale = Identity::from_pem(
+        cert.cert_pem.as_bytes(),
+        key.key_pem().as_bytes(),
+        next_pem.as_bytes(),
+    )
+    .unwrap();
+    running_agent.abort();
+    signer_task.abort();
+    watch_task.abort();
+    let result = hello(client_config(&stale).unwrap(), link.addr, hello_of(id)).await;
+    assert_tls_rejected(result);
+}

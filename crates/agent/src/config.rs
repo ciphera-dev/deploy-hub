@@ -1,6 +1,7 @@
 //! Configuration de l'agent (variables d'environnement) et identite mTLS
 //! lue dans son dossier : `agent.key` (cle privee, 0600, jamais transmise),
-//! `agent.crt` (certificat emis par la CA de l'instance) et `ca.crt`.
+//! `agent.crt` (certificat emis par la CA de l'instance) et `ca.crt` (CA de
+//! l'instance : une, ou deux pendant une rotation de la CA).
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -13,6 +14,9 @@ use shared::ids::ServerId;
 pub const KEY_FILE: &str = "agent.key";
 pub const CERT_FILE: &str = "agent.crt";
 pub const CA_FILE: &str = "ca.crt";
+/// Nombre maximal de CA dans `ca.crt` (courante et suivante, avec de la
+/// marge).
+pub const MAX_TRUSTED_CAS: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentConfig {
@@ -92,7 +96,8 @@ pub struct Identity {
     pub agent_id: ServerId,
     pub(crate) cert: CertificateDer<'static>,
     pub(crate) key: PrivateKeyDer<'static>,
-    pub(crate) ca: CertificateDer<'static>,
+    /// CA de l'instance (au moins une), dans l'ordre de `ca.crt`.
+    pub(crate) ca: Vec<CertificateDer<'static>>,
 }
 
 impl fmt::Debug for Identity {
@@ -175,7 +180,12 @@ impl Identity {
             CertificateDer::from_pem_slice(cert_pem).map_err(|_| IdentityError::Pem(CERT_FILE))?;
         let key =
             PrivateKeyDer::from_pem_slice(key_pem).map_err(|_| IdentityError::Pem(KEY_FILE))?;
-        let ca = CertificateDer::from_pem_slice(ca_pem).map_err(|_| IdentityError::Pem(CA_FILE))?;
+        let ca = CertificateDer::pem_slice_iter(ca_pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| IdentityError::Pem(CA_FILE))?;
+        if ca.is_empty() {
+            return Err(IdentityError::Pem(CA_FILE));
+        }
         let agent_id = pki::agent_id_from_cert(&cert).ok_or(IdentityError::NoAgentId)?;
         Ok(Self {
             agent_id,
@@ -196,7 +206,7 @@ impl Identity {
     }
 
     /// Certificat renouvele `cert_pem` (envoye par le plan de controle) :
-    /// accepte seulement s'il est signe par la CA de l'instance (`ca.crt`),
+    /// accepte seulement s'il est signe par une CA de l'instance (`ca.crt`),
     /// porte le meme identifiant et la meme cle publique que le certificat
     /// actuel et n'est pas lui-meme a renouveler a `now` (secondes Unix).
     /// Renvoie son DER ; rien n'est ecrit ici.
@@ -207,7 +217,7 @@ impl Identity {
     ) -> Result<CertificateDer<'static>, &'static str> {
         let cert = CertificateDer::from_pem_slice(cert_pem.as_bytes())
             .map_err(|_| "certificat illisible")?;
-        if !pki::issued_by(&self.ca, &cert) {
+        if !self.ca.iter().any(|ca| pki::issued_by(ca, &cert)) {
             return Err("certificat non emis par la CA de l'instance");
         }
         if pki::agent_id_from_cert(&cert) != Some(self.agent_id) {
@@ -221,6 +231,43 @@ impl Identity {
             return Err("certificat deja a renouveler");
         }
         Ok(cert)
+    }
+
+    /// CA envoyees par le plan de controle (`ControlToAgent::TrustedCas`),
+    /// sur une connexion dont le certificat du lien est `link_leaf` (DER).
+    /// Adoptees seulement si chaque certificat est une CA racine (au plus
+    /// [`MAX_TRUSTED_CAS`]) et si `link_leaf` est emis par l'une d'elles :
+    /// l'agent pourra se reconnecter. `Ok(None)` : jeu identique au sien.
+    /// Rien n'est ecrit ici.
+    pub fn check_trusted(
+        &self,
+        ca_pem: &str,
+        link_leaf: &[u8],
+    ) -> Result<Option<Vec<CertificateDer<'static>>>, &'static str> {
+        let cas = CertificateDer::pem_slice_iter(ca_pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "PEM illisible")?;
+        if cas.is_empty() {
+            return Err("aucune CA");
+        }
+        if cas.len() > MAX_TRUSTED_CAS {
+            return Err("trop de CA");
+        }
+        if !cas.iter().all(|ca| pki::is_root_ca(ca)) {
+            return Err("certificat qui n'est pas une CA racine");
+        }
+        if !cas.iter().any(|ca| pki::issued_by(ca, link_leaf)) {
+            return Err("certificat du lien emis par aucune de ces CA");
+        }
+        if cas == self.ca {
+            return Ok(None);
+        }
+        Ok(Some(cas))
+    }
+
+    /// Remplace les CA de confiance (apres l'ecriture de `ca.crt`).
+    pub(crate) fn set_cas(&mut self, cas: Vec<CertificateDer<'static>>) {
+        self.ca = cas;
     }
 
     /// Le certificat actuel a-t-il passe les deux tiers de sa validite ?
@@ -240,11 +287,16 @@ impl Identity {
     }
 }
 
-/// Remplace `<dir>/agent.crt` : fichier temporaire 0600 du meme dossier,
-/// donnees sur disque, renommage, dossier sur disque.
+/// Remplace `<dir>/agent.crt` : voir [`replace_file`].
 pub fn replace_cert_file(dir: &Path, pem: &[u8]) -> std::io::Result<()> {
+    replace_file(dir, CERT_FILE, pem)
+}
+
+/// Remplace `<dir>/<name>` (`agent.crt`, `ca.crt`) : fichier temporaire
+/// 0600 du meme dossier, donnees sur disque, renommage, dossier sur disque.
+pub fn replace_file(dir: &Path, name: &str, pem: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let tmp = dir.join(format!(".{CERT_FILE}.renew"));
+    let tmp = dir.join(format!(".{name}.renew"));
     let _ = std::fs::remove_file(&tmp);
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
@@ -257,7 +309,7 @@ pub fn replace_cert_file(dir: &Path, pem: &[u8]) -> std::io::Result<()> {
     let written = file
         .write_all(pem)
         .and_then(|()| file.sync_all())
-        .and_then(|()| std::fs::rename(&tmp, dir.join(CERT_FILE)));
+        .and_then(|()| std::fs::rename(&tmp, dir.join(name)));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -365,6 +417,94 @@ mod tests {
         );
         let renewed = ca.issue_agent_cert(id, key.public_key_der()).unwrap();
         assert!(identity.check_renewed(&renewed.cert_pem, now).is_ok());
+    }
+
+    /// `ca.crt` a deux CA (rotation) : un certificat renouvele emis par
+    /// l'une ou l'autre est accepte.
+    #[test]
+    fn identity_trusts_every_ca_of_its_bundle() {
+        let ca = pki::Ca::generate("Ciphera CA").unwrap();
+        let next = pki::Ca::generate("Ciphera CA 2").unwrap();
+        let key = pki::AgentKey::generate().unwrap();
+        let id = ServerId::new();
+        let cert = ca.issue_agent_cert(id, key.public_key_der()).unwrap();
+        let bundle = format!("{}{}", ca.cert_pem(), next.cert_pem());
+        let identity = Identity::from_pem(
+            cert.cert_pem.as_bytes(),
+            key.key_pem().as_bytes(),
+            bundle.as_bytes(),
+        )
+        .unwrap();
+        let now = pki::validity_unix(&identity.cert).unwrap().0 + 86_400;
+        let renewed = next.issue_agent_cert(id, key.public_key_der()).unwrap();
+        assert!(identity.check_renewed(&renewed.cert_pem, now).is_ok());
+        let other = pki::Ca::generate("Ciphera CA 3").unwrap();
+        let foreign = other.issue_agent_cert(id, key.public_key_der()).unwrap();
+        assert!(identity.check_renewed(&foreign.cert_pem, now).is_err());
+    }
+
+    /// CA envoyees par le plan de controle (`TrustedCas`) : adoptees
+    /// seulement si ce sont des CA racines et si le certificat du lien de
+    /// la connexion en cours est emis par l'une d'elles (l'agent pourra se
+    /// reconnecter) ; un jeu identique ne change rien.
+    #[test]
+    fn trusted_cas_keep_the_link_reachable() {
+        let old = pki::Ca::generate("Ciphera CA").unwrap();
+        let next = pki::Ca::generate("Ciphera CA 2").unwrap();
+        let key = pki::AgentKey::generate().unwrap();
+        let id = ServerId::new();
+        let cert = old.issue_agent_cert(id, key.public_key_der()).unwrap();
+        let identity = Identity::from_pem(
+            cert.cert_pem.as_bytes(),
+            key.key_pem().as_bytes(),
+            old.cert_pem().as_bytes(),
+        )
+        .unwrap();
+        let der = |pem: &str| pki::der_from_pem(pem).unwrap();
+        let mut link = old.issue_server_cert(&["localhost".into()]).unwrap();
+        let _ = link.key_pem.take();
+        let link_old = der(&link.cert_pem);
+        let mut link = next.issue_server_cert(&["localhost".into()]).unwrap();
+        let _ = link.key_pem.take();
+        let link_next = der(&link.cert_pem);
+
+        assert_eq!(
+            identity.check_trusted(old.cert_pem(), &link_old),
+            Ok(None),
+            "inchange"
+        );
+        let both = format!("{}{}", old.cert_pem(), next.cert_pem());
+        let adopted = identity.check_trusted(&both, &link_old).unwrap().unwrap();
+        assert_eq!(adopted.len(), 2);
+        assert_eq!(
+            identity
+                .check_trusted(next.cert_pem(), &link_old)
+                .unwrap_err(),
+            "certificat du lien emis par aucune de ces CA"
+        );
+        assert_eq!(
+            identity.check_trusted("", &link_old).unwrap_err(),
+            "aucune CA"
+        );
+        let leaf = format!("{}{}", old.cert_pem(), cert.cert_pem);
+        assert_eq!(
+            identity.check_trusted(&leaf, &link_old).unwrap_err(),
+            "certificat qui n'est pas une CA racine"
+        );
+        let many = format!("{both}{both}{both}");
+        assert_eq!(
+            identity.check_trusted(&many, &link_old).unwrap_err(),
+            "trop de CA"
+        );
+        // Fin de rotation : la nouvelle seule, le lien deja emis par elle.
+        let mut identity = identity;
+        identity.set_cas(adopted);
+        assert!(
+            identity
+                .check_trusted(next.cert_pem(), &link_next)
+                .unwrap()
+                .is_some()
+        );
     }
 
     /// `agent.key` lisible par le groupe ou les autres : identite refusee.

@@ -15,7 +15,9 @@
 //! signataire root (`ciphera admin sign-requests`, `agents::signer`) ;
 //! `ca/` (0750) et `ca/ca.crt` (0640) restent a root, groupe du service :
 //! le service lit le certificat mais ne peut ni remplacer ni supprimer la
-//! cle ou le certificat.
+//! cle ou le certificat. Le dossier de configuration lui-meme, s'il est cree
+//! par l'init, reste a root, groupe du service, 0750 : le service le
+//! traverse mais ne peut pas y renommer `ca/` (ni ses autres dossiers).
 //!
 //! Enrolement de l'agent local, dans `<agent_dir>` : la paire de cles est
 //! generee cote agent (`agent.key`), la CA ne recoit que la cle publique et
@@ -275,10 +277,10 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
     // 4. Proprietaires.
     let mut warnings = Vec::new();
     if let Some(owner) = &opts.owner {
-        let targets = chown_targets(dir, config_dir_created, written);
+        let targets = chown_targets(dir, written);
         if let Some(w) = chown_all(&targets, owner) {
             warnings.push(w);
-        } else if let Some(w) = share_with_group(&shared_targets(dir), owner) {
+        } else if let Some(w) = share_with_group(&shared_targets(dir, config_dir_created), owner) {
             warnings.push(w);
         }
     }
@@ -326,10 +328,15 @@ fn config_owner(rel: &str) -> Owner {
     }
 }
 
-/// Dossier de la CA et son certificat : a root, groupe du service, avec ces
-/// droits (le service lit le certificat, rien d'autre).
-pub fn shared_targets(dir: &Path) -> [(PathBuf, u32); 2] {
-    [(dir.join(CA_DIR), 0o750), (dir.join(CA_CRT), 0o640)]
+/// Dossier de la CA et son certificat, et le dossier de configuration s'il
+/// est cree par l'init : a root, groupe du service, avec ces droits (le
+/// service traverse les dossiers et lit le certificat, rien d'autre).
+pub fn shared_targets(dir: &Path, config_dir_created: bool) -> Vec<(PathBuf, u32)> {
+    let mut targets = vec![(dir.join(CA_DIR), 0o750), (dir.join(CA_CRT), 0o640)];
+    if config_dir_created {
+        targets.push((dir.to_path_buf(), 0o750));
+    }
+    targets
 }
 
 fn random<const N: usize>() -> Result<Zeroizing<[u8; N]>, InitError> {
@@ -340,11 +347,10 @@ fn random<const N: usize>() -> Result<Zeroizing<[u8; N]>, InitError> {
     Ok(buf)
 }
 
-/// Cibles du changement de proprietaire : fichiers ecrits, sous-dossiers
-/// sauf `ca/` (root, voir [`shared_targets`]), et `config_dir` seulement si
-/// l'init l'a cree (sinon il appartient a l'installeur ; le compte de
-/// service doit pouvoir le traverser).
-pub fn chown_targets(dir: &Path, config_dir_created: bool, written: Vec<PathBuf>) -> Vec<PathBuf> {
+/// Cibles du changement de proprietaire : fichiers ecrits et sous-dossiers
+/// sauf `ca/`. Jamais `config_dir` : a root (voir [`shared_targets`]), ou a
+/// l'installeur s'il existait deja.
+pub fn chown_targets(dir: &Path, written: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut targets = written;
     targets.extend(
         SUBDIRS
@@ -352,9 +358,6 @@ pub fn chown_targets(dir: &Path, config_dir_created: bool, written: Vec<PathBuf>
             .filter(|s| **s != CA_DIR)
             .map(|s| dir.join(s)),
     );
-    if config_dir_created {
-        targets.push(dir.to_path_buf());
-    }
     targets
 }
 
@@ -601,10 +604,10 @@ mod tests {
             assert_eq!(config_owner(rel), Owner::Instance, "{rel}");
         }
         let dir = Path::new("/etc/ciphera");
-        let targets = chown_targets(dir, true, vec![]);
+        let targets = chown_targets(dir, vec![]);
         assert!(!targets.contains(&dir.join("ca")), "ca/ reste a root");
         assert_eq!(
-            shared_targets(dir),
+            shared_targets(dir, false),
             [(dir.join("ca"), 0o750), (dir.join("ca/ca.crt"), 0o640)]
         );
     }
@@ -640,15 +643,18 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Le dossier de configuration n'est jamais donne au compte du service :
+    /// cree par l'init, il reste a root, groupe du service, 0750 (le service
+    /// ne peut pas y renommer `ca/`) ; existant, il reste a l'installeur.
     #[test]
-    fn chown_targets_include_config_dir_only_when_created() {
+    fn config_dir_stays_with_root() {
         let dir = Path::new("/etc/ciphera");
         let files = vec![dir.join("age.key")];
-        let created = chown_targets(dir, true, files.clone());
-        assert!(created.contains(&dir.to_path_buf()));
-        assert!(created.contains(&dir.join("tls")) && created.contains(&dir.join("agents")));
-        assert!(created.contains(&dir.join("age.key")));
-        let existing = chown_targets(dir, false, files);
-        assert!(!existing.contains(&dir.to_path_buf()));
+        let targets = chown_targets(dir, files);
+        assert!(!targets.contains(&dir.to_path_buf()));
+        assert!(targets.contains(&dir.join("tls")) && targets.contains(&dir.join("agents")));
+        assert!(targets.contains(&dir.join("age.key")));
+        assert!(shared_targets(dir, true).contains(&(dir.to_path_buf(), 0o750)));
+        assert!(!shared_targets(dir, false).iter().any(|(p, _)| p == dir));
     }
 }

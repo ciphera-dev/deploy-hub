@@ -6,7 +6,9 @@
 `ciphera-certsign.service` (`ciphera admin sign-requests`) la lit. Le
 dossier `ca/` (0750) et `ca.crt` (0640) sont a root, groupe `ciphera` : le
 service lit le certificat mais ne peut ni remplacer ni supprimer la cle ou
-le certificat. Elle signe trois sortes de certificats :
+le certificat. Le dossier `/etc/ciphera` lui-meme est a root, groupe
+`ciphera`, 0750 : le service le traverse mais ne peut pas y renommer `ca/`.
+Elle signe trois sortes de certificats :
 
 | Certificat | Fichiers | Validite | Renouvellement automatique |
 |---|---|---|---|
@@ -71,11 +73,13 @@ Le `.path` et le signataire surveillent `/var/lib/ciphera` : un
 par le renouvellement (les demandes ne seraient jamais signees ; le journal
 du service le signale par `pas de reponse du signataire`).
 
-Limite connue : le dossier `/etc/ciphera` lui-meme reste au compte
-`ciphera` quand `ciphera init` l'a cree. Hors de la sandbox du service
-(`/etc` y est en lecture seule), ce compte peut donc renommer `ca/` en
-entier : la cle reste illisible (root 0600), mais l'instance perd sa CA
-(deni de service, sans gain de cle). A traiter avec la rotation de la CA.
+Le dossier `/etc/ciphera` est a root, groupe `ciphera`, 0750 : `ciphera
+init` le laisse ainsi quand il le cree, et `install.sh`, `ciphera admin
+renew-certs` et `ciphera admin rotate-ca` corrigent une installation
+anterieure ou il appartenait au compte `ciphera` (qui pouvait alors renommer
+`ca/` hors de la sandbox du service). Le signataire, sans droit d'ecriture
+sur `/etc/ciphera` dans sa sandbox, ne fait que le signaler (`attention :
+/etc/ciphera pas a root en 0750`).
 
 ## Renouvellement d'un agent
 
@@ -86,7 +90,7 @@ entier : la cle reste illisible (root 0600), mais l'instance perd sa CA
    privee ne quitte jamais l'agent) ; le signataire note son empreinte en
    `servers.next_cert_fingerprint` ; le plan de controle l'envoie
    (`RenewedCertificate`) des que la reponse arrive.
-3. L'agent verifie qu'il est signe par la CA de l'instance (`ca.crt`) et
+3. L'agent verifie qu'il est signe par une CA de l'instance (`ca.crt`) et
    porte son identifiant et sa cle, remplace `agent.crt` (ecriture
    atomique) puis se reconnecte avec lui.
 4. A cette connexion, l'empreinte du nouveau certificat remplace l'ancienne
@@ -152,7 +156,75 @@ annule, avant toute lecture. Le service et la commande prennent un verrou
 exclusif (`/etc/ciphera/tls/.pair.lock`) pour ces operations : la commande
 peut etre lancee pendant que le service tourne.
 
-La CA elle-meme (10 ans) n'est pas renouvelee par Ciphera v0.1.
+La CA elle-meme (10 ans) se remplace par une rotation (voir plus bas).
+Pendant une rotation, `renew-certs` accepte un certificat emis par l'une ou
+l'autre CA ; le lien et le panneau restent signes par la CA courante,
+l'agent local par la suivante.
+
+## Rotation de la CA : `ciphera admin rotate-ca`
+
+A faire :
+
+- **apres la mise a jour vers la version qui apporte le signataire root**
+  (`ciphera-certsign`) : avant elle, la cle de la CA etait lisible par le
+  compte `ciphera` ; la rotation la remplace par une cle qui ne l'a jamais
+  ete ;
+- quand il reste moins d'un an a la CA : le proprietaire de l'instance
+  recoit alors un e-mail (verification horaire, rappel chaque mois, rien
+  pendant une rotation) ;
+- apres tout doute sur la cle de la CA.
+
+```sh
+sudo ciphera admin rotate-ca            # 1. nouvelle CA
+sudo ciphera admin rotate-ca --status   # 2. suivi
+sudo ciphera admin rotate-ca --finish   # 3. ancienne CA retiree
+```
+
+1. `rotate-ca` ecrit une nouvelle CA (10 ans) a cote de la courante :
+   `/etc/ciphera/ca/ca-next.key` (root 0600) puis `ca-next.crt` (root,
+   groupe `ciphera`, 0640). Relancee, la commande ne change rien. En
+   quelques secondes, le service :
+   - accepte les certificats d'agent des deux CA sur le lien ;
+   - reconnecte les agents connectes ; a chaque connexion, il leur envoie
+     les deux CA (`TrustedCas`), que l'agent ecrit dans
+     `/etc/ciphera-agent/ca.crt`, puis leur fait signer un nouveau
+     certificat par la nouvelle CA (meme cle, meme identifiant, procedure du
+     renouvellement ci-dessus, sans attendre les deux tiers) ;
+   - note pour chaque serveur la CA du certificat presente
+     (`servers.cert_issuer_fingerprint`).
+
+   Le lien et le panneau restent signes par l'ancienne CA : un agent eteint
+   pendant la rotation se reconnecte normalement a son retour et passe alors
+   a la nouvelle CA.
+2. `rotate-ca --status` affiche les deux CA et les serveurs non revoques
+   dont l'agent ne presente pas encore un certificat de la nouvelle CA (y
+   compris un serveur jamais reconnecte depuis la mise a jour). Un serveur
+   qui ne reviendra pas se revoque : `sudo ciphera admin revoke-agent <id>`.
+3. `rotate-ca --finish` est refuse tant que cette liste n'est pas vide
+   (rien n'est change). Sinon : certificats du lien et du panneau re-signes
+   par la nouvelle CA (memes cles), puis `ca.crt` et `ca.key` remplaces
+   ensemble par la nouvelle CA (meme mecanisme de paire que le lien :
+   manifeste `ca/.ca.crt.pair`, verrou `ca/.pair.lock`), puis
+   `ca-next.{crt,key}` supprimes : l'ancienne cle n'existe plus. En quelques
+   secondes, le service recharge le lien et le panneau et reconnecte les
+   agents, qui ne gardent que la nouvelle CA dans `ca.crt`. Un certificat de
+   l'ancienne CA n'ouvre plus le lien. Une fin interrompue se reprend en
+   relancant `--finish` ; le signataire termine aussi un remplacement de
+   `ca.crt` + `ca.key` interrompu avant de lire la CA.
+
+La fin est manuelle : elle remplace la cle de la CA (root) et l'operateur
+choisit quand retirer l'ancienne (par exemple apres avoir revoque un
+serveur perdu). Un navigateur dans lequel l'ancienne CA avait ete importee
+pour l'acces direct au panneau (port 8443) doit recevoir la nouvelle
+(`/etc/ciphera/ca/ca.crt`) ; l'empreinte du certificat du panneau change.
+
+Journal : `journalctl -u ciphera` (`CA de l'instance changees (rotation)`,
+`agent(s) reconnecte(s) pour les nouvelles CA`), `journalctl -u
+ciphera-agent` (`CA de l'instance mises a jour`, `CA de l'instance
+refusees : ...`). L'agent n'adopte des CA que si ce sont des CA racines et
+si le certificat du lien de la connexion en cours est emis par l'une
+d'elles (il pourra toujours se reconnecter). La fin est journalisee en base
+(`ca.rotate.cli`).
 
 ## Revoquer un serveur : `ciphera admin revoke-agent`
 

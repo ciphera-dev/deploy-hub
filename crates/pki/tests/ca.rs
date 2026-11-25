@@ -360,3 +360,40 @@ fn load_refuses_a_key_that_does_not_match_the_certificate() {
     assert!(Ca::load(ca.cert_pem(), &other.key_pem()).is_err());
     assert!(Ca::load(ca.cert_pem(), &ca.key_pem()).is_ok());
 }
+
+/// Jeu de CA (rotation) : tous les certificats d'un PEM sont lus, dans
+/// l'ordre ; un certificat est reconnu s'il est emis par l'une d'elles.
+#[test]
+fn a_ca_bundle_lists_every_certificate() {
+    let current = Ca::generate("Ciphera CA").unwrap();
+    let next = Ca::generate("Ciphera CA 2").unwrap();
+    let bundle = format!("{}{}", current.cert_pem(), next.cert_pem());
+    let ders = pki::ders_from_pem(&bundle);
+    assert_eq!(
+        ders,
+        vec![parse_pem(current.cert_pem()), parse_pem(next.cert_pem())]
+    );
+    assert!(pki::ders_from_pem("pas un PEM").is_empty());
+    let key = KeyPair::generate().unwrap();
+    let issued = next
+        .issue_agent_cert(ServerId::new(), &key.subject_public_key_info())
+        .unwrap();
+    let der = parse_pem(&issued.cert_pem);
+    assert!(pki::issued_by_any(&ders, &der));
+    assert!(!pki::issued_by_any(&ders[..1], &der));
+    assert!(!pki::issued_by_any(&[], &der));
+}
+
+/// Une CA racine (signee par elle-meme, CA:true) est reconnue ; un
+/// certificat d'agent ou serveur ne l'est pas.
+#[test]
+fn self_signed_ca_is_recognised() {
+    let ca = Ca::generate("Ciphera CA").unwrap();
+    assert!(pki::is_root_ca(&parse_pem(ca.cert_pem())));
+    let mut server = ca.issue_server_cert(&["localhost".into()]).unwrap();
+    let _ = server.key_pem.take();
+    assert!(!pki::is_root_ca(&parse_pem(&server.cert_pem)));
+    assert!(!pki::is_root_ca(b"pas un certificat"));
+    assert_eq!(pki::sha256(b"abc").len(), 32);
+    assert_ne!(pki::sha256(b"abc"), pki::sha256(b"abd"));
+}

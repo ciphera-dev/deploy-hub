@@ -966,6 +966,20 @@ stage_failed() {
 	die "$1"
 }
 
+# Dossier de configuration a root, groupe ciphera, 0750 : le service le
+# traverse et y lit ses fichiers, mais ne peut ni renommer ni remplacer
+# ca/ (signataire root) ou un autre de ses dossiers. Installation anterieure
+# (dossier au compte ciphera) : corrige ici (droits d'abord, proprietaire
+# ensuite). Un lien symbolique est refuse.
+harden_config_dir() {
+	[ -e "$CONFIG_DIR" ] || [ -L "$CONFIG_DIR" ] || return 0
+	if [ -L "$CONFIG_DIR" ] || [ ! -d "$CONFIG_DIR" ]; then
+		die "$CONFIG_DIR n'est pas un dossier (lien symbolique ?) : a corriger avant de relancer install.sh"
+	fi
+	chmod 0750 "$CONFIG_DIR" && chown root:ciphera "$CONFIG_DIR" ||
+		die "$CONFIG_DIR : droits root:ciphera 0750 non appliques"
+}
+
 # Cle de la CA absente, ou a root sans droit pour le groupe ni les autres.
 ca_key_protected() {
 	ca_key_file=$CONFIG_DIR/ca/ca.key
@@ -1074,6 +1088,7 @@ main() {
 	check_docker_init
 	install_files
 	init_instance
+	harden_config_dir
 	protect_env_file
 	start_services
 

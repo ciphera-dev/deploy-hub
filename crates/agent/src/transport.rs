@@ -1,7 +1,10 @@
 //! Lien QUIC + mTLS vers le plan de controle. Le certificat du plan de
-//! controle est verifie contre la seule CA de l'instance (aucune racine du
-//! systeme, aucune option pour desactiver la verification). Apres chaque
-//! (re)connexion : `Hello`, puis l'etat courant (`State`).
+//! controle est verifie contre les seules CA de l'instance (`ca.crt` : une,
+//! ou deux pendant une rotation ; aucune racine du systeme, aucune option
+//! pour desactiver la verification). Apres chaque (re)connexion : `Hello`,
+//! puis l'etat courant (`State`). Le plan de controle envoie alors ses CA
+//! (`ControlToAgent::TrustedCas`), adoptees si le lien reste joignable
+//! (voir `Identity::check_trusted`).
 //!
 //! Garanties de livraison : `State` est un instantane complet (idempotent,
 //! renvoye a chaque connexion) ; `DeployProgress` et `LogLine` passent par la
@@ -111,14 +114,16 @@ impl fmt::Display for LinkError {
 
 impl std::error::Error for LinkError {}
 
-/// Configuration client : CA de l'instance seule, certificat de l'agent,
+/// Configuration client : CA de l'instance seules, certificat de l'agent,
 /// TLS 1.3, ALPN `ciphera/1`.
 pub fn client_config(identity: &Identity) -> Result<quinn::ClientConfig, LinkError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut roots = RootCertStore::empty();
-    roots
-        .add(identity.ca.clone())
-        .map_err(|_| LinkError::Tls("certificat de la CA refuse"))?;
+    for ca in &identity.ca {
+        roots
+            .add(ca.clone())
+            .map_err(|_| LinkError::Tls("certificat de la CA refuse"))?;
+    }
     let mut tls = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|_| LinkError::Tls("TLS 1.3 indisponible"))?
@@ -312,13 +317,19 @@ impl Agent {
         // Lecture dans une tache a part : read_frame n'est pas annulable sans
         // perte, il ne doit pas etre mis en concurrence dans un select.
         let forward = inbox.clone();
-        // Certificat renouvele : traite ici (fichier, configuration TLS).
-        let (renewed_tx, mut renewed_rx) = mpsc::channel::<String>(1);
+        // Certificat renouvele et CA de confiance : traites ici (fichiers,
+        // configuration TLS), dans l'ordre de reception (les CA arrivent
+        // avant un certificat emis par une nouvelle CA).
+        let link_leaf = peer_leaf(&conn);
+        let (renewed_tx, mut renewed_rx) = mpsc::channel::<IdentityUpdate>(4);
         let mut reader = tokio::spawn(async move {
             loop {
                 match codec::read_frame::<_, ControlToAgent>(&mut recv).await {
                     Ok(Some(ControlToAgent::RenewedCertificate { cert_pem })) => {
-                        let _ = renewed_tx.try_send(cert_pem);
+                        let _ = renewed_tx.try_send(IdentityUpdate::Certificate(cert_pem));
+                    }
+                    Ok(Some(ControlToAgent::TrustedCas { ca_pem })) => {
+                        let _ = renewed_tx.try_send(IdentityUpdate::Cas(ca_pem));
                     }
                     Ok(Some(msg)) => {
                         if forward.send(msg).await.is_err() {
@@ -334,13 +345,23 @@ impl Agent {
         let mut outbox_open = true;
         let result = loop {
             tokio::select! {
-                Some(cert_pem) = renewed_rx.recv() => match self.install_certificate(&cert_pem) {
-                    Ok(()) => {
-                        tracing::info!("certificat de l'agent renouvele : reconnexion");
-                        close(&conn, error_code::NONE, "certificat renouvele");
-                        break Err(LinkError::Renewal("renouvele, reconnexion"));
-                    }
-                    Err(e) => tracing::error!("certificat renouvele refuse : {e}"),
+                Some(update) = renewed_rx.recv() => match update {
+                    IdentityUpdate::Certificate(cert_pem) => match self.install_certificate(&cert_pem) {
+                        Ok(()) => {
+                            tracing::info!("certificat de l'agent renouvele : reconnexion");
+                            close(&conn, error_code::NONE, "certificat renouvele");
+                            break Err(LinkError::Renewal("renouvele, reconnexion"));
+                        }
+                        Err(e) => tracing::error!("certificat renouvele refuse : {e}"),
+                    },
+                    IdentityUpdate::Cas(ca_pem) => match self.install_cas(&ca_pem, link_leaf.as_deref()) {
+                        Ok(true) => tracing::info!(
+                            "CA de l'instance mises a jour ({})",
+                            crate::config::CA_FILE
+                        ),
+                        Ok(false) => {}
+                        Err(e) => tracing::error!("CA de l'instance refusees : {e}"),
+                    },
                 },
                 () = &mut check => {
                     if self.renewal_due() {
@@ -399,6 +420,24 @@ impl Agent {
             .renewal_due(now_unix())
     }
 
+    /// Verifie les CA envoyees par le plan de controle, les garde (`ca.crt`
+    /// remplace atomiquement) puis reconstruit la configuration TLS : la
+    /// connexion suivante verifie le lien avec elles. Vrai si elles ont
+    /// change.
+    fn install_cas(&self, ca_pem: &str, link_leaf: Option<&[u8]>) -> Result<bool, String> {
+        let link_leaf = link_leaf.ok_or("certificat du lien inconnu")?;
+        let mut identity = self.identity.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(cas) = identity.check_trusted(ca_pem, link_leaf)? else {
+            return Ok(false);
+        };
+        crate::config::replace_file(&self.dir, crate::config::CA_FILE, ca_pem.as_bytes())
+            .map_err(|e| format!("ecriture de {} : {e}", crate::config::CA_FILE))?;
+        identity.set_cas(cas);
+        let client = client_config(&identity).map_err(|e| e.to_string())?;
+        *self.client.lock().unwrap_or_else(PoisonError::into_inner) = client;
+        Ok(true)
+    }
+
     /// Verifie le certificat renouvele, le garde (`agent.crt` remplace
     /// atomiquement) puis reconstruit la configuration TLS : la connexion
     /// suivante le presente.
@@ -412,6 +451,23 @@ impl Agent {
         *self.client.lock().unwrap_or_else(PoisonError::into_inner) = client;
         Ok(())
     }
+}
+
+/// Mise a jour de l'identite recue sur le lien.
+enum IdentityUpdate {
+    /// `ControlToAgent::RenewedCertificate`.
+    Certificate(String),
+    /// `ControlToAgent::TrustedCas`.
+    Cas(String),
+}
+
+/// Certificat (DER) presente par le plan de controle sur cette connexion.
+fn peer_leaf(conn: &Connection) -> Option<Vec<u8>> {
+    conn.peer_identity()?
+        .downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>()
+        .ok()?
+        .first()
+        .map(|c| c.to_vec())
 }
 
 /// Prochaine mesure (en attente indefinie sans metriques). Annulable sans

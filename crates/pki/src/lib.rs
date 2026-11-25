@@ -365,6 +365,40 @@ pub fn issued_by(ca_der: &[u8], der: &[u8]) -> bool {
         && cert.verify_signature(Some(ca.public_key())).is_ok()
 }
 
+/// Le certificat DER `der` est-il emis par l'une des CA de certificats DER
+/// `cas` (voir [`issued_by`]) : CA courante et suivante pendant une rotation.
+pub fn issued_by_any(cas: &[Vec<u8>], der: &[u8]) -> bool {
+    cas.iter().any(|ca| issued_by(ca, der))
+}
+
+/// Le certificat DER est-il une CA racine : CA:true, signe par lui-meme.
+pub fn is_root_ca(der: &[u8]) -> bool {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+    let Ok((rest, cert)) = X509Certificate::from_der(der) else {
+        return false;
+    };
+    rest.is_empty() && cert.is_ca() && issued_by(der, der)
+}
+
+/// SHA-256 brut (32 octets), par exemple d'un certificat de CA DER.
+pub fn sha256(bytes: &[u8]) -> Vec<u8> {
+    Sha256::digest(bytes).to_vec()
+}
+
+/// DER de chaque certificat d'un PEM (jeu de CA), dans l'ordre ; vide si
+/// aucun n'est lisible. Un bloc illisible arrete la lecture.
+pub fn ders_from_pem(pem: &str) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    for block in x509_parser::pem::Pem::iter_from_buffer(pem.as_bytes()) {
+        match block {
+            Ok(block) if block.label == "CERTIFICATE" => out.push(block.contents),
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    out
+}
+
 /// SubjectPublicKeyInfo DER d'un certificat DER.
 pub fn public_key_der(der: &[u8]) -> Option<Vec<u8>> {
     use x509_parser::prelude::{FromDer, X509Certificate};

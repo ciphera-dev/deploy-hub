@@ -294,8 +294,9 @@ async fn control_plane_never_opens_ca_key() {
             .any(|l| l == "InaccessiblePaths=-/etc/ciphera/ca/ca.key"),
         "ciphera.service doit masquer ca.key"
     );
-    // Chemins : seuls le signataire, l'init (root) et `renew-certs` (root,
-    // agents::certs hors de `Renewals`) nomment la cle de la CA.
+    // Chemins : seuls le signataire, l'init (root), la rotation de la CA
+    // (root) et `renew-certs` (root, agents::certs hors de `Renewals`)
+    // nomment la cle de la CA.
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut checked = 0;
     for (path, text) in rust_sources(&src) {
@@ -305,7 +306,7 @@ async fn control_plane_never_opens_ca_key() {
             .to_string_lossy()
             .replace('\\', "/");
         let scope = match rel.as_str() {
-            "agents/signer.rs" | "init.rs" => continue,
+            "agents/signer.rs" | "agents/rotation.rs" | "init.rs" => continue,
             "agents/certs.rs" => {
                 let start = text.find("impl Renewals {").expect("impl Renewals");
                 let len = text[start..].find("\n}\n").expect("fin de impl Renewals");
@@ -528,4 +529,26 @@ fn ca_is_hardened_in_place() {
     std::os::unix::fs::symlink(elsewhere.0.join("k"), &path).unwrap();
     assert!(signer::harden_ca(&dir.0).is_err());
     assert!(certs::load_ca(&dir.0).is_err());
+}
+
+/// Dossier de configuration d'une installation anterieure (au compte du
+/// service) : remis au proprietaire du signataire, groupe conserve, 0750 ;
+/// le service le traverse mais ne peut plus y renommer `ca/`. Un lien est
+/// refuse.
+#[cfg(unix)]
+#[test]
+fn config_dir_is_hardened_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+    let ca = Ca::generate("instance").unwrap();
+    let dir = config_dir(&ca);
+    std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(signer::harden_config_dir(&dir.0).unwrap());
+    assert_eq!(mode(&dir.0), 0o750);
+    assert!(!signer::harden_config_dir(&dir.0).unwrap(), "deja fait");
+
+    let elsewhere = common::TempDir::new();
+    let link = elsewhere.0.join("lien");
+    std::os::unix::fs::symlink(&dir.0, &link).unwrap();
+    assert!(signer::harden_config_dir(&link).is_err());
 }

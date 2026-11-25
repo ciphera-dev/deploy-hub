@@ -16,7 +16,8 @@ pub use messages::*;
 /// `RemoveProject`, `DeploymentRemoved`, `ProjectRemoved`, identifiants de
 /// projet et d'environnement dans `BuildSpec` et `DeploySpec`, `run_as` et
 /// `read_only_rootfs` dans `DeploySpec`, `runs_as_root` dans
-/// `RunningDeployment`, `panel_confirmed` dans `Route`.
+/// `RunningDeployment`, `panel_confirmed` dans `Route`, `TrustedCas`
+/// (rotation de la CA de l'instance).
 ///
 /// Regle : la version change avec chaque version publiee de Ciphera dont les
 /// messages different. Avant v0.1.0, la v6 est la version de travail : elle

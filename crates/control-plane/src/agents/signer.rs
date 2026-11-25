@@ -39,6 +39,12 @@
 //!
 //! `ciphera admin renew-certs` passe par les memes fonctions de signature
 //! ([`sign_agent`], [`sign_server`]).
+//!
+//! Rotation de la CA (`ciphera admin rotate-ca`, `agents::rotation`) : tant
+//! que `ca/ca-next.{crt,key}` existent ([`load_cas`]), un certificat emis par
+//! la CA courante ou par la suivante est accepte ; les certificats d'agent
+//! sont signes par la suivante, ceux du lien et du panneau par la courante
+//! (un agent qui n'a pas encore recu la suivante garde un lien joignable).
 
 use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Write as _};
@@ -51,7 +57,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::certs::CA_KEY;
-use super::transport::{CA_CRT, LINK_CRT};
+use super::transport::{CA_CRT, CA_NEXT_CRT, LINK_CRT};
+
+/// Cle privee de la CA suivante, pendant une rotation (root 0600).
+pub const CA_NEXT_KEY: &str = "ca/ca-next.key";
 
 /// Dossier des demandes, dans le dossier de donnees du service.
 pub const REQUESTS_DIR: &str = "cert-requests";
@@ -275,8 +284,18 @@ fn parse_response(text: &str) -> Option<(Uuid, String)> {
 /// Nouveau certificat d'agent : `der` emis par la CA, identifiant `id`,
 /// meme cle publique. Partage avec `ciphera admin renew-certs`.
 pub fn sign_agent(ca: &pki::Ca, der: &[u8], id: ServerId) -> Result<pki::CertBundle, String> {
-    let ca_der = pki::der_from_pem(ca.cert_pem()).ok_or("certificat de la CA illisible")?;
-    if !pki::issued_by(&ca_der, der) {
+    sign_agent_with(ca, &[ca], der, id)
+}
+
+/// Comme [`sign_agent`] : `der` emis par l'une des CA `trusted`, nouveau
+/// certificat signe par `ca`.
+pub fn sign_agent_with(
+    ca: &pki::Ca,
+    trusted: &[&pki::Ca],
+    der: &[u8],
+    id: ServerId,
+) -> Result<pki::CertBundle, String> {
+    if !issued_by_one_of(trusted, der) {
         return Err("certificat non emis par la CA de l'instance".into());
     }
     if pki::agent_id_from_cert(der) != Some(id) {
@@ -288,12 +307,69 @@ pub fn sign_agent(ca: &pki::Ca, der: &[u8], id: ServerId) -> Result<pki::CertBun
 /// Nouveau certificat serveur (lien, panneau) : `pem` emis par la CA, meme
 /// cle publique, memes SAN. Partage avec `ciphera admin renew-certs`.
 pub fn sign_server(ca: &pki::Ca, pem: &str) -> Result<pki::CertBundle, String> {
-    let ca_der = pki::der_from_pem(ca.cert_pem()).ok_or("certificat de la CA illisible")?;
+    sign_server_with(ca, &[ca], pem)
+}
+
+/// Comme [`sign_server`] : `pem` emis par l'une des CA `trusted`, nouveau
+/// certificat signe par `ca`.
+pub fn sign_server_with(
+    ca: &pki::Ca,
+    trusted: &[&pki::Ca],
+    pem: &str,
+) -> Result<pki::CertBundle, String> {
     let der = pki::der_from_pem(pem).ok_or("certificat serveur illisible")?;
-    if !pki::issued_by(&ca_der, &der) {
+    if !issued_by_one_of(trusted, &der) {
         return Err("certificat serveur non emis par la CA de l'instance".into());
     }
     ca.reissue_server_cert(pem).map_err(|e| e.to_string())
+}
+
+fn issued_by_one_of(cas: &[&pki::Ca], der: &[u8]) -> bool {
+    cas.iter().any(|ca| {
+        pki::der_from_pem(ca.cert_pem()).is_some_and(|ca_der| pki::issued_by(&ca_der, der))
+    })
+}
+
+/// CA de l'instance pour root : courante et, pendant une rotation,
+/// suivante.
+pub struct Cas {
+    pub current: pki::Ca,
+    pub next: Option<pki::Ca>,
+}
+
+impl fmt::Debug for Cas {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cas")
+            .field("rotation", &self.next.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Cas {
+    /// CA de confiance : courante, puis suivante.
+    pub fn trusted(&self) -> Vec<&pki::Ca> {
+        let mut out = vec![&self.current];
+        out.extend(self.next.as_ref());
+        out
+    }
+
+    /// `der` est-il emis par l'une des CA de confiance ?
+    pub fn issued(&self, der: &[u8]) -> bool {
+        issued_by_one_of(&self.trusted(), der)
+    }
+
+    /// Certificat d'agent : signe par la suivante pendant une rotation,
+    /// sinon par la courante.
+    pub fn sign_agent(&self, der: &[u8], id: ServerId) -> Result<pki::CertBundle, String> {
+        let ca = self.next.as_ref().unwrap_or(&self.current);
+        sign_agent_with(ca, &self.trusted(), der, id)
+    }
+
+    /// Certificat du lien ou du panneau : toujours signe par la courante
+    /// (la suivante ne sert au lien qu'a la fin de la rotation).
+    pub fn sign_server(&self, pem: &str) -> Result<pki::CertBundle, String> {
+        sign_server_with(&self.current, &self.trusted(), pem)
+    }
 }
 
 /// CA de l'instance, lue par root : `ca/ca.key` fichier ordinaire (jamais un
@@ -313,10 +389,74 @@ fn file_name(rel: &str) -> &str {
     rel.rsplit('/').next().unwrap_or(rel)
 }
 
+/// CA courante et, si `ca/ca-next.crt` existe (rotation en cours), CA
+/// suivante : `ca/ca-next.key` aux memes conditions que la cle courante
+/// ([`load_cas`] pour root seulement).
+pub fn load_cas(config_dir: &Path) -> io::Result<Cas> {
+    let current = load_ca(config_dir)?;
+    let ca = fsio::Dir::open(&config_dir.join("ca"))?;
+    let cert = match ca.read_file(file_name(CA_NEXT_CRT), MAX_CA_BYTES) {
+        Ok(c) => c,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(Cas {
+                current,
+                next: None,
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    let key = zeroize::Zeroizing::new(ca.read_secret(file_name(CA_NEXT_KEY), MAX_CA_BYTES)?);
+    let key = std::str::from_utf8(&key).map_err(io::Error::other)?;
+    let cert = std::str::from_utf8(&cert).map_err(io::Error::other)?;
+    let next = pki::Ca::load(cert, key).map_err(io::Error::other)?;
+    Ok(Cas {
+        current,
+        next: Some(next),
+    })
+}
+
+/// Ecrit la CA suivante (debut d'une rotation, root) : `ca/ca-next.key`
+/// (0600, proprietaire et groupe du processus) puis `ca/ca-next.crt` (0640,
+/// groupe du dossier : le service le lit). Le certificat est ecrit en
+/// dernier : sa presence signale la rotation au service. Jamais a travers
+/// un lien.
+pub fn write_next_ca(config_dir: &Path, next: &pki::Ca) -> io::Result<()> {
+    let ca = fsio::Dir::open(&config_dir.join("ca"))?;
+    ca.write_atomic_mode(
+        file_name(CA_NEXT_KEY),
+        next.key_pem().as_bytes(),
+        0o600,
+        true,
+    )?;
+    ca.write_atomic_mode(
+        file_name(CA_NEXT_CRT),
+        next.cert_pem().as_bytes(),
+        0o640,
+        false,
+    )
+}
+
+/// Retire la CA suivante (fin d'une rotation, apres son installation comme
+/// CA courante) : cle d'abord, certificat ensuite.
+pub fn remove_next_ca(config_dir: &Path) -> io::Result<()> {
+    let ca = fsio::Dir::open(&config_dir.join("ca"))?;
+    ca.remove(file_name(CA_NEXT_KEY))?;
+    ca.remove(file_name(CA_NEXT_CRT))
+}
+
+/// Dossier de configuration (`/etc/ciphera`) a root, groupe conserve (celui
+/// du service), 0750 : le service le traverse et y lit ses fichiers, mais ne
+/// peut ni renommer ni remplacer `ca/` ou un autre de ses dossiers. Jamais
+/// a travers un lien. Vrai si quelque chose a change.
+pub fn harden_config_dir(config_dir: &Path) -> io::Result<bool> {
+    fsio::Dir::open(config_dir)?.harden_self(0o750)
+}
+
 /// Passage d'une installation anterieure (dossier de la CA au compte du
 /// service) : `ca/` au proprietaire du processus (root), groupe conserve
 /// (celui du service), 0750 ; `ca/ca.crt` idem en 0640 (le service le lit) ;
-/// `ca/ca.key` au proprietaire et au groupe du processus, 0600. Le service ne
+/// `ca/ca.key` au proprietaire et au groupe du processus, 0600 (de meme pour
+/// `ca-next.crt` et `ca-next.key` pendant une rotation). Le service ne
 /// peut alors ni lire la cle ni remplacer ou supprimer la cle ou le
 /// certificat. Jamais a travers un lien ; fichier a plusieurs liens durs
 /// refuse. Vrai si quelque chose a change. Sans dossier : rien a faire.
@@ -328,7 +468,14 @@ pub fn harden_ca(config_dir: &Path) -> io::Result<bool> {
     };
     let mut changed = ca.harden(file_name(CA_KEY), 0o600, true)?;
     changed |= ca.harden(file_name(CA_CRT), 0o640, false)?;
+    changed |= ca.harden(file_name(CA_NEXT_KEY), 0o600, true)?;
+    changed |= ca.harden(file_name(CA_NEXT_CRT), 0o640, false)?;
     changed |= ca.harden_self(0o750)?;
+    // Fin de rotation interrompue (remplacement de `ca.crt` + `ca.key`) :
+    // terminee ou annulee avant toute lecture de la CA.
+    if super::certs::recover_pair(config_dir, (CA_CRT, CA_KEY))? {
+        changed = true;
+    }
     Ok(changed)
 }
 
@@ -497,8 +644,8 @@ pub async fn sign_requests(
             );
         }
     };
-    let ca = match load_ca(config_dir) {
-        Ok(ca) => ca,
+    let cas = match load_cas(config_dir) {
+        Ok(cas) => cas,
         Err(e) => {
             discard(&mut report);
             return Err(fatal_after(&report, "CA de l'instance illisible", e));
@@ -513,7 +660,7 @@ pub async fn sign_requests(
     };
     for name in names {
         let file = format!("{name}.json");
-        let outcome = sign_one(db, &ca, config_dir, &requests, &responses, &name, &file).await;
+        let outcome = sign_one(db, &cas, config_dir, &requests, &responses, &name, &file).await;
         clear(&data, &requests, OsStr::new(&file), &mut report);
         match outcome {
             Ok(()) => report.signed.push(name),
@@ -539,7 +686,7 @@ fn fatal_after(report: &SignReport, what: &str, e: impl fmt::Display) -> SignErr
 
 async fn sign_one(
     db: &PgPool,
-    ca: &pki::Ca,
+    cas: &Cas,
     config_dir: &Path,
     requests: &fsio::Dir,
     responses: &fsio::Dir,
@@ -559,11 +706,11 @@ async fn sign_one(
     }
     let cert_pem = match (request.usage, request.server_id, &request.cert_pem) {
         (Usage::Agent, Some(id), Some(pem)) => {
-            sign_agent_request(db, ca, id, &request, pem).await?
+            sign_agent_request(db, cas, id, &request, pem).await?
         }
         (Usage::Link | Usage::Panel, None, None) => {
             let rel = request.usage.own_cert().unwrap_or(LINK_CRT);
-            sign_own_request(ca, config_dir, rel, &request)?
+            sign_own_request(cas, config_dir, rel, &request)?
         }
         _ => return Err("champs incoherents avec l'usage".into()),
     };
@@ -577,7 +724,7 @@ async fn sign_one(
 
 async fn sign_agent_request(
     db: &PgPool,
-    ca: &pki::Ca,
+    cas: &Cas,
     id: ServerId,
     request: &CertRequest,
     pem: &str,
@@ -586,7 +733,7 @@ async fn sign_agent_request(
     if public_key_sha256(&der).as_deref() != Some(request.public_key_sha256.as_str()) {
         return Err("cle publique differente du certificat joint".into());
     }
-    let bundle = sign_agent(ca, &der, id)?;
+    let bundle = cas.sign_agent(&der, id)?;
     let current = pki::fingerprint_sha256(&der);
     // Enregistre, non revoque, empreinte actuelle : controle et note en une
     // instruction.
@@ -618,7 +765,7 @@ async fn sign_agent_request(
 }
 
 fn sign_own_request(
-    ca: &pki::Ca,
+    cas: &Cas,
     config_dir: &Path,
     rel: &str,
     request: &CertRequest,
@@ -634,7 +781,7 @@ fn sign_own_request(
     if public_key_sha256(&der).as_deref() != Some(request.public_key_sha256.as_str()) {
         return Err(format!("cle publique differente de celle de {rel}"));
     }
-    Ok(sign_server(ca, &pem)?.cert_pem)
+    Ok(cas.sign_server(&pem)?.cert_pem)
 }
 
 /// Acces aux fichiers du signataire : sous Unix, descripteurs de dossier
@@ -825,16 +972,32 @@ mod fsio {
         /// Ecrit `name` : temporaire cree sans suivre de lien (`O_EXCL`),
         /// 0640, groupe de ce dossier, donnees sur disque, renommage.
         pub fn write_atomic(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+            self.write_atomic_mode(name, bytes, 0o640, false)
+        }
+
+        /// Comme [`Dir::write_atomic`], droits `mode`, groupe du processus si
+        /// `own_group` (sinon celui de ce dossier).
+        pub fn write_atomic_mode(
+            &self,
+            name: &str,
+            bytes: &[u8],
+            mode: u32,
+            own_group: bool,
+        ) -> io::Result<()> {
             let tmp = format!(".{name}.tmp");
             self.remove(tmp.as_str())?;
             let flags =
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-            let fd = rustix::fs::openat(&self.fd, tmp.as_str(), flags, Mode::from_raw_mode(0o640))?;
-            let gid = rustix::fs::fstat(&self.fd)?.st_gid;
+            let fd = rustix::fs::openat(&self.fd, tmp.as_str(), flags, Mode::from_raw_mode(mode))?;
+            let gid = if own_group {
+                rustix::process::getegid().as_raw()
+            } else {
+                rustix::fs::fstat(&self.fd)?.st_gid
+            };
             let mut file = File::from(fd);
             let written = std::os::unix::fs::fchown(&file, None, Some(gid))
                 .and_then(|()| {
-                    rustix::fs::fchmod(file.as_fd(), Mode::from_raw_mode(0o640)).map_err(Into::into)
+                    rustix::fs::fchmod(file.as_fd(), Mode::from_raw_mode(mode)).map_err(Into::into)
                 })
                 .and_then(|()| file.write_all(bytes))
                 .and_then(|()| file.sync_all())
@@ -960,6 +1123,16 @@ mod fsio {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
                 other => other,
             }
+        }
+
+        pub fn write_atomic_mode(
+            &self,
+            name: &str,
+            bytes: &[u8],
+            _mode: u32,
+            _own_group: bool,
+        ) -> io::Result<()> {
+            self.write_atomic(name, bytes)
         }
 
         pub fn write_atomic(&self, name: &str, bytes: &[u8]) -> io::Result<()> {

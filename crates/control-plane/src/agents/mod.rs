@@ -3,6 +3,7 @@
 
 pub mod certs;
 pub mod registry;
+pub mod rotation;
 pub mod servers;
 pub mod signer;
 pub mod transport;
