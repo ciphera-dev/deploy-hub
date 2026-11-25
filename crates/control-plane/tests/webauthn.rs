@@ -1621,7 +1621,7 @@ async fn daily_totp_cap_does_not_block_passkeys() {
         "INSERT INTO mfa_attempts (at, user_id, session_id, succeeded, totp)          SELECT now() - interval '1 hour', $1, $2, false, true FROM generate_series(1, 20)",
     )
     .bind(env.user_id)
-    .bind(Uuid::new_v4())
+    .bind(None::<Uuid>)
     .execute(&s.db)
     .await
     .unwrap();
@@ -1646,7 +1646,7 @@ async fn passkey_not_limited_by_totp_failures() {
         "INSERT INTO mfa_attempts (at, user_id, session_id, succeeded, totp)          SELECT now(), $1, $2, false, true FROM generate_series(1, 5)",
     )
     .bind(env.user_id)
-    .bind(Uuid::new_v4())
+    .bind(None::<Uuid>)
     .execute(&s.db)
     .await
     .unwrap();

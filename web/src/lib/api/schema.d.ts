@@ -2461,9 +2461,9 @@ export interface components {
              * @description Les 5 derniers deploiements, le plus recent d'abord. Absent sans la
              *     lecture des deploiements.
              */
-            recent_deployments?: components["schemas"]["Deployment"][] | null;
+            recent_deployments?: components["schemas"]["Deployment"][];
             /** @description Absent sans la lecture des serveurs. */
-            servers?: components["schemas"]["ServerLoad"][] | null;
+            servers?: components["schemas"]["ServerLoad"][];
             /** Format: int64 */
             servers_online: number;
             /** Format: int64 */
@@ -2575,13 +2575,13 @@ export interface components {
              * @description Activite recente : les 4 derniers deploiements, le plus recent d'abord.
              *     Absente sans la lecture des deploiements.
              */
-            activity?: components["schemas"]["Deployment"][] | null;
+            activity?: components["schemas"]["Deployment"][];
             /** @description Domaine principal de la production (absent : aucun domaine). */
             domain?: string | null;
             metrics: components["schemas"]["OverviewMetrics"];
             production?: components["schemas"]["Deployment"] | null;
             /** @description Absent sans la lecture des serveurs. */
-            services?: components["schemas"]["ProjectService"][] | null;
+            services?: components["schemas"]["ProjectService"][];
             status: components["schemas"]["ProjectStatus"];
         };
         /** @description Service d'un projet, tel que l'apercu et l'onglet Services l'affichent. */

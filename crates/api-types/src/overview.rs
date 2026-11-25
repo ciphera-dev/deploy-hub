@@ -109,9 +109,11 @@ pub struct Overview {
     /// Les 5 derniers deploiements, le plus recent d'abord. Absent sans la
     /// lecture des deploiements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
     pub recent_deployments: Option<Vec<Deployment>>,
     /// Absent sans la lecture des serveurs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
     pub servers: Option<Vec<ServerLoad>>,
 }
 

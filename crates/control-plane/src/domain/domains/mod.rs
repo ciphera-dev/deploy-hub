@@ -57,6 +57,8 @@ pub fn in_wildcard_zone(host: &str) -> bool {
 pub enum DomainError {
     /// Valeur refusee (422).
     Invalid(String),
+    /// Port interne ou healthcheck du service a changer sans `Projects:Write` (403).
+    Forbidden,
     /// Port interne du service manquant (422).
     PortRequired,
     /// IP publique du noeud inconnue (422).
@@ -368,7 +370,20 @@ async fn set_service_port(
     service: Uuid,
     port: Option<u16>,
     healthcheck: Option<&str>,
+    may_edit: bool,
 ) -> Result<()> {
+    if !may_edit {
+        let (current_port, current_check): (Option<i32>, Option<String>) =
+            sqlx::query_as("SELECT internal_port, healthcheck_path FROM services WHERE id = $1")
+                .bind(service)
+                .fetch_one(&mut *conn)
+                .await?;
+        let port_changes = port.is_some_and(|p| current_port != Some(i32::from(p)));
+        let check_changes = healthcheck.is_some_and(|h| current_check.as_deref() != Some(h));
+        if port_changes || check_changes {
+            return Err(DomainError::Forbidden);
+        }
+    }
     if let Some(p) = healthcheck
         && !valid_healthcheck_path(p)
     {
@@ -451,6 +466,7 @@ pub async fn create(
     project: Uuid,
     input: &NewDomain,
     actor: Uuid,
+    may_edit_service: bool,
 ) -> Result<Uuid> {
     let host = normalize_host(&input.host).map_err(|m| DomainError::Invalid(m.into()))?;
     if in_wildcard_zone(&host) {
@@ -492,6 +508,7 @@ pub async fn create(
             service,
             input.internal_port,
             input.healthcheck_path.as_deref(),
+            may_edit_service,
         )
         .await?;
     }
@@ -666,7 +683,12 @@ async fn locked(conn: &mut PgConnection, id: Uuid) -> Result<Found> {
 }
 
 /// Modifie le prefixe, le service servi et son port ou son healthcheck.
-pub async fn update(conn: &mut PgConnection, id: Uuid, input: &UpdateDomain) -> Result<()> {
+pub async fn update(
+    conn: &mut PgConnection,
+    id: Uuid,
+    input: &UpdateDomain,
+    may_edit_service: bool,
+) -> Result<()> {
     let found = locked(conn, id).await?;
     if let Some(p) = &input.path_prefix
         && !valid_path_prefix(p)
@@ -690,6 +712,7 @@ pub async fn update(conn: &mut PgConnection, id: Uuid, input: &UpdateDomain) -> 
         service,
         input.internal_port,
         input.healthcheck_path.as_deref(),
+        may_edit_service,
     )
     .await?;
     sqlx::query(

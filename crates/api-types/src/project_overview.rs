@@ -113,10 +113,12 @@ pub struct ProjectOverview {
     pub metrics: OverviewMetrics,
     /// Absent sans la lecture des serveurs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
     pub services: Option<Vec<ProjectService>>,
     /// Activite recente : les 4 derniers deploiements, le plus recent d'abord.
     /// Absente sans la lecture des deploiements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
     pub activity: Option<Vec<Deployment>>,
 }
 

@@ -1,9 +1,10 @@
 -- Contraintes d'integrite manquantes.
 --
--- 1. `deploy_hooks.token_hash` : l'URL secrete d'un deploy hook retrouve son
---    hook par le SHA-256 du secret ; deux lignes au meme hash rendraient la
---    resolution ambigue. Les doublons eventuels sont purges (le plus ancien
---    reste), puis le hash devient unique.
+-- 1. `deploy_hooks.token_hash` : le hook est retrouve par son identifiant et
+--    le secret compare a temps constant ; l'unicite du hash est une defense en
+--    profondeur, garantie par le schema. Les doublons eventuels (collision
+--    SHA-256, theorique) sont purges, le plus ancien reste, puis le hash
+--    devient unique.
 DELETE FROM deploy_hooks d
 USING (
     SELECT id,

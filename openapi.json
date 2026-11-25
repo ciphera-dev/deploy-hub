@@ -269,7 +269,12 @@
             "description": "Jeton CSRF absent ou invalide"
           }
         },
-        "security": []
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/auth/mfa/methods": {
@@ -297,7 +302,11 @@
             "description": "`mfa_not_pending` : la session est deja complete"
           }
         },
-        "security": []
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/auth/mfa/verify": {
@@ -338,7 +347,11 @@
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
         },
-        "security": []
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/auth/password/forgot": {
@@ -506,7 +519,11 @@
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
         },
-        "security": []
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/auth/register": {
@@ -604,7 +621,12 @@
             "description": "Trop de ceremonies en cours ; en-tete Retry-After"
           }
         },
-        "security": []
+        "security": [
+          {},
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/auth/webauthn/assert/verify": {
@@ -648,7 +670,12 @@
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
         },
-        "security": []
+        "security": [
+          {},
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/auth/webauthn/status": {
@@ -7582,20 +7609,14 @@
             "format": "int64"
           },
           "recent_deployments": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": "array",
             "items": {
               "$ref": "#/components/schemas/Deployment"
             },
             "description": "Les 5 derniers deploiements, le plus recent d'abord. Absent sans la\nlecture des deploiements."
           },
           "servers": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": "array",
             "items": {
               "$ref": "#/components/schemas/ServerLoad"
             },
@@ -7880,10 +7901,7 @@
         ],
         "properties": {
           "activity": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": "array",
             "items": {
               "$ref": "#/components/schemas/Deployment"
             },
@@ -7911,10 +7929,7 @@
             ]
           },
           "services": {
-            "type": [
-              "array",
-              "null"
-            ],
+            "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProjectService"
             },

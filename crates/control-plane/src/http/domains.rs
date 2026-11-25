@@ -23,7 +23,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::auth::internal;
-use crate::authz::{Level, Require, Resource, Role, allowed, forbidden, lvl, res};
+use crate::authz::{Level, Require, Resource, Role, allowed, lvl, res};
 use crate::domain::domains::{self, DomainError, acme, dns};
 use crate::http::panel_host;
 use crate::state::AppState;
@@ -83,10 +83,18 @@ fn domain_error(e: DomainError) -> ApiError {
             "reserved_host",
             "Ce domaine est réservé au panneau Ciphera.",
         ),
+        DomainError::Forbidden => crate::authz::forbidden(),
         DomainError::Conflict(m) => ApiError::new(409, "conflict", m),
         DomainError::NotFound(m) => ApiError::new(404, "not_found", m),
         DomainError::Db(e) => internal("domaines", e),
     }
+}
+
+/// Port interne et healthcheck sont des reglages du service : les changer par
+/// la route des domaines exige aussi `Projects:Write`. Renvoyer la valeur
+/// actuelle n'est pas un changement.
+fn may_edit_service(role: Role) -> bool {
+    allowed(role, Resource::Projects, Level::Write)
 }
 
 fn project_id(query: Result<Query<ProjectQuery>, QueryRejection>) -> Result<Uuid, ApiError> {
@@ -146,20 +154,6 @@ async fn begin(state: &AppState) -> Result<sqlx::Transaction<'static, sqlx::Post
         .map_err(db("transaction des domaines"))
 }
 
-/// Port interne et healthcheck sont des reglages du service : les changer par
-/// la route des domaines exige aussi `Projects:Write`.
-fn service_settings_guard(
-    role: Role,
-    internal_port: Option<u16>,
-    healthcheck_path: Option<&str>,
-) -> Result<(), ApiError> {
-    let touches_service = internal_port.is_some() || healthcheck_path.is_some();
-    if touches_service && !allowed(role, Resource::Projects, Level::Write) {
-        return Err(forbidden());
-    }
-    Ok(())
-}
-
 /// `GET /api/domains?project=`
 async fn list(
     State(state): State<AppState>,
@@ -186,11 +180,6 @@ async fn create(
 ) -> Result<Response, ApiError> {
     let project = project_id(query)?;
     let Json(input) = body.map_err(|_| unprocessable("Corps de requête invalide."))?;
-    service_settings_guard(
-        auth.role,
-        input.internal_port,
-        input.healthcheck_path.as_deref(),
-    )?;
     // Nom par lequel le panneau est joint : jamais un domaine de projet.
     let current = panel_host::request_host_name(&headers, &uri);
     let mut tx = begin(&state).await?;
@@ -201,6 +190,7 @@ async fn create(
         project,
         &input,
         auth.user.id,
+        may_edit_service(auth.role),
     )
     .await
     .map_err(domain_error)?;
@@ -251,13 +241,8 @@ async fn update(
 ) -> Result<Response, ApiError> {
     let id = domain_id(&id)?;
     let Json(input) = body.map_err(|_| unprocessable("Corps de requête invalide."))?;
-    service_settings_guard(
-        auth.role,
-        input.internal_port,
-        input.healthcheck_path.as_deref(),
-    )?;
     let mut tx = begin(&state).await?;
-    domains::update(&mut tx, id, &input)
+    domains::update(&mut tx, id, &input, may_edit_service(auth.role))
         .await
         .map_err(domain_error)?;
     let found = one(&mut tx, id).await?;

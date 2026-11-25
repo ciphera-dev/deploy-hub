@@ -297,15 +297,44 @@ const CSRF_SCHEME: &str = "csrfHeader";
 /// `Domain`).
 const SESSION_COOKIE: &str = "__Host-ciphera_session";
 
-/// Routes sans session par conception (la matrice des droits les declare
-/// `Public`) : assistant d'installation, connexion et ses suites, sonde,
-/// deploy hook et webhook, qui portent leur propre secret.
-fn is_public(path: &str) -> bool {
-    path == "/api/health"
-        || path.starts_with("/api/setup/")
-        || path.starts_with("/api/auth/")
-        || path.starts_with("/v1/hooks/deploy/")
-        || path == "/v1/webhooks/github"
+/// Exigence d'une route : aucune (`[]`), le cookie de session seul, le
+/// cookie et l'en-tete CSRF, ou un cookie facultatif.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Need {
+    Nothing,
+    Cookie,
+    CookieAndCsrf,
+    OptionalCookie,
+}
+
+/// Exigence de securite de `path`.
+///
+/// Sans session par conception : assistant d'installation, connexion,
+/// inscription, invitations, mot de passe et e-mail, sonde, deploy hook et
+/// webhook (ces deux derniers portent leur propre secret). La deconnexion lit
+/// le cookie et exige le jeton CSRF. La verification du second facteur lit le
+/// cookie de la session en attente de MFA (sans CSRF : exemptee), et les
+/// assertions WebAuthn le lisent seulement pour le second facteur.
+fn need(method: &str, path: &str) -> Need {
+    match path {
+        "/api/auth/logout" => Need::CookieAndCsrf,
+        "/api/auth/mfa/verify" | "/api/auth/recovery-code" | "/api/auth/mfa/methods" => {
+            Need::Cookie
+        }
+        "/api/auth/webauthn/assert/options" | "/api/auth/webauthn/assert/verify" => {
+            Need::OptionalCookie
+        }
+        _ if path == "/api/health"
+            || path.starts_with("/api/setup/")
+            || path.starts_with("/api/auth/")
+            || path.starts_with("/v1/hooks/deploy/")
+            || path == "/v1/webhooks/github" =>
+        {
+            Need::Nothing
+        }
+        _ if method == "GET" => Need::Cookie,
+        _ => Need::CookieAndCsrf,
+    }
 }
 
 /// Declare les schemas de securite et les rattache a chaque operation :
@@ -333,25 +362,24 @@ impl utoipa::Modify for Security {
             ))),
         );
         let no_scopes = Vec::<String>::new;
+        let cookie = || SecurityRequirement::new(SESSION_SCHEME, no_scopes());
         for (path, item) in openapi.paths.paths.iter_mut() {
             let ops = [
-                (&mut item.get, false),
-                (&mut item.put, true),
-                (&mut item.post, true),
-                (&mut item.delete, true),
-                (&mut item.patch, true),
+                (&mut item.get, "GET"),
+                (&mut item.put, "PUT"),
+                (&mut item.post, "POST"),
+                (&mut item.delete, "DELETE"),
+                (&mut item.patch, "PATCH"),
             ];
-            for (op, writes) in ops {
+            for (op, method) in ops {
                 let Some(op) = op else { continue };
-                op.security = Some(if is_public(path) {
-                    Vec::new()
-                } else if writes {
-                    vec![
-                        SecurityRequirement::new(SESSION_SCHEME, no_scopes())
-                            .add(CSRF_SCHEME, no_scopes()),
-                    ]
-                } else {
-                    vec![SecurityRequirement::new(SESSION_SCHEME, no_scopes())]
+                op.security = Some(match need(method, path) {
+                    Need::Nothing => Vec::new(),
+                    Need::Cookie => vec![cookie()],
+                    Need::OptionalCookie => vec![SecurityRequirement::default(), cookie()],
+                    Need::CookieAndCsrf => {
+                        vec![cookie().add(CSRF_SCHEME, no_scopes())]
+                    }
                 });
             }
         }

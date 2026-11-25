@@ -867,6 +867,28 @@ async fn ops_cannot_change_internal_port_via_domains() {
     .await;
     assert_eq!(r.status, 403, "{}", r.raw);
     assert_eq!(service_port(&env.state, &id).await, Some(3000));
+    // Le meme port renvoye (ce que fait le panneau) n'est pas un changement.
+    let r = send(
+        &env.state,
+        &ops,
+        "PATCH",
+        &format!("/api/domains/{id}"),
+        Some(json!({ "path_prefix": "/same", "internal_port": 3000 })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    // Creation sans port (celui du service est repris) ou avec le meme port.
+    for (host, body) in [
+        ("ops-a.example.com", json!({ "host": "ops-a.example.com" })),
+        (
+            "ops-b.example.com",
+            json!({ "host": "ops-b.example.com", "internal_port": 3000 }),
+        ),
+    ] {
+        let r = add(&env.state, &ops, p, body).await;
+        assert_eq!(r.status, 201, "{host} {}", r.raw);
+    }
+    assert_eq!(service_port(&env.state, &id).await, Some(3000));
     // Le reste de la route reste ouvert a Ops (Domains:Write).
     let r = send(
         &env.state,

@@ -751,23 +751,55 @@ fn openapi_security_matches_the_guards() {
     assert_eq!(schemes["sessionCookie"]["name"], "__Host-ciphera_session");
     assert_eq!(schemes["csrfHeader"]["in"], "header");
     assert_eq!(schemes["csrfHeader"]["name"], "X-CSRF-Token");
+    // Routes sans role qui lisent pourtant un cookie : la deconnexion et le
+    // second facteur (session en attente de MFA).
+    const READS_COOKIE: [&str; 4] = [
+        "/api/auth/logout",
+        "/api/auth/mfa/verify",
+        "/api/auth/recovery-code",
+        "/api/auth/mfa/methods",
+    ];
+    // Cookie facultatif : mode `second_factor` ou connexion par passkey.
+    const OPTIONAL_COOKIE: [&str; 2] = [
+        "/api/auth/webauthn/assert/options",
+        "/api/auth/webauthn/assert/verify",
+    ];
     for &(method, path, guard) in MATRIX {
         let op = &doc["paths"][path][method.to_ascii_lowercase()];
         let security = op["security"]
             .as_array()
             .unwrap_or_else(|| panic!("{method} {path} : security absent"));
-        match guard {
-            Public(_) => assert!(security.is_empty(), "{method} {path} : public"),
-            _ => {
-                assert_eq!(security.len(), 1, "{method} {path}");
-                let req = security[0].as_object().unwrap();
-                assert!(req.contains_key("sessionCookie"), "{method} {path}");
-                assert_eq!(
-                    req.contains_key("csrfHeader"),
-                    method != "GET",
-                    "{method} {path} : en-tete CSRF"
-                );
-            }
+        // L'en-tete CSRF est exige exactement quand la couche CSRF l'exige.
+        let csrf_needed = csrf::is_protected(&method.parse().unwrap(), path);
+        if OPTIONAL_COOKIE.contains(&path) {
+            assert_eq!(security.len(), 2, "{method} {path}");
+            assert!(
+                security[0].as_object().unwrap().is_empty(),
+                "{method} {path}"
+            );
+            assert!(
+                security[1].get("sessionCookie").is_some(),
+                "{method} {path}"
+            );
+            assert!(!csrf_needed, "{method} {path}");
+            continue;
         }
+        let needs_cookie = !matches!(guard, Public(_)) || READS_COOKIE.contains(&path);
+        if !needs_cookie {
+            assert!(security.is_empty(), "{method} {path} : sans session");
+            assert!(
+                !csrf_needed,
+                "{method} {path} : CSRF sur une route sans session"
+            );
+            continue;
+        }
+        assert_eq!(security.len(), 1, "{method} {path}");
+        let req = security[0].as_object().unwrap();
+        assert!(req.contains_key("sessionCookie"), "{method} {path}");
+        assert_eq!(
+            req.contains_key("csrfHeader"),
+            csrf_needed,
+            "{method} {path} : en-tete CSRF"
+        );
     }
 }
