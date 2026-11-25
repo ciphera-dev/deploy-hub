@@ -1794,10 +1794,19 @@ async fn agent_keeps_state_when_docker_remove_fails() {
     assert_eq!(removal_acks(&mut rx), vec![id]);
 }
 
-/// Balayage des restes : conteneurs etiquetes d'un deploiement absent de
-/// l'etat local et images dont l'etat local ne garde rien sont supprimes ;
-/// le reste (deploiements enregistres, build conclu en attente de son
-/// `Deploy`, services Compose sans deploiement, autres conteneurs) reste.
+/// Rend le conteneur `id` du faux Docker arrete, avec l'image `image`.
+fn stopped_with_image(bench: &Bench, id: &str, image: &str) {
+    let mut containers = bench.docker.containers.lock().unwrap();
+    let c = containers.get_mut(id).unwrap();
+    c.running = false;
+    c.image = image.to_string();
+}
+
+/// Balayage des restes : conteneurs arretes etiquetes d'un deploiement absent
+/// de l'etat local et images dont l'etat local ne garde rien et qu'aucun
+/// conteneur restant n'utilise sont supprimes ; le reste (deploiements
+/// enregistres, orphelin en marche, build conclu en attente de son `Deploy`,
+/// services Compose sans deploiement, autres conteneurs) reste.
 #[tokio::test(start_paused = true)]
 async fn orphan_labeled_containers_and_images_are_swept() {
     let bench = Bench::new();
@@ -1807,23 +1816,37 @@ async fn orphan_labeled_containers_and_images_are_swept() {
     deploy_ok(&bench, &v1).await;
     let kept = v1.deployment_id;
     let orphan = DeploymentId::new();
+    let live = DeploymentId::new();
     let built = DeploymentId::new();
     let stray_image = DeploymentId::new();
+    let shared = DeploymentId::new();
     bench
         .db
         .put_outcome(built, Stage::Image, &StageStatus::Succeeded)
         .unwrap();
-    let orphan_label = orphan.to_string();
+    let tag = |id: DeploymentId| format!("ciphera/web-production:{id}");
     let project_label = project.to_string();
-    bench.docker.add_container(
-        "orphan",
-        &format!("ciphera-d-{orphan}"),
-        &[
-            (DEPLOYMENT_LABEL, orphan_label.as_str()),
-            (PROJECT_LABEL, project_label.as_str()),
-        ],
-        None,
-    );
+    for (cid, id) in [("orphan", orphan), ("live", live)] {
+        let label = id.to_string();
+        bench.docker.add_container(
+            cid,
+            &format!("ciphera-d-{id}"),
+            &[
+                (DEPLOYMENT_LABEL, label.as_str()),
+                (PROJECT_LABEL, project_label.as_str()),
+            ],
+            None,
+        );
+    }
+    stopped_with_image(&bench, "orphan", &tag(orphan));
+    bench
+        .docker
+        .containers
+        .lock()
+        .unwrap()
+        .get_mut("live")
+        .unwrap()
+        .image = tag(live);
     bench.docker.add_container(
         "compose-db",
         "web-production-db-1",
@@ -1834,15 +1857,19 @@ async fn orphan_labeled_containers_and_images_are_swept() {
         ],
         None,
     );
+    // Conteneur sans deploiement qui utilise l'image d'un deploiement inconnu
+    // (arrete compris) : l'image reste.
     bench
         .docker
         .add_container("odd", "odd", &[(DEPLOYMENT_LABEL, "pas-un-uuid")], None);
-    let tag = |id: DeploymentId| format!("ciphera/web-production:{id}");
+    stopped_with_image(&bench, "odd", &tag(shared));
     bench.docker.images.lock().unwrap().extend([
         tag(kept),
         tag(orphan),
+        tag(live),
         tag(built),
         tag(stray_image),
+        tag(shared),
         format!("ciphera-staging/{stray_image}-web:build"),
         "nginx:alpine".to_string(),
     ]);
@@ -1853,16 +1880,69 @@ async fn orphan_labeled_containers_and_images_are_swept() {
     assert!(bench.docker.container(&kept_container).is_some());
     assert!(
         bench.docker.container("orphan").is_none(),
-        "orphelin supprime"
+        "orphelin arrete supprime"
+    );
+    assert!(
+        bench.docker.container("live").is_some(),
+        "orphelin en marche garde : le plan de controle decide"
     );
     assert!(bench.docker.container("compose-db").is_some());
     assert!(bench.docker.container("odd").is_some());
     let mut images = bench.docker.images.lock().unwrap().clone();
     images.sort();
-    let mut expected = vec![tag(kept), tag(built), "nginx:alpine".to_string()];
+    let mut expected = vec![
+        tag(kept),
+        tag(live),
+        tag(built),
+        tag(shared),
+        "nginx:alpine".to_string(),
+    ];
     expected.sort();
     assert_eq!(images, expected);
     assert!(bench.db.record(kept).unwrap().is_some());
+}
+
+/// Etat local neuf (aucun deploiement) alors que des conteneurs de
+/// deploiement existent : rien n'est supprime, ni conteneur (meme arrete), ni
+/// image.
+#[tokio::test(start_paused = true)]
+async fn fresh_state_skips_the_orphan_sweep() {
+    let bench = Bench::new();
+    let (running, stopped) = (DeploymentId::new(), DeploymentId::new());
+    let tag = |id: DeploymentId| format!("ciphera/web-production:{id}");
+    for (cid, id) in [("running", running), ("stopped", stopped)] {
+        let label = id.to_string();
+        bench.docker.add_container(
+            cid,
+            &format!("ciphera-d-{id}"),
+            &[(DEPLOYMENT_LABEL, label.as_str())],
+            None,
+        );
+    }
+    stopped_with_image(&bench, "stopped", &tag(stopped));
+    let unused = DeploymentId::new();
+    bench
+        .docker
+        .images
+        .lock()
+        .unwrap()
+        .extend([tag(running), tag(stopped), tag(unused)]);
+    assert!(bench.db.deployments().unwrap().is_empty());
+
+    bench.deployer.sweep_orphans().await;
+
+    assert!(bench.docker.container("running").is_some());
+    assert!(bench.docker.container("stopped").is_some());
+    assert_eq!(bench.docker.images.lock().unwrap().len(), 3);
+    assert!(
+        !bench
+            .docker
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("remove:")),
+        "{:?}",
+        bench.docker.calls()
+    );
 }
 
 // --- Compose -------------------------------------------------------------------

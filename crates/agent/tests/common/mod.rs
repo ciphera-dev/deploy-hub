@@ -331,6 +331,8 @@ impl DockerOps for FakeDocker {
                 id: ContainerId(id.clone()),
                 name: c.name.clone(),
                 labels: c.labels.clone(),
+                image: c.image.clone(),
+                stopped: !c.running,
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));

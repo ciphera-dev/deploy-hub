@@ -82,7 +82,7 @@ use crate::build::argv::ValidatedArg;
 use crate::build::{self, BuildBackend, BuildConfig, BuildError, ProgressSink};
 use crate::docker::{
     ContainerId, ContainerSpec, DEPLOYMENT_LABEL, DockerError, DockerOps, PREPARE_ROLE, ROLE_LABEL,
-    network_project, project_network,
+    image_deployment, network_project, project_network,
 };
 use crate::ops::{Busy, Cancel, OpKind, Operations, Ticket};
 use crate::routes::{RouteError, RouteSink, Router};
@@ -1005,17 +1005,27 @@ where
         }
     }
 
-    /// Balayage des restes (au demarrage et toutes les heures) : conteneurs
-    /// etiquetes d'un deploiement absent de l'etat local (ni enregistre, ni en
-    /// cours) et images de deploiement dont l'etat local ne garde rien (ni
-    /// enregistrement, ni issue, ni ensemble Compose, ni operation). Etat
-    /// local illisible : rien n'est supprime.
+    /// Balayage des restes (au demarrage et toutes les heures), sur la foi
+    /// du seul etat local, donc prudent :
+    /// - seuls les conteneurs **arretes** etiquetes d'un deploiement absent
+    ///   de l'etat local (ni enregistre, ni en cours) sont supprimes ; un
+    ///   conteneur en marche n'est jamais touche (journalise) : le plan de
+    ///   controle, qui fait foi, le retire a la reconciliation s'il le faut ;
+    /// - images de deploiement dont l'etat local ne garde rien (ni
+    ///   enregistrement, ni issue, ni ensemble Compose, ni operation) et
+    ///   qu'aucun conteneur restant n'utilise ;
+    /// - etat local sans aucun deploiement alors que des conteneurs
+    ///   etiquetes existent (etat neuf ou recree, sauvegarde ancienne) :
+    ///   rien n'est supprime, une alerte est journalisee ;
+    /// - etat local illisible : rien n'est supprime.
     pub async fn sweep_orphans(&self) {
         self.sweep_orphans_in(None).await;
     }
 
     /// [`Deployer::sweep_orphans`] limite aux conteneurs du projet `project`
-    /// et aux images de leurs deploiements (Docker partage, tests).
+    /// et aux images de leurs deploiements. Pour les tests sur un Docker
+    /// partage seulement.
+    #[doc(hidden)]
     pub async fn sweep_orphans_of_project(&self, project: ProjectId) {
         self.sweep_orphans_in(Some(project)).await;
     }
@@ -1029,7 +1039,6 @@ where
             .as_deref()
             .map(|p| vec![(PROJECT_LABEL, p)])
             .unwrap_or_default();
-        // `project` : seules les images des conteneurs supprimes sont visees.
         let containers = match self.docker.list_managed(&scope).await {
             Ok(list) => list,
             Err(e) => {
@@ -1037,6 +1046,7 @@ where
                 return;
             }
         };
+        // `project` : seules les images des conteneurs supprimes sont visees.
         let images = match project {
             Some(_) => Vec::new(),
             None => match self.docker.image_deployments().await {
@@ -1061,6 +1071,19 @@ where
             tracing::error!("balayage des restes saute, etat local illisible");
             return;
         };
+        let labelled: Vec<(DeploymentId, &crate::docker::ManagedContainer)> = containers
+            .iter()
+            .filter_map(|c| container_deployment(c).map(|id| (id, c)))
+            .collect();
+        if records.is_empty() && !labelled.is_empty() {
+            tracing::error!(
+                "balayage des restes saute : etat local sans aucun deploiement alors que {} \
+                 conteneur(s) de deploiement existent (etat neuf, recree ou restaure ?) ; \
+                 rien n'est supprime, le plan de controle reconcilie",
+                labelled.len()
+            );
+            return;
+        }
         let recorded: std::collections::HashSet<DeploymentId> = records
             .iter()
             .map(|r| r.deployment.deployment_id)
@@ -1071,28 +1094,40 @@ where
         known.extend(bundles);
 
         let mut doomed_images: Vec<DeploymentId> = Vec::new();
-        for c in &containers {
-            // Forme canonique seulement (celle que pose l'agent).
-            let Some(id) = c.labels.get(DEPLOYMENT_LABEL).and_then(|d| {
-                d.parse::<DeploymentId>()
-                    .ok()
-                    .filter(|id| id.to_string() == *d)
-            }) else {
-                continue;
-            };
+        let mut removed: std::collections::HashSet<&ContainerId> = std::collections::HashSet::new();
+        for (id, c) in &labelled {
+            let id = *id;
             if recorded.contains(&id) || self.ops.is_running(id) {
                 continue;
             }
+            if !c.stopped {
+                tracing::warn!(
+                    "conteneur {} du deploiement {id} absent de l'etat local mais en marche : \
+                     garde (retire par le plan de controle s'il le faut)",
+                    c.name
+                );
+                continue;
+            }
             tracing::info!(
-                "conteneur {} du deploiement {id} absent de l'etat local : supprime",
+                "conteneur arrete {} du deploiement {id} absent de l'etat local : supprime",
                 c.name
             );
-            if let Err(e) = self.docker.remove(&c.id).await {
-                tracing::warn!("{} : {e}", c.name);
+            match self.docker.remove(&c.id).await {
+                Ok(()) => {
+                    removed.insert(&c.id);
+                    if project.is_some() && !known.contains(&id) && !doomed_images.contains(&id) {
+                        doomed_images.push(id);
+                    }
+                }
+                Err(e) => tracing::warn!("{} : {e}", c.name),
             }
-            if project.is_some() && !known.contains(&id) && !doomed_images.contains(&id) {
-                doomed_images.push(id);
-            }
+        }
+        // Deploiements dont une image sert encore a un conteneur restant (par
+        // son image ou son etiquette) : leurs images restent.
+        let mut in_use: std::collections::HashSet<DeploymentId> = std::collections::HashSet::new();
+        for c in containers.iter().filter(|c| !removed.contains(&c.id)) {
+            in_use.extend(image_deployment(&c.image));
+            in_use.extend(container_deployment(c));
         }
         for id in images {
             if !known.contains(&id) && !doomed_images.contains(&id) {
@@ -1100,7 +1135,7 @@ where
             }
         }
         for id in doomed_images {
-            if self.ops.is_running(id) {
+            if in_use.contains(&id) || self.ops.is_running(id) {
                 continue;
             }
             tracing::info!("images du deploiement {id} absent de l'etat local : supprimees");
@@ -1383,6 +1418,16 @@ pub fn valid_env_key(key: &str) -> bool {
         && (b[0].is_ascii_uppercase() || b[0] == b'_')
         && b.iter()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
+}
+
+/// Deploiement de l'etiquette `dev.ciphera.deployment` d'un conteneur, sous
+/// sa forme canonique seulement (celle que pose l'agent).
+fn container_deployment(c: &crate::docker::ManagedContainer) -> Option<DeploymentId> {
+    let label = c.labels.get(DEPLOYMENT_LABEL)?;
+    label
+        .parse::<DeploymentId>()
+        .ok()
+        .filter(|id| id.to_string() == *label)
 }
 
 /// L'issue conclut le deploiement (pas seulement son build) : echec ou

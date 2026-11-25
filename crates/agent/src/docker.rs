@@ -148,6 +148,11 @@ pub struct ManagedContainer {
     /// Nom sans le `/` de tete.
     pub name: String,
     pub labels: HashMap<String, String>,
+    /// Image demandee a la creation (reference telle que donnee a Docker).
+    pub image: String,
+    /// Arrete pour de bon (`created`, `exited`, `dead`). Faux pour un
+    /// conteneur en marche, en pause, en redemarrage ou d'etat inconnu.
+    pub stopped: bool,
 }
 
 /// Etiquette d'image d'un deploiement : `ciphera/<projet>-<env>:<id>`,
@@ -1642,7 +1647,17 @@ impl BollardDocker {
                 let labels = c.labels.unwrap_or_default();
                 // Filtre de Docker reverifie : jamais un conteneur d'autrui.
                 check_managed("", Some(&labels)).ok()?;
+                let stopped = matches!(
+                    c.state,
+                    Some(
+                        bollard::models::ContainerSummaryStateEnum::CREATED
+                            | bollard::models::ContainerSummaryStateEnum::EXITED
+                            | bollard::models::ContainerSummaryStateEnum::DEAD
+                    )
+                );
                 Some(ManagedContainer {
+                    image: c.image.unwrap_or_default(),
+                    stopped,
                     id: ContainerId(c.id?),
                     name: c
                         .names

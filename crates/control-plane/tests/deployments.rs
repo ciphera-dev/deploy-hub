@@ -2143,8 +2143,19 @@ async fn cleaned_at_only_after_ack() {
     env.run_jobs().await;
     assert!(removals(&env.orders()).is_empty());
 
-    // Un accuse pour un deploiement servi (non termine) ne le marque pas.
+    // Le deploiement servi, jamais vise, reste en place.
     assert_eq!(cleaned(&env, v1).await, None);
+
+    // Un accuse pour un deploiement en cours (non termine) ne le marque pas.
+    let v3 = deploy(&env.state, p).await;
+    env.run_jobs().await;
+    assert_eq!(builds(&env.orders()), vec![v3]);
+    env.agent_says(AgentToControl::DeploymentRemoved {
+        deployment_id: DeploymentId(v3),
+    })
+    .await;
+    assert_eq!(env.status(v3).await, "running");
+    assert_eq!(cleaned(&env, v3).await, None);
 }
 
 /// A chaque `State`, un deploiement rapporte par l'agent mais inconnu de la
