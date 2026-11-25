@@ -130,3 +130,125 @@ async fn admin_renews_an_expired_local_agent_cert() {
         pem
     );
 }
+
+/// `ciphera admin renew-certs` ne signe que le certificat du serveur local
+/// enregistre (empreinte en base) et emis par la CA de l'instance : un
+/// certificat d'une autre CA, ou de la bonne CA mais avec une autre cle,
+/// pose dans le dossier de l'agent est refuse sans rien ecrire ni noter.
+#[tokio::test]
+async fn renew_certs_rejects_foreign_fingerprint() {
+    let (db, _guard) = common::database().await;
+    let ca = Ca::generate("instance").unwrap();
+    let dir = config_dir(&ca);
+    let agent_dir = common::TempDir::new();
+    let id = ServerId::new();
+    let key = pki::AgentKey::generate().unwrap();
+    let registered = ca.issue_agent_cert(id, key.public_key_der()).unwrap();
+    servers::register_local(&db, &registered.cert_pem)
+        .await
+        .unwrap();
+
+    let other_ca = Ca::generate("instance").unwrap();
+    let other_key = pki::AgentKey::generate().unwrap();
+    let foreign_ca = other_ca.issue_agent_cert(id, key.public_key_der()).unwrap();
+    let foreign_key = ca.issue_agent_cert(id, other_key.public_key_der()).unwrap();
+    for foreign in [&foreign_ca, &foreign_key] {
+        std::fs::write(agent_dir.0.join("agent.crt"), &foreign.cert_pem).unwrap();
+        let err = certs::renew_all(&db, &dir.0, &agent_dir.0)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("agent"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(agent_dir.0.join("agent.crt")).unwrap(),
+            foreign.cert_pem,
+            "rien n'est ecrit"
+        );
+        let next: Option<String> =
+            sqlx::query_scalar("SELECT next_cert_fingerprint FROM servers WHERE id = $1")
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(next, None, "rien n'est note");
+    }
+
+    // Le certificat enregistre, lui, est renouvele.
+    std::fs::write(agent_dir.0.join("agent.crt"), &registered.cert_pem).unwrap();
+    let done = certs::renew_all(&db, &dir.0, &agent_dir.0).await.unwrap();
+    assert_eq!(done.agent.map(|a| a.0), Some(id));
+    // Relance avant la reconnexion de l'agent : le certificat suivant
+    // (note en base) est reconnu aussi.
+    certs::renew_all(&db, &dir.0, &agent_dir.0).await.unwrap();
+
+    // Empreinte enregistree mais certificat d'une autre CA : refuse aussi.
+    sqlx::query("DELETE FROM servers WHERE id = $1")
+        .bind(id)
+        .execute(&db)
+        .await
+        .unwrap();
+    servers::register_local(&db, &foreign_ca.cert_pem)
+        .await
+        .unwrap();
+    std::fs::write(agent_dir.0.join("agent.crt"), &foreign_ca.cert_pem).unwrap();
+    let err = certs::renew_all(&db, &dir.0, &agent_dir.0)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("CA de l'instance"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(agent_dir.0.join("agent.crt")).unwrap(),
+        foreign_ca.cert_pem
+    );
+}
+
+/// Paire certificat + cle ecrite avec un manifeste : une coupure apres le
+/// manifeste est terminee a la reprise, une coupure avant laisse
+/// l'ancienne paire intacte. Aucun fichier temporaire ne reste.
+#[test]
+fn key_pair_write_is_completed_or_rolled_back() {
+    let ca = Ca::generate("instance").unwrap();
+    let dir = config_dir(&ca);
+    let (crt, key) = (transport::LINK_CRT, transport::LINK_KEY);
+    let old_crt = std::fs::read_to_string(dir.0.join(crt)).unwrap();
+    let old_key = std::fs::read_to_string(dir.0.join(key)).unwrap();
+    let mut new = ca.issue_server_cert(&["localhost".into()]).unwrap();
+    let new_key = new.key_pem.take().unwrap();
+    let staged = |name: &str| {
+        let p = std::path::Path::new(name);
+        dir.0.join(p.parent().unwrap()).join(format!(
+            ".{}.renew",
+            p.file_name().unwrap().to_string_lossy()
+        ))
+    };
+    let manifest = certs::pair_manifest(&dir.0, crt);
+
+    // Coupure avant le manifeste : fichiers prepares abandonnes.
+    std::fs::write(staged(crt), &new.cert_pem).unwrap();
+    std::fs::write(staged(key), new_key.as_bytes()).unwrap();
+    certs::recover_pairs(&dir.0).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.0.join(crt)).unwrap(), old_crt);
+    assert_eq!(std::fs::read_to_string(dir.0.join(key)).unwrap(), old_key);
+    assert!(!staged(crt).exists() && !staged(key).exists());
+
+    // Coupure apres le manifeste et le certificat deja en place : la cle
+    // suit a la reprise.
+    std::fs::write(staged(key), new_key.as_bytes()).unwrap();
+    std::fs::write(&manifest, "").unwrap();
+    std::fs::write(dir.0.join(crt), &new.cert_pem).unwrap();
+    certs::recover_pairs(&dir.0).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.0.join(crt)).unwrap(),
+        new.cert_pem
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.0.join(key)).unwrap(),
+        new_key.as_str()
+    );
+    assert!(!manifest.exists() && !staged(key).exists());
+    transport::server_config(&transport::LinkTls::load(&dir.0).unwrap()).unwrap();
+
+    // Ecriture complete : paire coherente, ni manifeste ni temporaire.
+    let loaded = certs::load_ca(&dir.0).unwrap();
+    assert!(certs::renew_server(&dir.0, &loaded, (crt, key), certs::now_unix(), true).unwrap());
+    assert!(!manifest.exists() && !staged(crt).exists() && !staged(key).exists());
+    transport::server_config(&transport::LinkTls::load(&dir.0).unwrap()).unwrap();
+}
