@@ -417,3 +417,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 11:46 — Session v0.1-sdd — claude-code (orchestrateur) — Task fix/ci-team-hooks : CI : empreintes de hooks distinctes dans le test d'équipe
 - fait : Test team.rs adapté à la contrainte UNIQUE de 0037
 - résultat : TERMINÉ
+
+## 2026-11-25 12:06 — Session v0.1-sdd — claude-code (orchestrateur) — Task R35 : Variables globales : portée explicite des secrets
+- fait : Secret + tous les projets interdit, migration 0036 à valeurs conservées, Appliquer à ce projet
+- résultat : TERMINÉ (relecture approuvée, 1 tour)
