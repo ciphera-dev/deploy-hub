@@ -206,9 +206,18 @@ impl Ca {
         })
     }
 
-    /// CA existante (`ca/ca.crt` et `ca/ca.key` de `ciphera init`).
+    /// CA existante (`ca/ca.crt` et `ca/ca.key` de `ciphera init`). La cle
+    /// doit etre celle du certificat.
     pub fn load(cert_pem: &str, key_pem: &str) -> Result<Ca> {
         let key = KeyPair::from_pem(key_pem)?;
+        let cert_key = der_from_pem(cert_pem)
+            .and_then(|der| public_key_der(&der))
+            .ok_or_else(|| Error("certificat de la CA illisible".into()))?;
+        if cert_key != key.subject_public_key_info() {
+            return Err(Error(
+                "cle de la CA differente de celle de son certificat".into(),
+            ));
+        }
         let issuer = Issuer::from_ca_cert_pem(cert_pem, key)?;
         Ok(Ca {
             issuer,
@@ -236,6 +245,26 @@ impl Ca {
         self.issue_server_cert(&sans)
     }
 
+    /// Nouveau certificat serveur pour la cle publique et les SAN (noms DNS
+    /// et adresses IP) du certificat PEM `old_pem` : la cle privee reste ou
+    /// elle est (signataire root, `ciphera admin sign-requests`).
+    pub fn reissue_server_cert(&self, old_pem: &str) -> Result<CertBundle> {
+        let sans = server_sans(old_pem)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error("certificat serveur illisible ou sans SAN".into()))?;
+        let spki = der_from_pem(old_pem)
+            .and_then(|der| public_key_der(&der))
+            .ok_or_else(|| Error("certificat serveur illisible".into()))?;
+        let public_key = SubjectPublicKeyInfo::from_der(&spki)?;
+        let params = server_params(&sans)?;
+        let cert = params.signed_by(&public_key, &self.issuer)?;
+        Ok(CertBundle {
+            cert_pem: cert.pem(),
+            key_pem: None,
+            fingerprint_sha256: fingerprint_sha256(cert.der()),
+        })
+    }
+
     /// Certificat de la CA (public).
     pub fn cert_pem(&self) -> &str {
         &self.cert_pem
@@ -249,13 +278,7 @@ impl Ca {
     /// Certificat serveur (TLS du panneau) avec sa propre cle. Chaque SAN est
     /// un nom DNS ou une adresse IP.
     pub fn issue_server_cert(&self, sans: &[String]) -> Result<CertBundle> {
-        let mut params = CertificateParams::new(sans.to_vec())?;
-        params.distinguished_name = common_name(sans.first().map_or("ciphera", String::as_str));
-        params.is_ca = IsCa::ExplicitNoCa;
-        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-        validity(&mut params, SERVER_VALIDITY_DAYS);
-        params.serial_number = Some(random_serial()?);
+        let params = server_params(sans)?;
         let key = KeyPair::generate()?;
         let cert = params.signed_by(&key, &self.issuer)?;
         Ok(CertBundle {
@@ -398,6 +421,19 @@ fn server_sans(pem: &str) -> Option<Vec<String>> {
     }
     out.extend(ips_from_cert_pem(pem).iter().map(ToString::to_string));
     Some(out)
+}
+
+/// Parametres d'un certificat serveur : SAN, CA:false, signature
+/// numerique, authentification serveur, 730 jours, numero aleatoire.
+fn server_params(sans: &[String]) -> Result<CertificateParams> {
+    let mut params = CertificateParams::new(sans.to_vec())?;
+    params.distinguished_name = common_name(sans.first().map_or("ciphera", String::as_str));
+    params.is_ca = IsCa::ExplicitNoCa;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    validity(&mut params, SERVER_VALIDITY_DAYS);
+    params.serial_number = Some(random_serial()?);
+    Ok(params)
 }
 
 fn common_name(name: &str) -> DistinguishedName {

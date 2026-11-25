@@ -317,3 +317,46 @@ fn issued_by_checks_the_ca_signature() {
     assert!(!pki::issued_by(b"pas une CA", &der));
     assert!(!pki::issued_by(&ca_der, b"pas un certificat"));
 }
+
+/// Certificat serveur re-signe (signataire root) : meme cle publique, memes
+/// SAN, 730 jours, aucune cle generee ; signe par la CA.
+#[test]
+fn reissued_server_cert_keeps_the_key_and_the_names() {
+    let ca = Ca::generate("Ciphera test CA").unwrap();
+    let mut link = ca
+        .issue_server_cert(&["203.0.113.7".into(), "localhost".into()])
+        .unwrap();
+    let _ = link.key_pem.take();
+    let old_der = parse_pem(&link.cert_pem);
+    let again = ca.reissue_server_cert(&link.cert_pem).unwrap();
+    assert!(again.key_pem.is_none(), "aucune nouvelle cle");
+    let new_der = parse_pem(&again.cert_pem);
+    assert_ne!(again.fingerprint_sha256, link.fingerprint_sha256);
+    assert_eq!(
+        pki::public_key_der(&new_der).unwrap(),
+        pki::public_key_der(&old_der).unwrap(),
+        "meme cle"
+    );
+    assert!(pki::issued_by(&parse_pem(ca.cert_pem()), &new_der));
+    assert_eq!(
+        pki::ips_from_cert_pem(&again.cert_pem),
+        vec!["203.0.113.7".parse::<std::net::IpAddr>().unwrap()]
+    );
+    let (from, to) = pki::validity_unix(&new_der).unwrap();
+    assert_eq!(to - from, 731 * 86_400);
+    // Certificat d'agent (sans SAN DNS ni IP) : refuse.
+    let key = KeyPair::generate().unwrap();
+    let agent = ca
+        .issue_agent_cert(ServerId::new(), &key.subject_public_key_info())
+        .unwrap();
+    assert!(ca.reissue_server_cert(&agent.cert_pem).is_err());
+}
+
+/// CA chargee avec une cle qui ne correspond pas a son certificat : refusee.
+#[test]
+fn load_refuses_a_key_that_does_not_match_the_certificate() {
+    let ca = Ca::generate("Ciphera test CA").unwrap();
+    let other = Ca::generate("Ciphera test CA").unwrap();
+    assert!(Ca::load(ca.cert_pem(), &other.key_pem()).is_err());
+    assert!(Ca::load(ca.cert_pem(), &ca.key_pem()).is_ok());
+}
