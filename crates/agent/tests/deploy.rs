@@ -2004,20 +2004,45 @@ async fn fresh_state_skips_the_orphan_sweep() {
 
 // --- Compose -------------------------------------------------------------------
 
-/// Ensemble Compose tel que produit par le build (forme normalisee).
+/// Deploiement dont le build a produit `compose_bundle()` : ses images
+/// construites portent cette etiquette.
+fn bundle_id() -> DeploymentId {
+    "0b7c3e2a-5d41-4f6e-9a8b-1c2d3e4f5a6b".parse().unwrap()
+}
+
+/// `bundle` tel que le build du deploiement `id` l'enregistre : images
+/// construites etiquetees `id`.
+fn built_as(bundle: &Value, id: DeploymentId) -> Value {
+    let mut out = bundle.clone();
+    for svc in out["services"].as_object_mut().unwrap().values_mut() {
+        let Some(image) = svc["image"].as_str() else {
+            continue;
+        };
+        if shared::images::is_internal_ref(image) {
+            let (repo, _) = image.rsplit_once(':').unwrap();
+            svc["image"] = json!(format!("{repo}:{id}"));
+        }
+    }
+    out
+}
+
+/// Ensemble Compose tel que produit par le build `bundle_id()` (forme
+/// normalisee).
 fn compose_bundle() -> Value {
+    let web = format!("ciphera.invalid/shop-production/web:{}", bundle_id());
+    let api = format!("ciphera.invalid/shop-production/api:{}", bundle_id());
     json!({
         "name": "shop-production",
         "services": {
             "web": {
-                "image": "ciphera.invalid/shop-production/web:x",
+                "image": web,
                 "depends_on": {"api": {"condition": "service_started", "required": true}},
                 "networks": {"default": null},
                 "environment": {"API_HOST": "api"},
                 "volumes": [{"type": "volume", "source": "uploads", "target": "/srv"}]
             },
             "api": {
-                "image": "ciphera.invalid/shop-production/api:x",
+                "image": api,
                 "depends_on": {"cache": {"condition": "service_started", "required": true}},
                 "networks": {"default": null},
                 "labels": {"app.tier": "back"}
@@ -2041,6 +2066,7 @@ fn compose_services_get_rotated_logs() {
         "web",
         ProjectId::new(),
         DeploymentId::new(),
+        bundle_id(),
     )
     .unwrap();
     for (name, svc) in plan.file["services"].as_object().unwrap() {
@@ -2060,7 +2086,8 @@ fn compose_services_get_rotated_logs() {
 #[test]
 fn compose_services_are_forced_onto_the_project_network() {
     let (project, deployment) = (ProjectId::new(), DeploymentId::new());
-    let plan = ComposePlan::new(&compose_bundle(), "web", project, deployment).unwrap();
+    let plan =
+        ComposePlan::new(&compose_bundle(), "web", project, deployment, bundle_id()).unwrap();
     let file = &plan.file;
     // Reseau `default` = reseau du projet, externe ; aucun autre reseau.
     assert_eq!(
@@ -2121,27 +2148,36 @@ fn compose_bundle_with_declared_network_or_privilege_is_refused() {
     let mut declared = compose_bundle();
     declared["networks"]["backend"] = json!({});
     declared["services"]["api"]["networks"] = json!({"backend": null});
-    assert!(ComposePlan::new(&declared, "web", project, deployment).is_err());
+    assert!(ComposePlan::new(&declared, "web", project, deployment, bundle_id()).is_err());
     let mut host = compose_bundle();
     host["services"]["api"]["network_mode"] = json!("host");
-    assert!(ComposePlan::new(&host, "web", project, deployment).is_err());
+    assert!(ComposePlan::new(&host, "web", project, deployment, bundle_id()).is_err());
     let mut forged = compose_bundle();
     forged["services"]["api"]["labels"] = json!({"dev.ciphera.deployment": "x"});
-    assert!(ComposePlan::new(&forged, "web", project, deployment).is_err());
+    assert!(ComposePlan::new(&forged, "web", project, deployment, bundle_id()).is_err());
     let mut cycle = compose_bundle();
     cycle["services"]["cache"]["depends_on"] = json!(["web"]);
-    let err = ComposePlan::new(&cycle, "web", project, deployment).unwrap_err();
+    let err = ComposePlan::new(&cycle, "web", project, deployment, bundle_id()).unwrap_err();
     assert!(err.contains("cycle"), "{err}");
     let mut unknown = compose_bundle();
     unknown["services"]["cache"]["depends_on"] = json!(["db"]);
-    assert!(ComposePlan::new(&unknown, "web", project, deployment).is_err());
-    assert!(ComposePlan::new(&compose_bundle(), "absent", project, deployment).is_err());
+    assert!(ComposePlan::new(&unknown, "web", project, deployment, bundle_id()).is_err());
+    assert!(
+        ComposePlan::new(
+            &compose_bundle(),
+            "absent",
+            project,
+            deployment,
+            bundle_id()
+        )
+        .is_err()
+    );
     let mut unbuilt = compose_bundle();
     unbuilt["services"]["api"]
         .as_object_mut()
         .unwrap()
         .remove("image");
-    assert!(ComposePlan::new(&unbuilt, "web", project, deployment).is_err());
+    assert!(ComposePlan::new(&unbuilt, "web", project, deployment, bundle_id()).is_err());
 }
 
 /// Ensemble a deployer : une image interne n'est acceptee que si c'est
@@ -2149,7 +2185,8 @@ fn compose_bundle_with_declared_network_or_privilege_is_refused() {
 #[test]
 fn compose_bundle_internal_images_only_their_own() {
     let (project, deployment) = (ProjectId::new(), DeploymentId::new());
-    let plan = ComposePlan::new(&compose_bundle(), "web", project, deployment).unwrap();
+    let b = bundle_id();
+    let plan = ComposePlan::new(&compose_bundle(), "web", project, deployment, b).unwrap();
     let services = &plan.file["services"];
     assert_eq!(services["web"]["pull_policy"], "never");
     assert_eq!(services["api"]["pull_policy"], "never");
@@ -2157,25 +2194,61 @@ fn compose_bundle_internal_images_only_their_own() {
     // Ancien nom enregistre (deploiement anterieur) : accepte, jamais
     // telecharge non plus.
     let mut legacy = compose_bundle();
-    legacy["services"]["web"]["image"] = json!("ciphera/shop-production/web:x");
-    let plan = ComposePlan::new(&legacy, "web", project, deployment).unwrap();
+    legacy["services"]["web"]["image"] = json!(format!("ciphera/shop-production/web:{b}"));
+    let plan = ComposePlan::new(&legacy, "web", project, deployment, b).unwrap();
     assert_eq!(plan.file["services"]["web"]["pull_policy"], "never");
     for image in [
-        "ciphera.invalid/shop-production/api:x",
-        "ciphera.invalid/other-production:x",
-        "ciphera.invalid/staging/x-web:build",
-        "ciphera.invalid/a/b/web:x",
-        "ciphera.invalid//web:x",
-        "ciphera.invalid/shop-production/web",
-        "docker.io/ciphera/shop-production/web:x",
-        "ciphera-staging/x-web:build",
-        "CIPHERA.INVALID/shop-production/web:x",
+        format!("ciphera.invalid/shop-production/api:{b}"),
+        format!("ciphera.invalid/other-production:{b}"),
+        format!("ciphera.invalid/staging/{b}-web:build"),
+        format!("ciphera.invalid/a/b/web:{b}"),
+        format!("ciphera.invalid//web:{b}"),
+        "ciphera.invalid/shop-production/web".to_string(),
+        format!("docker.io/ciphera/shop-production/web:{b}"),
+        format!("ciphera-staging/{b}-web:build"),
+        format!("CIPHERA.INVALID/shop-production/web:{b}"),
     ] {
         let mut other = compose_bundle();
         other["services"]["web"]["image"] = json!(image);
         assert!(
-            ComposePlan::new(&other, "web", project, deployment).is_err(),
+            ComposePlan::new(&other, "web", project, deployment, b).is_err(),
             "{image}"
+        );
+    }
+}
+
+/// Image construite acceptee seulement sous l'etiquette du build qui a
+/// enregistre l'ensemble : jamais celle d'un autre deploiement (meme
+/// projet, meme service), ni une etiquette quelconque.
+#[test]
+fn compose_bundle_image_tag_must_be_its_build() {
+    let (project, deployment) = (ProjectId::new(), DeploymentId::new());
+    let b = bundle_id();
+    // Rollback : deploiement nouveau, ensemble (et images) du build `b`.
+    ComposePlan::new(&compose_bundle(), "web", project, deployment, b).unwrap();
+    // Meme ensemble annonce comme celui d'un autre build : refuse.
+    assert!(ComposePlan::new(&compose_bundle(), "web", project, deployment, deployment).is_err());
+    let other = DeploymentId::new();
+    for (service, image) in [
+        (
+            "web",
+            format!("ciphera.invalid/shop-production/web:{other}"),
+        ),
+        (
+            "web",
+            "ciphera.invalid/shop-production/web:latest".to_string(),
+        ),
+        (
+            "api",
+            format!("ciphera.invalid/shop-production/api:{other}"),
+        ),
+        ("web", format!("ciphera/shop-production/web:{other}")),
+    ] {
+        let mut bundle = compose_bundle();
+        bundle["services"][service]["image"] = json!(image);
+        assert!(
+            ComposePlan::new(&bundle, "web", project, deployment, b).is_err(),
+            "{service} : {image}"
         );
     }
 }
@@ -2184,7 +2257,14 @@ const GIB: u64 = 1 << 30;
 
 fn limited_plan(bundle: &Value) -> Result<ComposePlan, String> {
     let limits = ciphera_agent::docker::AppLimits::compute(8 * GIB, 4);
-    ComposePlan::with_limits(bundle, "web", ProjectId::new(), DeploymentId::new(), limits)
+    ComposePlan::with_limits(
+        bundle,
+        "web",
+        ProjectId::new(),
+        DeploymentId::new(),
+        bundle_id(),
+        limits,
+    )
 }
 
 /// Volumes sans nom dans l'ensemble : nommes d'apres le projet stable, pour
@@ -2470,7 +2550,7 @@ async fn compose_deploy_restarts_others_in_order_and_switches_the_exposed_servic
     let build = DeploymentId::new();
     bench
         .db
-        .put_bundle(build, &compose_bundle().to_string())
+        .put_bundle(build, &built_as(&compose_bundle(), build).to_string())
         .unwrap();
     let deploy = |id: DeploymentId| DeploySpec {
         deployment_id: id,
@@ -2585,7 +2665,7 @@ async fn restart_does_not_start_previous_compose_deployment() {
     for id in [first, second] {
         bench
             .db
-            .put_bundle(id, &compose_bundle().to_string())
+            .put_bundle(id, &built_as(&compose_bundle(), id).to_string())
             .unwrap();
         bench
             .deploy(&compose_deploy_spec(project, web, id))
@@ -2778,7 +2858,10 @@ async fn compose_env_keys_on_disk_values_only_in_child_env() {
     let build = DeploymentId::new();
     let mut bundle = compose_bundle();
     bundle["services"]["api"]["environment"] = json!(["API_HOST=from-file", "KEEP=1"]);
-    bench.db.put_bundle(build, &bundle.to_string()).unwrap();
+    bench
+        .db
+        .put_bundle(build, &built_as(&bundle, build).to_string())
+        .unwrap();
     let spec = with_env(
         DeploySpec {
             deployment_id: build,
@@ -3204,7 +3287,7 @@ async fn failed_first_compose_deploy_removes_its_unexposed_services() {
     let first = DeploymentId::new();
     bench
         .db
-        .put_bundle(first, &compose_bundle().to_string())
+        .put_bundle(first, &built_as(&compose_bundle(), first).to_string())
         .unwrap();
     let (result, _) = bench
         .deploy(&compose_deploy_spec(project, web, first))
@@ -3220,7 +3303,7 @@ async fn failed_first_compose_deploy_removes_its_unexposed_services() {
     let second = DeploymentId::new();
     bench
         .db
-        .put_bundle(second, &compose_bundle().to_string())
+        .put_bundle(second, &built_as(&compose_bundle(), second).to_string())
         .unwrap();
     bench
         .deploy(&compose_deploy_spec(project, web, second))
@@ -3231,7 +3314,7 @@ async fn failed_first_compose_deploy_removes_its_unexposed_services() {
     let third = DeploymentId::new();
     bench
         .db
-        .put_bundle(third, &compose_bundle().to_string())
+        .put_bundle(third, &built_as(&compose_bundle(), third).to_string())
         .unwrap();
     assert!(
         bench
@@ -3262,7 +3345,7 @@ fn worker_bundle(mailer: bool) -> Value {
     services.insert(
         "worker".into(),
         json!({
-            "image": "ciphera.invalid/shop-production/worker:x",
+            "image": format!("ciphera.invalid/shop-production/worker:{}", bundle_id()),
             "depends_on": {"cache": {"condition": "service_started", "required": true}},
             "networks": {"default": null}
         }),
@@ -3288,7 +3371,10 @@ fn compose_spec_with(
     bundle: &Value,
 ) -> DeploySpec {
     let id = DeploymentId::new();
-    bench.db.put_bundle(id, &bundle.to_string()).unwrap();
+    bench
+        .db
+        .put_bundle(id, &built_as(bundle, id).to_string())
+        .unwrap();
     compose_deploy_spec(project, web, id)
 }
 
@@ -3671,11 +3757,11 @@ fn named(bench: &Bench, name: &str) -> Vec<(String, common::FakeContainer)> {
         .collect()
 }
 
-/// Ensemble `worker_bundle(false)` dont la dependance `api` change d'image.
+/// Ensemble `worker_bundle(false)` du deploiement suivant : la dependance
+/// `api` change d'image (chaque build etiquette ses images de son propre
+/// identifiant, voir `built_as`).
 fn bundle_with_new_api() -> Value {
-    let mut bundle = worker_bundle(false);
-    bundle["services"]["api"]["image"] = json!("ciphera/shop-production/api:y");
-    bundle
+    worker_bundle(false)
 }
 
 /// Projet Compose servi, Compose recreant chaque service relance ; renvoie
@@ -3691,7 +3777,14 @@ fn dependencies_before(bench: &Bench) -> Vec<(String, common::FakeContainer)> {
     let mut out = named(bench, "shop-production-api-1");
     out.extend(named(bench, "shop-production-cache-1"));
     assert_eq!(out.len(), 2);
-    assert_eq!(out[0].1.image, "ciphera/shop-production/api:x");
+    assert!(
+        out[0]
+            .1
+            .image
+            .starts_with("ciphera.invalid/shop-production/api:"),
+        "{}",
+        out[0].1.image
+    );
     out
 }
 
@@ -3774,7 +3867,10 @@ async fn compose_cancel_restores_updated_dependency_services() {
     .await;
     assert_eq!(
         named(&bench, "shop-production-api-1")[0].1.image,
-        "ciphera/shop-production/api:y"
+        format!(
+            "ciphera.invalid/shop-production/api:{}",
+            second.deployment_id
+        )
     );
 
     bench.deployer.stop(second.deployment_id, &tx).await;

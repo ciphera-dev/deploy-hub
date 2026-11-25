@@ -779,8 +779,9 @@ where
         })?;
         let value = serde_json::from_str(&text)
             .map_err(|_| DeployError::Compose("ensemble illisible".into()))?;
-        let mut plan = ComposePlan::new(&value, service, spec.project_id, spec.deployment_id)
-            .map_err(DeployError::Compose)?;
+        let mut plan =
+            ComposePlan::new(&value, service, spec.project_id, spec.deployment_id, bundle)
+                .map_err(DeployError::Compose)?;
         plan.secure_exposed(spec.run_as.as_deref(), spec.read_only_rootfs)
             .map_err(DeployError::Compose)?;
         // Cles seules dans le fichier ; valeurs dans l'environnement de

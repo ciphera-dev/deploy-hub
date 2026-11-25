@@ -409,8 +409,14 @@ async fn fixtures_build_with_buildkit_and_load_into_docker() {
         serde_json::from_str(built.compose.as_deref().expect("ensemble Compose")).unwrap();
     assert_eq!(bundle["services"]["web"]["image"], tag.as_str());
     assert!(bundle["services"]["web"].get("build").is_none());
-    let plan = ComposePlan::new(&bundle, "web", ProjectId::new(), s.deployment_id)
-        .unwrap_or_else(|e| panic!("plan Compose : {e}\n{bundle}"));
+    let plan = ComposePlan::new(
+        &bundle,
+        "web",
+        ProjectId::new(),
+        s.deployment_id,
+        s.deployment_id,
+    )
+    .unwrap_or_else(|e| panic!("plan Compose : {e}\n{bundle}"));
     let order: Vec<&str> = plan.order.iter().map(|a| a.as_str()).collect();
     assert_eq!(order, ["cache"]);
 

@@ -379,14 +379,24 @@ pub fn start_order(services: &Map<String, Value>) -> Result<Vec<String>, String>
 
 impl ComposePlan {
     /// Plan du deploiement `deployment` du projet `project`, service expose
-    /// `exposed`, depuis l'ensemble Compose `bundle`.
+    /// `exposed`, depuis l'ensemble Compose `bundle` enregistre par le build
+    /// du deploiement `built_by` (lui-meme, ou la version restauree d'un
+    /// rollback) : ses images construites portent l'etiquette `built_by`.
     pub fn new(
         bundle: &Value,
         exposed: &str,
         project: ProjectId,
         deployment: DeploymentId,
+        built_by: DeploymentId,
     ) -> Result<Self, String> {
-        Self::with_limits(bundle, exposed, project, deployment, AppLimits::node())
+        Self::with_limits(
+            bundle,
+            exposed,
+            project,
+            deployment,
+            built_by,
+            AppLimits::node(),
+        )
     }
 
     /// Comme `new`, avec les plafonds de ressources `limits` (ceux du noeud
@@ -396,6 +406,7 @@ impl ComposePlan {
         exposed: &str,
         project: ProjectId,
         deployment: DeploymentId,
+        built_by: DeploymentId,
         limits: AppLimits,
     ) -> Result<Self, String> {
         let stable_name = bundle
@@ -413,7 +424,7 @@ impl ComposePlan {
             root: PathBuf::from("/nonexistent"),
             base: PathBuf::from("/nonexistent"),
         };
-        compose_policy::check_bundle(&checked).map_err(|v| v.to_string())?;
+        compose_policy::check_bundle(&checked, built_by).map_err(|v| v.to_string())?;
 
         let mut file = bundle.clone();
         let doc = file
