@@ -826,6 +826,70 @@ async fn viewer_reads_but_cannot_change_domains() {
     }
 }
 
+async fn service_port(state: &AppState, domain: &str) -> Option<i32> {
+    sqlx::query_scalar(
+        "SELECT s.internal_port FROM domains d JOIN services s ON s.id = d.service_id WHERE d.id = $1::uuid",
+    )
+    .bind(domain)
+    .fetch_one(&state.db)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn ops_cannot_change_internal_port_via_domains() {
+    let env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let ops = login(&env.state, "ops").await;
+    let p = project(&env.state, &dev, "portguard").await;
+    let id = add_ok(&env.state, &dev, p, "portguard.example.com").await;
+    // Port et healthcheck : Projects:Write exige, Ops n'a que la lecture.
+    for body in [
+        json!({ "internal_port": 4000 }),
+        json!({ "healthcheck_path": "/up" }),
+    ] {
+        let r = send(
+            &env.state,
+            &ops,
+            "PATCH",
+            &format!("/api/domains/{id}"),
+            Some(body),
+        )
+        .await;
+        assert_eq!(r.status, 403, "{}", r.raw);
+    }
+    let r = add(
+        &env.state,
+        &ops,
+        p,
+        json!({ "host": "ops-new.example.com", "internal_port": 4000 }),
+    )
+    .await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(service_port(&env.state, &id).await, Some(3000));
+    // Le reste de la route reste ouvert a Ops (Domains:Write).
+    let r = send(
+        &env.state,
+        &ops,
+        "PATCH",
+        &format!("/api/domains/{id}"),
+        Some(json!({ "path_prefix": "/app" })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    // Developer : Projects:Write, le port change.
+    let r = send(
+        &env.state,
+        &dev,
+        "PATCH",
+        &format!("/api/domains/{id}"),
+        Some(json!({ "internal_port": 4000 })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(service_port(&env.state, &id).await, Some(4000));
+}
+
 /// Prend la prochaine tache `acme_issue` (horloge `at`).
 async fn claim_acme(state: &AppState, at: SystemTime) -> jobs::Job {
     let clock = Clock::from_fn(move || at);

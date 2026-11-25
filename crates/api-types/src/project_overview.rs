@@ -111,9 +111,13 @@ pub struct ProjectOverview {
     /// Domaine principal de la production (absent : aucun domaine).
     pub domain: Option<String>,
     pub metrics: OverviewMetrics,
-    pub services: Vec<ProjectService>,
+    /// Absent sans la lecture des serveurs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services: Option<Vec<ProjectService>>,
     /// Activite recente : les 4 derniers deploiements, le plus recent d'abord.
-    pub activity: Vec<Deployment>,
+    /// Absente sans la lecture des deploiements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<Vec<Deployment>>,
 }
 
 /// Reponse de `POST /api/projects/{id}/services/{sid}/{restart,stop}`.

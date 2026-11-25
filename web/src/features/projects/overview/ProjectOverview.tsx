@@ -97,7 +97,7 @@ export function ProjectOverview({ project, overview }: { project: Project; overv
             <span style={{ font: "500 13px/1 var(--font-sans)", color: "var(--text-strong)" }}>Services</span>
             <Button size="sm" variant="ghost" iconRight="ArrowRight" onClick={() => go("services")}>Tout voir</Button>
           </div>
-          {overview.services.map((s) => {
+          {(overview.services ?? []).map((s) => {
             const view = SERVICE_STATE_VIEW[s.state];
             return (
               <div key={s.id} style={{ display: "grid", gridTemplateColumns: "26px minmax(0,1fr) 90px 60px", gap: 12, alignItems: "center", padding: "12px 18px", borderTop: hair }}>
@@ -124,8 +124,8 @@ export function ProjectOverview({ project, overview }: { project: Project; overv
             <span style={{ font: "500 13px/1 var(--font-sans)", color: "var(--text-strong)" }}>Activité récente</span>
             <Button size="sm" variant="ghost" iconRight="ArrowRight" onClick={() => go("deployments")}>Déploiements</Button>
           </div>
-          {overview.activity.length === 0 && <div style={{ padding: "12px 18px", borderTop: hair, ...lbl }}>Aucun déploiement pour l'instant.</div>}
-          {overview.activity.map((d) => (
+          {(overview.activity ?? []).length === 0 && <div style={{ padding: "12px 18px", borderTop: hair, ...lbl }}>Aucun déploiement pour l'instant.</div>}
+          {(overview.activity ?? []).map((d) => (
             <Link key={d.id} to="/projects/$projectId/deployments" params={{ projectId: project.id }} style={{ display: "grid", gridTemplateColumns: "22px minmax(0,1fr) auto", gap: 12, alignItems: "center", padding: "12px 18px", borderTop: hair, cursor: "pointer", textDecoration: "none" }}>
               <StatusIcon status={d.status} size={22} />
               <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>

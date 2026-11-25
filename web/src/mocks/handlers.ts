@@ -70,12 +70,12 @@ export const handlers: RequestHandler[] = [
   http.get("*/api/projects/:id/overview", ({ params }) => {
     const found = PROJECT_SUMMARIES.find((p) => p.id === params.id);
     if (!found) return HttpResponse.json({ error: { code: "not_found", message: "Projet introuvable." } }, { status: 404 });
-    return HttpResponse.json(found.id === WEB_OVERVIEW.activity[0]?.project_id ? WEB_OVERVIEW : emptyOverview(serviceOf(found)));
+    return HttpResponse.json(found.id === WEB_OVERVIEW.activity?.[0]?.project_id ? WEB_OVERVIEW : emptyOverview(serviceOf(found)));
   }),
   http.get("*/api/projects/:id/services", ({ params }) => {
     const found = PROJECT_SUMMARIES.find((p) => p.id === params.id);
     if (!found) return HttpResponse.json({ error: { code: "not_found", message: "Projet introuvable." } }, { status: 404 });
-    return HttpResponse.json(found.id === WEB_OVERVIEW.activity[0]?.project_id ? WEB_SERVICES : [serviceOf(found)]);
+    return HttpResponse.json(found.id === WEB_OVERVIEW.activity?.[0]?.project_id ? WEB_SERVICES : [serviceOf(found)]);
   }),
   http.post("*/api/projects/:id/services/:sid/:action", () => HttpResponse.json({ deployment_id: DEPLOYMENTS[1].id }, { status: 202 })),
   http.post("*/api/projects/:id/redeploy", ({ params }) => HttpResponse.json(queuedDeployment(String(params.id)), { status: 201 })),

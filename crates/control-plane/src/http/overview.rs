@@ -22,7 +22,7 @@ use shared::ids::ServerId;
 use uuid::Uuid;
 
 use crate::auth::internal;
-use crate::authz::{Require, lvl, res};
+use crate::authz::{Reads, Require, lvl, res};
 use crate::domain::deployments::{self, Filter};
 use crate::domain::metrics;
 use crate::domain::projects::store;
@@ -51,10 +51,27 @@ fn change(current: f64, previous: f64) -> Option<f64> {
     (previous > 0.0).then(|| ((current - previous) / previous * 1000.0).round() / 10.0)
 }
 
+/// Retire ce que le role ne lit pas : serveurs (liste, comptes, alertes de
+/// serveur injoignable) sans `Servers:Read`, deploiements (liste, compte du
+/// jour, graphe) sans `Deployments:Read`. Les champs absents sont omis.
+fn restrict(o: &mut Overview, reads: Reads) {
+    if !reads.servers {
+        o.servers = None;
+        o.servers_online = 0;
+        o.servers_total = 0;
+        o.issues.retain(|i| i.kind != IssueKind::ServerUnreachable);
+    }
+    if !reads.deployments {
+        o.recent_deployments = None;
+        o.deployments_today = 0;
+        o.chart.deployments = KpiSeries::default();
+    }
+}
+
 /// `GET /api/overview`
 async fn overview(
     State(state): State<AppState>,
-    _auth: Require<res::Projects, lvl::Read>,
+    auth: Require<res::Projects, lvl::Read>,
     query: Result<Query<OverviewQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let Query(OverviewQuery { period }) = query
@@ -186,20 +203,112 @@ async fn overview(
             requests: KpiSeries::default(),
             latency_p95_ms: KpiSeries::default(),
         },
-        recent_deployments,
-        servers,
+        recent_deployments: Some(recent_deployments),
+        servers: Some(servers),
     };
+    let mut body = body;
+    restrict(&mut body, Reads::of(auth.role));
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authz::{Resource, Role};
 
     #[test]
     fn change_needs_a_previous_period() {
         assert_eq!(change(3.0, 0.0), None);
         assert_eq!(change(3.0, 2.0), Some(50.0));
         assert_eq!(change(1.0, 3.0), Some(-66.7));
+    }
+
+    fn full() -> Overview {
+        Overview {
+            issues: vec![
+                OverviewIssue {
+                    kind: IssueKind::ProjectDown,
+                    id: "p".into(),
+                    name: "app".into(),
+                },
+                OverviewIssue {
+                    kind: IssueKind::ServerUnreachable,
+                    id: "s".into(),
+                    name: "edge".into(),
+                },
+            ],
+            projects_online: 1,
+            projects_total: 1,
+            servers_online: 0,
+            servers_total: 1,
+            deployments_today: 2,
+            period: OverviewPeriod::Days7,
+            chart: OverviewChart {
+                deployments: KpiSeries {
+                    total: Some(2.0),
+                    change_percent: None,
+                    points: vec![],
+                },
+                requests: KpiSeries::default(),
+                latency_p95_ms: KpiSeries::default(),
+            },
+            recent_deployments: Some(vec![]),
+            servers: Some(vec![ServerLoad {
+                id: "s".into(),
+                name: "edge".into(),
+                online: false,
+                kind: "remote".into(),
+                cpu_percent: None,
+                memory_percent: None,
+                link_error: None,
+            }]),
+        }
+    }
+
+    #[test]
+    fn overview_hides_servers_for_viewer_without_servers_read() {
+        let reads = Reads::with(|r| r != Resource::Servers);
+        let mut o = full();
+        restrict(&mut o, reads);
+        let json = serde_json::to_value(&o).unwrap();
+        assert!(json.get("servers").is_none(), "{json}");
+        assert_eq!(json["servers_total"], 0);
+        assert_eq!(json["servers_online"], 0);
+        let kinds: Vec<_> = o.issues.iter().map(|i| i.kind).collect();
+        assert_eq!(kinds, [IssueKind::ProjectDown]);
+        // Les deploiements restent, faute d'avoir ete retires.
+        assert!(json.get("recent_deployments").is_some());
+        assert_eq!(json["deployments_today"], 2);
+    }
+
+    #[test]
+    fn overview_hides_deployments_without_deployments_read() {
+        let reads = Reads::with(|r| r != Resource::Deployments);
+        let mut o = full();
+        restrict(&mut o, reads);
+        let json = serde_json::to_value(&o).unwrap();
+        assert!(json.get("recent_deployments").is_none(), "{json}");
+        assert_eq!(json["deployments_today"], 0);
+        assert_eq!(
+            json["chart"]["deployments"]["total"],
+            serde_json::Value::Null
+        );
+        assert!(json.get("servers").is_some());
+    }
+
+    #[test]
+    fn default_roles_keep_the_whole_overview() {
+        for role in [
+            Role::Owner,
+            Role::Admin,
+            Role::Ops,
+            Role::Developer,
+            Role::Viewer,
+        ] {
+            let mut o = full();
+            restrict(&mut o, Reads::of(role));
+            let json = serde_json::to_value(&o).unwrap();
+            assert!(json.get("servers").is_some() && json.get("recent_deployments").is_some());
+        }
     }
 }

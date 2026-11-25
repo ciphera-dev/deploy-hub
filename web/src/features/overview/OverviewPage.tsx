@@ -218,8 +218,8 @@ export function OverviewView({ o, name, period, onPeriod, now }: { o: Overview; 
             <span style={{ flex: 1 }} />
             {link("Tout voir", () => void navigate({ to: "/deployments" }))}
           </div>
-          {o.recent_deployments.length === 0 && <div style={{ borderTop: hair, padding: "18px 20px", ...lbl, fontSize: 13 }}>Aucun déploiement pour l'instant.</div>}
-          {o.recent_deployments.map((d) => {
+          {(o.recent_deployments ?? []).length === 0 && <div style={{ borderTop: hair, padding: "18px 20px", ...lbl, fontSize: 13 }}>Aucun déploiement pour l'instant.</div>}
+          {(o.recent_deployments ?? []).map((d) => {
             const st = DEPLOYMENT_ST[d.status];
             const sub = [d.project_name, d.created_by, `#${d.number}`, shortSha(d.commit_sha)].filter(Boolean).join(" · ");
             return (
@@ -254,8 +254,8 @@ export function OverviewView({ o, name, period, onPeriod, now }: { o: Overview; 
             <span style={{ flex: 1 }} />
             {link("Serveurs", null, soonTooltip("v0.2"))}
           </div>
-          {o.servers.length === 0 && <div style={{ borderTop: hair, padding: "18px 20px", ...lbl, fontSize: 13 }}>Aucun serveur enregistré.</div>}
-          {o.servers.map((s) => {
+          {(o.servers ?? []).length === 0 && <div style={{ borderTop: hair, padding: "18px 20px", ...lbl, fontSize: 13 }}>Aucun serveur enregistré.</div>}
+          {(o.servers ?? []).map((s) => {
             const off = !s.online;
             const c = off || s.cpu_percent == null ? null : Math.round(s.cpu_percent);
             return (

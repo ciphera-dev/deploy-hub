@@ -21,7 +21,7 @@ use shared::error::ApiError;
 use uuid::Uuid;
 
 use crate::auth::internal;
-use crate::authz::{Require, lvl, res};
+use crate::authz::{Reads, Require, lvl, res};
 use crate::domain::deployments::{self, Filter};
 use crate::domain::metrics;
 use crate::domain::projects::services::{self, Action, ActionError, Target};
@@ -72,10 +72,12 @@ pub(super) fn action_error(
 /// `GET /api/projects/{id}/overview`
 async fn overview(
     State(state): State<AppState>,
-    _auth: Require<res::Projects, lvl::Read>,
+    auth: Require<res::Projects, lvl::Read>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let id = parse_id(&id)?;
+    // Deploiements et services : seulement aux roles qui les lisent.
+    let reads = Reads::of(auth.role);
     let mut conn = state
         .db
         .acquire()
@@ -100,7 +102,7 @@ async fn overview(
             .map_err(|e| internal("lecture du deploiement servi", e))?,
         None => None,
     };
-    let production = match production {
+    let production = match production.filter(|_| reads.deployments) {
         Some((deployment, _)) => deployments::get(&mut conn, deployment)
             .await
             .map_err(|e| internal("lecture du deploiement servi", e))?,
@@ -139,8 +141,8 @@ async fn overview(
             },
             ..OverviewMetrics::default()
         },
-        services,
-        activity,
+        services: reads.servers.then_some(services),
+        activity: reads.deployments.then_some(activity),
     })
     .into_response())
 }

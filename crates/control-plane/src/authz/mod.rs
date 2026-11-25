@@ -112,6 +112,28 @@ mod tests {
     }
 }
 
+/// Lectures qui decident des sections d'une vue d'ensemble.
+#[derive(Clone, Copy, Debug)]
+pub struct Reads {
+    pub deployments: bool,
+    pub servers: bool,
+}
+
+impl Reads {
+    /// Lectures de `role` d'apres la matrice.
+    pub fn of(role: Role) -> Self {
+        Self::with(|resource| allowed(role, resource, Level::Read))
+    }
+
+    /// Lectures decidees par `can` (la ressource est lisible ou non).
+    pub fn with(can: impl Fn(Resource) -> bool) -> Self {
+        Reads {
+            deployments: can(Resource::Deployments),
+            servers: can(Resource::Servers),
+        }
+    }
+}
+
 /// Ressources de la matrice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Resource {

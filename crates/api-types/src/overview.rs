@@ -106,9 +106,13 @@ pub struct Overview {
     pub deployments_today: i64,
     pub period: OverviewPeriod,
     pub chart: OverviewChart,
-    /// Les 5 derniers deploiements, le plus recent d'abord.
-    pub recent_deployments: Vec<Deployment>,
-    pub servers: Vec<ServerLoad>,
+    /// Les 5 derniers deploiements, le plus recent d'abord. Absent sans la
+    /// lecture des deploiements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_deployments: Option<Vec<Deployment>>,
+    /// Absent sans la lecture des serveurs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub servers: Option<Vec<ServerLoad>>,
 }
 
 /// Vue d'ensemble de l'instance (viewer et plus).
