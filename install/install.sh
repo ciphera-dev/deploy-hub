@@ -33,12 +33,16 @@ UNIT_DIR=/etc/systemd/system
 CONFIG_DIR=/etc/ciphera
 # Configuration de l'updater (root seulement, voir write_updater_config).
 UPDATER_CONFIG_DIR=/etc/ciphera-updater
+# Reglage du filtrage de la sortie des conteneurs (root seulement, lu par
+# `ciphera-agent egress`, voir write_egress_config).
+EGRESS_CONFIG_DIR=/etc/ciphera-egress
+EGRESS_CONFIG=$EGRESS_CONFIG_DIR/egress.env
 # Etat et verrou de ciphera-cli updater (journal d'une mise a jour en cours).
 UPDATER_STATE_DIR=/var/lib/ciphera-updater
 UPDATE_LOCK=/run/ciphera/update.lock
 PANEL_PORT=8443
 BINARIES='ciphera ciphera-agent ciphera-proxy ciphera-cli'
-UNITS='ciphera.service ciphera-proxy.socket ciphera-proxy.service ciphera-agent.service ciphera-updater.service ciphera-updater.path ciphera-updater-recover.service'
+UNITS='ciphera.service ciphera-proxy.socket ciphera-proxy.service ciphera-agent.service ciphera-updater.service ciphera-updater.path ciphera-updater-recover.service ciphera-egress-check.service ciphera-egress-check.timer'
 # Dossiers des sockets Unix (PostgreSQL, buildkitd), recrees a chaque demarrage.
 TMPFILES=ciphera.tmpfiles.conf
 TMPFILES_DEST=/etc/tmpfiles.d/ciphera.conf
@@ -106,6 +110,13 @@ Usage : install.sh [options]
                        affiche les outils tiers epingles pour CIBLE et s'arrete
                        (construction des releases, install/package.sh)
   -h, --help           cette aide
+
+Variable d'environnement :
+  CIPHERA_APP_EGRESS_DENY_PRIVATE=0|1
+                       1 : les applications ne joignent pas non plus les plages
+                       privees (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7) ;
+                       0 (defaut) : permises. Ecrite dans /etc/ciphera-egress/egress.env
+                       (fichier garde tel quel a la reinstallation sans cette variable).
 EOF
 }
 
@@ -169,6 +180,10 @@ parse_args() {
 	if [ -n "$public_ip" ]; then
 		check_ip "$public_ip"
 	fi
+	case "${CIPHERA_APP_EGRESS_DENY_PRIVATE:-}" in
+	'' | 0 | 1) ;;
+	*) die "CIPHERA_APP_EGRESS_DENY_PRIVATE : 0 ou 1 attendu" ;;
+	esac
 }
 
 # URL de test <nom> <valeur> : mode test exige, https, caracteres surs.
@@ -501,9 +516,32 @@ install_files() {
 	install -m 0644 -o root -g root "$pkg_dir/systemd/$TMPFILES" "$TMPFILES_DEST"
 	systemd-tmpfiles --create "$TMPFILES_DEST" || die "creation des dossiers de sockets impossible"
 	write_updater_config
+	write_egress_config
 	install_apparmor_profile
 	systemctl daemon-reload
 	say "binaires installes dans $BIN_DIR, unites dans $UNIT_DIR"
+}
+
+# Reglage du filtrage de la sortie des conteneurs, lu en root par
+# `ciphera-agent egress` (qui refuse un fichier d'un autre proprietaire que
+# root ou modifiable par d'autres) : dossier root 0755, fichier root 0644.
+# Ecrit s'il est absent (defaut : plages privees permises aux applications)
+# ou si CIPHERA_APP_EGRESS_DENY_PRIVATE est donnee ; sinon garde, droits
+# remis.
+write_egress_config() {
+	install -d -m 0755 -o root -g root "$EGRESS_CONFIG_DIR"
+	if [ ! -f "$EGRESS_CONFIG" ] || [ -n "${CIPHERA_APP_EGRESS_DENY_PRIVATE:-}" ]; then
+		{
+			printf '# Filtrage de la sortie des applications (ciphera-agent egress).\n'
+			printf '# 1 : plages privees (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7)\n'
+			printf '# interdites aux applications ; 0 : permises. Applique en 5 min au plus\n'
+			printf '# (ciphera-egress-check.timer) ou par systemctl restart ciphera-agent.\n'
+			printf 'CIPHERA_APP_EGRESS_DENY_PRIVATE=%s\n' "${CIPHERA_APP_EGRESS_DENY_PRIVATE:-0}"
+		} >"$EGRESS_CONFIG_DIR/.egress.env.new"
+		mv -f "$EGRESS_CONFIG_DIR/.egress.env.new" "$EGRESS_CONFIG"
+	fi
+	chown root:root "$EGRESS_CONFIG"
+	chmod 0644 "$EGRESS_CONFIG"
 }
 
 # Configuration de ciphera-cli updater (root) : jamais /etc/ciphera/ciphera.env,
@@ -585,6 +623,16 @@ login_defs_min() { # <UID_MIN|GID_MIN>
 	'' | *[!0-9]*) v=1000 ;;
 	esac
 	printf '%s\n' "$v"
+}
+
+# Compte de PostgreSQL : jamais root (uid ou groupe principal 0), sinon la
+# base tournerait en root dans son conteneur ; l'agent le refuse aussi.
+check_postgres_account() {
+	pg_uid=$(id -u ciphera-postgres 2>/dev/null) || return 0
+	pg_gid=$(id -g ciphera-postgres) || die "groupe du compte ciphera-postgres illisible"
+	if [ "$pg_uid" -eq 0 ] || [ "$pg_gid" -eq 0 ]; then
+		die "le compte ciphera-postgres a l'uid $pg_uid et le groupe $pg_gid : root refuse pour PostgreSQL (supprimer ce compte puis relancer install.sh)"
+	fi
 }
 
 check_build_account() {
@@ -743,6 +791,7 @@ recheck_existing_install() {
 # telechargement des archives. Un compte absent est cree puis verifie de
 # meme pendant l'installation.
 preflight_checks() {
+	check_postgres_account
 	if id -u "$BUILD_ACCOUNT" >/dev/null 2>&1; then
 		check_build_account
 		check_subids
@@ -791,8 +840,9 @@ check_compose_plugin() {
 }
 
 # nft (paquet nftables) : ciphera-agent.service charge avant chaque demarrage
-# le filtrage de la sortie des builds (ponts ciphera-build et ciphera-prepare,
-# table inet ciphera_egress) ; sans nft, l'agent ne demarre pas. Installe
+# le filtrage de la sortie des conteneurs (ponts ciphera-build et
+# ciphera-prepare des builds, ponts cphp* des projets ; table
+# inet ciphera_egress) ; sans nft, l'agent ne demarre pas. Installe
 # meme sans Docker : l'unite est activee dans tous les cas et demarre des
 # que Docker apparait (ConditionPathExists).
 ensure_nftables() {
@@ -885,6 +935,10 @@ start_services() {
 	# Reprise d'une mise a jour interrompue, au demarrage, avant les services.
 	systemctl enable ciphera-updater-recover.service ||
 		die "activation de ciphera-updater-recover.service impossible"
+	# Filtrage de sortie retabli toutes les 5 min s'il disparait (sans
+	# Docker, le service est saute par sa condition).
+	systemctl enable --now ciphera-egress-check.timer ||
+		die "activation de ciphera-egress-check.timer impossible (journalctl -u ciphera-egress-check)"
 	# Reparation : `enable --now` ne relance pas un service deja actif ; les
 	# trois services repartent ensemble sur les fichiers reinstalles.
 	if [ "$repair" = yes ]; then
@@ -924,6 +978,7 @@ main() {
 	for u in $USERS; do
 		ensure_user "$u"
 	done
+	check_postgres_account
 	check_build_account
 	ensure_subids
 	setup_docker

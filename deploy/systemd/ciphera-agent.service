@@ -15,46 +15,24 @@ ConditionPathExists=/var/run/docker.sock
 Type=simple
 User=ciphera-agent
 Group=ciphera-agent
-# Filtrage de la sortie des builds (avant l'agent, en root : prefixe +) :
-# les ponts ciphera-build (buildkitd et ses etapes RUN) et ciphera-prepare
-# (railpack prepare) n'atteignent ni l'hote lui-meme (plan de controle,
-# agent, API Docker, PostgreSQL, proxy : chaine input), ni les adresses de
-# metadonnees des clouds (169.254.169.254, fd00:ec2::254, 100.100.100.200,
-# 168.63.129.16), ni les plages privees, locales, CGNAT, de lien local ou
-# multicast (chaine forward) ; Internet public reste ouvert (paquets, depots
-# git, images). Seule exception : le DNS (port 53, TCP et UDP), car le
-# resolveur des clouds est souvent prive ou de lien local (168.63.129.16,
-# 169.254.169.253, 169.254.169.254 chez GCP, x.x.x.2 d'un VPC) ; il n'ouvre
-# que ce port, pas le reste de ces adresses. Table nftables a part
-# (inet ciphera_egress) : un rejet y est definitif quel que soit le pare-feu
-# de Docker (iptables ou nftables).
-# Remplacement atomique (une seule transaction nft). Sans nft, l'agent ne
-# demarre pas (aucun build sans filtre) : install.sh installe nftables.
-ExecStartPre=+/usr/sbin/nft "\
-add table inet ciphera_egress; \
-delete table inet ciphera_egress; \
-table inet ciphera_egress { \
-  set blocked4 { type ipv4_addr; flags interval; elements = { \
-    0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 168.63.129.16, \
-    169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, \
-    198.18.0.0/15, 224.0.0.0/3 }; }; \
-  set blocked6 { type ipv6_addr; flags interval; elements = { \
-    ::/127, ::ffff:0:0/96, 64:ff9b:1::/48, fc00::/7, fe80::/10, ff00::/8 }; }; \
-  chain input { type filter hook input priority -10; policy accept; \
-    iifname { \"ciphera-build\", \"ciphera-prepare\" } \
-      meta l4proto { tcp, udp } th dport 53 accept; \
-    iifname { \"ciphera-build\", \"ciphera-prepare\" } icmpv6 type \
-      { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit } accept; \
-    iifname { \"ciphera-build\", \"ciphera-prepare\" } \
-      reject with icmpx admin-prohibited; }; \
-  chain forward { type filter hook forward priority -10; policy accept; \
-    iifname { \"ciphera-build\", \"ciphera-prepare\" } \
-      meta l4proto { tcp, udp } th dport 53 accept; \
-    iifname { \"ciphera-build\", \"ciphera-prepare\" } ip daddr @blocked4 \
-      reject with icmpx admin-prohibited; \
-    iifname { \"ciphera-build\", \"ciphera-prepare\" } ip6 daddr @blocked6 \
-      reject with icmpx admin-prohibited; }; \
-}"
+# Filtrage de la sortie des conteneurs (avant l'agent, en root : prefixe +),
+# table nftables a part (inet ciphera_egress) generee par le binaire lui-meme
+# (module egress) et remplacee en une transaction :
+# - builds (ponts ciphera-build et ciphera-prepare) : ni l'hote (plan de
+#   controle, agent, API Docker, PostgreSQL, proxy : chaine input), ni les
+#   metadonnees des clouds, ni les plages privees, locales, CGNAT, de lien
+#   local, multicast, NAT64, 6to4 ou Teredo (chaine forward) ;
+# - applications (ponts de projet cphp<10 hex>) : ni l'hote (sauf le trafic
+#   etabli et les ports 80/443 du proxy), ni les metadonnees des clouds
+#   (169.254.0.0/16, fd00:ec2::254, 100.100.100.200, 168.63.129.16) ;
+#   plages privees permises, sauf CIPHERA_APP_EGRESS_DENY_PRIVATE=1 dans
+#   /etc/ciphera-egress/egress.env (fichier root).
+# Seule exception commune : le DNS (port 53) vers les resolveurs de l'hote,
+# lus au chargement (/etc/resolv.conf, ou /run/systemd/resolve/resolv.conf).
+# Un rejet y est definitif quel que soit le pare-feu de Docker. Sans nft,
+# l'agent ne demarre pas (aucun conteneur sans filtre) : install.sh installe
+# nftables. ciphera-egress-check.timer recharge la table toutes les 5 min.
+ExecStartPre=+/usr/local/bin/ciphera-agent egress load
 ExecStart=/usr/local/bin/ciphera-agent
 Restart=on-failure
 RestartSec=5s
@@ -73,9 +51,27 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
 RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
 LockPersonality=yes
 CapabilityBoundingSet=
+# /dev prive (null, zero, urandom, tty...) : ni l'agent, ni docker, ni git
+# n'ouvrent de peripherique ; l'API Docker est un socket de /run.
+PrivateDevices=yes
+# Sockets : Unix (API Docker, sockets de buildkitd et du proxy), IPv4/IPv6
+# (lien QUIC, git, registres), netlink (lecture des interfaces par les
+# outils Go : docker, docker compose, buildctl).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Appels systeme d'un service ordinaire (Rust, Go, git) : ni montage, ni
+# module, ni ptrace, ni horloge, ni reboot. Un appel hors liste echoue
+# (EPERM) au lieu de tuer le processus : un outil tiers qui sonde un appel
+# facultatif se replie au lieu de planter.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target

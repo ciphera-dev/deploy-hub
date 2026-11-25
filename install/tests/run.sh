@@ -12,9 +12,13 @@
 #     d'installe ;
 #   - (e) compte ciphera-build existant d'uid 1000 : refus avant tout
 #     telechargement, rien d'installe ;
+#   - (g) compte ciphera-postgres existant de groupe principal 0 (root) :
+#     refus avant tout telechargement, rien d'installe ;
 #   - (a) release valide : succes, `Empreinte SHA-256 :` affichee,
 #     ciphera.service actif une fois la base de test creee ; compte systeme
 #     ciphera-build avec ses plages de sous-uids/sous-gids sans chevauchement ;
+#     reglage du filtrage de sortie (/etc/ciphera-egress/egress.env, root,
+#     defaut 0) et minuterie ciphera-egress-check.timer active ;
 #   - unites activees : aucun cycle d'ordre (systemd-analyze verify), puis vrai
 #     redemarrage du conteneur (sockets.target et paths.target actifs) ;
 #   - (r) relance sur l'installation : meme version = reparation (services
@@ -273,7 +277,7 @@ start_release_server() {
 # demarrage (systemd casserait le cycle en supprimant un job, par exemple
 # sockets.target ou paths.target, a chaque demarrage).
 units_without_cycle() {
-	in_ctr 'out=$(systemd-analyze verify multi-user.target /etc/systemd/system/ciphera*.service /etc/systemd/system/ciphera*.socket /etc/systemd/system/ciphera*.path 2>&1 || true); if printf "%s\n" "$out" | grep -qi "ordering cycle"; then printf "%s\n" "$out" >&2; false; fi'
+	in_ctr 'out=$(systemd-analyze verify multi-user.target /etc/systemd/system/ciphera*.service /etc/systemd/system/ciphera*.socket /etc/systemd/system/ciphera*.path /etc/systemd/system/ciphera*.timer 2>&1 || true); if printf "%s\n" "$out" | grep -qi "ordering cycle"; then printf "%s\n" "$out" >&2; false; fi'
 }
 
 # Apres un vrai redemarrage du conteneur : sockets.target et paths.target
@@ -369,6 +373,20 @@ run_distro() {
 		test "$(subids_snapshot)" = "$subids_before"
 	in_ctr 'userdel ciphera-build'
 
+	# (g) ciphera-postgres existe deja avec le groupe principal root (gid 0) :
+	# la base tournerait en root ; refus avant toute installation.
+	in_ctr 'useradd -r -M -g 0 -s /usr/sbin/nologin ciphera-postgres'
+	out="$work/$distro-g.log"
+	mapfile -t envs < <(test_env good)
+	if install "$out" "${envs[@]}"; then
+		check "(g) ciphera-postgres de groupe root : echec" false
+	else
+		check "(g) ciphera-postgres de groupe root : echec" true
+	fi
+	check "(g) motif : root refuse pour PostgreSQL" grep -q "root refuse pour PostgreSQL" "$out"
+	check "(g) rien d'installe" nothing_installed
+	in_ctr 'userdel ciphera-postgres'
+
 	local planted
 	planted=$(plant_id_in_candidate_range)
 
@@ -407,6 +425,10 @@ run_distro() {
 		in_ctr 'bk=$(stat -c %a:%U:%G /run/ciphera-agent/buildkit); st=$(stat -c %a:%U:%G /var/lib/ciphera-buildkit); test "$bk" = 2770:ciphera-build:ciphera-agent && test "$st" = 700:ciphera-build:ciphera-build || { echo "    observe : buildkit=$bk state=$st" >&2; false; }'
 	check "(a) agent non demarre sans Docker" \
 		in_ctr 'test "$(systemctl is-active ciphera-agent)" != active'
+	check "(a) reglage du filtrage de sortie : root 0644, plages privees permises" \
+		in_ctr 'test "$(stat -c %a:%U:%G /etc/ciphera-egress/egress.env)" = 644:root:root && grep -qx CIPHERA_APP_EGRESS_DENY_PRIVATE=0 /etc/ciphera-egress/egress.env'
+	check "(a) minuterie ciphera-egress-check.timer active" \
+		in_ctr 'test "$(systemctl is-active ciphera-egress-check.timer)" = active'
 
 	# Fixture : role et base avec le mot de passe genere par `ciphera init`,
 	# joints par le socket de la distribution. Authentification par mot de

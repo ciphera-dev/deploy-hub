@@ -25,6 +25,14 @@ Le script :
 
 Le détail est dans [docs/adr/0003-installation-et-verification-des-releases.md](docs/adr/0003-installation-et-verification-des-releases.md).
 
+Sortie réseau des conteneurs : les applications ne joignent ni l'hôte lui-même (sauf les ports 80 et 443 du proxy du nœud, pour un domaine servi par ce même serveur) ni les adresses de métadonnées des clouds (169.254.169.254 et le reste de 169.254.0.0/16, `fd00:ec2::254`, 100.100.100.200, 168.63.129.16) ; les builds ne joignent en plus aucune plage privée. Les plages privées (10/8, 172.16/12, 192.168/16, 100.64/10, `fc00::/7`) restent permises aux applications par défaut. Pour les interdire :
+
+```sh
+curl -fsSL https://get.ciphera.ch/install.sh | sudo CIPHERA_APP_EGRESS_DENY_PRIVATE=1 sh
+```
+
+Le réglage est gardé dans `/etc/ciphera-egress/egress.env` (root, `CIPHERA_APP_EGRESS_DENY_PRIVATE=0` ou `1`) : après une modification à la main, il s'applique en 5 minutes au plus (`ciphera-egress-check.timer`) ou tout de suite par `sudo systemctl start ciphera-egress-check.service`.
+
 ## Stack
 
 | Couche | Choix |

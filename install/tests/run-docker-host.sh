@@ -35,8 +35,16 @@
 # BuildKit et un conteneur sur ciphera-prepare n'atteignent ni l'hote
 # (proxy, panneau) ni 169.254.169.254, mais Internet public (temoin : le
 # pont par defaut atteint l'hote) ;
+# sortie des applications filtree (pont de projet cphp<10 hex>) : un
+# conteneur n'atteint ni un port de test de l'hote, ni 169.254.169.254:80
+# (adresse liee a lo, servie par le proxy du noeud), ni une adresse de lien
+# local routee (169.254.170.2), mais le proxy (80), le reseau prive, le DNS
+# et Internet ; CIPHERA_APP_EGRESS_DENY_PRIVATE=1 ferme le reseau prive ;
+# docker et docker compose fonctionnent sous le durcissement de l'unite de
+# l'agent (SystemCallFilter, RestrictAddressFamilies, PrivateDevices...) ;
+# table retablie par ciphera-egress-check apres `nft flush ruleset` ;
 # (b) desinstallation sans --purge : conteneurs retires, volume de la base
-# conserve, proxy arrete, filtrage retire ; (c) reinstallation : meme base,
+# conserve, proxy arrete, filtrage et sa minuterie retires ; (c) reinstallation : meme base,
 # panneau et proxy joignables, filtrage recharge, plage de sous-uids de ciphera-build conservee sans doublon ;
 # (d) --purge : volume, reseaux, profil AppArmor, secrets, comptes (plages
 # de ciphera-build comprises) et etat de BuildKit supprimes.
@@ -75,16 +83,24 @@ version=$(sed -n "s/^DEFAULT_VERSION='\(v[0-9.]*\)'\$/\1/p" "$installer")
 work=$(mktemp -d)
 server_pid=
 witness_pid=
+witness_ll_pid=
+host_port_pid=
+app_net=
 cleanup() {
-	if [ -n "$server_pid" ]; then
-		kill "$server_pid" 2>/dev/null || true
+	local pid
+	for pid in "$server_pid" "$witness_pid" "$witness_ll_pid" "$host_port_pid"; do
+		if [ -n "$pid" ]; then
+			kill "$pid" 2>/dev/null || true
+		fi
+	done
+	if [ -n "$app_net" ]; then
+		docker network rm "$app_net" >/dev/null 2>&1 || true
 	fi
-	if [ -n "$witness_pid" ]; then
-		kill "$witness_pid" 2>/dev/null || true
-	fi
+	ip addr del 169.254.169.254/32 dev lo 2>/dev/null || true
+	ip route del 169.254.170.2/32 2>/dev/null || true
 	ip netns del ciphera-witness 2>/dev/null || true
 	ip link del cw-host 2>/dev/null || true
-	rm -rf "$work"
+	rm -rf "$work" /run/ciphera-compose-test
 }
 trap cleanup EXIT
 
@@ -431,6 +447,138 @@ if [ "$failures" -ne 0 ]; then
 	cat "$work/egress-build.log" "$work/egress-witness.log" "$work/egress-prepare.log" 2>/dev/null | grep -E 'PROBE|ERROR|error' || true
 	nft list table inet ciphera_egress || true
 fi
+# Filtrage de la sortie des applications (table inet ciphera_egress,
+# chaines app_input et app_forward, pont de projet cphp<10 hex>) :
+# - bloques : un port de test de l'hote (chaine input), 169.254.169.254:80
+#   (adresse liee a lo, servie par le proxy du noeud qui ecoute toutes les
+#   adresses : faux service de metadonnees local, chaine input) et
+#   169.254.170.2:8080 (lien local route vers le serveur prive, chaine
+#   forward, comme les metadonnees d'un cloud) ;
+# - joignables : le proxy de l'hote (port 80, domaines servis par ce noeud),
+#   le serveur prive 10.250.0.2 (plages privees permises par defaut), le DNS
+#   et Internet public.
+# Temoin : les memes cibles depuis le pont par defaut de Docker.
+app_project=$(python3 -c 'import uuid; print(uuid.uuid4())')
+app_net=ciphera-p-$app_project
+app_bridge=cphp$(printf '%s' "$app_project" | tr -d - | cut -c1-10)
+# Reseau de projet cree comme l'agent le fait (docker::network_create_request).
+docker network create --driver bridge --label dev.ciphera.managed=true \
+	-o "com.docker.network.bridge.name=$app_bridge" "$app_net" >/dev/null
+host_port=18081
+python3 -m http.server "$host_port" --bind 0.0.0.0 >/dev/null 2>&1 &
+host_port_pid=$!
+ip addr add 169.254.169.254/32 dev lo
+ip netns exec ciphera-witness ip addr add 169.254.170.2/32 dev cw-ns
+ip route add 169.254.170.2/32 via 10.250.0.2 dev cw-host
+ip netns exec ciphera-witness python3 -m http.server 8080 --bind 169.254.170.2 >/dev/null 2>&1 &
+witness_ll_pid=$!
+wait_for 30 "curl -fs -o /dev/null http://$host_ip:$host_port/" || printf 'port de test de l hote injoignable\n'
+wait_for 30 "curl -fs -o /dev/null http://169.254.170.2:8080/" || printf 'serveur de lien local temoin injoignable\n'
+app_targets="http://$host_ip:$host_port/ http://169.254.169.254/ http://169.254.170.2:8080/ http://$host_ip/ $private_url $public_url"
+# shellcheck disable=SC2086
+egress_app() { # <reseau> <journal>
+	docker run --rm --network "$1" --entrypoint sh docker.io/library/busybox:1.37 \
+		-c "$probe_script; if nslookup deb.debian.org >/tmp/d 2>&1; then echo 'PROBE dns reached'; else echo \"PROBE dns blocked: \$(tr '\n' ' ' </tmp/d)\"; fi" \
+		sh $app_targets >"$2" 2>&1 # une cible par argument
+}
+check "(a) pont du projet nomme $app_bridge" test -d "/sys/class/net/$app_bridge"
+egress_app bridge "$work/egress-app-witness.log" || true
+egress_app "$app_net" "$work/egress-app.log" || true
+for t in "http://$host_ip:$host_port/" http://169.254.169.254/ http://169.254.170.2:8080/ "http://$host_ip/" "$private_url"; do
+	check "(a) temoin (pont par defaut) : $t joignable" probe_ok "$work/egress-app-witness.log" "$t" reached
+done
+check "(a) application : port de test de l'hote bloque" probe_ok "$work/egress-app.log" "http://$host_ip:$host_port/" blocked
+check "(a) application : 169.254.169.254:80 (lie a lo) bloque" probe_ok "$work/egress-app.log" http://169.254.169.254/ blocked
+check "(a) application : lien local route (169.254.170.2) bloque" probe_ok "$work/egress-app.log" http://169.254.170.2:8080/ blocked
+check "(a) application : proxy de l'hote (port 80) joignable" probe_ok "$work/egress-app.log" "http://$host_ip/" reached
+check "(a) application : serveur prive (10.250.0.2) joignable par defaut" probe_ok "$work/egress-app.log" "$private_url" reached
+check "(a) application : DNS joignable" probe_ok "$work/egress-app.log" dns reached
+check "(a) application : Internet public joignable" probe_ok "$work/egress-app.log" "$public_url" reached
+# CIPHERA_APP_EGRESS_DENY_PRIVATE=1 : le reseau prive se ferme aussi, le DNS
+# et Internet restent ouverts ; applique par ciphera-egress-check.
+egress_conf=/etc/ciphera-egress/egress.env
+check "(a) reglage du filtrage : root 0644, plages privees permises" \
+	sh -c "test \"\$(stat -c %a:%U:%G $egress_conf)\" = 644:root:root && grep -qx CIPHERA_APP_EGRESS_DENY_PRIVATE=0 $egress_conf"
+cp "$egress_conf" "$work/egress.env.saved"
+printf 'CIPHERA_APP_EGRESS_DENY_PRIVATE=1\n' >"$egress_conf"
+check "(a) ciphera-egress-check applique le reglage" systemctl start ciphera-egress-check.service
+egress_app "$app_net" "$work/egress-app-deny.log" || true
+check "(a) plages privees interdites : serveur prive bloque" probe_ok "$work/egress-app-deny.log" "$private_url" blocked
+check "(a) plages privees interdites : DNS joignable" probe_ok "$work/egress-app-deny.log" dns reached
+check "(a) plages privees interdites : Internet public joignable" probe_ok "$work/egress-app-deny.log" "$public_url" reached
+cp "$work/egress.env.saved" "$egress_conf"
+systemctl start ciphera-egress-check.service || true
+egress_app "$app_net" "$work/egress-app-back.log" || true
+check "(a) reglage remis a 0 : serveur prive joignable" probe_ok "$work/egress-app-back.log" "$private_url" reached
+if [ "$failures" -ne 0 ]; then
+	printf -- '--- sondes de sortie des applications (hote %s, pont %s) ---\n' "$host_ip" "$app_bridge"
+	cat "$work"/egress-app*.log 2>/dev/null | grep -E 'PROBE|ERROR|error' || true
+	nft list table inet ciphera_egress || true
+	journalctl -u ciphera-egress-check --no-pager -n 20 || true
+fi
+docker network rm "$app_net" >/dev/null 2>&1 || true
+app_net=
+kill "$host_port_pid" "$witness_ll_pid" 2>/dev/null || true
+host_port_pid=
+witness_ll_pid=
+ip addr del 169.254.169.254/32 dev lo 2>/dev/null || true
+ip route del 169.254.170.2/32 2>/dev/null || true
+
+# Durcissement de ciphera-agent.service (SystemCallFilter=@system-service,
+# SystemCallErrorNumber, RestrictAddressFamilies avec AF_NETLINK,
+# PrivateDevices, RestrictNamespaces...) : l'agent tourne sous ce filtre, et
+# les outils qu'il lance (docker, docker compose, buildctl, git) aussi. Memes
+# directives reprises de l'unite installee et appliquees par systemd-run au
+# compte ciphera-agent (groupe docker) : docker version, docker run, et un
+# projet Compose complet (config, up, ps, down).
+agent_pid=$(systemctl show -p MainPID --value ciphera-agent)
+check "(a) agent sous filtre seccomp, sans nouveaux privileges" \
+	sh -c "grep -q '^Seccomp:[[:space:]]*2' /proc/$agent_pid/status && grep -q '^NoNewPrivs:[[:space:]]*1' /proc/$agent_pid/status"
+mapfile -t agent_hardening < <(sed -n '/^\[Service\]/,/^\[Install\]/p' /etc/systemd/system/ciphera-agent.service |
+	grep -E '^(NoNewPrivileges|Protect[A-Za-z]+|Private[A-Za-z]+|Restrict[A-Za-z]+|LockPersonality|SystemCall[A-Za-z]+|UMask)=')
+hardening_props=()
+for line in "${agent_hardening[@]}"; do
+	hardening_props+=(-p "$line")
+done
+mkdir -p /run/ciphera-compose-test
+printf 'services:\n  t:\n    image: docker.io/library/busybox:1.37\n    command: ["sleep", "60"]\n' >/run/ciphera-compose-test/compose.yaml
+chmod -R a+rX /run/ciphera-compose-test
+hardened_run() { # <journal> <script sh>
+	systemd-run --wait --pipe --quiet --collect -p User=ciphera-agent -p Group=ciphera-agent \
+		-p Environment=HOME=/tmp "${hardening_props[@]}" /bin/sh -c "$2" >"$1" 2>&1
+}
+hardened_tools='set -e
+docker version --format "{{.Server.Version}}"
+docker run --rm docker.io/library/busybox:1.37 true
+docker compose version
+cd /run/ciphera-compose-test
+docker compose -p ciphera-hardened config --format json >/dev/null
+docker compose -p ciphera-hardened up -d
+docker compose -p ciphera-hardened ps --format json | grep -q running
+docker compose -p ciphera-hardened down
+/usr/local/lib/ciphera/bin/buildctl --version
+git --version
+echo HARDENED_OK'
+check "(a) ${#agent_hardening[@]} directives de durcissement reprises de l'unite" test "${#agent_hardening[@]}" -ge 15
+if hardened_run "$work/hardened.log" "$hardened_tools" && grep -q HARDENED_OK "$work/hardened.log"; then
+	check "(a) docker et docker compose sous le durcissement de l'agent" true
+else
+	check "(a) docker et docker compose sous le durcissement de l'agent" false
+	printf -- '--- durcissement : %s ---\n' "${agent_hardening[*]}"
+	cat "$work/hardened.log"
+fi
+docker compose -p ciphera-hardened -f /run/ciphera-compose-test/compose.yaml down >/dev/null 2>&1 || true
+# Indicatif : appels systeme hors de @system-service tentes par ces outils
+# (journalises sans filtre, SystemCallLog=), pour le suivi du durcissement.
+if systemd-run --version 2>/dev/null | awk 'NR == 1 { exit !($2 >= 247) }'; then
+	t0=$(date +%s)
+	systemd-run --wait --pipe --quiet --collect -p User=ciphera-agent -p Group=ciphera-agent \
+		-p Environment=HOME=/tmp -p 'SystemCallLog=~@system-service' /bin/sh -c "$hardened_tools" >/dev/null 2>&1 || true
+	journalctl -k --since "@$t0" --no-pager 2>/dev/null | grep 'type=1326' | sed 's/.*comm=\("[^"]*"\).*syscall=\([0-9]*\).*/\1 \2/' |
+		sort -u | sed 's/^/  info appel hors @system-service (comm, numero) : /' || true
+fi
+rm -rf /run/ciphera-compose-test
+
 subuid_line=$(grep '^ciphera-build:' /etc/subuid || true)
 subgid_line=$(grep '^ciphera-build:' /etc/subgid || true)
 if panel_up; then
@@ -490,6 +638,28 @@ proxy_checks() { # <etape>
 check "(a) proxy actif" sh -c 'test "$(systemctl is-active ciphera-proxy)" = active'
 proxy_checks a
 
+# Table du filtrage disparue (`nft flush ruleset`, autre outil de pare-feu) :
+# retablie par ciphera-egress-check (minuterie de 5 min, forcee ici).
+check "(a) minuterie ciphera-egress-check active, toutes les 5 min" \
+	sh -c 'test "$(systemctl is-active ciphera-egress-check.timer)" = active && systemctl cat ciphera-egress-check.timer | grep -qx "OnCalendar=\*:0/5"'
+nft flush ruleset
+check "(a) nft flush ruleset : table du filtrage retiree" sh -c '! nft list table inet ciphera_egress >/dev/null 2>&1'
+check "(a) ciphera-egress-check : execution forcee" systemctl start ciphera-egress-check.service
+check "(a) table du filtrage retablie" nft list table inet ciphera_egress
+check "(a) retablissement journalise" \
+	sh -c 'journalctl -u ciphera-egress-check --no-pager | grep -q "absente, retablie"'
+# Regles de Docker (NAT, isolation) videes aussi : Docker les recree a son
+# redemarrage ; la base et le panneau reviennent.
+systemctl restart docker
+check "(a) apres redemarrage de Docker : ciphera-postgres en marche" \
+	wait_for 300 "test \"\$(docker inspect -f '{{.State.Running}}' ciphera-postgres 2>/dev/null)\" = true"
+if panel_up; then
+	check "(a) apres redemarrage de Docker : panneau joignable" true
+else
+	check "(a) apres redemarrage de Docker : panneau joignable" false
+	diagnose
+fi
+
 # --- (b) desinstallation sans --purge ----------------------------------------------
 printf '== (b) desinstallation\n'
 check "(b) uninstall.sh" sh -c "sh '$root/install/uninstall.sh' >/dev/null"
@@ -507,7 +677,9 @@ check "(b) volume de la base conserve" docker volume inspect ciphera-postgres-da
 check "(b) secrets conserves" test -s /etc/ciphera/db_password
 check "(b) proxy arrete, socket de pilotage retire" \
 	sh -c '! systemctl is-active -q ciphera-proxy && test ! -e /run/ciphera/proxy.sock'
-check "(b) filtrage de sortie des builds retire" sh -c '! nft list table inet ciphera_egress >/dev/null 2>&1'
+check "(b) filtrage de sortie retire" sh -c '! nft list table inet ciphera_egress >/dev/null 2>&1'
+check "(b) minuterie ciphera-egress-check retiree" sh -c '! systemctl is-active -q ciphera-egress-check.timer && test ! -e /etc/systemd/system/ciphera-egress-check.timer'
+check "(b) reglage du filtrage conserve" test -f /etc/ciphera-egress/egress.env
 
 # --- (c) reinstallation : meme base ----------------------------------------------
 printf '== (c) reinstallation\n'
@@ -527,7 +699,8 @@ else
 	diagnose
 fi
 proxy_checks c
-check "(c) filtrage de sortie des builds recharge" nft list table inet ciphera_egress
+check "(c) filtrage de sortie recharge" nft list table inet ciphera_egress
+check "(c) minuterie ciphera-egress-check active" sh -c 'test "$(systemctl is-active ciphera-egress-check.timer)" = active'
 same_subid_lines() {
 	[ -n "$subuid_line" ] && [ "$(grep '^ciphera-build:' /etc/subuid)" = "$subuid_line" ] &&
 		[ -n "$subgid_line" ] && [ "$(grep '^ciphera-build:' /etc/subgid)" = "$subgid_line" ]
@@ -541,6 +714,7 @@ check "(d) volumes supprimes" sh -c '! docker volume inspect ciphera-postgres-da
 check "(d) reseaux supprimes" \
 	sh -c '! docker network inspect ciphera-internal >/dev/null 2>&1 && ! docker network inspect ciphera-build >/dev/null 2>&1'
 check "(d) profil AppArmor retire" test ! -e /etc/apparmor.d/ciphera-buildkitd
+check "(d) reglage du filtrage supprime" test ! -e /etc/ciphera-egress
 check "(d) secrets et comptes supprimes" \
 	sh -c 'test ! -e /etc/ciphera && test ! -e /etc/ciphera-agent && ! id -u ciphera-postgres >/dev/null 2>&1'
 check "(d) compte ciphera-build, ses plages et l'etat de BuildKit supprimes" \

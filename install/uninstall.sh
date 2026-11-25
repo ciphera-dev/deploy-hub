@@ -1,7 +1,8 @@
 #!/bin/sh
 # Desinstalle Ciphera : arrete les services, retire binaires et unites, et
 # supprime les conteneurs geres par Ciphera (etiquette dev.ciphera.managed).
-# Les secrets (/etc/ciphera, /etc/ciphera-agent), les donnees
+# Les secrets (/etc/ciphera, /etc/ciphera-agent), le reglage du filtrage de
+# sortie (/etc/ciphera-egress), les donnees
 # (/var/lib/ciphera*, dont l'etat de BuildKit /var/lib/ciphera-buildkit,
 # volume Docker ciphera-postgres-data) et les comptes (avec la plage de
 # sous-uids/sous-gids de ciphera-build) sont conserves, sauf avec --purge.
@@ -15,7 +16,7 @@ SHARE_DIR=/usr/local/share/ciphera
 TOOLS_ROOT=/usr/local/lib/ciphera
 UNIT_DIR=/etc/systemd/system
 BINARIES='ciphera ciphera-agent ciphera-proxy ciphera-cli'
-UNITS='ciphera-updater.path ciphera-updater.service ciphera-updater-recover.service ciphera-agent.service ciphera-proxy.service ciphera-proxy.socket ciphera.service'
+UNITS='ciphera-egress-check.timer ciphera-egress-check.service ciphera-updater.path ciphera-updater.service ciphera-updater-recover.service ciphera-agent.service ciphera-proxy.service ciphera-proxy.socket ciphera.service'
 USERS='ciphera ciphera-proxy ciphera-agent ciphera-postgres ciphera-build'
 TMPFILES_DEST=/etc/tmpfiles.d/ciphera.conf
 APPARMOR_DEST=/etc/apparmor.d/ciphera-buildkitd
@@ -109,8 +110,9 @@ main() {
 			docker ps -a --filter "$MANAGED" --format '  {{.ID}} {{.Names}} {{.Status}}' >&2 || true
 		fi
 	fi
-	# Filtrage de la sortie des builds (charge par ciphera-agent.service),
-	# Docker joignable ou non : l'agent, seul a lancer des builds, est arrete.
+	# Filtrage de la sortie des conteneurs (charge par ciphera-agent.service
+	# et ciphera-egress-check.timer, arretes plus haut), Docker joignable ou
+	# non.
 	if [ -x /usr/sbin/nft ]; then
 		/usr/sbin/nft delete table inet ciphera_egress >/dev/null 2>&1 || true
 	fi
@@ -138,7 +140,7 @@ main() {
 			done
 			docker network ls -q --filter "$MANAGED" | xargs -r docker network rm >/dev/null 2>&1 || true
 		fi
-		rm -rf /etc/ciphera /etc/ciphera-agent /etc/ciphera-updater /var/lib/ciphera /var/lib/ciphera-proxy /var/lib/ciphera-agent \
+		rm -rf /etc/ciphera /etc/ciphera-agent /etc/ciphera-updater /etc/ciphera-egress /var/lib/ciphera /var/lib/ciphera-proxy /var/lib/ciphera-agent \
 			/var/lib/ciphera-buildkit /var/lib/ciphera-updater /var/backups/ciphera /run/ciphera /run/ciphera-agent
 		# Plages de ciphera-build retirees par usermod (verrou de shadow) avant
 		# la suppression du compte.
@@ -160,7 +162,7 @@ main() {
 		fi
 		say "secrets, donnees (volumes Docker et etat de BuildKit compris) et comptes (plages de ciphera-build comprises) supprimes"
 	else
-		say "conserves : /etc/ciphera et /etc/ciphera-agent (secrets), /etc/ciphera-updater, /var/lib/ciphera* (dont l'etat de BuildKit), sauvegardes /var/backups/ciphera, volume Docker de PostgreSQL, comptes (--purge pour tout supprimer)"
+		say "conserves : /etc/ciphera et /etc/ciphera-agent (secrets), /etc/ciphera-updater, /etc/ciphera-egress, /var/lib/ciphera* (dont l'etat de BuildKit), sauvegardes /var/backups/ciphera, volume Docker de PostgreSQL, comptes (--purge pour tout supprimer)"
 	fi
 	# Desinstallation incomplete : code non nul.
 	[ "$leftover" = no ] || exit 1

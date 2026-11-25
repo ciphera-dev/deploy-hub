@@ -860,3 +860,73 @@ async fn legacy_build_network_is_recreated_with_its_bridge_name() {
     assert_eq!(again.id, net.id);
     drop(cleanup);
 }
+
+/// Reseau de projet : pont nomme `cphp<10 hex>` (sortie des applications
+/// filtree par `iifname "cphp*"`). Un reseau d'une version precedente (pont
+/// au nom genere par Docker) est garde tel quel tant qu'un conteneur y est
+/// (jamais d'application arretee), puis recree avec son pont une fois vide.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel : job Linux de la CI (cargo test -p ciphera-agent -- --ignored)"]
+async fn project_network_gets_its_bridge_name_and_legacy_one_is_recreated_once_empty() {
+    let api = api();
+    let docker = BollardDocker::connect().unwrap();
+    pull(&api, PROBE_IMAGE).await;
+    let fresh = ProjectId::new();
+    let legacy = ProjectId::new();
+    let busy = format!("ciphera-it-legacy-app-{}", DeploymentId::new());
+    let cleanup = Cleanup {
+        containers: vec![busy.clone()],
+        volumes: Vec::new(),
+        networks: vec![
+            docker::project_network(fresh),
+            docker::project_network(legacy),
+        ],
+    };
+
+    // Nouveau reseau : pont nomme, interface presente.
+    let net = docker::project_network(fresh);
+    docker.ensure_network(&net).await.unwrap();
+    let created = api.inspect_network(&net, None).await.unwrap();
+    let bridge = docker::project_bridge_name(fresh);
+    assert_eq!(docker::bridge_name_of(&created), Some(bridge.as_str()));
+    assert!(
+        Path::new("/sys/class/net").join(&bridge).exists(),
+        "interface {bridge} absente"
+    );
+
+    // Reseau d'une version precedente occupe : garde, conteneur intact.
+    let net = docker::project_network(legacy);
+    api.create_network(NetworkCreateRequest {
+        name: net.clone(),
+        driver: Some("bridge".into()),
+        labels: Some(HashMap::from([(
+            MANAGED_LABEL.to_string(),
+            "true".to_string(),
+        )])),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    foreign_container(&api, &busy, Some(&net), &["sleep", "600"]).await;
+    docker.ensure_network(&net).await.unwrap();
+    let kept = api.inspect_network(&net, None).await.unwrap();
+    assert_eq!(docker::bridge_name_of(&kept), None);
+    assert!(api.inspect_container(&busy, None).await.is_ok());
+
+    // Vide : recree avec son pont.
+    remove_container(&api, &busy).await;
+    docker.ensure_network(&net).await.unwrap();
+    let recreated = api.inspect_network(&net, None).await.unwrap();
+    let bridge = docker::project_bridge_name(legacy);
+    assert_ne!(recreated.id, kept.id);
+    assert_eq!(docker::bridge_name_of(&recreated), Some(bridge.as_str()));
+    assert!(
+        Path::new("/sys/class/net").join(&bridge).exists(),
+        "interface {bridge} absente"
+    );
+    // Deja a jour : rien ne change.
+    docker.ensure_network(&net).await.unwrap();
+    let again = api.inspect_network(&net, None).await.unwrap();
+    assert_eq!(again.id, recreated.id);
+    drop(cleanup);
+}

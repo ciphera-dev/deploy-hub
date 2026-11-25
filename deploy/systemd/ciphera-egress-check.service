@@ -1,0 +1,35 @@
+# Recharge le filtrage de la sortie des conteneurs (table nftables
+# inet ciphera_egress, voir ciphera-agent.service) : retablie si elle a
+# disparu (`nft flush ruleset`, autre outil de pare-feu), resolveurs DNS et
+# reglage (/etc/ciphera-egress/egress.env) mis a jour. Remplacement atomique :
+# jamais de fenetre sans filtre. Lancee par ciphera-egress-check.timer.
+[Unit]
+Description=Ciphera - controle du filtrage de sortie des conteneurs
+ConditionPathExists=/var/run/docker.sock
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Root sans autre capacite que CAP_NET_ADMIN (nft). Aucun fichier
+# d'environnement : le reglage est lu par le binaire (fichier root).
+ExecStart=/usr/local/bin/ciphera-agent egress check
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

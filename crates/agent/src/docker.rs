@@ -64,6 +64,9 @@ pub const BUILD_NETWORK: &str = "ciphera-build";
 pub const BRIDGE_NAME_OPTION: &str = "com.docker.network.bridge.name";
 /// Prefixe des reseaux de projet, ou tournent les applications.
 pub const PROJECT_NETWORK_PREFIX: &str = "ciphera-p-";
+/// Prefixe du pont d'un reseau de projet (`project_bridge_name`) : le
+/// filtrage de sortie des applications (`egress`) vise `iifname "cphp*"`.
+pub const PROJECT_BRIDGE_PREFIX: &str = "cphp";
 /// Longueur maximale d'une ligne de journal transmise (le reste est coupe).
 pub const MAX_LOG_LINE: usize = 16 * 1024;
 const STOP_TIMEOUT_SECS: i32 = 10;
@@ -570,6 +573,13 @@ pub fn project_network(project: ProjectId) -> String {
     format!("{PROJECT_NETWORK_PREFIX}{project}")
 }
 
+/// Interface du pont du reseau d'un projet : `cphp<10 premiers hex de
+/// l'UUID>` (14 caracteres, sous la limite de 15 des noms d'interface).
+pub fn project_bridge_name(project: ProjectId) -> String {
+    let hex = project.0.simple().to_string();
+    format!("{PROJECT_BRIDGE_PREFIX}{}", &hex[..10])
+}
+
 /// Projet d'un reseau `ciphera-p-<project_id>` (nom exact, sinon aucun).
 pub fn network_project(name: &str) -> Option<ProjectId> {
     let project: ProjectId = name.strip_prefix(PROJECT_NETWORK_PREFIX)?.parse().ok()?;
@@ -1065,7 +1075,7 @@ pub fn create_body(spec: &ContainerSpec) -> ContainerCreateBody {
 /// Requete de creation d'un reseau : `ciphera-internal` est interne (aucune
 /// sortie, aucune entree depuis l'exterieur) ; `ciphera-build` et les reseaux
 /// de projet ne le sont pas (buildkitd et les applications sortent sur
-/// Internet).
+/// Internet, filtres par `egress` d'apres le nom de leur pont).
 pub fn network_create_request(name: &str) -> NetworkCreateRequest {
     NetworkCreateRequest {
         name: name.to_string(),
@@ -1077,7 +1087,7 @@ pub fn network_create_request(name: &str) -> NetworkCreateRequest {
             "true".to_string(),
         )])),
         options: bridge_name(name)
-            .map(|bridge| HashMap::from([(BRIDGE_NAME_OPTION.to_string(), bridge.to_string())])),
+            .map(|bridge| HashMap::from([(BRIDGE_NAME_OPTION.to_string(), bridge)])),
         ..Default::default()
     }
 }
@@ -1092,9 +1102,12 @@ pub fn bridge_name_of(network: &bollard::models::NetworkInspect) -> Option<&str>
 }
 
 /// Nom impose a l'interface du pont de `network` (filtrage de sortie) :
-/// seulement pour `ciphera-build`.
-fn bridge_name(network: &str) -> Option<&'static str> {
-    (network == BUILD_NETWORK).then_some(BUILD_NETWORK)
+/// `ciphera-build`, et `cphp<hex>` pour un reseau de projet.
+fn bridge_name(network: &str) -> Option<String> {
+    if network == BUILD_NETWORK {
+        return Some(BUILD_NETWORK.to_string());
+    }
+    network_project(network).map(project_bridge_name)
 }
 
 /// Operations Docker de l'agent. Implementees par `BollardDocker`, simulees
@@ -1732,7 +1745,8 @@ impl DockerOps for BollardDocker {
         let bridge = bridge_name(name);
         let check = |existing: bollard::models::NetworkInspect| {
             check_managed(name, existing.labels.as_ref())?;
-            if existing.internal.unwrap_or(false) == internal && bridge_name_of(&existing) == bridge
+            if existing.internal.unwrap_or(false) == internal
+                && bridge_name_of(&existing) == bridge.as_deref()
             {
                 Ok(())
             } else {
@@ -1742,15 +1756,34 @@ impl DockerOps for BollardDocker {
         match self.docker.inspect_network(name, None).await {
             Ok(existing) => {
                 check_managed(name, existing.labels.as_ref())?;
-                if bridge.is_some()
+                let stale = bridge.is_some()
                     && existing.internal.unwrap_or(false) == internal
-                    && bridge_name_of(&existing) != bridge
-                {
+                    && bridge_name_of(&existing) != bridge.as_deref();
+                if !stale {
+                    return check(existing);
+                }
+                if name == BUILD_NETWORK {
                     // Reseau d'une version precedente : recree avec le nom
                     // de pont attendu par le filtrage de sortie.
                     self.recreate_network(name, &existing).await?;
+                } else if existing.containers.as_ref().is_none_or(|c| c.is_empty()) {
+                    // Reseau de projet d'une version precedente, vide :
+                    // recree avec son pont `cphp<hex>` (filtre).
+                    match self.docker.remove_network(name).await {
+                        Ok(()) => {}
+                        Err(e) if is_status(&e, 404) => {}
+                        Err(e) => return Err(api(e)),
+                    }
+                    tracing::info!("reseau {name} recree (nom du pont pour le filtrage de sortie)");
                 } else {
-                    return check(existing);
+                    // Jamais d'application arretee pour cela : garde tel quel
+                    // (sans filtrage de sortie) jusqu'a ce qu'il soit vide.
+                    tracing::warn!(
+                        "reseau {name} sans pont {} : sortie des applications non filtree \
+                         jusqu'a sa recreation (une fois sans conteneur)",
+                        bridge.as_deref().unwrap_or_default()
+                    );
+                    return Ok(());
                 }
             }
             Err(e) if is_status(&e, 404) => {}

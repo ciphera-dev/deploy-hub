@@ -3,9 +3,13 @@
 # Podman avec systemd (image de install/tests/Containerfile.<distro>) :
 # unites installees et activees comme par install.sh, binaires remplaces par
 # des bouchons, puis
-#   - `systemd-analyze verify` : aucun cycle d'ordre ;
-#   - vrai redemarrage du conteneur : sockets.target, paths.target et
-#     ciphera-proxy.socket actifs, aucun cycle casse dans le journal.
+#   - `systemd-analyze verify` : aucun cycle d'ordre, et chaque directive des
+#     unites de Ciphera comprise par le systemd de la distribution
+#     (durcissement de l'agent : SystemCallFilter, SystemCallErrorNumber,
+#     RestrictAddressFamilies, PrivateDevices...) ;
+#   - vrai redemarrage du conteneur : sockets.target, paths.target,
+#     timers.target, ciphera-proxy.socket et ciphera-egress-check.timer
+#     actifs, aucun cycle casse dans le journal.
 #
 #   install/tests/units-boot.sh [debian] [ubuntu] [fedora]
 #
@@ -63,19 +67,27 @@ done
 for u in ciphera ciphera-agent ciphera-proxy ciphera-postgres ciphera-build; do
 	getent passwd $u >/dev/null || useradd -r -M -s /usr/sbin/nologin $u
 done
-install -m 0644 /units/*.service /units/*.socket /units/*.path /etc/systemd/system/
+install -m 0644 /units/*.service /units/*.socket /units/*.path /units/*.timer /etc/systemd/system/
 install -m 0644 /units/ciphera.tmpfiles.conf /etc/tmpfiles.d/ciphera.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/ciphera.conf
 systemctl daemon-reload
 systemctl enable ciphera-proxy.socket ciphera-proxy.service ciphera.service \
-	ciphera-agent.service ciphera-updater.path ciphera-updater-recover.service >/dev/null 2>&1'
+	ciphera-agent.service ciphera-updater.path ciphera-updater-recover.service \
+	ciphera-egress-check.timer >/dev/null 2>&1'
 
 # shellcheck disable=SC2016
-verify='out=$(systemd-analyze verify multi-user.target /etc/systemd/system/ciphera*.service /etc/systemd/system/ciphera*.socket /etc/systemd/system/ciphera*.path 2>&1 || true)
+verify='out=$(systemd-analyze verify multi-user.target /etc/systemd/system/ciphera*.service /etc/systemd/system/ciphera*.socket /etc/systemd/system/ciphera*.path /etc/systemd/system/ciphera*.timer 2>&1 || true)
 if printf "%s\n" "$out" | grep -qi "ordering cycle"; then printf "%s\n" "$out" >&2; exit 1; fi'
 
+# Directive inconnue ou valeur refusee par ce systemd (ignoree en silence au
+# demarrage : un durcissement qui ne s'appliquerait pas).
 # shellcheck disable=SC2016
-booted='for t in sockets.target paths.target ciphera-proxy.socket; do
+directives='out=$(systemd-analyze verify /etc/systemd/system/ciphera*.service /etc/systemd/system/ciphera*.socket /etc/systemd/system/ciphera*.path /etc/systemd/system/ciphera*.timer 2>&1 || true)
+bad=$(printf "%s\n" "$out" | grep -i ciphera | grep -Ei "unknown (key|lvalue|section)|failed to parse" || true)
+if [ -n "$bad" ]; then printf "%s\n" "$bad" >&2; exit 1; fi'
+
+# shellcheck disable=SC2016
+booted='for t in sockets.target paths.target timers.target ciphera-proxy.socket ciphera-egress-check.timer; do
 	test "$(systemctl is-active $t)" = active || { echo "    $t : $(systemctl is-active $t)" >&2; exit 1; }
 done
 if journalctl -b --no-pager | grep -qi "ordering cycle"; then journalctl -b --no-pager | grep -i cycle >&2; exit 1; fi'
@@ -89,9 +101,10 @@ run_distro() {
 	wait_boot
 	check "unites installees et activees" in_ctr "$setup"
 	check "systemd-analyze verify : aucun cycle d'ordre" in_ctr "$verify"
+	check "systemd-analyze verify : directives toutes comprises" in_ctr "$directives"
 	podman restart "$cid" >/dev/null
 	wait_boot
-	check "redemarrage : cibles et socket du proxy actifs, aucun cycle" in_ctr "$booted"
+	check "redemarrage : cibles, socket du proxy et minuterie actifs, aucun cycle" in_ctr "$booted"
 	podman rm -f "$cid" >/dev/null
 	cid=
 }

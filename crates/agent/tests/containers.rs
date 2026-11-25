@@ -214,69 +214,81 @@ fn infra_network_is_internal_and_project_networks_are_not() {
     };
     assert_eq!(bridge(&build).as_deref(), Some("ciphera-build"));
     assert_eq!(bridge(&internal), None);
-    assert_eq!(bridge(&docker::network_create_request(&project)), None);
+    // Pont d'un projet nomme `cphp<10 hex>` : filtrage de sortie des
+    // applications (`ciphera-agent egress`) reconnu par `iifname "cphp*"`.
+    let id: ProjectId = "0a1b2c3d-4e5f-4000-8000-000000000001".parse().unwrap();
+    assert_eq!(
+        bridge(&docker::network_create_request(&docker::project_network(
+            id
+        )))
+        .as_deref(),
+        Some("cphp0a1b2c3d4e")
+    );
+    // Un nom qui n'est pas exactement celui d'un reseau de projet : aucun.
+    assert_eq!(bridge(&docker::network_create_request("ciphera-p-x")), None);
 }
 
-/// Filtrage de la sortie des builds, charge (root) avant chaque demarrage de
-/// l'agent : les deux ponts de build, l'hote (chaine input) et les plages
-/// privees ou de metadonnees (chaine forward) ; jamais ignore en cas
-/// d'echec (pas de prefixe `-`).
+/// Nom d'interface Linux : 15 caracteres au plus (IFNAMSIZ - 1), sinon
+/// Docker refuse de creer le pont ; prefixe fixe vise par le filtrage.
 #[test]
-fn agent_unit_loads_the_build_egress_filter_first() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../deploy/systemd/ciphera-agent.service");
-    let unit = std::fs::read_to_string(path)
-        .unwrap()
-        .replace("\\\r\n", "")
-        .replace("\\\n", "");
+fn bridge_name_is_15_chars() {
+    for _ in 0..64 {
+        let name = docker::project_bridge_name(ProjectId::new());
+        assert!(name.len() <= 15, "{name}");
+        assert_eq!(name.len(), 14, "{name}");
+        assert!(name.starts_with(docker::PROJECT_BRIDGE_PREFIX), "{name}");
+        assert!(
+            name[4..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "{name}"
+        );
+    }
+    assert_eq!(docker::PROJECT_BRIDGE_PREFIX, "cphp");
+    // Jamais confondu avec les ponts des builds.
+    assert!(!infra::BUILD_NETWORK.starts_with(docker::PROJECT_BRIDGE_PREFIX));
+    assert!(
+        !ciphera_agent::build::sandbox::PREPARE_NETWORK.starts_with(docker::PROJECT_BRIDGE_PREFIX)
+    );
+}
+
+/// Filtrage de la sortie des conteneurs, charge (root) avant chaque
+/// demarrage de l'agent par le binaire lui-meme (`egress load`, regles
+/// verifiees dans `egress`) ; jamais ignore en cas d'echec (pas de
+/// prefixe `-`) ; recharge toutes les 5 minutes par
+/// `ciphera-egress-check.timer`.
+#[test]
+fn agent_unit_loads_the_egress_filter_first() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/systemd");
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+    let unit = read("ciphera-agent.service");
     let pre: Vec<&str> = unit
         .lines()
         .filter_map(|l| l.strip_prefix("ExecStartPre="))
         .collect();
-    assert_eq!(pre.len(), 1, "{pre:?}");
-    let rules = pre[0]
-        .strip_prefix("+/usr/sbin/nft ")
-        .expect("nft en root, echec bloquant");
-    for bridge in [
-        infra::BUILD_NETWORK,
-        ciphera_agent::build::sandbox::PREPARE_NETWORK,
-    ] {
-        assert!(rules.contains(&format!("\\\"{bridge}\\\"")), "{bridge}");
-    }
-    assert!(rules.contains("hook input"));
-    assert!(rules.contains("hook forward"));
-    for range in [
-        "10.0.0.0/8",
-        "172.16.0.0/12",
-        "192.168.0.0/16",
-        "169.254.0.0/16",
-        "100.64.0.0/10",
-        "127.0.0.0/8",
-        "168.63.129.16",
-        "fc00::/7",
-        "fe80::/10",
-    ] {
-        assert!(rules.contains(range), "{range}");
-    }
-    // Exceptions : le DNS (resolveurs prives des clouds) et la decouverte
-    // de voisins IPv6 ; aucune autre regle n'accepte.
-    let accepts: Vec<&str> = rules
-        .split(';')
-        .map(str::trim)
-        .filter(|r| r.ends_with(" accept") && !r.starts_with("policy"))
+    assert_eq!(pre, ["+/usr/local/bin/ciphera-agent egress load"]);
+    let check = read("ciphera-egress-check.service");
+    let exec: Vec<&str> = check
+        .lines()
+        .filter_map(|l| l.strip_prefix("ExecStart="))
         .collect();
-    assert_eq!(accepts.len(), 3, "{accepts:?}");
-    for rule in accepts {
-        assert!(
-            rule.contains("meta l4proto { tcp, udp } th dport 53 accept")
-                || rule.contains("icmpv6 type"),
-            "{rule}"
-        );
-    }
-    // Une seule transaction : table remplacee, jamais doublee.
+    assert_eq!(exec, ["/usr/local/bin/ciphera-agent egress check"]);
+    let timer = read("ciphera-egress-check.timer");
+    assert!(timer.lines().any(|l| l == "OnCalendar=*:0/5"), "{timer}");
     assert!(
-        rules.starts_with("\"add table inet ciphera_egress; delete table inet ciphera_egress; "),
-        "{rules}"
+        timer
+            .lines()
+            .any(|l| l == "Unit=ciphera-egress-check.service"),
+        "{timer}"
+    );
+    assert!(
+        timer.lines().any(|l| l == "WantedBy=timers.target"),
+        "{timer}"
+    );
+    // Meme reglage lu par les deux chemins : le fichier root du binaire.
+    assert_eq!(
+        ciphera_agent::egress::CONFIG_FILE,
+        "/etc/ciphera-egress/egress.env"
     );
 }
 
@@ -558,6 +570,32 @@ fn resolve_reads_the_build_account_and_its_subid_ranges() {
         InfraConfig::resolve(&etc.0),
         Err(InfraError::MissingAccount("ciphera-postgres"))
     ));
+}
+
+/// Compte de PostgreSQL d'uid ou de gid 0 : refuse, l'agent ne demarre pas
+/// (conteneur de la base jamais lance en root).
+#[test]
+fn postgres_uid0_refused() {
+    let etc = Scratch::new("etc-pg-root");
+    for passwd in [
+        "ciphera-postgres:x:0:990::/:/x\n",
+        "ciphera-postgres:x:991:0::/:/x\n",
+        "ciphera-postgres:x:0:0::/:/x\n",
+    ] {
+        write_etc(&etc.0, passwd, "", "");
+        assert!(
+            matches!(
+                InfraConfig::resolve(&etc.0),
+                Err(InfraError::RootAccount("ciphera-postgres"))
+            ),
+            "{passwd}"
+        );
+    }
+    write_etc(&etc.0, "ciphera-postgres:x:991:990::/:/x\n", "", "");
+    assert_eq!(
+        InfraConfig::resolve(&etc.0).unwrap().postgres_user,
+        (991, 990)
+    );
 }
 
 #[tokio::test]

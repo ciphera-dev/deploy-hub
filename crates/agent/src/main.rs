@@ -40,6 +40,12 @@ fn main() {
     if let Some(code) = build::clone::askpass_main() {
         std::process::exit(code);
     }
+    // Mode `egress load|check` (root, ExecStartPre de ciphera-agent.service
+    // et ciphera-egress-check.service) : filtrage de sortie, puis sortie.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = ciphera_agent::egress::cli_main(&args) {
+        std::process::exit(code);
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

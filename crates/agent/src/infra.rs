@@ -447,7 +447,7 @@ pub fn resolve_buildkit_account(etc: &Path) -> Result<BuildkitAccount, InfraErro
 
 impl InfraConfig {
     /// Chemins par defaut ; compte de PostgreSQL lu dans `etc/passwd` (`etc` :
-    /// `/etc`), obligatoire ; compte et plages de buildkitd
+    /// `/etc`), obligatoire, uid et gid 0 refuses ; compte et plages de buildkitd
     /// (`resolve_buildkit_account`) facultatifs : s'ils manquent, l'erreur est
     /// journalisee et seuls les builds sont indisponibles (le plan de controle
     /// a besoin de PostgreSQL pour demarrer) ; profil AppArmor de buildkitd
@@ -456,6 +456,10 @@ impl InfraConfig {
         let passwd = read_etc(etc, "passwd")?;
         let postgres_user = lookup_account(&passwd, POSTGRES_ACCOUNT)
             .ok_or(InfraError::MissingAccount(POSTGRES_ACCOUNT))?;
+        // Jamais la base en root (uid ou gid 0 d'un compte detourne).
+        if postgres_user.0 == 0 || postgres_user.1 == 0 {
+            return Err(InfraError::RootAccount(POSTGRES_ACCOUNT));
+        }
         let buildkit_account = match resolve_buildkit_account(etc) {
             Ok(account) => Some(account),
             Err(e) => {

@@ -115,6 +115,7 @@ fn only_the_proxy_gets_ambient_capabilities() {
         "ciphera.service",
         "ciphera-agent.service",
         "ciphera-updater.service",
+        "ciphera-egress-check.service",
     ] {
         assert!(
             values(&unit(name), "AmbientCapabilities").is_empty(),
@@ -133,6 +134,8 @@ fn units_never_carry_secrets() {
         "ciphera-updater.service",
         "ciphera-updater.path",
         "ciphera-updater-recover.service",
+        "ciphera-egress-check.service",
+        "ciphera-egress-check.timer",
     ] {
         let text = unit(name);
         for env in values(&text, "Environment") {
@@ -180,7 +183,11 @@ fn updater_path_triggers_the_updater_service() {
 /// propre configuration root (`/etc/ciphera-updater/updater.env`).
 #[test]
 fn root_units_load_no_environment_file() {
-    for name in ["ciphera-updater.service", "ciphera-updater-recover.service"] {
+    for name in [
+        "ciphera-updater.service",
+        "ciphera-updater-recover.service",
+        "ciphera-egress-check.service",
+    ] {
         let text = unit(name);
         assert!(values(&text, "EnvironmentFile").is_empty(), "{name}");
         assert!(values(&text, "Environment").is_empty(), "{name}");
@@ -240,6 +247,7 @@ fn default_dependency_services_are_never_ordered_before_early_boot_units() {
         "ciphera-agent.service",
         "ciphera-updater.service",
         "ciphera-updater-recover.service",
+        "ciphera-egress-check.service",
     ] {
         let text = unit(name);
         if values(&text, "DefaultDependencies") == vec!["no"] {
@@ -351,6 +359,77 @@ fn control_plane_starts_after_the_agent_and_reaches_postgres_by_socket() {
         !env.iter().any(|e| e.starts_with("CIPHERA_DB_HOST=")),
         "{env:?}"
     );
+}
+
+/// Agent : compte sans capacite, appels systeme d'un service ordinaire,
+/// /dev prive, familles de sockets limitees (Docker CLI et compose : Unix et
+/// netlink ; lien et git : IPv4/IPv6). Prouve avec Docker reel par
+/// install/tests/run-docker-host.sh (memes reglages, docker et compose).
+#[test]
+fn agent_is_hardened_with_syscall_device_and_socket_filters() {
+    let text = assert_hardened("ciphera-agent.service");
+    assert_eq!(values(&text, "User"), vec!["ciphera-agent"]);
+    assert_eq!(values(&text, "CapabilityBoundingSet"), vec![""]);
+    assert_eq!(values(&text, "SystemCallFilter"), vec!["@system-service"]);
+    assert_eq!(values(&text, "SystemCallErrorNumber"), vec!["EPERM"]);
+    assert_eq!(values(&text, "SystemCallArchitectures"), vec!["native"]);
+    assert_eq!(
+        values(&text, "RestrictAddressFamilies"),
+        vec!["AF_UNIX AF_INET AF_INET6 AF_NETLINK"]
+    );
+    for key in [
+        "PrivateDevices",
+        "ProtectKernelTunables",
+        "ProtectKernelModules",
+        "ProtectKernelLogs",
+        "ProtectControlGroups",
+        "ProtectClock",
+        "ProtectHostname",
+        "RestrictSUIDSGID",
+        "RestrictRealtime",
+        "RestrictNamespaces",
+        "LockPersonality",
+    ] {
+        assert_eq!(values(&text, key), vec!["yes".to_string()], "{key}");
+    }
+    // Filtrage de sortie charge en root avant l'agent, echec bloquant.
+    assert_eq!(
+        values(&text, "ExecStartPre"),
+        vec!["+/usr/local/bin/ciphera-agent egress load"]
+    );
+}
+
+/// Controle periodique du filtrage : root reduit a CAP_NET_ADMIN, sans
+/// fichier d'environnement, seulement la ou Docker tourne ; minuterie de
+/// 5 minutes activee par install.sh.
+#[test]
+fn egress_check_is_a_hardened_root_oneshot_every_five_minutes() {
+    let svc = unit("ciphera-egress-check.service");
+    for (key, want) in HARDENING {
+        assert_eq!(values(&svc, key), vec![want.to_string()], "{key}");
+    }
+    assert!(values(&svc, "User").is_empty(), "root : aucun User=");
+    assert_eq!(values(&svc, "Type"), vec!["oneshot"]);
+    assert_eq!(
+        values(&svc, "ExecStart"),
+        vec!["/usr/local/bin/ciphera-agent egress check"]
+    );
+    assert_eq!(values(&svc, "CapabilityBoundingSet"), vec!["CAP_NET_ADMIN"]);
+    assert!(values(&svc, "AmbientCapabilities").is_empty());
+    assert!(values(&svc, "ReadWritePaths").is_empty());
+    assert_eq!(
+        values(&svc, "RestrictAddressFamilies"),
+        vec!["AF_UNIX AF_NETLINK"]
+    );
+    assert_eq!(values(&svc, "SystemCallFilter"), vec!["@system-service"]);
+    assert_eq!(
+        values(&svc, "ConditionPathExists"),
+        vec!["/var/run/docker.sock"]
+    );
+    let timer = unit("ciphera-egress-check.timer");
+    assert_eq!(values(&timer, "OnCalendar"), vec!["*:0/5"]);
+    assert_eq!(values(&timer, "Unit"), vec!["ciphera-egress-check.service"]);
+    assert_eq!(values(&timer, "WantedBy"), vec!["timers.target"]);
 }
 
 #[test]

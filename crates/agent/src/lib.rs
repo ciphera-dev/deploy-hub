@@ -7,6 +7,7 @@ pub mod buildkit;
 pub mod config;
 pub mod deploy;
 pub mod docker;
+pub mod egress;
 pub mod infra;
 pub mod logs;
 pub mod metrics;
