@@ -253,6 +253,7 @@ it("domaine du panel : confirmation depuis le domaine, retrait qui ramène l'acc
   expect(screen.getByText("Certificat valide")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "https://panel.example.org/settings/panel-domain" })).toBeInTheDocument();
   expect(screen.getByRole("radio", { name: /Accès privé \(VPN\)/ })).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByRole("note")).toHaveTextContent(/passkeys\) sont liées au domaine du panneau : celles enregistrées sous l'ancien domaine ne fonctionneront plus/);
 
   fireEvent.click(screen.getByRole("button", { name: "Annuler la bascule" }));
   const dialog = await screen.findByRole("dialog");
@@ -269,6 +270,14 @@ it("domaine du panel confirmé : l'erreur de vérification s'affiche et « Revé
   expect(await screen.findByText("Vérification relancée")).toBeInTheDocument();
   expect(requests[0]).toMatchObject({ method: "POST", path: "/api/settings/panel-domain/recheck", csrf: "csrf-1" });
   await waitFor(() => expect(screen.queryByText(/Dernière vérification en échec/)).not.toBeInTheDocument());
+});
+
+it("domaine du panel confirmé : le retrait avertit que les passkeys de ce domaine ne fonctionneront plus", async () => {
+  panel = { domain: "panel.example.org", status: "active", error: null };
+  mount("/settings/panel-domain");
+  fireEvent.click(await screen.findByRole("button", { name: "Retirer le domaine" }, { timeout: 5000 }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("note")).toHaveTextContent(/passkeys\) enregistrées sous ce domaine ne fonctionneront plus après le retrait/);
 });
 
 it("domaine du panel : « Revérifier » refusé (DNS faux) affiche l'erreur de l'API", async () => {

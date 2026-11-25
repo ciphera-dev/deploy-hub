@@ -33,6 +33,20 @@ function AccessCards() {
   );
 }
 
+/** Le RP ID WebAuthn suit le domaine du panneau : changer de domaine rend les clés enregistrées inutilisables. */
+function PasskeyWarning({ removing }: { removing?: boolean }) {
+  return (
+    <Note icon="TriangleExclamationPoint" color="var(--amber-500)">
+      <span role="note">
+        {removing
+          ? "Les clés de sécurité (passkeys) enregistrées sous ce domaine ne fonctionneront plus après le retrait."
+          : "Les clés de sécurité (passkeys) sont liées au domaine du panneau : celles enregistrées sous l'ancien domaine ne fonctionneront plus après la bascule."}{" "}
+        Vérifiez que chaque membre peut se connecter autrement (mot de passe et code TOTP ou codes de secours), puis réenregistrez les clés depuis le nouveau domaine.
+      </span>
+    </Note>
+  );
+}
+
 function dnsPill(p: PanelDomain): ReactNode {
   if (p.status === "none") return <Pill tone="muted" icon="CircleMinus" mono>non vérifié</Pill>;
   if (p.status === "error") return <Pill tone="error" icon="CircleX" mono>erreur</Pill>;
@@ -131,6 +145,7 @@ function RemoveModal({ domain, active, onClose, onDone }: { domain: string; acti
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10, font: "400 13px/1.5 var(--font-sans)", color: "var(--text-body)" }}>
         <span>La route et le certificat de {domain} sont retirés.</span>
+        {active && <PasskeyWarning removing />}
         {active && <span>Si une GitHub App est connectée, son webhook revient automatiquement sur l'accès direct. Sur GitHub, remettez aussi son URL de configuration (Setup URL) sur l'adresse 8443 du panneau suivie de /connectors.</span>}
         {err && <FormError>{err}</FormError>}
       </div>
@@ -203,6 +218,7 @@ function PanelDomainForm({ current }: { current: PanelDomain }) {
           <Row t="Certificat HTTPS automatique" d="Émis et renouvelé via Let's Encrypt.">
             <Switch ariaLabel="Certificat HTTPS automatique" checked disabled />
           </Row>
+          {!locked && <PasskeyWarning />}
           {current.status === "awaiting_confirmation" && current.domain && <ConfirmBlock domain={current.domain} onDone={(p) => { update(p); flash("Domaine confirmé : accès direct fermé"); }} />}
           {current.status === "active" && <Note icon="CircleCheck" color="var(--green-500)">Le panneau est servi en HTTPS sur {current.domain} ; l'accès direct (port 8443) est fermé.</Note>}
           {current.status === "active" && current.error && (
