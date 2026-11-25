@@ -598,6 +598,7 @@ mod control_socket {
         let (_dir, path, table) = start_with_access(ControlAccess::new([other])).await;
         if own_uid() == 0 {
             // Root est toujours accepte : rien a refuser depuis ce compte.
+            eprintln!("control_socket_rejects_other_uid : lance en root, refus non verifie");
             still_serving(&path).await;
             return;
         }
@@ -626,16 +627,24 @@ mod control_socket {
 
         let mut idle = UnixStream::connect(&path).await.unwrap();
         tokio::time::sleep(Duration::from_millis(800)).await;
-        codec::write_frame(&mut idle, &ControlToAgent::ApplyRoutes(Vec::new()))
-            .await
-            .unwrap();
-        let reply: ProxyReply =
-            tokio::time::timeout(Duration::from_secs(5), codec::read_frame(&mut idle))
+        for n in [0usize, 1] {
+            let routes = (0..n)
+                .map(|i| route(&format!("h{i}.example.com"), "/", "10.0.0.1:80"))
+                .collect();
+            codec::write_frame(&mut idle, &ControlToAgent::ApplyRoutes(routes))
                 .await
-                .expect("reponse du proxy")
-                .unwrap()
                 .unwrap();
-        assert_eq!(reply, ProxyReply::Applied { routes: 0 });
+            let reply: ProxyReply =
+                tokio::time::timeout(Duration::from_secs(5), codec::read_frame(&mut idle))
+                    .await
+                    .expect("reponse du proxy")
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(reply, ProxyReply::Applied { routes: n as u32 });
+            // Repos plus long que le delai de lecture, apres une trame
+            // entiere : la connexion doit rester ouverte.
+            tokio::time::sleep(Duration::from_millis(800)).await;
+        }
     }
 
     #[test]

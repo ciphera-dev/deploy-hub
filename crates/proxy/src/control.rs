@@ -37,6 +37,7 @@ use async_trait::async_trait;
 use pingora::server::ShutdownWatch;
 use pingora::services::background::BackgroundService;
 use proto::{CertificateOutcome, ControlToAgent, ProxyReply, TlsMode, codec};
+use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 
@@ -86,7 +87,9 @@ impl ControlAccess {
             .ok()
             .and_then(|passwd| uid_of(&passwd, AGENT_USER));
         if agent.is_none() {
-            tracing::warn!("compte {AGENT_USER} introuvable : seul root peut piloter le proxy");
+            tracing::warn!(
+                "compte {AGENT_USER} introuvable dans /etc/passwd (absent, illisible ou hors fichier) : seul root peut piloter le proxy"
+            );
         }
         Self::new(agent)
     }
@@ -227,17 +230,22 @@ pub async fn serve(
     }
 }
 
-/// Lit le message suivant : attend sans limite qu'il commence (connexion au
-/// repos), puis `read_timeout` pour le recevoir en entier. `None` : delai
-/// depasse (connexion a fermer sans reponse).
+/// Lit le message suivant : attend sans limite son premier octet (lecture
+/// reelle, pas la disponibilite du socket, qui reste positive apres une
+/// trame entiere), puis `read_timeout` pour recevoir le reste. `None` :
+/// delai depasse (connexion a fermer sans reponse).
 async fn next_message(
     stream: &mut UnixStream,
     read_timeout: Duration,
 ) -> Option<codec::Result<Option<ControlToAgent>>> {
-    if stream.readable().await.is_err() {
-        return Some(Ok(None));
+    let mut first = [0u8; 1];
+    match stream.read(&mut first).await {
+        Ok(0) => return Some(Ok(None)),
+        Ok(_) => {}
+        Err(e) => return Some(Err(codec::Error::Io(e))),
     }
-    match tokio::time::timeout(read_timeout, codec::read_frame(stream)).await {
+    let mut message = (&first[..]).chain(&mut *stream);
+    match tokio::time::timeout(read_timeout, codec::read_frame(&mut message)).await {
         Ok(result) => Some(result),
         Err(_) => {
             tracing::warn!("socket de pilotage : message trop lent, connexion fermee");
@@ -280,18 +288,13 @@ async fn handle(
             Ok(Some(ControlToAgent::CheckCertificate { host })) => {
                 // Un certificat expire compte pour absent : le plan de
                 // controle en demande un nouveau.
-                ProxyReply::Certificate(
-                    match issuer
-                        .filter(|i| i.store().has(&host))
-                        .and_then(|i| i.store().get(&host))
-                    {
-                        Some(held) => CertificateOutcome::Issued {
-                            not_after: held.not_after,
-                            issuer: held.issuer.clone(),
-                        },
-                        None => CertificateOutcome::Missing,
+                ProxyReply::Certificate(match issuer.and_then(|i| i.store().current(&host)) {
+                    Some(held) => CertificateOutcome::Issued {
+                        not_after: held.not_after,
+                        issuer: held.issuer.clone(),
                     },
-                )
+                    None => CertificateOutcome::Missing,
+                })
             }
             Ok(Some(ControlToAgent::RemoveCertificate { host })) => {
                 // Aussi sans certificat installe : une emission en cours

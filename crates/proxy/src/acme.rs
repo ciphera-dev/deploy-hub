@@ -317,10 +317,13 @@ impl CertStore {
     }
 
     /// Certificat de `host` s'il est encore valide (jamais un expire).
+    pub fn current(&self, host: &str) -> Option<Arc<Installed>> {
+        self.get(host).filter(|c| c.valid_at(unix_now()))
+    }
+
+    /// Cle servie pour `host` (voir `current`).
     pub fn serving(&self, host: &str) -> Option<Arc<CertifiedKey>> {
-        self.get(host)
-            .filter(|c| c.valid_at(unix_now()))
-            .map(|c| c.key.clone())
+        self.current(host).map(|c| c.key.clone())
     }
 
     fn lock_write(&self) -> std::sync::MutexGuard<'_, Removals> {
