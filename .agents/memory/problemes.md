@@ -166,3 +166,10 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 - Correction : le test utilise `MAX_TRIES`, attend l'étape (Healthcheck, Started) signalée par l'agent et échoue aussitôt (étapes et journal affichés) si le déploiement se termine avant l'annulation ; `compose_spec` refuse un nombre d'essais hors bornes.
 - Leçon : les fichiers de tests réservés à unix ne sont jamais compilés ni lancés sous Windows ; la CI agent-docker est leur premier passage réel.
 - Statut : Résolu.
+
+## 2026-11-25 — Journaux d'agent : ligne partielle envoyée, fin ou début de secret visible (garantie R18)
+- Symptôme : CI agent-docker rouge sur `long_log_line_is_reassembled_with_the_secret_contiguous` (32768 au lieu de 36404) ; cause du test : lecture pendant que le conteneur écrivait encore (test corrigé : attente de la sortie du conteneur).
+- Faille réelle trouvée par la relecture (présente depuis R18) : `LogAssembler::finish()` envoyait la ligne en cours sur toute fin de flux (erreur, délai de prepare, conteneur encore en marche) ; une lecture `tail` ou après rotation (json-file 10m×3) pouvait commencer sur une trame de suite ; sur un conteneur TTY, l'horodatage de Docker restait au milieu de la ligne. Dans ces cas, un secret à cheval sur une trame sortait en partie non masqué (`redact_line` ne masque que la valeur entière).
+- Correction (fail-closed) : ligne en attente envoyée seulement sur une fin propre d'une lecture sans suivi d'un conteneur sorti (même exécution avant/après) ; sinon « [ligne incomplète ignorée] » ; toute lecture réelle (`Tail(n)` qui demande n+1, `Beginning`) remplace la première ligne de chaque flux par ce repère ; fin d'un suivi : ligne en attente toujours écartée ; conteneur TTY ou illisible : `timestamps: false` (heure de réception).
+- Limites acceptées : première ligne d'une lecture perdue (repère) ; sur un TTY, une ligne qui commence par un horodatage RFC 3339 `Z` le perd (sans fuite, à corriger : sauter `strip_timestamp`/`split_log_chunk` quand les horodatages sont désactivés).
+- Statut : Résolu (reste le défaut mineur ci-dessus).
