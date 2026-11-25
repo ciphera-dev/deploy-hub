@@ -1056,3 +1056,10 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Réponses GitHub bornées : 1 Mio par défaut, 10 Mio pour les listes (longueur annoncée refusée d'emblée, lecture arrêtée au dépassement).
 - Écarts au brief acceptés : un projet antérieur est lié à l'App au premier jeton d'installation (l'App est privée) ; la création de projet ne dépend pas de GitHub (rattrapage au premier build). GitHub n'a pas d'API pour supprimer une App (D-GH-7) : seul un lien vers ses réglages est proposé.
 - Laissés : test du corps en morceaux qui passerait sans la borne, messages 404/422 à préciser quand l'id est connu, lien « réglages de l'App » vers la page publique, pas de test de l'App déconnectée.
+
+## 2026-11-25 — Task R17 : variables (import .env, plafonds) et masquage multi-motifs
+- Décision R17 : masquage des secrets par automate aho-corasick 1.1.5 (déjà dans Cargo.lock, dernière version, aucun avis RustSec), en temps linéaire, construit dans `spawn_blocking` et appliqué hors du verrou du hub ; tous les secrets qui se chevauchent ou s'emboîtent sont masqués ; la forme nettoyée d'une valeur contenant un caractère de contrôle est aussi enregistrée ; l'ANSI est retiré avant le masquage des messages d'erreur.
+- Formes encodées masquées (base64 standard et URL sur les 3 alignements, pourcent RFC 3986) pour les valeurs de 8 à 256 octets seulement, pour borner la mémoire (~31 Mio par projet au pire) : un secret d'une ligne de plus de 256 octets n'a pas de forme encodée masquée ; au plus 3 caractères encodés visibles en tête et 1 en fin.
+- Import `.env` : guillemets, `export`, commentaires, CRLF ; BOM et valeurs multilignes entre guillemets refusés proprement ; erreurs sans la valeur.
+- Plafonds de secrets vérifiés à chaque écriture sous verrou consultatif par projet (globales : verrous pris dans l'ordre trié) ; `warnings` seulement dans les réponses d'écriture.
+- Laissés : coût de `check_scope_caps` pour une globale, mémoire du cache des masqueurs non bornée entre projets, `+` et `/` non encodés non reconnus en pourcent, test de temps non strict, boucle `run` du hub en série.

@@ -325,3 +325,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 01:12 — Session v0.1-sdd — claude-code (orchestrateur) — Task R21 : Remédiation audit — GitHub, dépôt identifié par son id, jeton restreint
 - fait : Id du dépôt retenu, pas de repli anonyme, jeton limité au dépôt et en lecture, réponses bornées
 - résultat : relecture approuvée, finitions relues
+
+## 2026-11-25 01:14 — Session v0.1-sdd — claude-code (orchestrateur) — Task R17 : Remédiation audit — variables, import .env, masquage multi-motifs
+- fait : Automate aho-corasick linéaire hors verrou, formes encodées et nettoyées masquées, import .env, plafonds sous verrou par projet
+- résultat : relecture : 1 Important corrigé, approuvée

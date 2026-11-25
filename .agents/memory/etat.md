@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-25 01:12
+# État courant — mis à jour le 2026-11-25 01:14
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R21 : Remédiation audit — GitHub, dépôt identifié par son id, jeton restreint — statut : TERMINÉ (relecture approuvée, finitions relues)
+Task R17 : Remédiation audit — variables, import .env, masquage multi-motifs — statut : TERMINÉ (relecture : 1 Important corrigé, approuvée)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R17 : Remédiation audit — variables, import .env, masquage multi-motifs
 - Task R21 : Remédiation audit — GitHub, dépôt identifié par son id, jeton restreint
 - Task R14 : Remédiation audit — origine des liens de réinitialisation, remise à zéro du second facteur
 - Task R15 : Remédiation audit — vérification de l'adresse e-mail
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R46 : Remédiation audit — utilisateur et racine en lecture seule des conteneurs
 - Task R13 : Remédiation audit — limites du second facteur, de la ré-authentification et de la connexion
 - Task fix-ci-zombie : CI : buildkitd zombie à la désinstallation
-- Task R18 : Remédiation audit — secrets masqués dans les journaux avant toute coupe
 
 ## Prochaine étape exacte
-Intégrer R14 (conflit en cours), R17, R4 ; R23 en cours
+Intégrer R14 (conflit), R4 ; R23 en cours ; lancer R19, R22
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,9 +32,9 @@ Intégrer R14 (conflit en cours), R17, R4 ; R23 en cours
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/control-plane/src/connectors/github/app.rs`
+- `crates/control-plane/src/domain/logs/redact.rs`
+- `crates/control-plane/src/domain/variables`
 - `crates/control-plane/src/orchestrator.rs`
-- `crates/control-plane/migrations/0034_github_repo_id.sql`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
