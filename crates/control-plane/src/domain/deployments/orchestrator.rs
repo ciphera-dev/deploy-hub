@@ -1207,10 +1207,9 @@ async fn send_build(state: &AppState, info: Info) -> Result<(), HandlerError> {
         Some("compose") => info.build_service.clone(),
         _ => None,
     };
-    let image = format!(
-        "ciphera/{}-{}:{}",
-        info.project_name, info.environment, info.id
-    );
+    // Registre jamais resolu (`ciphera.invalid`) : l'agent ne la telecharge
+    // jamais. Un ancien deploiement garde le nom enregistre.
+    let image = shared::images::deployment_image(&info.project_name, &info.environment, info.id);
     let spec = BuildSpec {
         deployment_id: DeploymentId(id),
         project: info.project_name.clone(),

@@ -606,7 +606,7 @@ async fn rollback_uses_retained_image_without_rebuild() {
     env.run_jobs().await;
     env.orders();
     let image_v1 = env.get(v1).await["image"].as_str().unwrap().to_string();
-    assert_eq!(image_v1, format!("ciphera/web-production:{v1}"));
+    assert_eq!(image_v1, format!("ciphera.invalid/web-production:{v1}"));
 
     let r = send(
         &env.state,

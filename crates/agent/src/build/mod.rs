@@ -4,8 +4,9 @@
 //!
 //! Etapes rapportees au plan de controle (`DeployProgress`) : `Clone`,
 //! `Build`, `Image`. Une image n'est etiquetee
-//! `ciphera/<projet>-<environnement>:<deployment_id>` qu'apres un chargement
-//! reussi (nom provisoire `ciphera-staging/...` d'abord) ; en cas d'echec,
+//! `ciphera.invalid/<projet>-<environnement>:<deployment_id>` qu'apres un
+//! chargement reussi (nom provisoire `ciphera.invalid/staging/...` d'abord ;
+//! registre jamais resolu, voir `shared::images`) ; en cas d'echec,
 //! l'etape qui echoue est rapportee `Failed`, aucune image n'est etiquetee et
 //! les images provisoires sont supprimees. Aucune etiquette « courante » ici
 //! (la promotion vient avec les deploiements).
@@ -481,17 +482,18 @@ impl Targets {
         })
     }
 
-    /// `ciphera/<projet>-<env>`
+    /// `ciphera.invalid/<projet>-<env>` : registre jamais resolu
+    /// (`shared::images`), l'image n'est jamais telechargee.
     fn repo(&self) -> String {
-        format!("ciphera/{}-{}", self.project.as_str(), self.env.as_str())
+        shared::images::repository(self.project.as_str(), self.env.as_str())
     }
 
-    /// `ciphera/<projet>-<env>:<deployment_id>`
+    /// `ciphera.invalid/<projet>-<env>:<deployment_id>`
     pub(crate) fn main_tag(&self) -> ImageRef {
         ImageRef(format!("{}:{}", self.repo(), self.deployment.as_str()))
     }
 
-    /// `ciphera/<projet>-<env>/<service>:<deployment_id>` (Compose).
+    /// `ciphera.invalid/<projet>-<env>/<service>:<deployment_id>` (Compose).
     pub(crate) fn service_tag(&self, service: &ValidatedArg) -> ImageRef {
         ImageRef(format!(
             "{}/{}:{}",
@@ -501,7 +503,8 @@ impl Targets {
         ))
     }
 
-    /// Nom provisoire du chargement (`ciphera-staging/<deployment_id>[-<service>]:build`).
+    /// Nom provisoire du chargement
+    /// (`ciphera.invalid/staging/<deployment_id>[-<service>]:build`).
     pub(crate) fn staging(&self, service: Option<&ValidatedArg>) -> ValidatedArg {
         let mut parts = vec![&STAGING_PREFIX, &self.deployment];
         if let Some(s) = service {
@@ -544,7 +547,7 @@ impl Targets {
     }
 }
 
-static STAGING_PREFIX: ValidatedArg = ValidatedArg::lit("ciphera-staging/");
+static STAGING_PREFIX: ValidatedArg = ValidatedArg::lit(shared::images::STAGING_PREFIX);
 static STAGING_SUFFIX: ValidatedArg = ValidatedArg::lit(":build");
 static DASH: ValidatedArg = ValidatedArg::lit("-");
 
@@ -1120,7 +1123,7 @@ mod tests {
     fn workdir_removal_failure_after_success_keeps_the_success() {
         let ok = || {
             Ok(BuiltImages {
-                images: vec![ImageRef("ciphera/web-production:x".into())],
+                images: vec![ImageRef("ciphera.invalid/web-production:x".into())],
                 compose: None,
             })
         };

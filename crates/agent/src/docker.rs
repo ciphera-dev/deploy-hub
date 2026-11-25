@@ -322,23 +322,55 @@ pub fn snapshot_of(info: ContainerInspectResponse) -> Result<ContainerSnapshot, 
     })
 }
 
-/// Etiquette d'image d'un deploiement : `ciphera/<projet>-<env>:<id>`,
-/// `ciphera/<projet>-<env>/<service>:<id>` (images finales du build) ou
-/// `ciphera-staging/<id>[-<service>]:build` (noms provisoires). Une image
-/// d'un autre deploiement (rollback) n'en fait jamais partie.
+/// Prefixes des images internes : (provisoires, finales). Les anciens noms
+/// (`ciphera-staging/`, `ciphera/`) restent reconnus pour les images des
+/// deploiements anterieurs.
+const IMAGE_PREFIXES: [(&str, &str); 2] = [
+    (
+        shared::images::STAGING_PREFIX,
+        shared::images::INTERNAL_PREFIX,
+    ),
+    (
+        shared::images::LEGACY_STAGING_PREFIX,
+        shared::images::LEGACY_PREFIX,
+    ),
+];
+
+/// Nom d'image provisoire (`<id>[-<service>]`) ou finale
+/// (`<projet>-<env>[/<service>]:<id>`), prefixe retire. `None` : pas une
+/// image interne.
+fn internal_image_name(tag: &str) -> Option<(bool, &str)> {
+    IMAGE_PREFIXES.iter().find_map(|(staging, final_prefix)| {
+        // Le prefixe provisoire est plus long que le final du meme jeu
+        // (`ciphera.invalid/staging/`) : teste en premier.
+        tag.strip_prefix(staging)
+            .map(|rest| (true, rest))
+            .or_else(|| tag.strip_prefix(final_prefix).map(|rest| (false, rest)))
+    })
+}
+
+/// Etiquette d'image d'un deploiement :
+/// `ciphera.invalid/<projet>-<env>:<id>`,
+/// `ciphera.invalid/<projet>-<env>/<service>:<id>` (images finales du build)
+/// ou `ciphera.invalid/staging/<id>[-<service>]:build` (noms provisoires) ;
+/// aussi sous les anciens prefixes `ciphera/` et `ciphera-staging/`. Une
+/// image d'un autre deploiement (rollback) n'en fait jamais partie.
 pub fn is_deployment_image(tag: &str, deployment: DeploymentId) -> bool {
     let id = deployment.to_string();
-    if let Some(rest) = tag.strip_prefix("ciphera-staging/") {
-        return rest
+    match internal_image_name(tag) {
+        Some((true, rest)) => rest
             .strip_suffix(":build")
             .and_then(|name| name.strip_prefix(id.as_str()))
-            .is_some_and(|tail| tail.is_empty() || tail.starts_with('-'));
-    }
-    let Some(rest) = tag.strip_prefix("ciphera/") else {
-        return false;
-    };
-    match rest.rsplit_once(':') {
-        Some((repo, t)) => t == id && !repo.is_empty() && repo.split('/').count() <= 2,
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with('-')),
+        Some((false, rest)) => match rest.rsplit_once(':') {
+            Some((repo, t)) => {
+                t == id
+                    && !repo.is_empty()
+                    && repo.split('/').count() <= 2
+                    && repo.split('/').all(|s| !s.is_empty())
+            }
+            None => false,
+        },
         None => false,
     }
 }
@@ -346,9 +378,9 @@ pub fn is_deployment_image(tag: &str, deployment: DeploymentId) -> bool {
 /// Deploiement proprietaire de l'etiquette d'image `tag` (voir
 /// `is_deployment_image`), `None` pour toute autre image.
 pub fn image_deployment(tag: &str) -> Option<DeploymentId> {
-    let candidate = match tag.strip_prefix("ciphera-staging/") {
-        Some(rest) => rest.strip_suffix(":build")?.get(..36)?,
-        None => tag.strip_prefix("ciphera/")?.rsplit_once(':')?.1,
+    let candidate = match internal_image_name(tag)? {
+        (true, rest) => rest.strip_suffix(":build")?.get(..36)?,
+        (false, rest) => rest.rsplit_once(':')?.1,
     };
     let id = candidate.parse::<DeploymentId>().ok()?;
     is_deployment_image(tag, id).then_some(id)
@@ -1175,6 +1207,100 @@ pub fn project_ip<'a>(
     found.flatten().filter(|ip| !ip.is_unspecified())
 }
 
+/// Delai d'un telechargement d'image (registre lent ou muet).
+pub const PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// Plafond de la taille annoncee d'une image telechargee (somme des couches),
+/// le meme que celui d'une image construite.
+pub const MAX_PULL_BYTES: u64 = 10 << 30;
+
+/// Telechargement d'image refuse ou interrompu.
+#[derive(Debug)]
+pub enum PullError {
+    /// Image interne de Ciphera : jamais telechargee (`shared::images`).
+    Internal,
+    /// `PULL_TIMEOUT` depasse.
+    Timeout,
+    /// Taille annoncee au-dela du plafond.
+    TooLarge,
+    /// Erreur rapportee par Docker.
+    Failed(String),
+}
+
+impl fmt::Display for PullError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Internal => {
+                write!(
+                    f,
+                    "image interne absente (jamais telechargee d'un registre)"
+                )
+            }
+            Self::Timeout => write!(f, "delai depasse ({} min)", PULL_TIMEOUT.as_secs() / 60),
+            Self::TooLarge => write!(f, "taille annoncee au-dela de {} Gio", MAX_PULL_BYTES >> 30),
+            Self::Failed(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+impl std::error::Error for PullError {}
+
+/// Image telechargeable : jamais une image interne de Ciphera
+/// (`ciphera.invalid/…`, anciens `ciphera/…` et `ciphera-staging/…`, avec ou
+/// sans le registre de Docker Hub). Une image interne absente est une
+/// erreur, pas un telechargement.
+pub fn check_pullable(image: &str) -> Result<(), PullError> {
+    if shared::images::is_internal_ref(image) {
+        Err(PullError::Internal)
+    } else {
+        Ok(())
+    }
+}
+
+/// Lit le flux d'un telechargement (`create_image`) en `timeout` au plus, et
+/// s'arrete des que la taille annoncee (plus grande taille annoncee par
+/// couche, additionnee sur les couches, arithmetique saturee) depasse
+/// `max_bytes`. Abandonner le flux ferme la requete : Docker interrompt le
+/// telechargement. `status` recoit chaque etape (journal du build).
+pub async fn bounded_pull<S, F, Fut>(
+    steps: S,
+    timeout: std::time::Duration,
+    max_bytes: u64,
+    mut status: F,
+) -> Result<(), PullError>
+where
+    S: futures_util::Stream<Item = Result<bollard::models::CreateImageInfo, BollardError>>,
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let read = async {
+        let mut steps = std::pin::pin!(steps);
+        let mut layers: HashMap<String, u64> = HashMap::new();
+        while let Some(step) = steps.next().await {
+            let info = step.map_err(|e| PullError::Failed(e.to_string()))?;
+            let announced = info
+                .progress_detail
+                .as_ref()
+                .and_then(|p| p.total)
+                .and_then(|t| u64::try_from(t).ok());
+            if let (Some(id), Some(size)) = (info.id.as_ref(), announced) {
+                let layer = layers.entry(id.clone()).or_insert(0);
+                *layer = (*layer).max(size);
+                let total = layers.values().fold(0u64, |acc, s| acc.saturating_add(*s));
+                if total > max_bytes {
+                    return Err(PullError::TooLarge);
+                }
+            }
+            if let Some(s) = info.status {
+                status(s).await;
+            }
+        }
+        Ok(())
+    };
+    tokio::time::timeout(timeout, read)
+        .await
+        .unwrap_or(Err(PullError::Timeout))
+}
+
 /// CPU (pourcentage d'un coeur, comme `docker stats`) et memoire hors
 /// cache de fichiers (cgroup v2 `inactive_file`, v1 `total_inactive_file`)
 /// d'une lecture de `/containers/{id}/stats`.
@@ -1326,25 +1452,29 @@ impl BollardDocker {
         }
     }
 
+    /// Telecharge `image` si elle manque : jamais une image interne
+    /// (`check_pullable`), en `PULL_TIMEOUT` et `MAX_PULL_BYTES` annonces au
+    /// plus (`bounded_pull`).
     async fn pull_if_missing(&self, image: &str) -> Result<(), DockerError> {
         match self.docker.inspect_image(image).await {
             Ok(_) => return Ok(()),
             Err(e) if is_status(&e, 404) => {}
             Err(e) => return Err(api(e)),
         }
+        let failed = |e: PullError| {
+            tracing::warn!("image {image} : {e}");
+            DockerError::Pull(image.to_string())
+        };
+        check_pullable(image).map_err(failed)?;
         tracing::info!("telechargement de l'image {image}");
         let options = CreateImageOptions {
             from_image: Some(image.to_string()),
             ..Default::default()
         };
-        let mut pull = self.docker.create_image(Some(options), None, None);
-        while let Some(step) = pull.next().await {
-            step.map_err(|e| {
-                tracing::warn!("image {image} : {e}");
-                DockerError::Pull(image.to_string())
-            })?;
-        }
-        Ok(())
+        let pull = self.docker.create_image(Some(options), None, None);
+        bounded_pull(pull, PULL_TIMEOUT, MAX_PULL_BYTES, |_| async {})
+            .await
+            .map_err(failed)
     }
 
     /// Suppression forcee ; si Docker n'a pas vu le conteneur sortir apres
@@ -2116,14 +2246,25 @@ pub fn parse_rfc3339_ms(s: &str) -> Option<i64> {
     }
     let millis: i64 = format!("{frac:0<3}")[..3].parse().ok()?;
     // Jours depuis l'epoque (algorithme de H. Hinnant, calendrier gregorien).
-    let y = if month <= 2 { year - 1 } else { year };
+    // Annee lue telle quelle : arithmetique verifiee, une annee absurde
+    // donne `None`, jamais un debordement.
+    let y = if month <= 2 {
+        year.checked_sub(1)?
+    } else {
+        year
+    };
     let era = y.div_euclid(400);
-    let yoe = y - era * 400;
+    let yoe = y.rem_euclid(400);
     let mp = (month + 9) % 12;
     let doy = (153 * mp + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(((days * 24 + h) * 60 + m) * 60_000 + sec * 1000 + millis)
+    let days = era.checked_mul(146_097)?.checked_add(doe - 719_468)?;
+    days.checked_mul(24)?
+        .checked_add(h)?
+        .checked_mul(60)?
+        .checked_add(m)?
+        .checked_mul(60_000)?
+        .checked_add(sec * 1000 + millis)
 }
 
 #[cfg(test)]
@@ -2329,10 +2470,114 @@ mod tests {
     }
 
     #[test]
+    fn internal_images_never_pulled() {
+        for internal in [
+            "ciphera.invalid/web-production:1",
+            "ciphera.invalid/web-production/web:1",
+            "ciphera.invalid/staging/x:build",
+            "ciphera/web-production:1",
+            "ciphera-staging/x:build",
+            "docker.io/ciphera/web-production:1",
+            "index.docker.io/ciphera-staging/x:build",
+            "registry-1.docker.io/ciphera.invalid/x",
+        ] {
+            assert!(
+                matches!(check_pullable(internal), Err(PullError::Internal)),
+                "{internal}"
+            );
+        }
+        for user in [
+            "nginx:1.27",
+            "docker.io/library/postgres:17",
+            "ghcr.io/ciphera/web:1",
+        ] {
+            assert!(check_pullable(user).is_ok(), "{user}");
+        }
+    }
+
+    fn layer(id: &str, total: i64) -> Result<bollard::models::CreateImageInfo, BollardError> {
+        Ok(bollard::models::CreateImageInfo {
+            id: Some(id.into()),
+            status: Some("Downloading".into()),
+            progress_detail: Some(bollard::models::ProgressDetail {
+                current: Some(0),
+                total: Some(total),
+            }),
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pull_timeout() {
+        assert_eq!(PULL_TIMEOUT, std::time::Duration::from_secs(10 * 60));
+        // Registre qui ne repond plus apres une couche : abandon au delai.
+        let steps = stream::iter([layer("a", 10)]).chain(stream::pending());
+        let started = tokio::time::Instant::now();
+        let result = bounded_pull(steps, PULL_TIMEOUT, MAX_PULL_BYTES, |_| async {}).await;
+        assert!(matches!(result, Err(PullError::Timeout)), "{result:?}");
+        assert_eq!(started.elapsed(), PULL_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn pull_announced_size_is_capped() {
+        assert_eq!(MAX_PULL_BYTES, 10 << 30);
+        // Taille par couche : la plus grande annoncee, pas la somme des
+        // evenements d'une meme couche.
+        let fits = stream::iter([layer("a", 60), layer("a", 60), layer("b", 40)]);
+        assert!(
+            bounded_pull(fits, PULL_TIMEOUT, 100, |_| async {})
+                .await
+                .is_ok()
+        );
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let over = stream::iter([layer("a", 60), layer("b", 41), layer("c", 1)]);
+        let result = bounded_pull(over, PULL_TIMEOUT, 100, move |s| {
+            log.lock().unwrap().push(s);
+            async {}
+        })
+        .await;
+        assert!(matches!(result, Err(PullError::TooLarge)), "{result:?}");
+        // Arret des le depassement : la couche suivante n'est pas lue.
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        // Taille absurde (negative ou enorme) : somme saturee, jamais de
+        // debordement.
+        let huge = stream::iter([
+            layer("a", -5),
+            layer("b", i64::MAX),
+            layer("c", i64::MAX),
+            layer("d", i64::MAX),
+        ]);
+        let result = bounded_pull(huge, PULL_TIMEOUT, u64::MAX - 1, |_| async {}).await;
+        assert!(matches!(result, Err(PullError::TooLarge)), "{result:?}");
+    }
+
+    #[test]
+    fn rfc3339_arithmetic_never_overflows() {
+        assert_eq!(parse_rfc3339_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            parse_rfc3339_ms("2026-11-25T10:00:00.5Z"),
+            Some(1_795_600_800_500)
+        );
+        for bad in [
+            "9223372036854775807-12-31T23:59:59Z",
+            "99999999999999999-01-01T00:00:00Z",
+            "-1-01-01T00:00:00Z",
+        ] {
+            assert_eq!(parse_rfc3339_ms(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn deployment_images_are_recognised_by_their_tag() {
         let id = DeploymentId::new();
         let other = DeploymentId::new();
         for tag in [
+            format!("ciphera.invalid/web-production:{id}"),
+            format!("ciphera.invalid/web-production/web:{id}"),
+            format!("ciphera.invalid/staging/{id}:build"),
+            format!("ciphera.invalid/staging/{id}-web:build"),
+            // Anciens noms (deploiements anterieurs) : toujours reconnus.
             format!("ciphera/web-production:{id}"),
             format!("ciphera/web-production/web:{id}"),
             format!("ciphera-staging/{id}:build"),
@@ -2342,7 +2587,11 @@ mod tests {
             assert!(!is_deployment_image(&tag, other), "{tag}");
         }
         assert_eq!(
-            image_deployment(&format!("ciphera/web-production/web:{id}")),
+            image_deployment(&format!("ciphera.invalid/web-production/web:{id}")),
+            Some(id)
+        );
+        assert_eq!(
+            image_deployment(&format!("ciphera.invalid/staging/{id}-web:build")),
             Some(id)
         );
         assert_eq!(
@@ -2350,13 +2599,17 @@ mod tests {
             Some(id)
         );
         assert_eq!(
-            image_deployment(&format!("ciphera/web-production:{}", id.0.simple())),
+            image_deployment(&format!("ciphera.invalid/web-production:{}", id.0.simple())),
             None,
             "forme canonique seulement"
         );
         for tag in [
-            format!("ciphera/web-production:{id}x"),
+            format!("ciphera.invalid/web-production:{id}x"),
             format!("docker.io/ciphera/web:{id}"),
+            format!("ciphera.invalid/a/b/c:{id}"),
+            format!("ciphera.invalid/staging/{id}x:build"),
+            format!("ciphera.invalid/staging/{id}:latest"),
+            format!("ciphera.invalid:5000/web:{id}"),
             format!("ciphera/a/b/c:{id}"),
             format!("ciphera-staging/{id}x:build"),
             format!("ciphera-staging/{id}:latest"),

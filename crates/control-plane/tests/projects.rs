@@ -160,6 +160,32 @@ async fn create_project_for_each_build_and_image_source() {
 }
 
 #[tokio::test]
+async fn image_project_internal_ref_refused() {
+    let (state, _pg) = common::state().await;
+    let dev = login(&state, "developer").await;
+    for image in [
+        "ciphera.invalid/web-production:1",
+        "ciphera.invalid/staging/x:build",
+        "ciphera/web-production:1",
+        "ciphera-staging/x:build",
+        "docker.io/ciphera/web-production:1",
+        "index.docker.io/ciphera-staging/x:build",
+        "registry-1.docker.io/ciphera/web",
+    ] {
+        let body = json!({ "name": "cache", "source": { "type": "image", "image": image } });
+        let r = send(&state, &dev, "POST", "/api/projects", Some(body)).await;
+        assert_eq!(r.status, 422, "{image} : {}", r.raw);
+        assert_eq!(r.code(), "validation_failed");
+    }
+    assert_eq!(
+        send(&state, &dev, "GET", "/api/projects", None)
+            .await
+            .json(),
+        json!([])
+    );
+}
+
+#[tokio::test]
 async fn project_name_rejects_injection() {
     let (state, _pg) = common::state().await;
     let dev = login(&state, "developer").await;

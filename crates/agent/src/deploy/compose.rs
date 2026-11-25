@@ -413,7 +413,7 @@ impl ComposePlan {
             root: PathBuf::from("/nonexistent"),
             base: PathBuf::from("/nonexistent"),
         };
-        compose_policy::check(&checked).map_err(|v| v.to_string())?;
+        compose_policy::check_bundle(&checked).map_err(|v| v.to_string())?;
 
         let mut file = bundle.clone();
         let doc = file
@@ -455,6 +455,15 @@ impl ComposePlan {
                 .ok_or_else(|| format!("service {name} invalide"))?;
             if svc.contains_key("build") || !svc.get("image").is_some_and(Value::is_string) {
                 return Err(format!("service {name} : image construite absente"));
+            }
+            // Image construite (registre jamais resolu) : jamais telechargee,
+            // absente = erreur.
+            if svc
+                .get("image")
+                .and_then(Value::as_str)
+                .is_some_and(shared::images::is_internal_ref)
+            {
+                svc.insert("pull_policy".into(), json!("never"));
             }
             // Reseau `default` seul, avec l'alias `<service>.internal` (le
             // nom nu reste l'alias pose par Compose).

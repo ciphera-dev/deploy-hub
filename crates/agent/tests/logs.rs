@@ -42,7 +42,7 @@ impl Env {
             &RunningDeployment {
                 deployment_id: deployment,
                 service_id: service,
-                image: ImageRef("ciphera/web-production:1".into()),
+                image: ImageRef("ciphera.invalid/web-production:1".into()),
                 healthy: true,
                 serving: false,
                 runs_as_root: false,
@@ -179,7 +179,7 @@ async fn service_follow_moves_to_the_new_serving_container() {
             &RunningDeployment {
                 deployment_id: next,
                 service_id: env.service,
-                image: ImageRef("ciphera/web-production:2".into()),
+                image: ImageRef("ciphera.invalid/web-production:2".into()),
                 healthy: true,
                 serving: false,
                 runs_as_root: false,

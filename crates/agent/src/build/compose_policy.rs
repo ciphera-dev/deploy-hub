@@ -149,8 +149,48 @@ const BUILD_DENIED: &[(&str, &str)] = &[
     ("args", "arguments de build non pris en charge en v0.1"),
 ];
 
-/// Applique la politique a `file` (forme du depot ou normalisee).
+/// Applique la politique a `file` (forme du depot ou normalisee). Aucune
+/// image interne de Ciphera (`shared::images::is_internal_ref`).
 pub fn check(file: &ComposeFile) -> Checked {
+    check_with(file, false)
+}
+
+/// Politique de l'ensemble a deployer (forme normalisee, images construites
+/// a la place des sections `build`) : une image interne n'y est acceptee que
+/// si c'est l'image construite du service lui-meme (`built_image_of`).
+pub fn check_bundle(file: &ComposeFile) -> Checked {
+    check_with(file, true)
+}
+
+/// Image construite du service `service` par Ciphera :
+/// `ciphera.invalid/<depot>/<service>:<etiquette>`, ou son ancien nom
+/// `ciphera/<depot>/<service>:<etiquette>` (deploiement anterieur, nom
+/// enregistre). Comparaison exacte, sans normalisation.
+pub fn built_image_of(image: &str, service: &str) -> bool {
+    if !crate::docker::valid_image(image) {
+        return false;
+    }
+    let Some(rest) = image
+        .strip_prefix(shared::images::INTERNAL_PREFIX)
+        .or_else(|| image.strip_prefix(shared::images::LEGACY_PREFIX))
+    else {
+        return false;
+    };
+    let Some((path, tag)) = rest.rsplit_once(':') else {
+        return false;
+    };
+    let mut parts = path.split('/');
+    let (Some(repo), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    !repo.is_empty()
+        && repo != "staging"
+        && name == service
+        && !tag.is_empty()
+        && !tag.contains(['@', '/'])
+}
+
+fn check_with(file: &ComposeFile, bundle: bool) -> Checked {
     let doc = file
         .doc
         .as_object()
@@ -160,7 +200,7 @@ pub fn check(file: &ComposeFile) -> Checked {
         match key.as_str() {
             "name" | "version" => {}
             k if k.starts_with("x-") => {}
-            "services" => services(file, value)?,
+            "services" => services(file, value, bundle)?,
             "volumes" => top_volumes(file, project, value)?,
             "networks" if file.normalized => top_networks(project, value)?,
             "networks" => {
@@ -190,7 +230,7 @@ fn is_empty(value: &Value) -> bool {
     }
 }
 
-fn services(file: &ComposeFile, value: &Value) -> Checked {
+fn services(file: &ComposeFile, value: &Value, bundle: bool) -> Checked {
     for (name, svc) in object(value, "services")? {
         let at = format!("services.{name}");
         let svc = object(svc, &at)?;
@@ -209,7 +249,7 @@ fn services(file: &ComposeFile, value: &Value) -> Checked {
                 return Err(deny(path, UNSUPPORTED));
             }
             match key.as_str() {
-                "image" => image(v, &path)?,
+                "image" => image(v, &path, bundle.then_some(name.as_str()))?,
                 "build" => build(file, v, &path)?,
                 "volumes" => service_volumes(v, &path)?,
                 "env_file" => env_file(file, v, &path)?,
@@ -226,9 +266,17 @@ fn services(file: &ComposeFile, value: &Value) -> Checked {
     Ok(())
 }
 
-fn image(value: &Value, path: &str) -> Checked {
+/// Reference d'image d'un service : jamais une image interne de Ciphera
+/// (normalisee : `docker.io/`, `index.docker.io/`, `registry-1.docker.io/`
+/// retires ; voir `shared::validate::image`), sauf, dans l'ensemble a
+/// deployer (`built_for` = nom du service), l'image construite du service.
+fn image(value: &Value, path: &str, built_for: Option<&str>) -> Checked {
     match value.as_str() {
+        Some(i) if built_for.is_some_and(|s| built_image_of(i, s)) => Ok(()),
         Some(i) if shared::validate::image(i).is_ok() => Ok(()),
+        Some(i) if shared::images::is_internal_ref(i) => {
+            Err(deny(path, "image interne de Ciphera (reservee)"))
+        }
         _ => Err(deny(path, "reference d'image invalide")),
     }
 }

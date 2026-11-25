@@ -345,7 +345,7 @@ pub enum BuildMethod {
 }
 
 /// Ordre de build : l'agent clone, construit avec BuildKit et etiquette
-/// l'image `ciphera/<projet>-<environnement>:<deployment_id>`.
+/// l'image `ciphera.invalid/<projet>-<environnement>:<deployment_id>`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct BuildSpec {
     pub deployment_id: DeploymentId,

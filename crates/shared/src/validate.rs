@@ -95,8 +95,10 @@ pub fn branch(value: &str) -> Result<(), Invalid> {
     Ok(())
 }
 
-/// Reference d'image : `^[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,254}$` sans `..`.
-/// Ni espace, ni metacaractere de shell, ni guillemet.
+/// Reference d'image donnee par un utilisateur :
+/// `^[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,254}$` sans `..`. Ni espace, ni
+/// metacaractere de shell, ni guillemet, ni image interne de Ciphera
+/// (`crate::images::is_internal_ref`).
 pub fn image(value: &str) -> Result<(), Invalid> {
     let mut chars = value.chars();
     let first_ok = chars.next().is_some_and(|c| c.is_ascii_alphanumeric());
@@ -109,6 +111,11 @@ pub fn image(value: &str) -> Result<(), Invalid> {
         || value.contains("//")
     {
         return Err("Référence d'image invalide (exemple : ghcr.io/org/app:1.2).");
+    }
+    if crate::images::is_internal_ref(value) {
+        return Err(
+            "Les images « ciphera.invalid/… », « ciphera/… » et « ciphera-staging/… » sont réservées à Ciphera.",
+        );
     }
     Ok(())
 }
@@ -316,5 +323,20 @@ mod tests {
         ] {
             assert!(image(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn internal_images_are_refused() {
+        for internal in [
+            "ciphera.invalid/web-production:1",
+            "ciphera/web-production:1",
+            "ciphera-staging/x:build",
+            "docker.io/ciphera/web",
+            "index.docker.io/ciphera-staging/x:build",
+            "registry-1.docker.io/ciphera.invalid/x",
+        ] {
+            assert!(image(internal).is_err(), "{internal}");
+        }
+        assert!(image("ghcr.io/ciphera/web:1").is_ok());
     }
 }

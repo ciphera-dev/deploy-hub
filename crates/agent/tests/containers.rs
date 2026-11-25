@@ -893,7 +893,7 @@ fn app_alias_is_service_internal_on_the_project_network_only_for_a_dns_safe_name
     let project = ProjectId::new();
     let (deployment, image) = (
         DeploymentId::new(),
-        ImageRef("ciphera/web-production:1".into()),
+        ImageRef("ciphera.invalid/web-production:1".into()),
     );
     let app = |alias: Option<&str>| {
         let spec = ContainerSpec::app(deployment, project, &image, Vec::new());

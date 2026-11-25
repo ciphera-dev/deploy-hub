@@ -423,12 +423,12 @@ async fn healthy_deploy_switches_routes_then_drains_and_stops_the_old_one() {
         .unwrap();
     assert_eq!(bench.upstreams("app.example.com"), Vec::<SocketAddr>::new());
 
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     let v1_addr = SocketAddr::new(bench.ip_of(v1.deployment_id), 8080);
     assert_eq!(bench.upstreams("app.example.com"), vec![v1_addr]);
 
-    let v2 = spec(project, web, "ciphera/web-production:v2");
+    let v2 = spec(project, web, "ciphera.invalid/web-production:v2");
     let n = bench.docker.containers.lock().unwrap().len() + 10;
     let v2_ip: IpAddr = format!("172.18.0.{n}").parse().unwrap();
     bench.probe.answer(v2_ip);
@@ -444,7 +444,7 @@ async fn healthy_deploy_switches_routes_then_drains_and_stops_the_old_one() {
     // Nouveau conteneur sur le reseau du projet, sans privilege.
     let run = bench.docker.runs.lock().unwrap().last().unwrap().clone();
     assert_eq!(run.network(), project_network(project));
-    assert_eq!(run.image(), "ciphera/web-production:v2");
+    assert_eq!(run.image(), "ciphera.invalid/web-production:v2");
     assert!(
         bench
             .docker
@@ -488,10 +488,10 @@ async fn old_deployment_keeps_serving_during_the_drain() {
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     let v1_container = format!("id-ciphera-d-{}", v1.deployment_id);
-    let v2 = spec(project, web, "ciphera/web-production:v2");
+    let v2 = spec(project, web, "ciphera.invalid/web-production:v2");
     let n = bench.docker.containers.lock().unwrap().len() + 10;
     bench.probe.answer(format!("172.18.0.{n}").parse().unwrap());
     let deployer = bench.deployer.clone();
@@ -522,13 +522,13 @@ async fn failed_healthcheck_keeps_old_serving_and_marks_failed() {
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     let v1_addr = SocketAddr::new(bench.ip_of(v1.deployment_id), 8080);
     let tables = bench.routes.count();
 
     // v2 ne repond jamais 2xx.
-    let v2 = spec(project, web, "ciphera/web-production:v2");
+    let v2 = spec(project, web, "ciphera.invalid/web-production:v2");
     let (result, messages) = bench.deploy(&v2).await;
     let err = result.unwrap_err();
     assert!(err.contains("healthcheck"), "{err}");
@@ -582,7 +582,7 @@ async fn healthcheck_tries_five_times_five_seconds_apart() {
     let (project, web) = (ProjectId::new(), ServiceId::new());
     bench.sync_routes().await;
     // Echec : 5 essais, a 5, 10, 15, 20 et 25 s.
-    let failing = spec(project, web, "ciphera/web-production:v1");
+    let failing = spec(project, web, "ciphera.invalid/web-production:v1");
     let started = Instant::now();
     let (result, _) = bench.deploy(&failing).await;
     assert!(result.is_err());
@@ -605,7 +605,7 @@ async fn healthcheck_tries_five_times_five_seconds_apart() {
     // Reussite au troisieme essai (15 s), chemin et rythme configures.
     bench.probe.tries.lock().unwrap().clear();
     *bench.probe.fail_first.lock().unwrap() = 2;
-    let mut custom = spec(project, web, "ciphera/web-production:v2");
+    let mut custom = spec(project, web, "ciphera.invalid/web-production:v2");
     custom.healthcheck = Healthcheck {
         path: "/healthz".into(),
         tries: 3,
@@ -628,7 +628,7 @@ async fn invalid_healthcheck_is_refused_before_starting_anything() {
     let mut bad = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/web-production:v1",
+        "ciphera.invalid/web-production:v1",
     );
     bad.healthcheck.path = "/x\r\nHost: evil".into();
     let (result, messages) = bench.deploy(&bad).await;
@@ -641,7 +641,7 @@ async fn invalid_healthcheck_is_refused_before_starting_anything() {
     let mut zero = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/web-production:v1",
+        "ciphera.invalid/web-production:v1",
     );
     zero.internal_port = Some(0);
     assert!(bench.deploy(&zero).await.0.unwrap_err().contains("port 0"));
@@ -653,7 +653,7 @@ async fn service_without_port_must_be_running_and_gets_no_upstream() {
     let bench = Bench::new();
     let (project, worker) = (ProjectId::new(), ServiceId::new());
     bench.sync_routes().await;
-    let mut w1 = spec(project, worker, "ciphera/worker-production:v1");
+    let mut w1 = spec(project, worker, "ciphera.invalid/worker-production:v1");
     w1.internal_port = None;
     let container = format!("id-ciphera-d-{}", w1.deployment_id);
     // Le conteneur redemarre en boucle : jamais en marche.
@@ -670,7 +670,7 @@ async fn service_without_port_must_be_running_and_gets_no_upstream() {
             .contains(&format!("remove:{container}"))
     );
 
-    let mut w2 = spec(project, worker, "ciphera/worker-production:v2");
+    let mut w2 = spec(project, worker, "ciphera.invalid/worker-production:v2");
     w2.internal_port = None;
     bench.docker.set_health(
         &format!("id-ciphera-d-{}", w2.deployment_id),
@@ -696,7 +696,7 @@ async fn replayed_deploy_is_idempotent() {
     let v1 = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/web-production:v1",
+        "ciphera.invalid/web-production:v1",
     );
     deploy_ok(&bench, &v1).await;
     let (result, messages) = bench.deploy(&v1).await;
@@ -722,11 +722,11 @@ async fn upstreams_only_come_from_project_network_containers() {
         redirect,
     ];
     bench.sync_routes().await;
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
 
     // `api` sert depuis un conteneur sans adresse sur un reseau de projet.
-    let mut a1 = spec(project, api, "ciphera/api-production:v1");
+    let mut a1 = spec(project, api, "ciphera.invalid/api-production:v1");
     a1.healthcheck.tries = 1;
     a1.internal_port = None;
     bench.docker.set_health(
@@ -947,12 +947,12 @@ async fn cancel_during_deploy_removes_the_new_container_and_keeps_routes() {
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let mut v1 = spec(project, web, "ciphera/web-production:v1");
+    let mut v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     v1.healthcheck.interval_secs = 1;
     deploy_ok(&bench, &v1).await;
     let before = bench.upstreams("app.example.com");
 
-    let mut v2 = spec(project, web, "ciphera/web-production:v2");
+    let mut v2 = spec(project, web, "ciphera.invalid/web-production:v2");
     v2.healthcheck.interval_secs = 1;
     let n = bench.docker.containers.lock().unwrap().len() + 10;
     bench
@@ -1000,7 +1000,7 @@ async fn stop_of_the_serving_deployment_is_too_late_and_ignored() {
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     let before = bench.upstreams("app.example.com");
     let (tx, mut rx) = mpsc::channel(16);
@@ -1030,10 +1030,10 @@ async fn stop_after_switch_is_too_late_and_the_drain_continues() {
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     let v1_container = format!("id-ciphera-d-{}", v1.deployment_id);
-    let v2 = spec(project, web, "ciphera/web-production:v2");
+    let v2 = spec(project, web, "ciphera.invalid/web-production:v2");
     let n = bench.docker.containers.lock().unwrap().len() + 10;
     let v2_ip: IpAddr = format!("172.18.0.{n}").parse().unwrap();
     bench.probe.answer(v2_ip);
@@ -1082,7 +1082,7 @@ async fn switch_without_proxy_table_fails_safely_and_keeps_the_old_one() {
     let bench = Bench::new();
     let (project, web) = (ProjectId::new(), ServiceId::new());
     bench.sync_routes().await;
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     // Agent redemarre : v1 servi d'apres l'etat local, aucune table recue.
     let restarted: TestDeployer = Deployer::new(
@@ -1099,7 +1099,7 @@ async fn switch_without_proxy_table_fails_safely_and_keeps_the_old_one() {
         },
     );
     let tables = bench.routes.count();
-    let v2 = spec(project, web, "ciphera/web-production:v2");
+    let v2 = spec(project, web, "ciphera.invalid/web-production:v2");
     let n = bench.docker.containers.lock().unwrap().len() + 10;
     bench.probe.answer(format!("172.18.0.{n}").parse().unwrap());
     let (tx, mut rx) = mpsc::channel(1024);
@@ -1263,7 +1263,7 @@ async fn deploy_sent_while_its_build_finishes_waits_for_it() {
     let bench = Bench::new();
     bench.sync_routes().await;
     let (project, web) = (ProjectId::new(), ServiceId::new());
-    let mut v1 = spec(project, web, "ciphera/web-production:v1");
+    let mut v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     let (tx, mut rx) = mpsc::channel(1024);
     bench.deployer.spawn_build(
         image_build(v1.deployment_id),
@@ -1312,7 +1312,7 @@ async fn deploy_refused_while_its_build_never_ends_reports_failed() {
     let mut v1 = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/web-production:v1",
+        "ciphera.invalid/web-production:v1",
     );
     v1.deployment_id = id;
     bench.deployer.spawn_deploy(v1, tx.clone());
@@ -1336,7 +1336,7 @@ async fn duplicate_deploy_while_deploying_is_logged_not_silent() {
     let v1 = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/web-production:v1",
+        "ciphera.invalid/web-production:v1",
     );
     bench.probe.answer("172.18.0.10".parse().unwrap());
     let (tx, mut rx) = mpsc::channel(1024);
@@ -1367,7 +1367,7 @@ async fn replayed_deploy_after_failure_reports_the_stored_outcome_only() {
     let v1 = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/web-production:v1",
+        "ciphera.invalid/web-production:v1",
     );
     let (result, first) = bench.deploy(&v1).await;
     assert!(result.is_err());
@@ -1419,13 +1419,13 @@ async fn state_carries_recent_outcomes_for_reconciliation() {
     let failed = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/web-production:v1",
+        "ciphera.invalid/web-production:v1",
     );
     assert!(bench.deploy(&failed).await.0.is_err());
     let ok = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/api-production:v1",
+        "ciphera.invalid/api-production:v1",
     );
     deploy_ok(&bench, &ok).await;
     let state = bench.deployer.state().await;
@@ -1455,7 +1455,7 @@ async fn stop_while_a_deploy_waits_on_its_build_cancels_both() {
     let mut v1 = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/web-production:v1",
+        "ciphera.invalid/web-production:v1",
     );
     v1.healthcheck.interval_secs = 1;
     bench.probe.answer("172.18.0.10".parse().unwrap());
@@ -1498,7 +1498,7 @@ async fn cancellation_is_durable_before_the_slot_is_released() {
     let mut v1 = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/web-production:v1",
+        "ciphera.invalid/web-production:v1",
     );
     v1.healthcheck.interval_secs = 1;
     let ip: IpAddr = "172.18.0.10".parse().unwrap();
@@ -1549,9 +1549,9 @@ async fn restart_restarts_only_the_serving_deployment_and_refreshes_routes() {
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
-    let v2 = spec(project, web, "ciphera/web-production:v2");
+    let v2 = spec(project, web, "ciphera.invalid/web-production:v2");
     deploy_ok(&bench, &v2).await;
     let v1_container = format!("id-ciphera-d-{}", v1.deployment_id);
     let v2_container = format!("id-ciphera-d-{}", v2.deployment_id);
@@ -1595,7 +1595,7 @@ async fn app_container_is_reachable_as_service_internal_on_the_project_network()
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     let runs = bench.docker.runs.lock().unwrap().clone();
     let app = runs
@@ -1619,9 +1619,9 @@ async fn stop_containers_stops_only_the_serving_deployment_and_restart_brings_it
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
-    let v2 = spec(project, web, "ciphera/web-production:v2");
+    let v2 = spec(project, web, "ciphera.invalid/web-production:v2");
     deploy_ok(&bench, &v2).await;
     let v2_container = format!("id-ciphera-d-{}", v2.deployment_id);
 
@@ -1675,9 +1675,9 @@ async fn remove_deployment_deletes_containers_images_and_bundle() {
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
-    let v2 = spec(project, web, "ciphera/web-production:v2");
+    let v2 = spec(project, web, "ciphera.invalid/web-production:v2");
     deploy_ok(&bench, &v2).await;
     bench.db.put_bundle(v1.deployment_id, "{}").unwrap();
 
@@ -1773,12 +1773,12 @@ async fn agent_keeps_state_when_docker_remove_fails() {
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
-    let v2 = spec(project, web, "ciphera/web-production:v2");
+    let v2 = spec(project, web, "ciphera.invalid/web-production:v2");
     deploy_ok(&bench, &v2).await;
     let id = v1.deployment_id;
-    let tag = format!("ciphera/web-production:{id}");
+    let tag = format!("ciphera.invalid/web-production:{id}");
     bench.docker.images.lock().unwrap().push(tag.clone());
     bench.db.put_bundle(id, "{}").unwrap();
     let container = format!("id-ciphera-d-{id}");
@@ -1836,7 +1836,7 @@ async fn orphan_labeled_containers_and_images_are_swept() {
     let bench = Bench::new();
     let (project, web) = (ProjectId::new(), ServiceId::new());
     bench.sync_routes().await;
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     let kept = v1.deployment_id;
     let orphan = DeploymentId::new();
@@ -1848,7 +1848,7 @@ async fn orphan_labeled_containers_and_images_are_swept() {
         .db
         .put_outcome(built, Stage::Image, &StageStatus::Succeeded)
         .unwrap();
-    let tag = |id: DeploymentId| format!("ciphera/web-production:{id}");
+    let tag = |id: DeploymentId| format!("ciphera.invalid/web-production:{id}");
     let project_label = project.to_string();
     for (cid, id) in [("orphan", orphan), ("live", live)] {
         let label = id.to_string();
@@ -1894,7 +1894,7 @@ async fn orphan_labeled_containers_and_images_are_swept() {
         tag(built),
         tag(stray_image),
         tag(shared),
-        format!("ciphera-staging/{stray_image}-web:build"),
+        format!("ciphera.invalid/staging/{stray_image}-web:build"),
         "nginx:alpine".to_string(),
     ]);
 
@@ -1935,7 +1935,7 @@ async fn orphan_sweep_leaves_a_retiring_project_alone() {
     let v1 = spec(
         ProjectId::new(),
         ServiceId::new(),
-        "ciphera/web-production:v1",
+        "ciphera.invalid/web-production:v1",
     );
     deploy_ok(&bench, &v1).await;
     let retiring = ProjectId::new();
@@ -1966,7 +1966,7 @@ async fn orphan_sweep_leaves_a_retiring_project_alone() {
 async fn fresh_state_skips_the_orphan_sweep() {
     let bench = Bench::new();
     let (running, stopped) = (DeploymentId::new(), DeploymentId::new());
-    let tag = |id: DeploymentId| format!("ciphera/web-production:{id}");
+    let tag = |id: DeploymentId| format!("ciphera.invalid/web-production:{id}");
     for (cid, id) in [("running", running), ("stopped", stopped)] {
         let label = id.to_string();
         bench.docker.add_container(
@@ -2010,14 +2010,14 @@ fn compose_bundle() -> Value {
         "name": "shop-production",
         "services": {
             "web": {
-                "image": "ciphera/shop-production/web:x",
+                "image": "ciphera.invalid/shop-production/web:x",
                 "depends_on": {"api": {"condition": "service_started", "required": true}},
                 "networks": {"default": null},
                 "environment": {"API_HOST": "api"},
                 "volumes": [{"type": "volume", "source": "uploads", "target": "/srv"}]
             },
             "api": {
-                "image": "ciphera/shop-production/api:x",
+                "image": "ciphera.invalid/shop-production/api:x",
                 "depends_on": {"cache": {"condition": "service_started", "required": true}},
                 "networks": {"default": null},
                 "labels": {"app.tier": "back"}
@@ -2142,6 +2142,42 @@ fn compose_bundle_with_declared_network_or_privilege_is_refused() {
         .unwrap()
         .remove("image");
     assert!(ComposePlan::new(&unbuilt, "web", project, deployment).is_err());
+}
+
+/// Ensemble a deployer : une image interne n'est acceptee que si c'est
+/// l'image construite du service lui-meme, et n'est jamais telechargee.
+#[test]
+fn compose_bundle_internal_images_only_their_own() {
+    let (project, deployment) = (ProjectId::new(), DeploymentId::new());
+    let plan = ComposePlan::new(&compose_bundle(), "web", project, deployment).unwrap();
+    let services = &plan.file["services"];
+    assert_eq!(services["web"]["pull_policy"], "never");
+    assert_eq!(services["api"]["pull_policy"], "never");
+    assert!(services["cache"].get("pull_policy").is_none());
+    // Ancien nom enregistre (deploiement anterieur) : accepte, jamais
+    // telecharge non plus.
+    let mut legacy = compose_bundle();
+    legacy["services"]["web"]["image"] = json!("ciphera/shop-production/web:x");
+    let plan = ComposePlan::new(&legacy, "web", project, deployment).unwrap();
+    assert_eq!(plan.file["services"]["web"]["pull_policy"], "never");
+    for image in [
+        "ciphera.invalid/shop-production/api:x",
+        "ciphera.invalid/other-production:x",
+        "ciphera.invalid/staging/x-web:build",
+        "ciphera.invalid/a/b/web:x",
+        "ciphera.invalid//web:x",
+        "ciphera.invalid/shop-production/web",
+        "docker.io/ciphera/shop-production/web:x",
+        "ciphera-staging/x-web:build",
+        "CIPHERA.INVALID/shop-production/web:x",
+    ] {
+        let mut other = compose_bundle();
+        other["services"]["web"]["image"] = json!(image);
+        assert!(
+            ComposePlan::new(&other, "web", project, deployment).is_err(),
+            "{image}"
+        );
+    }
 }
 
 const GIB: u64 = 1 << 30;
@@ -2373,13 +2409,13 @@ fn build_bundle_replaces_build_sections_with_built_images() {
         &file,
         &[(
             "web".into(),
-            ImageRef("ciphera/shop-production/web:d".into()),
+            ImageRef("ciphera.invalid/shop-production/web:d".into()),
         )],
     ))
     .unwrap();
     assert_eq!(
         out["services"]["web"]["image"],
-        "ciphera/shop-production/web:d"
+        "ciphera.invalid/shop-production/web:d"
     );
     assert!(out["services"]["web"].get("build").is_none());
     assert!(out["services"]["web"].get("env_file").is_none());
@@ -2439,7 +2475,7 @@ async fn compose_deploy_restarts_others_in_order_and_switches_the_exposed_servic
     let deploy = |id: DeploymentId| DeploySpec {
         deployment_id: id,
         service_id: web,
-        image: ImageRef("ciphera/shop-production/web:x".into()),
+        image: ImageRef("ciphera.invalid/shop-production/web:x".into()),
         internal_port: Some(3000),
         project_id: project,
         healthcheck: Healthcheck::default(),
@@ -2517,7 +2553,7 @@ fn compose_deploy_spec(project: ProjectId, web: ServiceId, id: DeploymentId) -> 
     DeploySpec {
         deployment_id: id,
         service_id: web,
-        image: ImageRef("ciphera/shop-production/web:x".into()),
+        image: ImageRef("ciphera.invalid/shop-production/web:x".into()),
         internal_port: Some(3000),
         project_id: project,
         healthcheck: Healthcheck::default(),
@@ -2598,7 +2634,7 @@ async fn image_labels_cannot_join_other_project() {
         ],
         Some("172.18.9.9"),
     );
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     let container = format!("id-ciphera-d-{}", v1.deployment_id);
 
@@ -2680,7 +2716,7 @@ async fn agent_state_db_has_no_secret_values() {
 
     // Deploiement reussi : l'environnement arrive au conteneur.
     let v1 = with_env(
-        spec(project, web, "ciphera/web-production:v1"),
+        spec(project, web, "ciphera.invalid/web-production:v1"),
         &[("DATABASE_URL", SECRETS[0]), ("STRIPE_KEY", SECRETS[1])],
     );
     deploy_ok(&bench, &v1).await;
@@ -2696,14 +2732,14 @@ async fn agent_state_db_has_no_secret_values() {
 
     // Deploiement en echec (healthcheck) : issue gardee, sans valeur.
     let v2 = with_env(
-        spec(project, web, "ciphera/web-production:v2"),
+        spec(project, web, "ciphera.invalid/web-production:v2"),
         &[("DATABASE_URL", SECRETS[2])],
     );
     let (result, messages) = bench.deploy(&v2).await;
     assert!(result.is_err());
     // Cle invalide : refusee avant tout demarrage, sans la valeur.
     let v3 = with_env(
-        spec(project, web, "ciphera/web-production:v3"),
+        spec(project, web, "ciphera.invalid/web-production:v3"),
         &[("BAD-KEY", SECRETS[2])],
     );
     let (refused, refused_messages) = bench.deploy(&v3).await;
@@ -2747,7 +2783,7 @@ async fn compose_env_keys_on_disk_values_only_in_child_env() {
         DeploySpec {
             deployment_id: build,
             service_id: web,
-            image: ImageRef("ciphera/shop-production/web:x".into()),
+            image: ImageRef("ciphera.invalid/shop-production/web:x".into()),
             internal_port: Some(3000),
             project_id: project,
             healthcheck: Healthcheck::default(),
@@ -2825,7 +2861,7 @@ async fn routes_table_survives_an_agent_restart_without_the_control_plane() {
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     let served = bench.upstreams("app.example.com");
     assert_eq!(
@@ -2893,9 +2929,9 @@ async fn remove_project_cancels_its_build_and_removes_everything_of_the_project(
         ])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
-    let keep = spec(other, other_web, "ciphera/other-production:v1");
+    let keep = spec(other, other_web, "ciphera.invalid/other-production:v1");
     deploy_ok(&bench, &keep).await;
     let label = project.to_string();
     bench.docker.add_container(
@@ -2970,7 +3006,7 @@ async fn remove_project_cancels_its_build_and_removes_everything_of_the_project(
         slow_pull(Duration::from_secs(1)),
         tx.clone(),
     );
-    let late_deploy = spec(project, web, "ciphera/web-production:v2");
+    let late_deploy = spec(project, web, "ciphera.invalid/web-production:v2");
     let runs = bench.docker.runs.lock().unwrap().len();
     bench.deployer.spawn_deploy(late_deploy.clone(), tx.clone());
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -3007,7 +3043,11 @@ async fn remove_project_keeps_volumes_unless_purged() {
     let env = EnvironmentId::new();
     deploy_ok(
         &bench,
-        &spec(project, ServiceId::new(), "ciphera/web-production:v1"),
+        &spec(
+            project,
+            ServiceId::new(),
+            "ciphera.invalid/web-production:v1",
+        ),
     )
     .await;
     bench
@@ -3030,7 +3070,11 @@ async fn remove_project_purge_removes_volumes_of_the_exposed_service_and_anonymo
     bench.sync_routes().await;
     let (project, other) = (ProjectId::new(), ProjectId::new());
     let env = EnvironmentId::new();
-    let v1 = spec(project, ServiceId::new(), "ciphera/web-production:v1");
+    let v1 = spec(
+        project,
+        ServiceId::new(),
+        "ciphera.invalid/web-production:v1",
+    );
     deploy_ok(&bench, &v1).await;
     let stable = compose_project_name(project, env);
     let other_stable = compose_project_name(other, env);
@@ -3077,7 +3121,7 @@ async fn remove_project_keeps_local_state_when_docker_fails() {
         .apply_routes(vec![route("app.example.com", Some(web))])
         .await
         .unwrap();
-    let v1 = spec(project, web, "ciphera/web-production:v1");
+    let v1 = spec(project, web, "ciphera.invalid/web-production:v1");
     deploy_ok(&bench, &v1).await;
     let env = EnvironmentId::new();
     bench
@@ -3116,7 +3160,11 @@ async fn remove_project_without_purge_keeps_anonymous_volumes() {
     let bench = Bench::new();
     bench.sync_routes().await;
     let project = ProjectId::new();
-    let v1 = spec(project, ServiceId::new(), "ciphera/web-production:v1");
+    let v1 = spec(
+        project,
+        ServiceId::new(),
+        "ciphera.invalid/web-production:v1",
+    );
     deploy_ok(&bench, &v1).await;
     bench.deployer.remove_project(project, false).await.unwrap();
     let calls = bench.docker.calls();
@@ -3214,7 +3262,7 @@ fn worker_bundle(mailer: bool) -> Value {
     services.insert(
         "worker".into(),
         json!({
-            "image": "ciphera/shop-production/worker:x",
+            "image": "ciphera.invalid/shop-production/worker:x",
             "depends_on": {"cache": {"condition": "service_started", "required": true}},
             "networks": {"default": null}
         }),
@@ -4036,7 +4084,7 @@ async fn empty_project_networks_of_unknown_projects_are_swept() {
     let live = ProjectId::new();
     deploy_ok(
         &bench,
-        &spec(live, ServiceId::new(), "ciphera/web-production:v1"),
+        &spec(live, ServiceId::new(), "ciphera.invalid/web-production:v1"),
     )
     .await;
     let gone = ProjectId::new();

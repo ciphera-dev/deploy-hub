@@ -361,18 +361,24 @@ async fn fixtures_build_with_buildkit_and_load_into_docker() {
             path: "Dockerfile".into(),
         },
     );
-    let tag = format!("ciphera/{project}-production:{}", s.deployment_id);
+    let tag = format!("ciphera.invalid/{project}-production:{}", s.deployment_id);
     cleanup.images.push(tag.clone());
     let (result, stages) = build_local(&build_cfg, &backend, &s, &fixture("dockerfile-app")).await;
     let built = result.unwrap_or_else(|e| panic!("dockerfile-app : {e} ({stages:?})"));
     assert_eq!(built.images, [ImageRef(tag.clone())]);
     assert!(image_exists(&api, &tag).await);
-    assert!(!image_exists(&api, &format!("ciphera-staging/{}:build", s.deployment_id)).await);
+    assert!(
+        !image_exists(
+            &api,
+            &format!("ciphera.invalid/staging/{}:build", s.deployment_id)
+        )
+        .await
+    );
     assert_eq!(stages.last(), Some(&(Stage::Image, StageStatus::Succeeded)));
 
     // Railpack (Node) : plan prepare puis frontend epingle.
     let s = spec(&project, local_source(), BuildMethod::Railpack);
-    let tag = format!("ciphera/{project}-production:{}", s.deployment_id);
+    let tag = format!("ciphera.invalid/{project}-production:{}", s.deployment_id);
     cleanup.images.push(tag.clone());
     let (result, stages) = build_local(&build_cfg, &backend, &s, &fixture("node-app")).await;
     let built = result.unwrap_or_else(|e| panic!("node-app : {e} ({stages:?})"));
@@ -388,7 +394,10 @@ async fn fixtures_build_with_buildkit_and_load_into_docker() {
             service: "web".into(),
         },
     );
-    let tag = format!("ciphera/{project}-production/web:{}", s.deployment_id);
+    let tag = format!(
+        "ciphera.invalid/{project}-production/web:{}",
+        s.deployment_id
+    );
     cleanup.images.push(tag.clone());
     let (result, stages) = build_local(&build_cfg, &backend, &s, &fixture("compose-app")).await;
     let built = result.unwrap_or_else(|e| panic!("compose-app : {e} ({stages:?})"));
@@ -420,7 +429,7 @@ async fn fixtures_build_with_buildkit_and_load_into_docker() {
             path: "Dockerfile".into(),
         },
     );
-    let tag = format!("ciphera/{project}-production:{}", s.deployment_id);
+    let tag = format!("ciphera.invalid/{project}-production:{}", s.deployment_id);
     let (result, stages) = build_local(&build_cfg, &backend, &s, &broken).await;
     assert!(matches!(result, Err(BuildError::Tool { .. })), "{result:?}");
     assert!(
@@ -431,7 +440,13 @@ async fn fixtures_build_with_buildkit_and_load_into_docker() {
         "{stages:?}"
     );
     assert!(!image_exists(&api, &tag).await);
-    assert!(!image_exists(&api, &format!("ciphera-staging/{}:build", s.deployment_id)).await);
+    assert!(
+        !image_exists(
+            &api,
+            &format!("ciphera.invalid/staging/{}:build", s.deployment_id)
+        )
+        .await
+    );
 
     // Clone reel d'un depot public au commit demande (sans jeton), puis
     // echec propre au build (ce depot n'a pas de Dockerfile) ; dossier du
@@ -585,7 +600,7 @@ async fn assert_cache_isolation(prefix: &str) {
 
     let mut build = async |ids: (ProjectId, EnvironmentId), repo: &Path, what: &str| {
         let s = dockerfile_spec(&project, ids);
-        let tag = format!("ciphera/{project}-production:{}", s.deployment_id);
+        let tag = format!("ciphera.invalid/{project}-production:{}", s.deployment_id);
         cleanup.images.push(tag.clone());
         let (result, stages) = build_local(&build_cfg, &backend, &s, repo).await;
         result.unwrap_or_else(|e| panic!("{what} ({prefix:?}) : {e} ({stages:?})"));
@@ -673,7 +688,7 @@ async fn foreign_frontend_refused() {
     )
     .unwrap();
     let s = dockerfile_spec(&project, (ProjectId::new(), EnvironmentId::new()));
-    let tag = format!("ciphera/{project}-production:{}", s.deployment_id);
+    let tag = format!("ciphera.invalid/{project}-production:{}", s.deployment_id);
     cleanup.images.push(tag.clone());
     let (result, stages) = build_local(&build_cfg, &backend, &s, &repo).await;
     assert!(matches!(result, Err(BuildError::Frontend(_))), "{result:?}");
@@ -750,7 +765,7 @@ async fn docker_dockerfile_frontend_allowed() {
     )
     .unwrap();
     let s = dockerfile_spec(&project, (ProjectId::new(), EnvironmentId::new()));
-    let tag = format!("ciphera/{project}-production:{}", s.deployment_id);
+    let tag = format!("ciphera.invalid/{project}-production:{}", s.deployment_id);
     cleanup.images.push(tag.clone());
     let (result, stages) = build_local(&build_cfg, &backend, &s, &repo).await;
     let built = result.unwrap_or_else(|e| panic!("docker/dockerfile:1 : {e} ({stages:?})"));
@@ -831,9 +846,10 @@ async fn builds_are_serialized() {
         )
         .unwrap();
         let s = dockerfile_spec(&project, (ProjectId::new(), EnvironmentId::new()));
-        cleanup
-            .images
-            .push(format!("ciphera/{project}-production:{}", s.deployment_id));
+        cleanup.images.push(format!(
+            "ciphera.invalid/{project}-production:{}",
+            s.deployment_id
+        ));
         specs.push(s);
         repos.push(repo);
     }

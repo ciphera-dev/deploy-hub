@@ -506,17 +506,17 @@ async fn build_failure_reports_stage_build_failed_and_no_current_tag() {
     assert!(backend.loaded.lock().unwrap().is_empty());
 
     // Succes : l'image n'est etiquetee qu'apres son chargement, sous
-    // ciphera/<projet>-<env>:<deployment_id> seulement, puis le nom
-    // provisoire est retire.
+    // ciphera.invalid/<projet>-<env>:<deployment_id> seulement (registre
+    // jamais resolu), puis le nom provisoire est retire.
     let ok = FakeBackend {
         repo: dockerfile_repo(),
         ..Default::default()
     };
     let (result, messages) = run(&spec, &ok, &dir).await;
     let images = result.unwrap().images;
-    let tag = format!("ciphera/web-production:{}", spec.deployment_id);
+    let tag = format!("ciphera.invalid/web-production:{}", spec.deployment_id);
     assert_eq!(images, [ImageRef(tag.clone())]);
-    let staging = format!("ciphera-staging/{}:build", spec.deployment_id);
+    let staging = format!("ciphera.invalid/staging/{}:build", spec.deployment_id);
     assert_eq!(
         ok.loaded.lock().unwrap().as_slice(),
         std::slice::from_ref(&staging)
@@ -907,6 +907,54 @@ async fn build_already_in_progress_is_rejected_without_touching_its_workdir() {
     drop(running);
     run(&spec, &backend, &dir).await.0.unwrap();
     assert!(!Path::new(&workdir).exists());
+}
+
+#[test]
+fn compose_image_internal_refused() {
+    for image in [
+        "ciphera.invalid/other-production:1",
+        "ciphera.invalid/other-production/db:1",
+        "ciphera.invalid/staging/x:build",
+        "ciphera.invalid:443/other-production:1",
+        "CIPHERA.INVALID/other-production:1",
+        "ciphera/other-production:1",
+        "ciphera-staging/x:build",
+        "docker.io/ciphera/other-production:1",
+        "index.docker.io/ciphera/other-production:1",
+        "registry-1.docker.io/ciphera-staging/x:build",
+        "docker.io/ciphera.invalid/other-production:1",
+    ] {
+        let text = format!("services:\n  web:\n    image: {image}\n");
+        let err = compose(&text).expect_err(&text);
+        assert_eq!(err.path, "services.web.image", "{err}");
+        // Aussi a cote d'une section build (forme normalisee).
+        let text = format!("services:\n  web:\n    image: {image}\n    build: .\n");
+        assert!(compose(&text).is_err(), "{text}");
+    }
+    compose("services:\n  web:\n    image: ghcr.io/ciphera/web:1\n").unwrap();
+}
+
+#[tokio::test]
+async fn image_source_internal_ref_refused() {
+    let dir = BuildsDir::new();
+    for image in [
+        "ciphera.invalid/other-production:1",
+        "ciphera/other-production:1",
+        "docker.io/ciphera-staging/x:build",
+    ] {
+        let backend = FakeBackend::default();
+        let mut spec = spec(BuildMethod::Railpack);
+        spec.source = BuildSource::Image {
+            reference: ImageRef(image.into()),
+        };
+        let (result, _) = run(&spec, &backend, &dir).await;
+        assert!(
+            matches!(result, Err(BuildError::Invalid(_))),
+            "{image} : {result:?}"
+        );
+        assert!(backend.loaded.lock().unwrap().is_empty(), "{image}");
+        assert!(backend.tags.lock().unwrap().is_empty(), "{image}");
+    }
 }
 
 #[test]

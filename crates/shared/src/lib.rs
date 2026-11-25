@@ -3,6 +3,7 @@
 pub mod config;
 pub mod error;
 pub mod ids;
+pub mod images;
 #[cfg(feature = "age")]
 pub mod secretbox;
 #[cfg(feature = "update")]

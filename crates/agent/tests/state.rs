@@ -99,7 +99,7 @@ fn record(service: ServiceId, container: &str, port: Option<u16>) -> DeploymentR
     DeploymentRecord {
         deployment: RunningDeployment {
             service_id: service,
-            ..deployment("ciphera/web-production:x", true)
+            ..deployment("ciphera.invalid/web-production:x", true)
         },
         container: ContainerId(container.into()),
         port,

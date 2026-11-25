@@ -571,23 +571,25 @@ impl BuildBackend for LocalBackend {
         result
     }
 
+    /// Jamais une image interne ; delai et taille annoncee bornes
+    /// (`docker::bounded_pull`).
     async fn pull(&self, image: &ImageRef, sink: &ProgressSink) -> Result<(), BuildError> {
+        let failed =
+            |e: crate::docker::PullError| BuildError::Image(format!("telechargement : {e}"));
+        crate::docker::check_pullable(&image.0).map_err(failed)?;
         let options = CreateImageOptions {
             from_image: Some(image.0.clone()),
             ..Default::default()
         };
-        let mut steps = self.docker.create_image(Some(options), None, None);
-        while let Some(step) = steps.next().await {
-            match step {
-                Ok(info) => {
-                    if let Some(status) = info.status {
-                        sink.log(LogStream::Stdout, &status).await;
-                    }
-                }
-                Err(e) => return Err(BuildError::Image(format!("telechargement : {e}"))),
-            }
-        }
-        Ok(())
+        let steps = self.docker.create_image(Some(options), None, None);
+        crate::docker::bounded_pull(
+            steps,
+            crate::docker::PULL_TIMEOUT,
+            crate::docker::MAX_PULL_BYTES,
+            move |status| async move { sink.log(LogStream::Stdout, &status).await },
+        )
+        .await
+        .map_err(failed)
     }
 
     async fn tag(&self, source: &ImageRef, target: &ImageRef) -> Result<(), BuildError> {
@@ -713,8 +715,12 @@ mod tests {
     fn tags_split_after_the_last_slash() {
         let r = |s: &str| ImageRef(s.to_string());
         assert_eq!(
-            split_tag(&r("ciphera/web-prod:abc")),
-            ("ciphera/web-prod", "abc")
+            split_tag(&r("ciphera.invalid/web-prod:abc")),
+            ("ciphera.invalid/web-prod", "abc")
+        );
+        assert_eq!(
+            split_tag(&r("ciphera.invalid/staging/abc-web:build")),
+            ("ciphera.invalid/staging/abc-web", "build")
         );
         assert_eq!(
             split_tag(&r("localhost:5000/app")),
