@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-25 10:48
+# État courant — mis à jour le 2026-11-25 10:58
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task fix/csp-fonts : CSP : polices servies en fichiers — statut : TERMINÉ (TERMINÉ)
+Task R36 : Autorisations par objet, contraintes de schéma, OpenAPI — statut : TERMINÉ (TERMINÉ (relecture approuvée, 1 tour))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R36 : Autorisations par objet, contraintes de schéma, OpenAPI
 - Task fix/csp-fonts : CSP : polices servies en fichiers
 - Task R47 : Lien agent limité à la boucle locale, ADR 0004
 - Task R33 : Panneau web : journaux, CSP des styles, copie, 401, jetons d'URL
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task fix/ci-panel-witness : CI : témoin du panneau sondé avant son démarrage
 - Task R30 : PKI et lien agent
 - Task R31 : Proxy : délais d'écriture et de corps, en-têtes, cibles
-- Task R29 : Hôtes du panneau, X-Forwarded-For, RP ID des passkeys
 
 ## Prochaine étape exacte
-Vérifier la CI ; R34, R36 en cours ; R48
+R34 en cours ; R48 ; R35 ; R38
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,8 +32,32 @@ Vérifier la CI ; R34, R36 en cours ; R48
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `web/scripts/check-dist.mjs`
-- `web/vite.config.ts`
+- `crates/api-types/src/github.rs`
+- `crates/api-types/src/lib.rs`
+- `crates/api-types/src/logs.rs`
+- `crates/api-types/src/overview.rs`
+- `crates/api-types/src/project_overview.rs`
+- `crates/control-plane/migrations/0037_object_constraints.sql`
+- `crates/control-plane/src/auth/rate_limit.rs`
+- `crates/control-plane/src/authz/mod.rs`
+- `crates/control-plane/src/domain/domains/mod.rs`
+- `crates/control-plane/src/domain/variables.rs`
+- `crates/control-plane/src/http/domains.rs`
+- `crates/control-plane/src/http/overview.rs`
+- `crates/control-plane/src/http/project_overview.rs`
+- `crates/control-plane/src/http/variables.rs`
+- `crates/control-plane/tests/authz_matrix.rs`
+- `crates/control-plane/tests/common/mod.rs`
+- `crates/control-plane/tests/domains.rs`
+- `crates/control-plane/tests/mfa.rs`
+- `crates/control-plane/tests/migration_0037.rs`
+- `crates/control-plane/tests/variables.rs`
+- `crates/control-plane/tests/webauthn.rs`
+- `openapi.json`
+- `web/src/features/overview/OverviewPage.tsx`
+- `web/src/features/projects/overview/ProjectOverview.tsx`
+- `web/src/lib/api/schema.d.ts`
+- `web/src/mocks/handlers.ts`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

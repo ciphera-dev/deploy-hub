@@ -405,3 +405,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 10:48 — Session v0.1-sdd — claude-code (orchestrateur) — Task fix/csp-fonts : CSP : polices servies en fichiers
 - fait : assetsInlineLimit sans polices, garde check-dist contre les URI data: hors image
 - résultat : TERMINÉ
+
+## 2026-11-25 10:58 — Session v0.1-sdd — claude-code (orchestrateur) — Task R36 : Autorisations par objet, contraintes de schéma, OpenAPI
+- fait : Migration 0037, chevauchement des globales, garde du port pour Ops, vues d'ensemble restreintes, sécurité OpenAPI des routes d'authentification
+- résultat : TERMINÉ (relecture approuvée, 1 tour)

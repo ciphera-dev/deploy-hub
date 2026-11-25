@@ -1174,3 +1174,11 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Décision R47 : au chargement de la config, `CIPHERA_AGENT_LINK_BIND` hors boucle locale (IPv4 127/8 ou ::1) est refusé avec une erreur explicite ; `::ffff:127.0.0.1` et `localhost` sont refusés ; aucun moyen de l'ouvrir sans enrôlement.
 - ADR 0004 (v0.2) : jeton de jonction 256 bits haché, usage unique, 1 h, créé par le propriétaire avec step-up (R37) ; l'agent génère sa clé et présente jeton + CSR en HTTPS au panneau (empreinte épinglée) ; signature par le signataire séparé (R48) ; révocation (R30). La règle ne sera levée qu'avec cette implémentation.
 - Laissés : pas de second contrôle dans main.rs ; `::1` et `127.0.0.2` acceptés alors que l'agent vise 127.0.0.1 ; ordre jeton consommé / CSR signée à trancher en v0.2.
+
+## 2026-11-25 — Task R36 : autorisations au niveau de l'objet, contraintes de schéma, OpenAPI
+- Décision R36 : migration 0037 : doublons de `deploy_hooks.token_hash` purgés (le plus ancien reste) puis `UNIQUE` ; `mfa_attempts.session_id` nullable avec clé étrangère vers `sessions(id)` en `ON DELETE SET NULL` (pas CASCADE : le plafond TOTP du jour doit survivre à la fin de la session de connexion) ; insertion d'une tentative tolérante à une session supprimée en parallèle.
+- Variables globales : même clé, environnements qui se recoupent et projet commun (ou « tous les projets ») → 422 `variable_scope_overlap`, contrôlé à la création et à la modification (sous `LOCK TABLE`) ; une base qui a déjà des recoupements n'est pas corrigée.
+- Domaines : changer réellement `internal_port` ou `healthcheck_path` exige `Projects:Write` (Ops : port inchangé accepté) ; signatures de `domains::create`/`update` modifiées (à suivre en R38).
+- Vues d'ensemble : `servers`, `recent_deployments` (organisation) et `services`, `activity` (projet) omis sans le droit de lecture correspondant (champs optionnels dans l'API ; panneau adapté).
+- OpenAPI : sécurité des routes /api/auth/* alignée sur les gardes (CSRF de logout, cookie de session en attente pour la vérification MFA).
+- Laissés : `GET /api/projects/{id}/services` non restreint ; cookie exigé vérifié dans le test contre une liste fixe ; confirmation d'e-mail qui lit le cookie s'il est présent mais déclarée sans exigence ; autres mineurs de la relecture.
