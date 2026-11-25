@@ -1182,3 +1182,10 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Vues d'ensemble : `servers`, `recent_deployments` (organisation) et `services`, `activity` (projet) omis sans le droit de lecture correspondant (champs optionnels dans l'API ; panneau adapté).
 - OpenAPI : sécurité des routes /api/auth/* alignée sur les gardes (CSRF de logout, cookie de session en attente pour la vérification MFA).
 - Laissés : `GET /api/projects/{id}/services` non restreint ; cookie exigé vérifié dans le test contre une liste fixe ; confirmation d'e-mail qui lit le cookie s'il est présent mais déclarée sans exigence ; autres mineurs de la relecture.
+
+## 2026-11-25 — Task R34 : écoute HTTP du panneau, méthodes de la SPA, en-têtes, santé, délais
+- Décision R34 : repli SPA seulement en GET/HEAD (autre méthode : 405 `Allow: GET, HEAD` ; `/api` reste en 404 JSON) ; types MIME webp, jpg, gif, avif, wasm ; CSP complétée par `base-uri 'none'; form-action 'self'; object-src 'none'` (HSTS inchangé, R51).
+- `/api/health` : version donnée seulement au pair local direct (pas via le proxy, R29) ou à une session ; sinon omise (champ optionnel dans l'API ; l'updater et les scripts n'utilisent que le statut).
+- Délais : corps de requête avec une échéance totale de 30 s (corps enveloppé, contre le goutte-à-goutte) ; HTTP/2 : PING après 60 s et fermeture 60 s plus tard sans réponse, plus un vrai délai d'inactivité de 60 s par connexion (état par connexion posé en extension de requête ; fermeture par `graceful_shutdown`, GOAWAY, secours 5 s plus tard ; un flux long compte comme requête en cours et n'est jamais coupé). Hyper n'a pas de délai d'en-têtes HTTP/2 distinct.
+- Dépendances directes `http-body` et `tower-service` 0.3.3 (déjà dans le graphe, versions verrouillées identiques, pas de nouveau paquet).
+- Laissés : lecture lente non bornée hors corps (h1 et h2) ; pas de test de bout en bout du délai dans main ; test du PING peu isolé.

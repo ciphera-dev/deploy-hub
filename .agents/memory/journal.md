@@ -409,3 +409,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 10:58 — Session v0.1-sdd — claude-code (orchestrateur) — Task R36 : Autorisations par objet, contraintes de schéma, OpenAPI
 - fait : Migration 0037, chevauchement des globales, garde du port pour Ops, vues d'ensemble restreintes, sécurité OpenAPI des routes d'authentification
 - résultat : TERMINÉ (relecture approuvée, 1 tour)
+
+## 2026-11-25 11:37 — Session v0.1-sdd — claude-code (orchestrateur) — Task R34 : Écoute HTTP du panneau : SPA, en-têtes, santé, délais
+- fait : Repli SPA GET/HEAD, CSP complétée, version de /api/health réservée, délai de corps, inactivité HTTP/2 par connexion
+- résultat : TERMINÉ (relecture approuvée, 2 tours)
