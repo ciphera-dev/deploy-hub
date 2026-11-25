@@ -5429,7 +5429,7 @@
             "description": "Role insuffisant, ou jeton CSRF absent ou invalide"
           },
           "422": {
-            "description": "Cle, valeur, environnements ou projets invalides"
+            "description": "Cle, valeur, environnements ou projets invalides, secret pour tous les projets, ou portee qui recoupe une autre globale de la meme cle"
           }
         },
         "security": [
@@ -5588,7 +5588,7 @@
             "description": "Variable introuvable"
           },
           "422": {
-            "description": "Cle, valeur, environnements ou projets invalides"
+            "description": "Cle, valeur, environnements ou projets invalides, secret pour tous les projets, ou portee qui recoupe une autre globale de la meme cle"
           }
         },
         "security": [
@@ -6880,7 +6880,7 @@
         "properties": {
           "all_projects": {
             "type": "boolean",
-            "description": "Tous les projets, sinon ceux de `projects`."
+            "description": "Tous les projets, sinon ceux de `projects`. Toujours faux pour un\nsecret, qui nomme ses projets."
           },
           "environments": {
             "type": "array",
@@ -7311,7 +7311,8 @@
         ],
         "properties": {
           "all_projects": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Tous les projets : refuse (422) pour un secret, qui nomme ses projets."
           },
           "environments": {
             "type": "array",

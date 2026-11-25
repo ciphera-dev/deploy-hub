@@ -173,7 +173,7 @@ async fn secret_value_never_returned() {
         &state,
         &admin,
         json!({ "key": "RESEND_API_KEY", "value": OTHER_SECRET, "secret": true,
-                "environments": ["production"], "all_projects": true, "projects": [] }),
+                "environments": ["production"], "all_projects": false, "projects": [project.to_string()] }),
     )
     .await;
     assert_eq!(g["value"], Value::Null);
@@ -233,7 +233,7 @@ async fn secret_stored_encrypted() {
         &state,
         &admin,
         json!({ "key": "RESEND_API_KEY", "value": OTHER_SECRET, "secret": true,
-                "environments": ["production"], "all_projects": true, "projects": [] }),
+                "environments": ["production"], "all_projects": false, "projects": [project.to_string()] }),
     )
     .await;
     let (value, bytes): (Option<String>, Option<Vec<u8>>) = sqlx::query_as(
@@ -325,7 +325,7 @@ async fn empty_secret_update_keeps_previous() {
         &state,
         &admin,
         json!({ "key": "RESEND_API_KEY", "value": OTHER_SECRET, "secret": true,
-                "environments": ["production"], "all_projects": true, "projects": [] }),
+                "environments": ["production"], "all_projects": false, "projects": [project.to_string()] }),
     )
     .await;
     let r = send(
@@ -350,12 +350,13 @@ async fn empty_secret_update_keeps_previous() {
 #[tokio::test]
 async fn export_excludes_secrets() {
     let (state, _pg) = common::state().await;
+    let project = image_project(&state, "web").await;
     let admin = login(&state, "admin").await;
     for body in [
         json!({ "key": "SENTRY_DSN", "value": "https://k@o1.ingest.sentry.io/7", "secret": false,
                 "environments": ["production", "staging"], "all_projects": true, "projects": [] }),
         json!({ "key": "RESEND_API_KEY", "value": OTHER_SECRET, "secret": true,
-                "environments": ["production"], "all_projects": true, "projects": [] }),
+                "environments": ["production"], "all_projects": false, "projects": [project.to_string()] }),
         json!({ "key": "LOG_LEVEL", "value": "debug", "secret": false,
                 "environments": ["staging"], "all_projects": true, "projects": [] }),
     ] {
@@ -815,7 +816,7 @@ async fn secret_added_mid_stream_is_masked() {
         &state,
         &admin,
         json!({ "key": "RESEND_API_KEY", "value": OTHER_SECRET, "secret": true,
-                "environments": ["production"], "all_projects": true, "projects": [] }),
+                "environments": ["production"], "all_projects": false, "projects": [project.to_string()] }),
     )
     .await;
     state
@@ -1256,13 +1257,19 @@ async fn legacy_ciphertexts_are_rebound_once() {
     .unwrap();
     sqlx::query(
         "INSERT INTO global_variables (id, key, secret, value_sealed, environments, all_projects, updated_at) \
-         VALUES ($1, 'OLD_GLOBAL', true, $2, '{production}', true, now())",
+         VALUES ($1, 'OLD_GLOBAL', true, $2, '{production}', false, now())",
     )
     .bind(global)
     .bind(state.secrets.seal(OTHER_SECRET.as_bytes()).unwrap())
     .execute(&state.db)
     .await
     .unwrap();
+    sqlx::query("INSERT INTO global_variable_projects (variable_id, project_id) VALUES ($1, $2)")
+        .bind(global)
+        .bind(web)
+        .execute(&state.db)
+        .await
+        .unwrap();
     assert_eq!(
         variables::rebind_all(&state.db, &state.secrets)
             .await
@@ -1521,7 +1528,7 @@ async fn short_secret_warning() {
         "POST",
         "/api/variables",
         Some(json!({ "key": "G_PIN", "value": "42", "secret": true,
-                     "environments": ["production"], "all_projects": true, "projects": [] })),
+                     "environments": ["production"], "all_projects": false, "projects": [project.to_string()] })),
     )
     .await;
     assert_eq!(r.status, 201, "{}", r.raw);
@@ -1680,4 +1687,138 @@ async fn overlapping_global_scope_refused() {
     )
     .await;
     overlap(&r);
+}
+
+#[tokio::test]
+async fn secret_all_projects_refused() {
+    let (state, _pg) = common::state().await;
+    let admin = login(&state, "admin").await;
+    let p = image_project(&state, "alpha").await;
+    let refused = |r: &Reply| {
+        assert_eq!(r.status, 422, "{}", r.raw);
+        assert_eq!(r.json()["error"]["code"], "validation_failed", "{}", r.raw);
+        assert!(!r.raw.contains(SECRET));
+    };
+    // Creation : un secret doit nommer ses projets.
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        "/api/variables",
+        Some(json!({ "key": "TOKEN", "value": SECRET, "secret": true,
+                     "environments": ["production"], "all_projects": true, "projects": [] })),
+    )
+    .await;
+    refused(&r);
+    // Un secret par projet reste accepte.
+    let secret = create_global(
+        &state,
+        &admin,
+        json!({ "key": "TOKEN", "value": SECRET, "secret": true,
+                "environments": ["production"], "all_projects": false,
+                "projects": [p.to_string()] }),
+    )
+    .await;
+    // Modification : elargir un secret a tous les projets est refuse.
+    let id = secret["id"].as_str().unwrap();
+    let r = send(
+        &state,
+        &admin,
+        "PATCH",
+        &format!("/api/variables/{id}"),
+        Some(json!({ "all_projects": true })),
+    )
+    .await;
+    refused(&r);
+    // Une publique pour tous les projets ne devient pas secrete sans projets.
+    let public = create_global(
+        &state,
+        &admin,
+        json!({ "key": "REGION", "value": "eu", "secret": false,
+                "environments": ["production"], "all_projects": true, "projects": [] }),
+    )
+    .await;
+    let id = public["id"].as_str().unwrap();
+    let r = send(
+        &state,
+        &admin,
+        "PATCH",
+        &format!("/api/variables/{id}"),
+        Some(json!({ "secret": true, "value": OTHER_SECRET })),
+    )
+    .await;
+    refused(&r);
+    // La base elle-meme refuse la combinaison.
+    let direct = sqlx::query(
+        "INSERT INTO global_variables (id, key, secret, value_sealed, environments, all_projects, updated_at) \
+         VALUES ($1, 'RAW', true, '\x00', ARRAY['production'], true, now())",
+    )
+    .bind(Uuid::new_v4())
+    .execute(&state.db)
+    .await;
+    assert!(direct.is_err(), "secret pour tous les projets accepte");
+}
+
+#[tokio::test]
+async fn developer_cannot_list_globals() {
+    let (state, _pg) = common::state().await;
+    let admin = login(&state, "admin").await;
+    create_global(
+        &state,
+        &admin,
+        json!({ "key": "REGION", "value": "eu", "secret": false,
+                "environments": ["production"], "all_projects": true, "projects": [] }),
+    )
+    .await;
+    for role in ["developer", "ops"] {
+        let s = login(&state, role).await;
+        let r = send(&state, &s, "GET", "/api/variables", None).await;
+        assert_eq!(r.status, 403, "{role}: {}", r.raw);
+        assert!(!r.raw.contains("REGION"), "{role}: {}", r.raw);
+    }
+    let r = send(&state, &admin, "GET", "/api/variables", None).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
+#[tokio::test]
+async fn project_view_shows_inherited_globals() {
+    let (state, _pg) = common::state().await;
+    let admin = login(&state, "admin").await;
+    let (a, b) = (
+        image_project(&state, "alpha").await,
+        image_project(&state, "bravo").await,
+    );
+    create_global(
+        &state,
+        &admin,
+        json!({ "key": "REGION", "value": "eu-west", "secret": false,
+                "environments": ["production"], "all_projects": true, "projects": [] }),
+    )
+    .await;
+    create_global(
+        &state,
+        &admin,
+        json!({ "key": "TOKEN", "value": SECRET, "secret": true,
+                "environments": ["production"], "all_projects": false,
+                "projects": [a.to_string()] }),
+    )
+    .await;
+    // Tous les roles qui lisent le projet voient les cles heritees ; la valeur
+    // d'un secret n'est jamais renvoyee.
+    for role in ["developer", "ops", "admin"] {
+        let s = login(&state, role).await;
+        let rows = list(&state, &s, a).await;
+        let region = row(&rows, "REGION");
+        assert_eq!(region["inherited"], true, "{role}");
+        assert_eq!(region["value"], "eu-west", "{role}");
+        let token = row(&rows, "TOKEN");
+        assert_eq!(token["inherited"], true, "{role}");
+        assert_eq!(token["secret"], true, "{role}");
+        assert!(token["value"].is_null(), "{role}");
+    }
+    // Un projet hors de la portee du secret ne le voit pas.
+    let dev = login(&state, "developer").await;
+    let rows = list(&state, &dev, b).await;
+    assert!(rows.iter().all(|r| r["key"] != "TOKEN"), "{rows:?}");
+    assert_eq!(row(&rows, "REGION")["inherited"], true);
 }

@@ -997,6 +997,18 @@ pub async fn clean_scope(
     Ok(Scope::Projects(ids))
 }
 
+/// Un secret nomme ses projets : jamais « tous les projets », y compris ceux
+/// de demain (le projet qui apparait n'herite pas d'un secret sans l'accord
+/// d'un administrateur). Contrainte aussi portee par la base.
+pub fn check_secret_scope(secret: bool, scope: &Scope) -> Result<(), VarError> {
+    if secret && *scope == Scope::All {
+        return Err(invalid(
+            "Un secret nomme ses projets : il ne peut pas viser tous les projets.",
+        ));
+    }
+    Ok(())
+}
+
 /// Ecrit une globale (creation si `id` est nouveau) et sa portee.
 #[allow(clippy::too_many_arguments)]
 pub async fn save_global(

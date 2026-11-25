@@ -99,7 +99,8 @@ pub struct GlobalVariable {
     pub secret: bool,
     /// Noms des environnements concernes (`production`, `preview`, `staging`).
     pub environments: Vec<String>,
-    /// Tous les projets, sinon ceux de `projects`.
+    /// Tous les projets, sinon ceux de `projects`. Toujours faux pour un
+    /// secret, qui nomme ses projets.
     pub all_projects: bool,
     /// Identifiants des projets concernes (vide si `all_projects`).
     pub projects: Vec<String>,
@@ -125,6 +126,7 @@ pub struct NewGlobalVariable {
     pub secret: bool,
     /// 1 a 16 noms d'environnement.
     pub environments: Vec<String>,
+    /// Tous les projets : refuse (422) pour un secret, qui nomme ses projets.
     pub all_projects: bool,
     /// Projets concernes si `all_projects` est faux (au moins un).
     #[serde(default)]
@@ -295,7 +297,7 @@ pub fn list_global_variables() {}
     responses(
         (status = 201, description = "Creee", body = GlobalVariable),
         (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
-        (status = 422, description = "Cle, valeur, environnements ou projets invalides"),
+        (status = 422, description = "Cle, valeur, environnements ou projets invalides, secret pour tous les projets, ou portee qui recoupe une autre globale de la meme cle"),
     )
 )]
 #[allow(dead_code)]
@@ -315,7 +317,7 @@ pub fn create_global_variable() {}
         (status = 200, description = "Modifiee", body = GlobalVariable),
         (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
         (status = 404, description = "Variable introuvable"),
-        (status = 422, description = "Cle, valeur, environnements ou projets invalides"),
+        (status = 422, description = "Cle, valeur, environnements ou projets invalides, secret pour tous les projets, ou portee qui recoupe une autre globale de la meme cle"),
     )
 )]
 #[allow(dead_code)]

@@ -3,7 +3,8 @@
 //!   `GET` (Read : ops, developer, admin, owner), `PUT`, `PUT …/bulk`
 //!   (format `.env`) et `DELETE …/{key}` (Write : developer, admin, owner) ;
 //! - globales : `GET|POST /api/variables`, `PATCH|DELETE /api/variables/{id}`
-//!   et `GET /api/variables/export` (Admin).
+//!   et `GET /api/variables/export` (Admin) ; un secret global nomme ses
+//!   projets (jamais « tous les projets », 422).
 //!
 //! Ecritures sous CSRF (couche du routeur) et auditees, sans valeur dans
 //! l'audit. Un secret n'est jamais renvoye. Chaque ecriture verifie les
@@ -479,6 +480,7 @@ async fn create_global(
     let scope = vars::clean_scope(&mut tx, input.all_projects, &input.projects)
         .await
         .map_err(var_error)?;
+    vars::check_secret_scope(input.secret, &scope).map_err(var_error)?;
     let id = Uuid::new_v4();
     vars::check_global_overlap(&mut tx, id, &input.key, &environments, &scope)
         .await
@@ -582,10 +584,11 @@ async fn update_global(
             return Err(unprocessable("Choisissez au moins un projet."));
         }
     };
+    let secret = input.secret.unwrap_or(current.value.is_secret());
+    vars::check_secret_scope(secret, &scope).map_err(var_error)?;
     vars::check_global_overlap(&mut tx, id, &key, &environments, &scope)
         .await
         .map_err(var_error)?;
-    let secret = input.secret.unwrap_or(current.value.is_secret());
     let given = input.value.as_ref().map(|v| v.as_str());
     let changed = vars::next_value(
         &state.secrets,

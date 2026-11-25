@@ -716,7 +716,8 @@ async fn export_has_no_secrets() {
         "/api/variables",
         Some(
             json!({ "key": "SENTRY_DSN", "value": "fixture-global-secret", "secret": true,
-                     "environments": ["production"], "all_projects": true }),
+                     "environments": ["production"], "all_projects": false,
+                     "projects": [id.to_string()] }),
         ),
     )
     .await;
