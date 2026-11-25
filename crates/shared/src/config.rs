@@ -151,6 +151,9 @@ pub enum ConfigError {
     Invalid(&'static str),
     /// Fichier illisible pour la variable nommee.
     UnreadableFile(&'static str),
+    /// Adresse d'ecoute refusee car hors de la boucle locale : l'enrolement
+    /// des agents distants n'existe pas encore (ADR 0004).
+    NotLoopback(&'static str),
 }
 
 impl fmt::Display for ConfigError {
@@ -164,6 +167,10 @@ impl fmt::Display for ConfigError {
             }
             Self::Invalid(name) => write!(f, "valeur invalide pour {name}"),
             Self::UnreadableFile(name) => write!(f, "fichier illisible pour {name}"),
+            Self::NotLoopback(name) => write!(
+                f,
+                "{name} doit etre une adresse de boucle locale (127.0.0.0/8 ou ::1) :                  les agents distants ne sont pas pris en charge avant l'enrolement (ADR 0004)"
+            ),
         }
     }
 }
@@ -182,8 +189,8 @@ pub struct Config {
     pub panel_local_port: u16,
     /// Port UDP du lien QUIC avec les agents.
     pub agent_link_port: u16,
-    /// Adresse d'ecoute du lien QUIC (boucle locale par defaut en v0.1 :
-    /// seul l'agent local s'y connecte).
+    /// Adresse d'ecoute du lien QUIC : boucle locale obligatoire en v0.1
+    /// (seul l'agent local s'y connecte ; refus au chargement sinon).
     pub agent_link_bind: IpAddr,
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -309,9 +316,15 @@ impl Config {
             agent_link_port: port("CIPHERA_AGENT_LINK_PORT", Self::DEFAULT_AGENT_LINK_PORT)?,
             agent_link_bind: match optional("CIPHERA_AGENT_LINK_BIND") {
                 None => Self::DEFAULT_AGENT_LINK_BIND,
-                Some(v) => v
-                    .parse()
-                    .map_err(|_| ConfigError::Invalid("CIPHERA_AGENT_LINK_BIND"))?,
+                Some(v) => {
+                    let ip: IpAddr = v
+                        .parse()
+                        .map_err(|_| ConfigError::Invalid("CIPHERA_AGENT_LINK_BIND"))?;
+                    if !ip.is_loopback() {
+                        return Err(ConfigError::NotLoopback("CIPHERA_AGENT_LINK_BIND"));
+                    }
+                    ip
+                }
             },
             config_dir,
             data_dir: PathBuf::from(text("CIPHERA_DATA_DIR", Self::DEFAULT_DATA_DIR)),
@@ -691,6 +704,42 @@ mod tests {
     }
 
     #[test]
+    fn non_loopback_agent_link_refused() {
+        for bad in [
+            "0.0.0.0",
+            "::",
+            "192.168.1.10",
+            "10.0.0.5",
+            "2001:db8::1",
+            "::ffff:127.0.0.1",
+        ] {
+            let err = Config::from_lookup(lookup(&[
+                ("CIPHERA_DATABASE_URL", "postgres://u:p@db/c"),
+                ("CIPHERA_AGENT_LINK_BIND", bad),
+            ]))
+            .unwrap_err();
+            assert_eq!(
+                err,
+                ConfigError::NotLoopback("CIPHERA_AGENT_LINK_BIND"),
+                "{bad}"
+            );
+            assert!(err.to_string().contains("boucle locale"));
+        }
+    }
+
+    #[test]
+    fn loopback_v4_v6_accepted() {
+        for ok in ["127.0.0.1", "127.0.0.2", "::1"] {
+            let c = Config::from_lookup(lookup(&[
+                ("CIPHERA_DATABASE_URL", "postgres://u:p@db/c"),
+                ("CIPHERA_AGENT_LINK_BIND", ok),
+            ]))
+            .unwrap();
+            assert_eq!(c.agent_link_bind, ok.parse::<IpAddr>().unwrap());
+        }
+    }
+
+    #[test]
     fn agent_link_defaults_to_loopback_7443_and_can_be_overridden() {
         let c = Config::from_lookup(lookup(&[("CIPHERA_DATABASE_URL", "postgres://u:p@db/c")]))
             .unwrap();
@@ -699,11 +748,11 @@ mod tests {
         let c = Config::from_lookup(lookup(&[
             ("CIPHERA_DATABASE_URL", "postgres://u:p@db/c"),
             ("CIPHERA_AGENT_LINK_PORT", "9000"),
-            ("CIPHERA_AGENT_LINK_BIND", "::"),
+            ("CIPHERA_AGENT_LINK_BIND", "::1"),
         ]))
         .unwrap();
         assert_eq!(c.agent_link_port, 9000);
-        assert_eq!(c.agent_link_bind, "::".parse::<IpAddr>().unwrap());
+        assert_eq!(c.agent_link_bind, "::1".parse::<IpAddr>().unwrap());
         for (key, bad) in [
             ("CIPHERA_AGENT_LINK_BIND", "localhost"),
             ("CIPHERA_AGENT_LINK_PORT", "70000"),
