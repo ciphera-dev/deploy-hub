@@ -20,8 +20,9 @@ du noeud.
    **meme cle** et le **meme identifiant** (la cle privee ne quitte jamais
    l'agent), note son empreinte en `servers.next_cert_fingerprint` et
    l'envoie (`RenewedCertificate`, protocole version 5).
-3. L'agent verifie qu'il porte son identifiant et sa cle, remplace
-   `agent.crt` (ecriture atomique) puis se reconnecte avec lui.
+3. L'agent verifie qu'il est signe par la CA de l'instance (`ca.crt`) et
+   porte son identifiant et sa cle, remplace `agent.crt` (ecriture
+   atomique) puis se reconnecte avec lui.
 4. A cette connexion, l'empreinte du nouveau certificat remplace l'ancienne
    en une seule instruction : l'ancien certificat n'ouvre plus le lien.
 
@@ -61,7 +62,35 @@ Les fichiers gardent leur proprietaire et leurs droits. La commande lit la
 configuration du service (`/etc/ciphera/ciphera.env`) pour joindre la base,
 comme les autres commandes `ciphera admin`. Un serveur revoque est refuse.
 
+Le certificat de l'agent n'est re-signe que s'il est emis par la CA de
+l'instance et que son empreinte est celle enregistree en base pour le
+serveur local (actuelle, ou celle d'un renouvellement en attente) ; sinon la
+commande s'arrete avant d'ecrire quoi que ce soit.
+
+Certificat et cle du lien et du panneau sont remplaces ensemble : fichiers
+prepares (`.link.crt.renew`, `.link.key.renew`), puis un manifeste
+(`.link.crt.pair`), puis les renommages. Apres une coupure, le service (au
+demarrage) ou la commande termine le remplacement si le manifeste existe,
+sinon supprime les fichiers prepares : un certificat et une cle qui ne vont
+pas ensemble ne restent jamais en place.
+
 La CA elle-meme (10 ans) n'est pas renouvelee par Ciphera v0.1.
+
+## Revoquer un serveur : `ciphera admin revoke-agent`
+
+```sh
+sudo ciphera admin revoke-agent <id-du-serveur>
+```
+
+La commande pose `servers.revoked_at` (definitif, auditee
+`server.revoke.cli`). Le service deconnecte l'agent en quelques secondes et
+refuse ses poignees de main suivantes (`journalctl -u ciphera` : `agent ...
+revoque, deconnecte`, puis `inconnu ou revoque`). Un serveur revoque n'est
+plus jamais renouvele ; il n'existe pas de commande pour annuler une
+revocation.
+
+L'agent refuse aussi de demarrer si `agent.key` est lisible par le groupe ou
+les autres (`ciphera init` l'ecrit en 0600).
 
 ## Base restauree depuis une sauvegarde anterieure a un renouvellement
 
