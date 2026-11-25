@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-25 12:58
+# État courant — mis à jour le 2026-11-25 13:08
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R48 : Signataire de la CA séparé (root) — statut : TERMINÉ (TERMINÉ (relecture approuvée, 3 tours))
+Task R4 : Réglages SMTP réservés au propriétaire — statut : TERMINÉ (TERMINÉ (relecture approuvée))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R4 : Réglages SMTP réservés au propriétaire
 - Task R48 : Signataire de la CA séparé (root)
 - Task R35 : Variables globales : portée explicite des secrets
 - Task fix/ci-team-hooks : CI : empreintes de hooks distinctes dans le test d'équipe
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R36 : Autorisations par objet, contraintes de schéma, OpenAPI
 - Task fix/csp-fonts : CSP : polices servies en fichiers
 - Task R47 : Lien agent limité à la boucle locale, ADR 0004
-- Task R33 : Panneau web : journaux, CSP des styles, copie, 401, jetons d'URL
 
 ## Prochaine étape exacte
-R4, R38, R51 en cours ; puis R37, R39, R49
+R38, R51 en correction ; R49 en cours ; puis R37, R39, R50
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,10 +32,8 @@ R4, R38, R51 en cours ; puis R37, R39, R49
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `control-plane/src`
-- `pki`
-- `install`
-- `docs`
+- `crates/control-plane/src/mail.rs`
+- `crates/control-plane/src/http`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

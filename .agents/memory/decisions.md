@@ -1202,3 +1202,9 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Entrées impossibles à supprimer (ou au nom non UTF-8 dans un dossier) mises de côté dans `cert-rejected/` ; demandes refusées supprimées ; install.sh avertit au lieu d'échouer si le signataire refuse ; commandes réservées à root.
 - La clé de la CA a été lisible par `ciphera` avant R48 : la rotation de la CA (R49) doit la remplacer.
 - Laissés : `cert-rejected/` jamais purgé (n3) ; `/etc/ciphera` appartenant à `ciphera`, qui peut renommer `ca/` (déni de service seulement) → R49 (n4) ; fenêtre de migration où `ciphera` peut remettre son mode entre `fchmod` et `fchown` (déni de service seulement, corrigé au passage suivant) (r1) ; branche d'échec de `harden_ca` sans test automatisé ; code Unix vérifié d'abord en CI.
+
+## 2026-11-25 — Task R4 : réglages SMTP réservés au propriétaire, adresses privées refusées à chaque connexion
+- Décision R4 : lecture et modification des réglages SMTP réservées au propriétaire ; le serveur SMTP est résolu à chaque connexion et toute la liste résolue est contrôlée (une seule adresse privée, de boucle locale ou réservée refuse l'envoi) ; jusqu'à 3 adresses vérifiées sont essayées à tour de rôle, une réponse SMTP 4xx/5xx arrête aussitôt ; l'échéance de 120 s de l'envoi couvre l'ensemble.
+- Ruling : un refus des réglages (adresse interdite) est classé en erreur de connexion, comme un serveur injoignable — même traitement par les lots de notifications (arrêt au premier échec) et pas d'indice supplémentaire sur la cause.
+- Le contournement des adresses privées n'existe que dans les tests unitaires (`#[cfg(test)]`), jamais en release ni dans les tests d'intégration.
+- Laissés : test du passage à l'adresse suivante qui lie 127.0.0.2 (indisponible par défaut sous macOS) et assertion sur le texte d'erreur sensible aux fins de ligne du source ; port supposé fermé sur 127.0.0.1 (risque très faible).

@@ -425,3 +425,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 12:58 — Session v0.1-sdd — claude-code (orchestrateur) — Task R48 : Signataire de la CA séparé (root)
 - fait : Signataire root séparé, dossier ca/ protégé, demandes mises de côté, docs
 - résultat : TERMINÉ (relecture approuvée, 3 tours)
+
+## 2026-11-25 13:08 — Session v0.1-sdd — claude-code (orchestrateur) — Task R4 : Réglages SMTP réservés au propriétaire
+- fait : Propriétaire seul, adresses privées contrôlées à chaque connexion, refus classés en erreur de connexion, essai de 3 adresses
+- résultat : TERMINÉ (relecture approuvée)
