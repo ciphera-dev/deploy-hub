@@ -252,6 +252,11 @@ enum Restore {
 }
 
 /// Supprime un dossier s'il existe (sans suivre un lien symbolique).
+/// Bac a sable de `railpack prepare` (etiquette de role reservee).
+fn is_sandbox(c: &crate::docker::ManagedContainer) -> bool {
+    c.labels.get(ROLE_LABEL).map(String::as_str) == Some(PREPARE_ROLE)
+}
+
 fn remove_path(path: &Path) {
     match std::fs::symlink_metadata(path) {
         Ok(m) if m.is_dir() => {
@@ -939,11 +944,12 @@ where
         {
             return;
         }
-        for c in self.containers_of(id).await {
-            if let Err(e) = self.docker.remove(&c).await {
-                tracing::warn!("deploiement {id} : suppression de {} : {e}", c.0);
+        for c in self.managed_of(id).await {
+            if let Err(e) = self.remove_container(&c).await {
+                tracing::warn!("deploiement {id} : suppression de {} : {e}", c.id.0);
             }
         }
+        self.remove_prepare_volumes(Some(id)).await;
         if let Err(e) = self.db.remove_deployment(id) {
             tracing::error!("{e}");
         }
@@ -1441,17 +1447,47 @@ where
     }
 
     async fn containers_of(&self, id: DeploymentId) -> Vec<ContainerId> {
+        self.managed_of(id)
+            .await
+            .into_iter()
+            .map(|c| c.id)
+            .collect()
+    }
+
+    async fn managed_of(&self, id: DeploymentId) -> Vec<crate::docker::ManagedContainer> {
         let label = id.to_string();
         match self
             .docker
             .list_managed(&[(DEPLOYMENT_LABEL, label.as_str())])
             .await
         {
-            Ok(list) => list.into_iter().map(|c| c.id).collect(),
+            Ok(list) => list,
             Err(e) => {
                 tracing::warn!("deploiement {id} : conteneurs illisibles : {e}");
                 Vec::new()
             }
+        }
+    }
+
+    /// Supprime un conteneur gere ; le bac a sable de `railpack prepare`
+    /// part avec son volume anonyme de sortie.
+    async fn remove_container(
+        &self,
+        c: &crate::docker::ManagedContainer,
+    ) -> Result<(), DockerError> {
+        if is_sandbox(c) {
+            self.docker.remove_with_volumes(&c.id).await
+        } else {
+            self.docker.remove(&c.id).await
+        }
+    }
+
+    /// Volumes de sortie de `railpack prepare` que plus aucun conteneur ne
+    /// monte (du deploiement `id`, ou tous) : un build interrompu ou une
+    /// suppression qui a echoue n'en laisse aucun. Un echec est journalise.
+    async fn remove_prepare_volumes(&self, id: Option<DeploymentId>) {
+        if let Err(e) = self.docker.remove_prepare_volumes(id).await {
+            tracing::warn!("volumes de sortie de railpack prepare : {e}");
         }
     }
 
@@ -1578,17 +1614,29 @@ where
                 return false;
             }
         };
+        let sandboxes: Vec<ContainerId> = containers
+            .iter()
+            .filter(|c| is_sandbox(c))
+            .map(|c| c.id.clone())
+            .collect();
         let mut doomed: Vec<ContainerId> = containers.iter().map(|c| c.id.clone()).collect();
         if serving {
             doomed.extend(self.compose_siblings(id, &containers).await);
         }
         let mut complete = compose_undone;
         for c in &doomed {
-            if let Err(e) = self.docker.remove(c).await {
+            // Bac a sable `railpack prepare` : avec son volume de sortie.
+            let removed = if sandboxes.contains(c) {
+                self.docker.remove_with_volumes(c).await
+            } else {
+                self.docker.remove(c).await
+            };
+            if let Err(e) = removed {
                 tracing::warn!("deploiement {id} : suppression de {} : {e}", c.0);
                 complete = false;
             }
         }
+        self.remove_prepare_volumes(Some(id)).await;
         if let Err(e) = self.docker.remove_deployment_images(id).await {
             tracing::warn!("deploiement {id} : images : {e}");
             complete = false;
@@ -2044,6 +2092,9 @@ where
             }
             Err(e) => tracing::warn!("nettoyage au demarrage : {e}"),
         }
+        // Volumes de sortie restes sans bac a sable (arret brutal pendant
+        // une suppression, par exemple).
+        self.remove_prepare_volumes(None).await;
         for dir in [&self.cfg.builds_dir, &self.cfg.deploys_dir] {
             let Ok(entries) = std::fs::read_dir(dir) else {
                 continue;

@@ -896,14 +896,22 @@ async fn cancel_during_build_cleans_up() {
     bench
         .deployer
         .spawn_build(build_spec, cfg, backend.clone(), tx.clone());
-    // Bac a sable `railpack prepare` du build et image provisoire en cours.
+    // Bac a sable `railpack prepare` du build, son volume de sortie, et
+    // image provisoire en cours ; volume de sortie d'un autre deploiement.
     let label = id.to_string();
     bench.docker.add_container(
         "prep",
         &format!("ciphera-prepare-{id}"),
-        &[(DEPLOYMENT_LABEL, label.as_str())],
+        &[
+            (DEPLOYMENT_LABEL, label.as_str()),
+            (ROLE_LABEL, PREPARE_ROLE),
+        ],
         None,
     );
+    bench.docker.add_prepare_volume("prep-out", id);
+    bench
+        .docker
+        .add_prepare_volume("other-out", DeploymentId::new());
 
     bench.deployer.stop(id, &tx).await;
 
@@ -917,7 +925,10 @@ async fn cancel_during_build_cleans_up() {
         "bac a sable supprime"
     );
     let calls = bench.docker.calls();
-    assert!(calls.contains(&"remove:prep".to_string()), "{calls:?}");
+    // Avec son volume anonyme ; le volume de sortie du deploiement est
+    // balaye, celui d'un autre deploiement garde.
+    assert!(calls.contains(&"remove-v:prep".to_string()), "{calls:?}");
+    assert_eq!(bench.docker.volume_names(), ["other-out"], "{calls:?}");
     assert!(calls.contains(&format!("rmi:{id}")), "{calls:?}");
     assert!(bench.deployer.ops().in_progress().is_empty());
     let st = stages(&drain(&mut rx).await);
@@ -1735,9 +1746,18 @@ async fn startup_sweep_removes_leftover_sandboxes_and_dirs() {
     std::fs::create_dir_all(&build_dir).unwrap();
     std::fs::create_dir_all(&deploy_dir).unwrap();
 
+    // Volume de sortie abandonne et volume d'un projet Compose.
+    bench.docker.add_prepare_volume("stale-out", stale);
+    bench.docker.add_volume("cp-x-12345678", "data");
+
     bench.deployer.sweep().await;
 
     assert!(bench.docker.container("prep").is_none());
+    assert_eq!(
+        bench.docker.volume_names(),
+        ["cp-x-12345678_data"],
+        "volume de sortie balaye, volume Compose garde"
+    );
     // Avec son volume anonyme de sortie.
     assert!(
         bench.docker.calls().contains(&"remove-v:prep".to_string()),
@@ -1755,6 +1775,45 @@ async fn startup_sweep_removes_leftover_sandboxes_and_dirs() {
     assert!(!Path::new(&format!("{}/{stale}", bench.builds_dir())).exists());
     assert!(!Path::new(&deploy_dir).exists());
     assert!(Path::new(&bench.builds_dir()).is_dir());
+}
+
+/// `RemoveDeployment` d'un build interrompu pendant `railpack prepare` :
+/// bac a sable supprime avec son volume anonyme, volume de sortie restant
+/// balaye ; un volume encore monte par un autre bac a sable est garde.
+#[tokio::test]
+async fn remove_takes_the_prepare_output_volume() {
+    let bench = Bench::new();
+    let id = DeploymentId::new();
+    let label = id.to_string();
+    bench.docker.add_container(
+        "prep",
+        &format!("ciphera-prepare-{id}"),
+        &[
+            (DEPLOYMENT_LABEL, label.as_str()),
+            (ROLE_LABEL, PREPARE_ROLE),
+        ],
+        None,
+    );
+    bench.docker.add_prepare_volume("prep-out", id);
+    let busy = DeploymentId::new();
+    let busy_label = busy.to_string();
+    bench.docker.add_container(
+        "busy",
+        &format!("ciphera-prepare-{busy}"),
+        &[
+            (DEPLOYMENT_LABEL, busy_label.as_str()),
+            (ROLE_LABEL, PREPARE_ROLE),
+        ],
+        None,
+    );
+    bench.docker.add_prepare_volume("busy-out", busy);
+
+    assert!(bench.deployer.remove(id).await);
+
+    let calls = bench.docker.calls();
+    assert!(calls.contains(&"remove-v:prep".to_string()), "{calls:?}");
+    assert_eq!(bench.docker.volume_names(), ["busy-out"], "{calls:?}");
+    assert!(bench.docker.container("busy").is_some());
 }
 
 /// Accuses `DeploymentRemoved` recus sur `rx` jusqu'ici.

@@ -32,6 +32,9 @@ use crate::docker::{LogAssembler, check_managed};
 /// Lignes de journal de `railpack prepare` transmises au plus (les
 /// dernieres).
 const PREPARE_LOG_TAIL: &str = "2000";
+/// Delai de chaque echange avec l'API d'archive (dossier de sortie, lecture
+/// d'un fichier de sortie).
+const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Delai d'un clone ou d'une normalisation Compose.
 pub const SHORT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -676,7 +679,9 @@ impl BuildBackend for LocalBackend {
             .await
             .map_err(|e| prepare_err(format!("creation du bac a sable : {e}")))?;
         let outcome = async {
-            self.create_output_dir(&created.id).await?;
+            tokio::time::timeout(ARCHIVE_TIMEOUT, self.create_output_dir(&created.id))
+                .await
+                .map_err(|_| prepare_err("dossier de sortie : delai depasse"))??;
             tokio::time::timeout(sandbox::PREPARE_TIMEOUT, self.start_and_wait(&created.id))
                 .await
                 .map_err(|_| prepare_err("delai depasse"))?
@@ -684,7 +689,9 @@ impl BuildBackend for LocalBackend {
         .await;
         self.forward_container_logs(&created.id, sink).await;
         let output = match outcome {
-            Ok(0) => self.read_output(&created.id).await,
+            Ok(0) => tokio::time::timeout(ARCHIVE_TIMEOUT, self.read_output(&created.id))
+                .await
+                .unwrap_or_else(|_| Err(prepare_err("lecture de la sortie : delai depasse"))),
             Ok(code) => Err(prepare_err(format!("echec (code {code})"))),
             Err(e) => Err(e),
         };

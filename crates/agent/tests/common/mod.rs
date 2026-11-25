@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bollard::models::ContainerCreateBody;
 use ciphera_agent::docker::{
-    COMPOSE_PROJECT_KEY, ContainerId, ContainerLog, ContainerSnapshot, ContainerSpec, DockerError,
-    DockerOps, Health, MANAGED_LABEL, ManagedContainer, PROJECT_LABEL, compose_project_prefix,
+    COMPOSE_PROJECT_KEY, ContainerId, ContainerLog, ContainerSnapshot, ContainerSpec,
+    DEPLOYMENT_LABEL, DockerError, DockerOps, Health, MANAGED_LABEL, ManagedContainer,
+    PREPARE_ROLE, PROJECT_LABEL, ROLE_LABEL, compose_project_prefix, is_prepare_volume,
     is_project_volume, network_project,
 };
 use futures_util::stream::{self, BoxStream, StreamExt};
@@ -115,6 +116,20 @@ impl FakeDocker {
         self.volumes.lock().unwrap().insert(
             name.to_string(),
             HashMap::from([(COMPOSE_PROJECT_KEY.to_string(), created_by.to_string())]),
+        );
+    }
+
+    /// Volume de sortie de `railpack prepare` du deploiement `deployment`
+    /// (etiquettes posees par le bac a sable). Comme pour Docker, il est
+    /// monte tant que le bac a sable de ce deploiement existe.
+    pub fn add_prepare_volume(&self, name: &str, deployment: DeploymentId) {
+        self.volumes.lock().unwrap().insert(
+            name.to_string(),
+            HashMap::from([
+                (MANAGED_LABEL.to_string(), "true".to_string()),
+                (ROLE_LABEL.to_string(), PREPARE_ROLE.to_string()),
+                (DEPLOYMENT_LABEL.to_string(), deployment.to_string()),
+            ]),
         );
     }
 
@@ -397,6 +412,40 @@ impl DockerOps for FakeDocker {
         let doomed: Vec<String> = volumes
             .iter()
             .filter(|(name, labels)| is_project_volume(name, labels, &prefix))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in &doomed {
+            self.calls.lock().unwrap().push(format!("rmvol:{name}"));
+            volumes.remove(name);
+        }
+        Ok(doomed.len())
+    }
+
+    async fn remove_prepare_volumes(
+        &self,
+        deployment: Option<DeploymentId>,
+    ) -> Result<usize, DockerError> {
+        if self.fail_volumes.load(Ordering::SeqCst) {
+            return Err(DockerError::Api("volumes : refus".into()));
+        }
+        // Monte : le bac a sable de son deploiement existe encore.
+        let mounted: HashSet<String> = self
+            .containers
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|c| c.labels.get(ROLE_LABEL).is_some_and(|r| r == PREPARE_ROLE))
+            .filter_map(|c| c.labels.get(DEPLOYMENT_LABEL).cloned())
+            .collect();
+        let mut volumes = self.volumes.lock().unwrap();
+        let doomed: Vec<String> = volumes
+            .iter()
+            .filter(|(_, labels)| is_prepare_volume(labels, deployment))
+            .filter(|(_, labels)| {
+                labels
+                    .get(DEPLOYMENT_LABEL)
+                    .is_none_or(|d| !mounted.contains(d))
+            })
             .map(|(name, _)| name.clone())
             .collect();
         for name in &doomed {

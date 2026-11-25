@@ -591,6 +591,21 @@ pub fn compose_project_name(project: ProjectId, environment: EnvironmentId) -> S
     format!("{}{}", compose_project_prefix(project), &env[..8])
 }
 
+/// Volume de sortie d'un bac a sable `railpack prepare` (du deploiement
+/// `deployment` s'il est donne), reconnu par ses seules etiquettes
+/// reservees : gere, role `prepare`, deploiement valide.
+pub fn is_prepare_volume(
+    labels: &HashMap<String, String>,
+    deployment: Option<DeploymentId>,
+) -> bool {
+    labels.get(MANAGED_LABEL).is_some_and(|v| v == "true")
+        && labels.get(ROLE_LABEL).is_some_and(|v| v == PREPARE_ROLE)
+        && labels
+            .get(DEPLOYMENT_LABEL)
+            .and_then(|d| d.parse::<DeploymentId>().ok())
+            .is_some_and(|d| deployment.is_none_or(|want| want == d))
+}
+
 /// Debut du nom de tous les projets Compose de `project`.
 pub fn compose_project_prefix(project: ProjectId) -> String {
     format!("{COMPOSE_PROJECT_PREFIX}{}-", project.0.simple())
@@ -1168,6 +1183,14 @@ pub trait DockerOps: Send + Sync + 'static {
     fn remove_project_volumes(
         &self,
         project: ProjectId,
+    ) -> impl Future<Output = Result<usize, DockerError>> + Send;
+    /// Supprime les volumes de sortie de `railpack prepare`
+    /// (`is_prepare_volume`, du deploiement `deployment` s'il est donne)
+    /// qu'aucun conteneur n'utilise : un volume encore monte est laisse.
+    /// Renvoie leur nombre.
+    fn remove_prepare_volumes(
+        &self,
+        deployment: Option<DeploymentId>,
     ) -> impl Future<Output = Result<usize, DockerError>> + Send;
     /// Deploiements qui ont au moins une etiquette d'image
     /// (`image_deployment`), sans doublon.
@@ -1885,6 +1908,51 @@ impl DockerOps for BollardDocker {
             .collect())
     }
 
+    async fn remove_prepare_volumes(
+        &self,
+        deployment: Option<DeploymentId>,
+    ) -> Result<usize, DockerError> {
+        let mut labels = vec![
+            format!("{MANAGED_LABEL}=true"),
+            format!("{ROLE_LABEL}={PREPARE_ROLE}"),
+        ];
+        if let Some(d) = deployment {
+            labels.push(format!("{DEPLOYMENT_LABEL}={d}"));
+        }
+        // `dangling` : volumes qu'aucun conteneur (meme arrete) ne monte.
+        let options = ListVolumesOptions {
+            filters: Some(HashMap::from([
+                ("label".to_string(), labels),
+                ("dangling".to_string(), vec!["true".to_string()]),
+            ])),
+        };
+        let volumes = self
+            .docker
+            .list_volumes(Some(options))
+            .await
+            .map_err(api)?
+            .volumes
+            .unwrap_or_default();
+        let mut removed = 0;
+        for v in volumes
+            .iter()
+            .filter(|v| is_prepare_volume(&v.labels, deployment))
+        {
+            check_name(&v.name)?;
+            // Sans `force` : Docker refuse (409) un volume encore monte.
+            match self
+                .docker
+                .remove_volume(&v.name, Some(RemoveVolumeOptions { force: false }))
+                .await
+            {
+                Ok(()) => removed += 1,
+                Err(e) if is_status(&e, 404) || is_status(&e, 409) => {}
+                Err(e) => return Err(api(e)),
+            }
+        }
+        Ok(removed)
+    }
+
     async fn remove_project_volumes(&self, project: ProjectId) -> Result<usize, DockerError> {
         let prefix = compose_project_prefix(project);
         let options = ListVolumesOptions {
@@ -2275,6 +2343,39 @@ pub fn parse_rfc3339_ms(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepare_volumes_are_recognized_by_reserved_labels_only() {
+        let id = DeploymentId::new();
+        let labels = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let d = id.to_string();
+        let ok = labels(&[
+            (MANAGED_LABEL, "true"),
+            (ROLE_LABEL, PREPARE_ROLE),
+            (DEPLOYMENT_LABEL, &d),
+        ]);
+        assert!(is_prepare_volume(&ok, None));
+        assert!(is_prepare_volume(&ok, Some(id)));
+        assert!(!is_prepare_volume(&ok, Some(DeploymentId::new())));
+        for bad in [
+            labels(&[(ROLE_LABEL, PREPARE_ROLE), (DEPLOYMENT_LABEL, &d)]),
+            labels(&[(MANAGED_LABEL, "true"), (DEPLOYMENT_LABEL, &d)]),
+            labels(&[(MANAGED_LABEL, "true"), (ROLE_LABEL, PREPARE_ROLE)]),
+            labels(&[
+                (MANAGED_LABEL, "true"),
+                (ROLE_LABEL, PREPARE_ROLE),
+                (DEPLOYMENT_LABEL, "pas-un-uuid"),
+            ]),
+            labels(&[(COMPOSE_PROJECT_KEY, "cp-x")]),
+        ] {
+            assert!(!is_prepare_volume(&bad, None), "{bad:?}");
+        }
+    }
 
     #[test]
     fn container_usage_follows_docker_stats() {

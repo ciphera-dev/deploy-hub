@@ -606,13 +606,13 @@ async fn railpack_prepare_runs_only_the_pinned_mise() {
 }
 
 /// `railpack::prepare` du depot `node-app` dans un dossier de build neuf de
-/// `builds` : resultat, dossier et lignes de journal.
+/// `builds`, pour `deployment` : resultat, dossier et lignes de journal.
 async fn prepare_node_app(
     builds: &Path,
     cfg: &PrepareConfig,
+    deployment: DeploymentId,
 ) -> (Result<(), BuildError>, Workdir, Vec<String>) {
     let backend = LocalBackend::connect(builds.join("absent.sock")).unwrap();
-    let deployment = DeploymentId::new();
     let workdir = Workdir::create(builds.to_str().unwrap(), deployment).unwrap();
     copy_dir(&fixture("node-app"), Path::new(&workdir.src()));
     let (tx, mut rx) = mpsc::channel(100_000);
@@ -690,7 +690,7 @@ async fn prepare_leaves_no_host_dirs() {
     let builds = tmp.subdir("builds", 0o700);
     let agent_uid = std::fs::metadata(&builds).unwrap().uid();
     let cfg = prepare_config();
-    let (result, workdir, logs) = prepare_node_app(&builds, &cfg).await;
+    let (result, workdir, logs) = prepare_node_app(&builds, &cfg, DeploymentId::new()).await;
     result.unwrap_or_else(|e| panic!("prepare : {e}\n{}", logs.join("\n")));
     let deployment = workdir.deployment();
 
@@ -704,7 +704,8 @@ async fn prepare_leaves_no_host_dirs() {
             path.display()
         );
     }
-    let plan = Path::new(&workdir.plan());
+    let plan_dir = workdir.plan();
+    let plan = Path::new(&plan_dir);
     let mut names: Vec<String> = std::fs::read_dir(plan)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -737,8 +738,26 @@ async fn prepare_output_symlink_refused() {
     let api = Docker::connect_with_socket_defaults().unwrap();
     let tmp = TempDir::new();
     let builds = tmp.subdir("builds", 0o700);
-    let cfg = fake_railpack(&tmp, "ln -s /etc/passwd \"$4\"\necho '{}' > \"$6\"");
-    let (result, workdir, logs) = prepare_node_app(&builds, &cfg).await;
+    // Le faux railpack s'attarde : le volume de sortie, etiquete, est vu
+    // pendant qu'il tourne (les controles « volume supprime » ne passent
+    // donc pas a vide).
+    let cfg = fake_railpack(
+        &tmp,
+        "ln -s /etc/passwd \"$4\"\necho '{}' > \"$6\"\nsleep 5",
+    );
+    let deployment = DeploymentId::new();
+    let watch = async {
+        for _ in 0..1200 {
+            if !deployment_volumes(&api, deployment).await.is_empty() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        false
+    };
+    let ((result, workdir, logs), seen) =
+        tokio::join!(prepare_node_app(&builds, &cfg, deployment), watch);
+    assert!(seen, "volume de sortie etiquete jamais vu");
     let err = result.expect_err("lien symbolique accepte");
     assert!(
         err.to_string().contains("lien refuse"),
@@ -769,7 +788,7 @@ async fn prepare_output_oversize_refused() {
         &tmp,
         "dd if=/dev/zero of=\"$4\" bs=1024 count=1025\necho '{}' > \"$6\"",
     );
-    let (result, workdir, logs) = prepare_node_app(&builds, &cfg).await;
+    let (result, workdir, logs) = prepare_node_app(&builds, &cfg, DeploymentId::new()).await;
     let err = result.expect_err("plan de plus de 1 Mio accepte");
     assert!(
         err.to_string().contains("plus de 1 Mio"),
@@ -1235,10 +1254,10 @@ async fn repo_dotenv_compose_vars_ignored() {
     let path = |p: &Path| ValidatedArg::path(p.to_str().unwrap()).unwrap();
     let project = ValidatedArg::name("cp-r27-dotenv").unwrap();
     let cmd = compose::config_command(
-        &path(&repo),
-        &path(&repo.join("compose.yaml")),
+        &path(repo.as_path()),
+        &path(repo.join("compose.yaml").as_path()),
         &project,
-        &path(&home),
+        &path(home.as_path()),
     );
     let backend = LocalBackend::connect(tmp.0.join("absent.sock")).unwrap();
     let (tx, _rx) = mpsc::channel(1000);
