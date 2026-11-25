@@ -1130,3 +1130,12 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Ancien réseau de projet sans pont nommé : recréé s'il n'a aucun conteneur (même arrêté), sinon gardé avec un avertissement.
 - Unité de l'agent : `SystemCallFilter=@system-service`, `PrivateDevices`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `ProtectClock`, `ProtectHostname`, `RestrictRealtime`, `RestrictNamespaces`.
 - Laissés : 80/443 vers l'hôte ouverts à tout processus de l'hôte, pas seulement au proxy ; avertissement sur les chaînes de Docker ; `ip addr` du test run-docker-host.
+
+## 2026-11-25 — Task R29 : hôtes du panneau, X-Forwarded-For, RP ID des passkeys
+- Décision R29 : l'accès direct 8443 répond 421 à tout hôte qui n'est ni une IP littérale, ni `localhost`, ni un nom réservé (hôte de `CIPHERA_PUBLIC_URL`, RP ID, `CIPHERA_PANEL_ALIASES`), ni le domaine du panneau confirmé.
+- `X-Forwarded-For` n'est cru que sur l'écoute locale du proxy (marqueur + pair en boucle locale) ; la confirmation du domaine du panneau exige aussi ce marqueur.
+- Un domaine d'application ne peut pas prendre un nom réservé ni l'hôte de la requête courante (409 `reserved_host`, aussi sur verify).
+- RP ID : `CIPHERA_WEBAUTHN_RP_ID`/`_RP_ORIGIN` d'abord (choix explicite de l'opérateur, non contrôlé), sinon l'origine publique (domaine confirmé, sinon `CIPHERA_PUBLIC_URL`) si c'est un nom, sinon `Host`.
+- Passkeys proposées seulement à l'origine publique exacte (schéma, hôte, port) : `allow_subdomains` et `allow_any_port` restent coupés ; ailleurs 409 `webauthn_unavailable` avec l'adresse publique (TOTP et codes de secours toujours proposés).
+- Pendant la bascule de domaine avec une URL publique en :8443, les passkeys ne servent que sur :8443 jusqu'à la confirmation ; le web avertit que les passkeys de l'ancien domaine ne marcheront plus après la bascule.
+- Laissés : `X-Forwarded-Proto` lu aussi hors de l'écoute locale (seulement pour décider de proposer les passkeys, webauthn-rs vérifie l'origine signée) ; M4 ; recommandation de documenter les variables dédiées.

@@ -373,3 +373,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 07:42 — Session v0.1-sdd — claude-code (orchestrateur) — Task R28 : Sortie réseau des applications et des builds, durcissement de l'agent
 - fait : Pont cphp par projet, table nftables générée en Rust et rechargée toutes les 5 min, DNS vers les résolveurs de l'hôte, métadonnées rejetées, unité de l'agent durcie
 - résultat : TERMINÉ (relecture approuvée, 1 tour)
+
+## 2026-11-25 07:52 — Session v0.1-sdd — claude-code (orchestrateur) — Task R29 : Hôtes du panneau, X-Forwarded-For, RP ID des passkeys
+- fait : 421 aux hôtes inconnus sur 8443, X-Forwarded-For seulement via le proxy local, noms réservés refusés aux domaines, passkeys à l'origine publique exacte
+- résultat : TERMINÉ (relecture approuvée, 2 tours)
