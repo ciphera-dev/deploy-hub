@@ -619,7 +619,8 @@ async fn app_container_cannot_reach_infra_network() {
 
 /// Une ligne de 36 Ko (secret de 40 caracteres sur l'octet 16 384) est
 /// coupee par Docker en messages partiels horodates : l'agent la rend d'un
-/// seul tenant, le secret intact.
+/// seul tenant, le secret intact. Une ligne courte la precede : la premiere
+/// ligne d'une lecture est toujours ecartee (`LogWindow`).
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "Docker reel : job Linux de la CI (cargo test -p ciphera-agent -- --ignored)"]
 async fn long_log_line_is_reassembled_with_the_secret_contiguous() {
@@ -630,7 +631,7 @@ async fn long_log_line_is_reassembled_with_the_secret_contiguous() {
     let name = format!("ciphera-it-longline-{}", DeploymentId::new());
     remove_container(&api, &name).await;
     let script = format!(
-        "head -c 16364 /dev/zero | tr '\\000' a; printf %s {SECRET}; \
+        "echo debut; head -c 16364 /dev/zero | tr '\\000' a; printf %s {SECRET}; \
          head -c 20000 /dev/zero | tr '\\000' b; echo"
     );
     foreign_container(&api, &name, None, &["sh", "-c", &script]).await;

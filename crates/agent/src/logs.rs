@@ -120,8 +120,8 @@ impl<D: DockerOps> LogFollows<D> {
                 }
                 // Fin du flux d'un service suivi : un nouveau deploiement le
                 // sert (bascule) ? Le suivi continue sur son conteneur, neuf,
-                // lu depuis sa creation : aucune fenetre ne coupe une ligne,
-                // aucune premiere ligne n'est perdue.
+                // lu depuis le debut de son journal (seule sa premiere ligne
+                // par flux est remplacee, voir `LogWindow`).
                 let next = match target {
                     LogTarget::Service(_) if follow && !outbox.is_closed() => {
                         this.container(target)

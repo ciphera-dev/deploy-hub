@@ -564,8 +564,8 @@ impl LocalBackend {
         // l'envoi : le plan de controle masque la ligne entiere.
         let mut lines = assemble_logs(
             self.docker.logs(id, Some(options)),
-            PREPARE_LOG_TAIL.window(false),
-            move |_| std::future::ready(exited),
+            PREPARE_LOG_TAIL.window(),
+            move || std::future::ready(exited),
         );
         while let Some(line) = lines.next().await {
             sink.log(line.stream, &line.line).await;
