@@ -829,6 +829,8 @@ async fn empty_project_networks_swept() {
     api.inspect_network(&docker::project_network(live), None)
         .await
         .expect("reseau du projet deploye garde");
+}
+
 /// Conteneur etiquete d'un deploiement absent de l'etat local (suppression
 /// perdue) : garde tant qu'il tourne, supprime par le balayage une fois
 /// arrete ; le deploiement enregistre reste.

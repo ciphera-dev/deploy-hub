@@ -1095,9 +1095,19 @@ where
 
         let mut doomed_images: Vec<DeploymentId> = Vec::new();
         let mut removed: std::collections::HashSet<&ContainerId> = std::collections::HashSet::new();
+        // Projets dont le retrait (`RemoveProject`) est en cours ou a
+        // reprendre : leurs conteneurs (et volumes) relevent de `remove_project`.
+        let retiring: HashSet<ProjectId> = self.removed().clone();
         for (id, c) in &labelled {
             let id = *id;
             if recorded.contains(&id) || self.ops.is_running(id) {
+                continue;
+            }
+            if c.labels
+                .get(PROJECT_LABEL)
+                .and_then(|p| p.parse::<ProjectId>().ok())
+                .is_some_and(|p| retiring.contains(&p))
+            {
                 continue;
             }
             if !c.stopped {

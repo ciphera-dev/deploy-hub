@@ -2015,6 +2015,25 @@ async fn remove_project_resent_after_reconnect() {
     let mut env = Env::new().await;
     let (p, _) = image_project(&env.state, "web").await;
     successful_deploy(&mut env, p).await;
+    env.state.agents.disconnect(ServerId(env.server));
+    let admin = login(&env.state, "admin").await;
+    let r = send(
+        &env.state,
+        &admin,
+        "DELETE",
+        &format!("/api/projects/{p}"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    assert_eq!(pending_removals(&env, p).await, 1);
+
+    env.agent = env.state.agents.attach_channel(ServerId(env.server));
+    env.agent_says(AgentToControl::State(AgentState::default()))
+        .await;
+    assert_eq!(project_removals(&env.orders()), vec![(p, false)]);
+}
+
 /// `cleaned_at` du deploiement (`None` : pas encore nettoye).
 async fn cleaned(env: &Env, id: Uuid) -> Option<f64> {
     sqlx::query_scalar(
@@ -2205,12 +2224,6 @@ async fn unknown_deployment_in_state_is_removed() {
     )
     .await;
     assert_eq!(r.status, 204, "{}", r.raw);
-    assert_eq!(pending_removals(&env, p).await, 1);
-
-    env.agent = env.state.agents.attach_channel(ServerId(env.server));
-    env.agent_says(AgentToControl::State(AgentState::default()))
-        .await;
-    assert_eq!(project_removals(&env.orders()), vec![(p, false)]);
     env.agent = env.state.agents.attach_channel(ServerId(env.server));
     env.agent_says(AgentToControl::State(AgentState {
         deployments: vec![running_deployment(live, true)],

@@ -1902,6 +1902,39 @@ async fn orphan_labeled_containers_and_images_are_swept() {
     assert!(bench.db.record(kept).unwrap().is_some());
 }
 
+/// Projet dont le retrait (`RemoveProject`) est a reprendre : ses conteneurs
+/// relevent de `remove_project`, jamais du balayage des restes.
+#[tokio::test(start_paused = true)]
+async fn orphan_sweep_leaves_a_retiring_project_alone() {
+    let bench = Bench::new();
+    bench.sync_routes().await;
+    let v1 = spec(
+        ProjectId::new(),
+        ServiceId::new(),
+        "ciphera/web-production:v1",
+    );
+    deploy_ok(&bench, &v1).await;
+    let retiring = ProjectId::new();
+    let orphan = DeploymentId::new();
+    let (orphan_label, project_label) = (orphan.to_string(), retiring.to_string());
+    bench.docker.add_container(
+        "retiring",
+        &format!("ciphera-d-{orphan}"),
+        &[
+            (DEPLOYMENT_LABEL, orphan_label.as_str()),
+            (PROJECT_LABEL, project_label.as_str()),
+        ],
+        None,
+    );
+    stopped_with_image(&bench, "retiring", "");
+    bench.docker.fail_remove.store(true, Ordering::SeqCst);
+    assert!(bench.deployer.remove_project(retiring, true).await.is_err());
+    bench.docker.fail_remove.store(false, Ordering::SeqCst);
+
+    bench.deployer.sweep_orphans().await;
+    assert!(bench.docker.container("retiring").is_some());
+}
+
 /// Etat local neuf (aucun deploiement) alors que des conteneurs de
 /// deploiement existent : rien n'est supprime, ni conteneur (meme arrete), ni
 /// image.
