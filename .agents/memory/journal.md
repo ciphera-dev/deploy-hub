@@ -341,3 +341,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 03:03 — Session v0.1-sdd — claude-code (orchestrateur) — Task R19 : Remédiation audit — quotas des flux de journaux et bornes mémoire
 - fait : Quota par compte, coupe et débit par agent avant la diffusion, origine du build
 - résultat : TERMINÉ (relecture : 2 Importants corrigés, approuvée)
+
+## 2026-11-25 03:33 — Session v0.1-sdd — claude-code (orchestrateur) — Task R24 : Remédiation audit — ordre des services Compose autour de la sonde, annulation tardive
+- fait : Ordre en trois temps, retrait des services nouveaux, notes en état local v6 avec garde « servi », annulation relue avant l'envoi
+- résultat : TERMINÉ (relecture : 1 Important corrigé, approuvée)

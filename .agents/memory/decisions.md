@@ -1085,3 +1085,9 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Débit de 2 000 lignes/s par agent appliqué dès la réception, avant la diffusion (`domain/logs/rate.rs`) : un agent qui inonde ne fait plus perdre les lignes des autres ; repère « N lignes ignorées » émis chaque seconde, seulement dans une cible dont l'agent est l'origine.
 - Origine d'un build fixée par `assign_build` avant l'envoi (et relue en base après redémarrage) ; une cible sans origine connue ignore les lignes (l'ancien « premier émetteur cru » est retiré).
 - Laissés : le 429 n'est pas visible du navigateur à l'ouverture du WebSocket (reconnexion avec délai croissant), test d'origine du repère peu probant, table des seaux par agent non purgée pour un serveur supprimé.
+
+## 2026-11-25 — Task R24 : ordre des services Compose autour de la sonde, annulation tardive
+- Décision R24 : déploiement Compose en trois temps — services nouveaux et dépendances du service exposé, puis service exposé sondé, puis (si la sonde réussit) mise à jour des autres services et bascule ; en échec ou annulation, les services nouveaux sont retirés et les services déjà mis à jour sont écrits au journal (leur restauration : R55).
+- H04-4 : `send_deploy` relit `cancel_requested` sous verrou juste avant l'envoi ; vrai → `finish(Cancelled)`.
+- Agent SQLite v6 (additif) : `compose_created` (service nouveau noté avant son `up`, retiré au démarrage si le déploiement a été interrompu) et `compose_serving` ; à la bascule, les notes des services du plan sont oubliées dans la même transaction que le changement de service servi ; tout retrait (balayage au démarrage, `undo_compose`, `remove`) vérifie d'abord que le service n'appartient pas à un ensemble servi ; échec Docker → note gardée, pas d'accusé.
+- Laissés : services laissés par du code d'avant R24 ou après perte de l'état local (retirés avec le projet), course étroite entre la vérification « servi » et le retrait (M3).
