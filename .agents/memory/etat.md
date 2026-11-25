@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-25 10:15
+# État courant — mis à jour le 2026-11-25 10:16
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task fix/ci-panel-witness : CI : témoin du panneau sondé avant son démarrage — statut : TERMINÉ (TERMINÉ)
+Task R32 : Proxy : socket de pilotage, certificats expirés — statut : TERMINÉ (TERMINÉ (relecture approuvée, 1 tour))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R32 : Proxy : socket de pilotage, certificats expirés
 - Task fix/ci-panel-witness : CI : témoin du panneau sondé avant son démarrage
 - Task R30 : PKI et lien agent
 - Task R31 : Proxy : délais d'écriture et de corps, en-têtes, cibles
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R28 : Sortie réseau des applications et des builds, durcissement de l'agent
 - Task fix/ci-loglines : Journaux d'agent : aucune ligne partielle, aucun morceau de secret
 - Task fix/R55-ci : CI : test d'annulation Compose de R55
-- Task R27 : Remédiation audit — bac à sable de railpack prepare, askpass, .env de Compose
 
 ## Prochaine étape exacte
-Intégrer R47, R32, R33
+R33
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,7 +32,13 @@ Intégrer R47, R32, R33
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `install/tests/run-docker-host.sh`
+- `crates/proxy/src/acme.rs`
+- `crates/proxy/src/control.rs`
+- `crates/proxy/src/lib.rs`
+- `crates/proxy/src/main.rs`
+- `crates/proxy/tests/acme.rs`
+- `crates/proxy/tests/forward.rs`
+- `crates/proxy/tests/routes.rs`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

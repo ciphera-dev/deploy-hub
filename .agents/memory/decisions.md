@@ -1155,3 +1155,8 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Certificats feuilles `BasicConstraints CA:false` explicite ; l'agent vérifie le certificat renouvelé (CA, même clé) avant écriture et refuse `agent.key` si le mode a des bits groupe/autres.
 - Fonctionnalité `verify` de x509-parser activée (pas de nouvelle crate, Cargo.lock inchangé).
 - Laissés : jusqu'à 5 s d'ordres possibles vers un agent révoqué ; lancement de `watch_revocations` non testé ; balayage qui relit toute la liste ; `renew_own` attend le verrou de façon bloquante (quelques ms) ; clé de la CA en mémoire du service (R48), pas de rotation (R49), pas de jeton de jonction (R47).
+
+## 2026-11-25 — Task R32 : proxy, socket de pilotage, certificats expirés
+- Décision R32 : socket de pilotage réservé par SO_PEERCRED à root et au compte ciphera-agent (uid lu dans /etc/passwd ; compte absent → root seul) ; le premier octet d'un message est attendu sans délai, le reste de la trame doit arriver en 10 s (connexion au repos conservée).
+- ACME : un certificat expiré n'est ni chargé ni servi ; le compteur des retraits est purgé.
+- Laissés : pas d'avertissement par hôte quand un certificat expire en cours de route (M3) ; saut de ligne dans une chaîne de format d'acme.rs.
