@@ -1107,3 +1107,10 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Ordres Restart/Stop envoyés après le COMMIT ; si l'envoi échoue, l'événement d'audit est retiré avec la remise des marques d'arrêt.
 - Pas de migration (index de déduplication et `priority` déjà présents).
 - Laissés : petite fenêtre où une action concurrente réussie peut perdre sa marque d'arrêt (documentée sur `restore_marks`).
+
+## 2026-11-25 — Task R26 : images internes sous un registre non résoluble
+- Décision R26 : images finales `ciphera.invalid/<projet>-<env>:<deployment>` (Compose : `ciphera.invalid/<projet>-<env>/<service>:<deployment>`), provisoires `ciphera.invalid/staging/<…>:build` ; anciens déploiements : image gardée sous son nom stocké (pas de migration), le balayage des restes reconnaît encore `ciphera/` et `ciphera-staging/`.
+- `normalize_ref` partagée (retire `docker.io/`, `index.docker.io/`, `registry-1.docker.io/`) ; `ciphera.invalid/`, `ciphera/` et `ciphera-staging/` refusés dans toute référence fournie par l'utilisateur (une organisation Docker Hub réelle nommée `ciphera` n'est plus utilisable) ; référence par identifiant d'image (`sha256:<hex>`, hexadécimal nu ou préfixe, avant tout `@`) refusée dans `validate::image` (un nom Docker Hub entièrement hexadécimal comme `deadbeef` est refusé).
+- Ensemble Compose : une image interne n'est acceptée que comme image construite du service, avec l'étiquette du déploiement qui a construit l'ensemble (`image_from` au retour arrière), et `pull_policy: never`.
+- `pull_if_missing` : jamais pour `ciphera.invalid/*` ; délai de 10 min ; plafond de 10 Gio sur le plus grand des octets reçus ou annoncés par couche ; arithmétique vérifiée.
+- Laissés : les images tierces tirées par `docker compose up` n'ont ni délai ni plafond ; pas de test sur Docker réel prouvant l'absence de requête au registre pour une image interne.
