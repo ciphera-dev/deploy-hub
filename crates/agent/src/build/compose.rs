@@ -7,11 +7,12 @@
 //! Ordre :
 //! 1. fichier resolu dans le depot (liens symboliques compris), 1 Mio au plus ;
 //! 2. `compose_policy::check` sur le fichier du depot, puis les fichiers
-//!    qu'il fait lire a Compose (`env_file`, `.env`) verifies dans le depot ;
-//! 3. `docker compose --project-directory <dossier> -f <fichier>
-//!    -p cp-<UUID du projet>-<debut de l'UUID de l'environnement> config
-//!    --format json` (environnement vide : interpolation depuis le `.env` du
-//!    depot seulement ; volumes nommes d'apres ce projet Compose) ;
+//!    qu'il fait lire a Compose (`env_file`) verifies dans le depot ;
+//! 3. `docker compose --env-file /dev/null --project-directory <dossier>
+//!    -f <fichier> -p cp-<UUID du projet>-<debut de l'UUID de
+//!    l'environnement> config --format json` (environnement vide et `.env`
+//!    du depot jamais lu : aucune variable `COMPOSE_*` ni interpolation
+//!    venue du depot ; volumes nommes d'apres ce projet Compose) ;
 //! 4. `compose_policy::check` sur la forme normalisee ; contextes et
 //!    Dockerfiles resolus dans le depot ; build de chaque service.
 
@@ -90,8 +91,15 @@ impl ComposeFile {
     }
 }
 
-/// `docker compose --project-directory <base> -f <file> -p <name> config
-/// --format json`, HOME dans le dossier du build.
+/// Fichier d'environnement de Compose : vide. Le `.env` du depot n'est donc
+/// jamais lu (ni pour l'interpolation, ni pour les variables `COMPOSE_*`
+/// que Compose y prendrait : nom de projet, fichiers, profils...).
+pub const COMPOSE_ENV_FILE: &str = "/dev/null";
+
+/// `docker compose --env-file /dev/null --project-directory <base>
+/// -f <file> -p <name> config --format json`, HOME dans le dossier du
+/// build. Environnement vide (`argv::command`) : aucune variable
+/// `COMPOSE_*` ; nom de projet et fichier viennent des arguments seuls.
 pub fn config_command(
     base: &ValidatedArg,
     file: &ValidatedArg,
@@ -101,6 +109,8 @@ pub fn config_command(
     let mut cmd = argv::command(
         AllowedBin::DockerCompose,
         &[
+            ValidatedArg::lit("--env-file"),
+            ValidatedArg::lit(COMPOSE_ENV_FILE),
             ValidatedArg::lit("--project-directory"),
             base.clone(),
             ValidatedArg::lit("-f"),
@@ -116,11 +126,12 @@ pub fn config_command(
     cmd
 }
 
-/// Fichiers lus par Compose a la normalisation (`env_file` des services,
-/// `.env` du projet) : dans le depot, liens symboliques compris. Un fichier
-/// absent n'est pas lu (Compose echoue s'il est exige).
+/// Fichiers lus par Compose a la normalisation (`env_file` des services ;
+/// le `.env` du projet ne l'est jamais, voir `COMPOSE_ENV_FILE`) : dans le
+/// depot, liens symboliques compris. Un fichier absent n'est pas lu
+/// (Compose echoue s'il est exige).
 fn check_read_files(file: &ComposeFile, src: &str) -> Result<(), BuildError> {
-    let mut paths = vec![file.base.join(".env")];
+    let mut paths = Vec::new();
     for (_, svc) in file.services() {
         if let Some(v) = svc.get("env_file") {
             for p in env_file_paths(v).unwrap_or_default() {

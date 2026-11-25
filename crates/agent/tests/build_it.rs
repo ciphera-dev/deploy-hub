@@ -1022,6 +1022,61 @@ async fn clone_over_cap_fails() {
     assert!(ok.join("gros.bin").is_file());
 }
 
+/// `docker compose config` (vrai greffon, commande de production) n'utilise
+/// pas le `.env` du depot : ni son `COMPOSE_PROJECT_NAME`, ni ses
+/// `COMPOSE_FILE` et `COMPOSE_PROFILES`, ni ses variables d'interpolation.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "docker compose reel : job agent-docker de la CI"]
+async fn repo_dotenv_compose_vars_ignored() {
+    use ciphera_agent::build::argv::ValidatedArg;
+    use ciphera_agent::build::compose;
+    let tmp = TempDir::new();
+    let repo = tmp.subdir("repo", 0o755);
+    let home = tmp.subdir("home", 0o700);
+    std::fs::write(
+        repo.join("compose.yaml"),
+        "services:\n  web:\n    image: docker.io/library/busybox:1.37\n    environment:\n      FROM_DOTENV: \"${DOTENV_VALUE:-absent}\"\n  extra:\n    image: docker.io/library/busybox:1.37\n    profiles: [extra]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("other.yaml"),
+        "services:\n  other:\n    image: docker.io/library/busybox:1.37\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join(".env"),
+        "COMPOSE_PROJECT_NAME=dotenv-project\nCOMPOSE_FILE=other.yaml\nCOMPOSE_PROFILES=extra\nDOTENV_VALUE=lu\n",
+    )
+    .unwrap();
+    let path = |p: &Path| ValidatedArg::path(p.to_str().unwrap()).unwrap();
+    let project = ValidatedArg::name("cp-r27-dotenv").unwrap();
+    let cmd = compose::config_command(
+        &path(&repo),
+        &path(&repo.join("compose.yaml")),
+        &project,
+        &path(&home),
+    );
+    let backend = LocalBackend::connect(tmp.0.join("absent.sock")).unwrap();
+    let (tx, _rx) = mpsc::channel(1000);
+    let sink = ProgressSink::new(DeploymentId::new(), tx);
+    let out = BuildBackend::exec(&backend, AllowedBin::DockerCompose, cmd, &sink, true)
+        .await
+        .expect("docker compose config");
+    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(doc["name"], "cp-r27-dotenv", "{doc}");
+    let services = doc["services"].as_object().unwrap();
+    let names: Vec<&str> = services.keys().map(String::as_str).collect();
+    assert_eq!(
+        names,
+        ["web"],
+        "COMPOSE_FILE ou COMPOSE_PROFILES lus : {doc}"
+    );
+    assert_eq!(
+        doc["services"]["web"]["environment"]["FROM_DOTENV"], "absent",
+        "interpolation depuis le .env du depot : {doc}"
+    );
+}
+
 /// Le conteneur buildkitd du projet tourne (`Some(true)`), est arrete
 /// (`Some(false)`) ou n'existe pas (`None`).
 async fn buildkitd_running(api: &Docker, project: ProjectId) -> Option<bool> {

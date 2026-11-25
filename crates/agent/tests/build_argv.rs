@@ -1116,6 +1116,49 @@ async fn railpack_without_pinned_mise_or_sandbox_fails_clearly() {
     assert!(backend.prepared.lock().unwrap().is_empty());
 }
 
+/// `docker compose config` ne lit jamais le `.env` du depot (fichier
+/// d'environnement vide, `/dev/null`) et ne recoit aucune variable
+/// `COMPOSE_*` : nom de projet et fichier sont donnes par les arguments.
+#[tokio::test]
+async fn compose_config_ignores_repo_dotenv_and_compose_vars() {
+    let dir = BuildsDir::new();
+    let backend = FakeBackend {
+        repo: vec![
+            ("compose.yaml", "services:\n  web:\n    build: .\n"),
+            ("Dockerfile", "FROM busybox\n"),
+            (".env", "COMPOSE_PROJECT_NAME=autre\nCOMPOSE_FILE=autre.yaml\n"),
+        ],
+        compose_json: Some(r#"{"name":"web-production","services":{"web":{"build":{"context":".","dockerfile":"Dockerfile"},"networks":{"default":null}}},"networks":{"default":{"name":"web-production_default"}}}"#.into()),
+        ..Default::default()
+    };
+    let spec = spec(BuildMethod::Compose {
+        path: "compose.yaml".into(),
+        service: "web".into(),
+    });
+    run(&spec, &backend, &dir).await.0.unwrap();
+    let calls = backend.calls.lock().unwrap().clone();
+    let config = calls
+        .iter()
+        .find(|c| c.args.iter().any(|a| a == "config"))
+        .unwrap();
+    let pos = |arg: &str| config.args.iter().position(|a| a == arg);
+    let env_file = pos("--env-file").expect("--env-file absent");
+    assert_eq!(config.args[env_file + 1], "/dev/null", "{config:?}");
+    assert!(
+        env_file < pos("config").unwrap(),
+        "option globale : {config:?}"
+    );
+    assert!(pos("-p").is_some(), "nom de projet explicite : {config:?}");
+    assert!(
+        config.envs.iter().all(|(k, _)| !k.starts_with("COMPOSE_")),
+        "{config:?}"
+    );
+    let names: Vec<&str> = config.envs.iter().map(|(k, _)| k.as_str()).collect();
+    for name in &names {
+        assert!(["PATH", "LC_ALL", "HOME"].contains(name), "{names:?}");
+    }
+}
+
 // --- dossier racine (monorepo) ---------------------------------------------
 
 fn with_root(build: BuildMethod, root: &str) -> BuildSpec {
