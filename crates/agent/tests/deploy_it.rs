@@ -1078,6 +1078,8 @@ struct Inspected {
     env: Vec<String>,
     labels: std::collections::HashMap<String, String>,
     running: bool,
+    /// Alias par reseau (sans l'identifiant court du conteneur), tries.
+    aliases: Vec<(String, Vec<String>)>,
 }
 
 async fn inspected(id: &str) -> Inspected {
@@ -1090,7 +1092,26 @@ async fn inspected(id: &str) -> Inspected {
         .await
         .unwrap();
     let config = info.config.unwrap_or_default();
+    let short = id.get(..12).unwrap_or(id).to_string();
+    let mut aliases: Vec<(String, Vec<String>)> = info
+        .network_settings
+        .and_then(|n| n.networks)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(net, e)| {
+            let mut list: Vec<String> = e
+                .aliases
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|a| *a != short)
+                .collect();
+            list.sort();
+            (net, list)
+        })
+        .collect();
+    aliases.sort();
     Inspected {
+        aliases,
         image: info.image.unwrap_or_default(),
         env: config.env.unwrap_or_default(),
         labels: config.labels.unwrap_or_default(),
@@ -1168,6 +1189,15 @@ async fn assert_cache_restored(
         after.env
     );
     assert_eq!(after.labels, before.labels);
+    assert_eq!(after.aliases, before.aliases, "reseaux et alias");
+    assert!(
+        after
+            .aliases
+            .iter()
+            .any(|(_, a)| a.iter().any(|x| x == "cache.internal")),
+        "{:?}",
+        after.aliases
+    );
     assert!(after.running, "conteneur restaure demarre");
     now
 }

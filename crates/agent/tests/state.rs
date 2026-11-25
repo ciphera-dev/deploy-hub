@@ -260,3 +260,37 @@ fn terminal_outcomes_survive_restart_with_bounded_retention() {
     db.remove_outcome(all[0].deployment_id).unwrap();
     assert_eq!(db.outcome(all[0].deployment_id).unwrap(), None);
 }
+
+/// Base de la version 6 (services Compose nouveaux notes) : migree en v7
+/// sans perte, table des services mis a jour vide.
+#[test]
+fn version_6_database_is_migrated() {
+    use shared::ids::ProjectId;
+    let path = TempPath::new("ciphera-agent-state-v6");
+    let (id, project) = (DeploymentId::new(), ProjectId::new());
+    {
+        let db = StateDb::open(&path.0).unwrap();
+        db.put_compose_created(id, project, "shop-production", "mailer")
+            .unwrap();
+    }
+    {
+        // Retour au schema 6 : sans la table de la version 7.
+        let conn = rusqlite::Connection::open(&path.0).unwrap();
+        conn.execute_batch("DROP TABLE compose_updated; PRAGMA user_version = 6;")
+            .unwrap();
+    }
+    let db = StateDb::open(&path.0).unwrap();
+    assert_eq!(
+        db.compose_created().unwrap(),
+        vec![(
+            id,
+            project,
+            "shop-production".to_string(),
+            "mailer".to_string()
+        )]
+    );
+    assert!(db.compose_updated().unwrap().is_empty());
+    db.put_compose_updated(id, "shop-production", "cache")
+        .unwrap();
+    assert_eq!(db.compose_updated().unwrap().len(), 1);
+}

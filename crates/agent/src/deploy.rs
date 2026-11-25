@@ -35,7 +35,13 @@
 //! l'ordre de `depends_on`, journal « services dependants restaures ») :
 //! l'ensemble servi reste intact. Docker refuse : la restauration reste a
 //! faire (reprise par l'appel suivant, `RemoveDeployment` sans accuse
-//! jusque-la). Les services sans lien avec le service expose ne sont
+//! jusque-la) et l'issue du deploiement le dit (`NOT_RESTORED`). Une
+//! restauration ne touche jamais un service repris entre-temps : ensemble
+//! servi change (bascule d'un autre deploiement) ou autre deploiement du
+//! meme projet Compose en cours ou en attente sur ce service ; elle est
+//! alors abandonnee (journal). Mises a jour, restaurations et bascules d'un
+//! meme projet Compose stable passent une a une (verrou par projet).
+//! Les services sans lien avec le service expose ne sont
 //! jamais touches avant la reussite de la sonde.
 //! Les services deja en place relances sont notes (noms seuls) dans l'etat
 //! local jusqu'a l'issue : si l'agent s'arrete avant, leur configuration
@@ -222,6 +228,8 @@ struct ComposeRun {
     /// Services deja en place relances par ce deploiement, dans l'ordre de
     /// `depends_on`.
     updated: Vec<Updated>,
+    /// Deploiement en cours (faux : en echec, restauration a reprendre).
+    active: bool,
 }
 
 /// Service deja en place relance par un deploiement Compose, et ses
@@ -229,6 +237,18 @@ struct ComposeRun {
 struct Updated {
     service: String,
     before: Vec<ContainerSnapshot>,
+    /// Deploiements servis du projet Compose stable a la lecture : une
+    /// bascule depuis rend la restauration caduque.
+    served: Vec<DeploymentId>,
+}
+
+/// Restauration d'un service : faite, abandonnee (service repris par un
+/// autre deploiement, raison), ou a reprendre (echec de Docker ou de
+/// l'etat local).
+enum Restore {
+    Done,
+    Skipped(String),
+    Pending,
 }
 
 /// Supprime un dossier s'il existe (sans suivre un lien symbolique).
@@ -294,6 +314,9 @@ pub struct Deployer<D, P, C, S: RouteSink> {
     removed: Mutex<HashSet<ProjectId>>,
     /// Deploiements Compose en cours, de `Start` a la bascule.
     compose_runs: Mutex<HashMap<DeploymentId, ComposeRun>>,
+    /// Un verrou par projet Compose stable : mises a jour de ses services,
+    /// restaurations et bascules passent une a une.
+    stable_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl<D, P, C, S> Deployer<D, P, C, S>
@@ -321,7 +344,27 @@ where
             ops: Operations::default(),
             removed: Mutex::new(HashSet::new()),
             compose_runs: Mutex::new(HashMap::new()),
+            stable_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Verrou du projet Compose stable `stable`.
+    fn stable_lock(&self, stable: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.stable_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(stable.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// Services deja en place que le deploiement `id` n'a pas encore pu
+    /// restaurer.
+    fn unrestored(&self, id: DeploymentId) -> Vec<String> {
+        self.compose_runs()
+            .get(&id)
+            .map(|r| r.updated.iter().map(|u| u.service.clone()).collect())
+            .unwrap_or_default()
     }
 
     fn removed(&self) -> std::sync::MutexGuard<'_, HashSet<ProjectId>> {
@@ -650,13 +693,12 @@ where
         self.discard(spec.deployment_id).await;
         self.undo_compose(spec.deployment_id, Some(sink)).await;
         remove_path(Path::new(&self.deploy_dir(spec.deployment_id)));
-        sink.stage(
-            stage,
-            StageStatus::Failed {
-                message: e.to_string(),
-            },
-        )
-        .await;
+        let mut message = e.to_string();
+        let unrestored = self.unrestored(spec.deployment_id);
+        if !unrestored.is_empty() {
+            message = format!("{message} ; {NOT_RESTORED} ({})", unrestored.join(", "));
+        }
+        sink.stage(stage, StageStatus::Failed { message }).await;
         Err(e)
     }
 
@@ -774,6 +816,7 @@ where
                 later,
                 created: Vec::new(),
                 updated: Vec::new(),
+                active: true,
             },
         );
         for svc in &now {
@@ -849,6 +892,12 @@ where
             .compose_runs()
             .get(&id)
             .map(|r| (r.stable.as_str().to_string(), r.services.clone()));
+        // Jamais pendant une restauration du meme projet Compose.
+        let lock = compose.as_ref().map(|(s, _)| self.stable_lock(s));
+        let _guard = match &lock {
+            Some(l) => Some(l.lock().await),
+            None => None,
+        };
         let previous = self.db.set_serving_compose(
             id,
             compose.as_ref().map(|(s, v)| (s.as_str(), v.as_slice())),
@@ -963,6 +1012,9 @@ where
             )
         };
         let name = service.as_str().to_string();
+        // Jamais pendant une restauration ou une bascule du meme projet.
+        let lock = self.stable_lock(stable.as_str());
+        let _guard = lock.lock().await;
         if existing {
             let known = self
                 .compose_runs()
@@ -974,10 +1026,12 @@ where
                 let before = self
                     .snapshot_service(project, stable.as_str(), &name)
                     .await?;
+                let served = self.db.compose_serving_deployments(stable.as_str())?;
                 if let Some(run) = self.compose_runs().get_mut(&id) {
                     run.updated.push(Updated {
                         service: name.clone(),
                         before,
+                        served,
                     });
                 }
                 self.db.put_compose_updated(id, stable.as_str(), &name)?;
@@ -1015,6 +1069,36 @@ where
             }
         }
         Ok(out)
+    }
+
+    /// Garde avant de restaurer le service `u` du deploiement `id` (verrou
+    /// du projet tenu) : la raison de ne pas y toucher, s'il a ete repris
+    /// (ensemble servi change, ou autre deploiement du meme projet Compose
+    /// en cours ou qui l'a lance ou mis a jour). `Err` : etat illisible.
+    fn restore_blocked(
+        &self,
+        id: DeploymentId,
+        stable: &str,
+        u: &Updated,
+    ) -> Result<Option<String>, StateError> {
+        for (other, run) in self.compose_runs().iter() {
+            if *other == id || run.stable.as_str() != stable {
+                continue;
+            }
+            if run.active || self.ops.is_running(*other) {
+                return Ok(Some(format!("deploiement {other} en cours")));
+            }
+            if run.created.contains(&u.service)
+                || run.updated.iter().any(|x| x.service == u.service)
+            {
+                return Ok(Some(format!("repris par le deploiement {other}")));
+            }
+        }
+        let served = self.db.compose_serving_deployments(stable)?;
+        if served != u.served {
+            return Ok(Some("ensemble servi change depuis".into()));
+        }
+        Ok(None)
     }
 
     /// Remet le service `u` du projet Compose stable `stable` tel qu'il
@@ -1121,18 +1205,53 @@ where
             }
         }
         let mut restored = Vec::new();
+        let mut skipped = Vec::new();
         let mut pending = Vec::new();
+        let lock = self.stable_lock(run.stable.as_str());
         for mut u in std::mem::take(&mut run.updated) {
-            if self
-                .restore_service(id, run.project, run.stable.as_str(), &mut u)
-                .await
-            {
-                if let Err(e) = self.db.remove_compose_updated(id, Some(&u.service)) {
-                    tracing::warn!("deploiement {id} : service Compose {} : {e}", u.service);
+            let outcome = {
+                let _guard = lock.lock().await;
+                match self.restore_blocked(id, run.stable.as_str(), &u) {
+                    Ok(Some(reason)) => Restore::Skipped(reason),
+                    Ok(None) => {
+                        if self
+                            .restore_service(id, run.project, run.stable.as_str(), &mut u)
+                            .await
+                        {
+                            Restore::Done
+                        } else {
+                            Restore::Pending
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("deploiement {id} : service Compose {} : {e}", u.service);
+                        Restore::Pending
+                    }
                 }
-                restored.push(u.service);
-            } else {
-                pending.push(u);
+            };
+            match outcome {
+                Restore::Pending => pending.push(u),
+                done => {
+                    if let Err(e) = self.db.remove_compose_updated(id, Some(&u.service)) {
+                        tracing::warn!("deploiement {id} : service Compose {} : {e}", u.service);
+                    }
+                    match done {
+                        Restore::Skipped(reason) => {
+                            skipped.push(format!("{} ({reason})", u.service));
+                        }
+                        _ => restored.push(u.service),
+                    }
+                }
+            }
+        }
+        if !skipped.is_empty() {
+            let message = format!(
+                "services dependants laisses tels quels, repris entre-temps : {}",
+                skipped.join(", ")
+            );
+            tracing::warn!("deploiement {id} : {message}");
+            if let Some(sink) = sink {
+                sink.log(LogStream::Stderr, &message).await;
             }
         }
         if !restored.is_empty() {
@@ -1162,6 +1281,7 @@ where
         run.created = left;
         run.updated = pending;
         run.later.clear();
+        run.active = false;
         self.compose_runs().insert(id, run);
         false
     }
@@ -1306,7 +1426,9 @@ where
                 let failed = StageStatus::Failed {
                     message: NOT_RESTORED.into(),
                 };
-                if let Err(e) = self.db.put_outcome(id, Stage::Start, &failed) {
+                // Remplace une issue deja gardee (echec, annulation) : la
+                // restauration perdue ne doit jamais passer inapercue.
+                if let Err(e) = self.db.put_outcome_forced(id, Stage::Start, &failed) {
                     tracing::error!("deploiement {id} : issue non enregistree : {e}");
                     continue;
                 }
@@ -1373,7 +1495,23 @@ where
             Cancel::Cancelled(kind, None) => {
                 self.undo_compose(id, Some(&sink)).await;
                 self.cleanup(id).await;
-                sink.stage(kind.stage(), StageStatus::Cancelled).await;
+                let unrestored = self.unrestored(id);
+                if unrestored.is_empty() {
+                    sink.stage(kind.stage(), StageStatus::Cancelled).await;
+                } else {
+                    // Annule, mais l'ensemble servi n'est pas revenu : dit
+                    // dans l'issue (qui remplace l'annulation gardee).
+                    let failed = StageStatus::Failed {
+                        message: format!(
+                            "deploiement annule ; {NOT_RESTORED} ({})",
+                            unrestored.join(", ")
+                        ),
+                    };
+                    if let Err(e) = self.db.put_outcome_forced(id, kind.stage(), &failed) {
+                        tracing::error!("deploiement {id} : issue non enregistree : {e}");
+                    }
+                    sink.stage(kind.stage(), failed).await;
+                }
                 tracing::info!("deploiement {id} annule");
             }
             Cancel::TooLate => {
@@ -1657,6 +1795,18 @@ where
                 self.cleanup(id).await;
                 tracing::info!("projet {project} supprime : operation {id} annulee");
             }
+        }
+        // Restaurations en attente du projet : sans objet, le projet part
+        // (configurations gardees en memoire oubliees avec elles).
+        let pending: Vec<DeploymentId> = self
+            .compose_runs()
+            .iter()
+            .filter(|(_, r)| r.project == project)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in pending {
+            self.compose_runs().remove(&id);
+            let _ = self.db.remove_compose_updated(id, None);
         }
         // Docker d'abord : sur un echec (conteneur, volumes, reseau), l'etat
         // local du projet reste et l'erreur empeche l'accuse ; l'ordre

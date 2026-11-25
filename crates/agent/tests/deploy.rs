@@ -125,8 +125,9 @@ struct FakeCompose {
     /// Variables donnees au processus, par appel.
     envs: Mutex<Vec<Vec<(String, String)>>>,
     /// Vrai : comme Compose quand la configuration change, `up` d'un service
-    /// non expose qui a deja un conteneur le remplace par un nouveau
-    /// (`cid-<nom>-r<n>`), image du fichier ; faux : meme identifiant.
+    /// non expose cree un nouveau conteneur (`cid-<nom>-r<n>`, identifiant
+    /// toujours neuf) qui remplace l'ancien, image du fichier ; faux : meme
+    /// identifiant.
     recreate: AtomicBool,
 }
 
@@ -188,11 +189,10 @@ impl FakeCompose {
         let recreate =
             self.recreate.load(Ordering::SeqCst) && !project.as_str().starts_with("ciphera-d-");
         if recreate {
+            // Identifiant toujours neuf, comme Docker.
             let mut containers = self.docker.containers.lock().unwrap();
-            if containers.values().any(|c| c.name == name) {
-                containers.retain(|_, c| c.name != name);
-                id = format!("cid-{name}-r{n}");
-            }
+            containers.retain(|_, c| c.name != name);
+            id = format!("cid-{name}-r{n}");
         }
         self.docker
             .add_container(&id, &name, &pairs, Some(&format!("172.18.1.{n}")));
@@ -3754,11 +3754,24 @@ async fn compose_restore_refused_by_docker_is_retried_before_acking() {
     *bench.probe.fail_first.lock().unwrap() = 1000;
     bench.docker.fail_recreate.store(true, Ordering::SeqCst);
     let second = compose_spec_with(&bench, project, web, &bundle);
-    assert!(bench.deploy(&second).await.0.is_err());
+    let (result, messages) = bench.deploy(&second).await;
+    assert!(result.is_err());
     assert_eq!(
         bench.db.compose_updated().unwrap().len(),
         2,
         "notes gardees"
+    );
+    // Restauration a mi-chemin : l'issue le dit.
+    match stages(&messages).last() {
+        Some((Stage::Healthcheck, StageStatus::Failed { message })) => {
+            assert!(message.contains(NOT_RESTORED), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let stored = bench.db.outcome(second.deployment_id).unwrap().unwrap();
+    assert!(
+        matches!(&stored.status, StageStatus::Failed { message } if message.contains(NOT_RESTORED)),
+        "{stored:?}"
     );
     assert!(
         !bench.deployer.remove(second.deployment_id).await,
@@ -3768,6 +3781,180 @@ async fn compose_restore_refused_by_docker_is_retried_before_acking() {
     bench.docker.fail_recreate.store(false, Ordering::SeqCst);
     assert!(bench.deployer.remove(second.deployment_id).await);
     assert_restored(&bench, &before);
+    assert!(bench.db.compose_updated().unwrap().is_empty());
+}
+
+/// Restauration refusee par Docker, puis redemarrage de l'agent avant la
+/// reprise : l'issue deja gardee (echec de la sonde) est remplacee par
+/// `NOT_RESTORED` avant que les notes soient oubliees.
+#[tokio::test(start_paused = true)]
+async fn compose_restart_after_a_failed_restore_still_reports_it() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    let bundle = recreating_stack(&bench, project, web).await;
+
+    *bench.probe.fail_first.lock().unwrap() = 1000;
+    bench.docker.fail_recreate.store(true, Ordering::SeqCst);
+    let second = compose_spec_with(&bench, project, web, &bundle);
+    assert!(bench.deploy(&second).await.0.is_err());
+    // Une issue anterieure differente : annulation gardee.
+    bench
+        .db
+        .put_outcome_forced(second.deployment_id, Stage::Start, &StageStatus::Cancelled)
+        .unwrap();
+
+    bench.restarted().sweep().await;
+
+    let outcome = bench.db.outcome(second.deployment_id).unwrap().unwrap();
+    assert_eq!(
+        outcome.status,
+        StageStatus::Failed {
+            message: NOT_RESTORED.into()
+        }
+    );
+    assert!(bench.db.compose_updated().unwrap().is_empty());
+}
+
+/// Annulation dont la restauration est refusee par Docker : l'issue est un
+/// echec qui le dit, pas une simple annulation.
+#[tokio::test(start_paused = true)]
+async fn compose_cancel_with_a_failed_restore_reports_it() {
+    let bench = Bench::new();
+    bench.compose.recreate.store(true, Ordering::SeqCst);
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.com", Some(web))])
+        .await
+        .unwrap();
+    for n in 100..105 {
+        bench.probe.answer(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let first = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    bench.deploy(&first).await.0.unwrap();
+    for n in 105..120 {
+        bench
+            .probe
+            .hang
+            .lock()
+            .unwrap()
+            .insert(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let tries = bench.probe.tries.lock().unwrap().len();
+    let mut second = compose_spec_with(&bench, project, web, &bundle_with_new_api());
+    second.healthcheck.interval_secs = 1;
+    let (tx, mut rx) = mpsc::channel(1024);
+    bench.deployer.spawn_deploy(second.clone(), tx.clone());
+    wait_until("sonde en cours", || {
+        bench.probe.tries.lock().unwrap().len() > tries
+    })
+    .await;
+    bench.docker.fail_recreate.store(true, Ordering::SeqCst);
+
+    bench.deployer.stop(second.deployment_id, &tx).await;
+
+    let messages = drain(&mut rx).await;
+    match stages(&messages).last() {
+        Some((Stage::Start, StageStatus::Failed { message })) => {
+            assert!(message.contains(NOT_RESTORED), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let stored = bench.db.outcome(second.deployment_id).unwrap().unwrap();
+    assert!(
+        matches!(&stored.status, StageStatus::Failed { message } if message.contains(NOT_RESTORED)),
+        "{stored:?}"
+    );
+}
+
+/// A en echec, restauration refusee par Docker ; puis `RemoveDeployment(A)`
+/// pendant le deploiement B du meme projet Compose : la reprise de A ne
+/// touche jamais les services de B (verrou du projet, garde de l'ensemble
+/// servi). B bascule avec ses propres conteneurs.
+#[tokio::test(start_paused = true)]
+async fn compose_restore_resumed_during_a_later_deploy_never_touches_it() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    let bundle = recreating_stack(&bench, project, web).await;
+
+    *bench.probe.fail_first.lock().unwrap() = 1000;
+    bench.docker.fail_recreate.store(true, Ordering::SeqCst);
+    let a = compose_spec_with(&bench, project, web, &bundle);
+    assert!(bench.deploy(&a).await.0.is_err());
+    *bench.probe.fail_first.lock().unwrap() = 0;
+    bench.docker.fail_recreate.store(false, Ordering::SeqCst);
+    *bench.docker.recreate_delay.lock().unwrap() = Duration::from_secs(5);
+
+    // Reprise de A en cours (recreation lente de `cache`)...
+    let deployer = bench.deployer.clone();
+    let a_id = a.deployment_id;
+    let resumed = tokio::spawn(async move { deployer.remove(a_id).await });
+    wait_until("restauration de A en cours", || {
+        bench
+            .docker
+            .calls()
+            .iter()
+            .any(|c| c == "recreate:shop-production-cache-1")
+    })
+    .await;
+    // ... pendant que B se deploie.
+    let b = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    let (result, messages) = bench.deploy(&b).await;
+    result.unwrap_or_else(|e| panic!("{e} {:?}", stages(&messages)));
+    assert!(resumed.await.unwrap(), "A retire");
+
+    assert!(
+        bench
+            .db
+            .record(b.deployment_id)
+            .unwrap()
+            .unwrap()
+            .deployment
+            .serving
+    );
+    for service in ["shop-production-cache-1", "shop-production-api-1"] {
+        let now = named(&bench, service);
+        assert_eq!(now.len(), 1, "{service}: {now:?}");
+        assert!(
+            now[0].0.starts_with("cid-"),
+            "{service} : conteneur de B attendu, {}",
+            now[0].0
+        );
+        assert!(now[0].1.running, "{service}");
+    }
+    assert!(bench.db.compose_updated().unwrap().is_empty());
+}
+
+/// A en echec, restauration refusee par Docker ; B bascule ensuite ;
+/// `RemoveDeployment(A)` arrive apres : les services de B restent.
+#[tokio::test(start_paused = true)]
+async fn compose_restore_resumed_after_a_later_switch_never_touches_it() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    let bundle = recreating_stack(&bench, project, web).await;
+
+    *bench.probe.fail_first.lock().unwrap() = 1000;
+    bench.docker.fail_recreate.store(true, Ordering::SeqCst);
+    let a = compose_spec_with(&bench, project, web, &bundle);
+    assert!(bench.deploy(&a).await.0.is_err());
+    *bench.probe.fail_first.lock().unwrap() = 0;
+    bench.docker.fail_recreate.store(false, Ordering::SeqCst);
+
+    let b = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    bench.deploy(&b).await.0.unwrap();
+    let kept: Vec<(String, common::FakeContainer)> =
+        ["shop-production-cache-1", "shop-production-api-1"]
+            .iter()
+            .flat_map(|n| named(&bench, n))
+            .collect();
+    assert_eq!(kept.len(), 2);
+
+    assert!(bench.deployer.remove(a.deployment_id).await);
+    for (id, c) in &kept {
+        let now = named(&bench, &c.name);
+        assert_eq!(now.len(), 1);
+        assert_eq!(&now[0].0, id, "{} : conteneur de B garde", c.name);
+    }
     assert!(bench.db.compose_updated().unwrap().is_empty());
 }
 

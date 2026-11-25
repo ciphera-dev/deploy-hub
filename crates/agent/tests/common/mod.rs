@@ -71,6 +71,8 @@ pub struct FakeDocker {
     pub fail_rmi: AtomicBool,
     /// `recreate` echoue (erreur d'API) tant que vrai.
     pub fail_recreate: AtomicBool,
+    /// Duree de `recreate` (restauration lente).
+    pub recreate_delay: Mutex<std::time::Duration>,
 }
 
 impl FakeDocker {
@@ -466,6 +468,10 @@ impl DockerOps for FakeDocker {
             calls.push(format!("recreate:{}", snap.name));
             calls.len()
         };
+        let delay = *self.recreate_delay.lock().unwrap();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         if self.fail_recreate.load(Ordering::SeqCst) {
             return Err(DockerError::Api(format!(
                 "recreation de {} refusee",

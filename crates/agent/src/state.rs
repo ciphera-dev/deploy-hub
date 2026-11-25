@@ -584,6 +584,30 @@ impl StateDb {
         Ok(())
     }
 
+    /// Deploiements servis dont l'ensemble comprend un service du projet
+    /// Compose stable `stable`, tries.
+    pub fn compose_serving_deployments(
+        &self,
+        stable: &str,
+    ) -> Result<Vec<DeploymentId>, StateError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT c.deployment_id FROM compose_serving c
+             JOIN deployments d ON d.deployment_id = c.deployment_id
+             WHERE d.serving = 1 AND c.stable = ?1
+             ORDER BY c.deployment_id",
+        )?;
+        let rows = stmt.query_map(params![stable], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(
+                row?.parse::<DeploymentId>()
+                    .map_err(|_| StateError::Corrupt("identifiant de deploiement"))?,
+            );
+        }
+        Ok(out)
+    }
+
     /// Service Compose deja en place `service` (projet Compose stable
     /// `stable`) mis a jour par le deploiement `id`, pas encore servi.
     pub fn put_compose_updated(
@@ -698,6 +722,19 @@ impl StateDb {
         self.put_outcome_at(id, stage, status, now_secs())
     }
 
+    /// Comme `put_outcome`, mais remplace aussi une issue `Failed` ou
+    /// `Cancelled` deja gardee. Reserve aux restaurations de services
+    /// Compose qui n'ont pas pu se faire : ce message ne doit jamais etre
+    /// masque par une issue anterieure.
+    pub fn put_outcome_forced(
+        &self,
+        id: DeploymentId,
+        stage: Stage,
+        status: &StageStatus,
+    ) -> Result<(), StateError> {
+        self.write_outcome(id, stage, status, now_secs(), true)
+    }
+
     /// `put_outcome` a l'instant `at` (secondes Unix ; tests de la garde).
     pub fn put_outcome_at(
         &self,
@@ -705,6 +742,17 @@ impl StateDb {
         stage: Stage,
         status: &StageStatus,
         at: i64,
+    ) -> Result<(), StateError> {
+        self.write_outcome(id, stage, status, at, false)
+    }
+
+    fn write_outcome(
+        &self,
+        id: DeploymentId,
+        stage: Stage,
+        status: &StageStatus,
+        at: i64,
+        force: bool,
     ) -> Result<(), StateError> {
         let status = match status {
             StageStatus::Failed { message } => StageStatus::Failed {
@@ -729,7 +777,8 @@ impl StateDb {
                 rusqlite::Error::QueryReturnedNoRows => Ok(None),
                 e => Err(e),
             })?;
-        if let Some(text) = previous
+        if !force
+            && let Some(text) = previous
             && let Ok(old) = parse_outcome(id, &text)
             && matches!(
                 old.status,
