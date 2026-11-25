@@ -75,6 +75,7 @@ fn unprocessable(message: impl Into<String>) -> ApiError {
 fn var_error(e: VarError) -> ApiError {
     match e {
         VarError::Invalid(m) => unprocessable(m),
+        VarError::Overlap => ApiError::new(422, "variable_scope_overlap", vars::OVERLAP_MESSAGE),
         VarError::NotFound => variable_not_found(),
         VarError::Seal => internal("variables", "chiffrement impossible"),
         VarError::Db(e) => internal("variables", e),
@@ -479,6 +480,9 @@ async fn create_global(
         .await
         .map_err(var_error)?;
     let id = Uuid::new_v4();
+    vars::check_global_overlap(&mut tx, id, &input.key, &environments, &scope)
+        .await
+        .map_err(var_error)?;
     let given = input.value.as_ref().map(|v| v.as_str());
     let short = vars::short_secret(input.secret, given, None);
     let value = vars::next_value(
@@ -553,6 +557,11 @@ async fn update_global(
         .begin()
         .await
         .map_err(db("transaction des variables"))?;
+    // Ecritures de globales en serie : le controle de chevauchement est exact.
+    sqlx::query("LOCK TABLE global_variables IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await
+        .map_err(db("verrou des variables globales"))?;
     let current = vars::lock_global(&mut tx, id)
         .await
         .map_err(db("lecture de la variable globale"))?
@@ -573,6 +582,9 @@ async fn update_global(
             return Err(unprocessable("Choisissez au moins un projet."));
         }
     };
+    vars::check_global_overlap(&mut tx, id, &key, &environments, &scope)
+        .await
+        .map_err(var_error)?;
     let secret = input.secret.unwrap_or(current.value.is_secret());
     let given = input.value.as_ref().map(|v| v.as_str());
     let changed = vars::next_value(

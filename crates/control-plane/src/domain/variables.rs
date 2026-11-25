@@ -69,6 +69,9 @@ pub fn valid_environment(name: &str) -> bool {
 pub enum VarError {
     /// 422.
     Invalid(String),
+    /// 422 `variable_scope_overlap` : une autre globale de la meme cle couvre
+    /// deja un projet et un environnement de cette portee.
+    Overlap,
     /// 404 (variable renommee, ou globale, introuvable).
     NotFound,
     Seal,
@@ -79,6 +82,7 @@ impl fmt::Display for VarError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(m) => f.write_str(m),
+            Self::Overlap => f.write_str(OVERLAP_MESSAGE),
             Self::NotFound => f.write_str("variable introuvable"),
             Self::Seal => f.write_str("chiffrement impossible"),
             Self::Db(e) => write!(f, "{e}"),
@@ -91,6 +95,9 @@ impl From<sqlx::Error> for VarError {
         Self::Db(e)
     }
 }
+
+/// Message de `VarError::Overlap`.
+pub const OVERLAP_MESSAGE: &str = "Une autre variable globale de même clé couvre déjà un projet et un environnement de cette portée.";
 
 fn invalid(m: impl Into<String>) -> VarError {
     VarError::Invalid(m.into())
@@ -1038,6 +1045,37 @@ pub async fn save_global(
         .await?;
     }
     Ok(())
+}
+
+/// Refuse une globale dont la portee recoupe celle d'une autre globale de la
+/// meme cle (meme environnement et meme projet, ou tous les projets). A
+/// appeler sous le verrou de table des ecritures de globales.
+pub async fn check_global_overlap(
+    conn: &mut PgConnection,
+    id: Uuid,
+    key: &str,
+    environments: &[String],
+    scope: &Scope,
+) -> Result<(), VarError> {
+    let projects: Vec<Uuid> = match scope {
+        Scope::All => Vec::new(),
+        Scope::Projects(p) => p.clone(),
+    };
+    let clash: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM global_variables g          WHERE g.key = $1 AND g.id <> $2 AND g.environments && $3            AND ($4 OR g.all_projects OR EXISTS (SELECT 1 FROM global_variable_projects p                 WHERE p.variable_id = g.id AND p.project_id = ANY ($5))))",
+    )
+    .bind(key)
+    .bind(id)
+    .bind(environments)
+    .bind(*scope == Scope::All)
+    .bind(&projects)
+    .fetch_one(conn)
+    .await?;
+    if clash {
+        Err(VarError::Overlap)
+    } else {
+        Ok(())
+    }
 }
 
 pub async fn count_globals(conn: &mut PgConnection) -> sqlx::Result<i64> {

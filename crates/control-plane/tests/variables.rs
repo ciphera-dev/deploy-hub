@@ -1610,3 +1610,74 @@ async fn concurrent_writes_cannot_exceed_caps() {
     .unwrap();
     assert_eq!(count, 2);
 }
+
+#[tokio::test]
+async fn overlapping_global_scope_refused() {
+    let (state, _pg) = common::state().await;
+    let admin = login(&state, "admin").await;
+    let (a, b) = (
+        image_project(&state, "alpha").await,
+        image_project(&state, "bravo").await,
+    );
+    let global = |key: &str, envs: Value, all: bool, projects: Vec<Uuid>| {
+        json!({ "key": key, "value": "1", "secret": false, "environments": envs,
+                "all_projects": all,
+                "projects": projects.iter().map(Uuid::to_string).collect::<Vec<_>>() })
+    };
+    let first = create_global(
+        &state,
+        &admin,
+        global("REGION", json!(["production"]), false, vec![a]),
+    )
+    .await;
+    let overlap = |r: &Reply| {
+        assert_eq!(r.status, 422, "{}", r.raw);
+        assert_eq!(
+            r.json()["error"]["code"],
+            "variable_scope_overlap",
+            "{}",
+            r.raw
+        );
+    };
+    // Meme cle, meme environnement, projet commun ou tous les projets.
+    for body in [
+        global(
+            "REGION",
+            json!(["production", "staging"]),
+            false,
+            vec![a, b],
+        ),
+        global("REGION", json!(["production"]), true, vec![]),
+    ] {
+        overlap(&send(&state, &admin, "POST", "/api/variables", Some(body)).await);
+    }
+    // Portees disjointes (autre projet, autre environnement, autre cle) : ok.
+    for body in [
+        global("REGION", json!(["production"]), false, vec![b]),
+        global("REGION", json!(["staging"]), false, vec![a]),
+        global("OTHER_KEY", json!(["production"]), true, vec![]),
+    ] {
+        create_global(&state, &admin, body).await;
+    }
+    // Modifier une globale sans changer sa portee ne se heurte pas a elle-meme.
+    let id = first["id"].as_str().unwrap();
+    let r = send(
+        &state,
+        &admin,
+        "PATCH",
+        &format!("/api/variables/{id}"),
+        Some(json!({ "value": "2" })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    // Elargir la portee vers une autre globale de la meme cle : refuse.
+    let r = send(
+        &state,
+        &admin,
+        "PATCH",
+        &format!("/api/variables/{id}"),
+        Some(json!({ "all_projects": true })),
+    )
+    .await;
+    overlap(&r);
+}
