@@ -678,6 +678,10 @@ async fn revoked_agent_handshake_refused() {
             .unwrap()
             .is_empty()
     );
+    // Pool ferme avant la suppression de la base de test : sinon une
+    // connexion encore tenue par une tache du lien la retarde.
+    drop(link);
+    db.close().await;
 }
 
 /// `ciphera admin revoke-agent <id>` : pose `revoked_at` une seule fois,
@@ -716,7 +720,8 @@ async fn admin_revoke_agent_cli() {
     assert!(!servers::is_authorized(&db, id, &fingerprint).await.unwrap());
 
     let audited: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_events          WHERE action = 'server.revoke.cli' AND detail->>'server_id' = $1",
+        "SELECT count(*) FROM audit_events \
+         WHERE action = 'server.revoke.cli' AND detail->>'server_id' = $1",
     )
     .bind(id.to_string())
     .fetch_one(&db)

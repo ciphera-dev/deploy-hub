@@ -63,16 +63,26 @@ configuration du service (`/etc/ciphera/ciphera.env`) pour joindre la base,
 comme les autres commandes `ciphera admin`. Un serveur revoque est refuse.
 
 Le certificat de l'agent n'est re-signe que s'il est emis par la CA de
-l'instance et que son empreinte est celle enregistree en base pour le
-serveur local (actuelle, ou celle d'un renouvellement en attente) ; sinon la
-commande s'arrete avant d'ecrire quoi que ce soit.
+l'instance, porte l'identifiant du serveur local enregistre et non revoque,
+et :
+
+- soit son empreinte est celle enregistree en base pour le serveur local
+  (actuelle, ou celle d'un renouvellement en attente) ;
+- soit son empreinte est inconnue de la base (base restauree, voir plus
+  bas) mais sa cle publique est celle de la copie
+  `/etc/ciphera/agents/local.crt` (la cle de l'agent ne change jamais).
+
+Sinon (autre CA, autre identifiant, autre cle, serveur revoque) la commande
+s'arrete avant d'ecrire quoi que ce soit.
 
 Certificat et cle du lien et du panneau sont remplaces ensemble : fichiers
 prepares (`.link.crt.renew`, `.link.key.renew`), puis un manifeste
 (`.link.crt.pair`), puis les renommages. Apres une coupure, le service (au
 demarrage) ou la commande termine le remplacement si le manifeste existe,
 sinon supprime les fichiers prepares : un certificat et une cle qui ne vont
-pas ensemble ne restent jamais en place.
+pas ensemble ne restent jamais en place. Le service et la commande prennent
+un verrou exclusif (`/etc/ciphera/tls/.pair.lock`) pour ces operations : la
+commande peut etre lancee pendant que le service tourne.
 
 La CA elle-meme (10 ans) n'est pas renouvelee par Ciphera v0.1.
 
@@ -107,9 +117,12 @@ sudo ciphera admin renew-certs
 sudo systemctl restart ciphera ciphera-agent
 ```
 
-La commande note en base l'empreinte d'un certificat neuf pour la cle de
-l'agent local et l'ecrit dans `/etc/ciphera-agent/agent.crt` : l'agent se
-reconnecte. Les certificats du lien et du panneau, sur disque, ne dependent
+La commande reconnait le certificat presente par l'agent (emis par la CA,
+identifiant du serveur local, meme cle que `/etc/ciphera/agents/local.crt`)
+meme si la base ne connait pas son empreinte, note en base l'empreinte d'un
+certificat neuf pour la meme cle et l'ecrit dans
+`/etc/ciphera-agent/agent.crt` : l'agent se reconnecte. Le journal le
+signale (`empreinte ... inconnue de la base (base restauree ?)`). Les certificats du lien et du panneau, sur disque, ne dependent
 pas de la base.
 
 ## Echecs de renouvellement

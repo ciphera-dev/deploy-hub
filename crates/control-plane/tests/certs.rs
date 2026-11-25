@@ -252,3 +252,138 @@ fn key_pair_write_is_completed_or_rolled_back() {
     assert!(!manifest.exists() && !staged(crt).exists() && !staged(key).exists());
     transport::server_config(&transport::LinkTls::load(&dir.0).unwrap()).unwrap();
 }
+
+/// Base restauree depuis une sauvegarde anterieure a un renouvellement :
+/// elle ne connait que l'ancienne empreinte, l'agent presente deja le
+/// certificat renouvele. `renew-certs` le re-signe quand meme (emis par la
+/// CA, identifiant du serveur local, meme cle que `agents/local.crt`) et
+/// l'agent se reconnecte.
+#[tokio::test]
+async fn renew_certs_after_database_restore() {
+    let (db, _guard) = common::database().await;
+    let ca = Ca::generate("instance").unwrap();
+    let dir = config_dir(&ca);
+    let agent_dir = common::TempDir::new();
+    let id = ServerId::new();
+    let key = pki::AgentKey::generate().unwrap();
+    let before = ca.issue_agent_cert(id, key.public_key_der()).unwrap();
+    std::fs::write(dir.0.join(servers::LOCAL_AGENT_CERT), &before.cert_pem).unwrap();
+    servers::register_local(&db, &before.cert_pem)
+        .await
+        .unwrap();
+    // Renouvele en ligne puis base restauree : seule `before` est connue.
+    let renewed = ca.issue_agent_cert(id, key.public_key_der()).unwrap();
+    std::fs::write(agent_dir.0.join("agent.crt"), &renewed.cert_pem).unwrap();
+    assert!(
+        !servers::is_authorized(&db, id, &renewed.fingerprint_sha256)
+            .await
+            .unwrap()
+    );
+
+    let done = certs::renew_all(&db, &dir.0, &agent_dir.0).await.unwrap();
+    assert_eq!(done.agent.map(|a| a.0), Some(id));
+    let pem = std::fs::read_to_string(agent_dir.0.join("agent.crt")).unwrap();
+    assert_ne!(pem, renewed.cert_pem);
+    let der = pki::der_from_pem(&pem).unwrap();
+    assert_eq!(pki::public_key_der(&der).unwrap(), key.public_key_der());
+    let new_fp = pki::fingerprint_sha256(&der);
+    assert!(servers::is_authorized(&db, id, &new_fp).await.unwrap());
+    assert!(servers::promote_next_cert(&db, id, &new_fp).await.unwrap());
+}
+
+/// Repli « base restauree » : refuse pour un certificat d'une autre CA,
+/// d'une autre cle, d'un autre identifiant, ou d'un serveur revoque ; rien
+/// n'est ecrit ni note.
+#[tokio::test]
+async fn renew_certs_restore_fallback_refusals() {
+    let (db, _guard) = common::database().await;
+    let ca = Ca::generate("instance").unwrap();
+    let dir = config_dir(&ca);
+    let agent_dir = common::TempDir::new();
+    let id = ServerId::new();
+    let key = pki::AgentKey::generate().unwrap();
+    let registered = ca.issue_agent_cert(id, key.public_key_der()).unwrap();
+    std::fs::write(dir.0.join(servers::LOCAL_AGENT_CERT), &registered.cert_pem).unwrap();
+    servers::register_local(&db, &registered.cert_pem)
+        .await
+        .unwrap();
+
+    let other_ca = Ca::generate("instance").unwrap();
+    let other_key = pki::AgentKey::generate().unwrap();
+    let cases = [
+        (
+            other_ca.issue_agent_cert(id, key.public_key_der()).unwrap(),
+            "CA de l'instance",
+        ),
+        (
+            ca.issue_agent_cert(id, other_key.public_key_der()).unwrap(),
+            "cle differente",
+        ),
+        (
+            ca.issue_agent_cert(ServerId::new(), key.public_key_der())
+                .unwrap(),
+            "serveur local",
+        ),
+    ];
+    let refused = async |pem: &str, expected: &str| {
+        std::fs::write(agent_dir.0.join("agent.crt"), pem).unwrap();
+        let err = certs::renew_all(&db, &dir.0, &agent_dir.0)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(expected), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(agent_dir.0.join("agent.crt")).unwrap(),
+            pem
+        );
+        let next: Option<String> =
+            sqlx::query_scalar("SELECT next_cert_fingerprint FROM servers WHERE id = $1")
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(next, None);
+    };
+    for (cert, expected) in &cases {
+        refused(&cert.cert_pem, expected).await;
+    }
+
+    // Serveur revoque : meme le bon certificat (meme cle) est refuse.
+    sqlx::query("UPDATE servers SET revoked_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let renewed = ca.issue_agent_cert(id, key.public_key_der()).unwrap();
+    refused(&renewed.cert_pem, "revoque").await;
+}
+
+/// Verrou des paires : un renouvellement attend que l'autre (service ou
+/// `renew-certs`) ait fini.
+#[test]
+fn pair_writes_are_serialized() {
+    let ca = Ca::generate("instance").unwrap();
+    let dir = config_dir(&ca);
+    let lock = certs::lock_pairs(&dir.0, transport::LINK_CRT).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = dir.0.clone();
+    let writer = std::thread::spawn(move || {
+        let loaded = certs::load_ca(&path).unwrap();
+        let renewed = certs::renew_server(
+            &path,
+            &loaded,
+            (transport::LINK_CRT, transport::LINK_KEY),
+            certs::now_unix(),
+            true,
+        );
+        tx.send(renewed.unwrap()).unwrap();
+    });
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "renouvellement fait malgre le verrou"
+    );
+    drop(lock);
+    assert!(rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap());
+    writer.join().unwrap();
+    transport::server_config(&transport::LinkTls::load(&dir.0).unwrap()).unwrap();
+}

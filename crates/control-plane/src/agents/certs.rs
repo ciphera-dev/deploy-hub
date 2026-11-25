@@ -147,14 +147,80 @@ pub fn replace_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     sync_dir(dir)
 }
 
+/// Fichier de verrou des paires d'un dossier (`tls/.pair.lock`).
+pub const PAIR_LOCK: &str = ".pair.lock";
+
+/// Verrou exclusif sur les paires du dossier de `crt` : relache a sa
+/// destruction.
+#[derive(Debug)]
+pub struct PairLock {
+    _file: fs::File,
+}
+
+/// Prend le verrou exclusif (attente) des paires certificat + cle du
+/// dossier de `crt` (relatif au dossier de configuration) : le service et
+/// `ciphera admin renew-certs` ne preparent, ne terminent ni n'annulent
+/// jamais une paire en meme temps. Fichier `.pair.lock` cree au besoin
+/// (0644, proprietaire du dossier, pour que le service puisse l'ouvrir
+/// apres une creation par root) ; jamais a travers un lien.
+pub fn lock_pairs(config_dir: &Path, crt: &str) -> io::Result<PairLock> {
+    let path = config_dir.join(crt);
+    let dir = path.parent().unwrap_or(config_dir);
+    let lock = dir.join(PAIR_LOCK);
+    let mut read = fs::OpenOptions::new();
+    read.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        read.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let file = match read.open(&lock) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let mut create = fs::OpenOptions::new();
+            create.read(true).write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                create
+                    .mode(0o644)
+                    .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+            }
+            let file = create.open(&lock)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let owner = fs::metadata(dir)?;
+                // Sans droit (service non root) : deja son proprietaire.
+                let _ = std::os::unix::fs::fchown(&file, Some(owner.uid()), Some(owner.gid()));
+            }
+            file
+        }
+        Err(e) => return Err(e),
+    };
+    file.lock()?;
+    Ok(PairLock { _file: file })
+}
+
 /// Remplace la paire `crt` + `key` (relatifs au dossier de configuration,
 /// meme dossier) sans jamais laisser un certificat et une cle qui ne vont
 /// pas ensemble : les deux fichiers sont prepares sur disque, puis le
 /// manifeste ([`pair_manifest`]) est ecrit (point de non-retour), puis le
 /// certificat et la cle sont renommes et le manifeste retire. Une coupure
 /// est reprise par [`recover_pair`] : avant le manifeste, l'ancienne paire
-/// reste ; apres, la nouvelle est terminee.
+/// reste ; apres, la nouvelle est terminee. Sous le verrou des paires
+/// ([`lock_pairs`]).
 pub fn replace_pair(
+    config_dir: &Path,
+    pair: (&str, &str),
+    cert_pem: &[u8],
+    key_pem: &[u8],
+) -> io::Result<()> {
+    let _lock = lock_pairs(config_dir, pair.0)?;
+    replace_pair_locked(config_dir, pair, cert_pem, key_pem)
+}
+
+fn replace_pair_locked(
     config_dir: &Path,
     (crt, key): (&str, &str),
     cert_pem: &[u8],
@@ -206,8 +272,18 @@ fn finish_pair(dir: &Path, manifest: &Path, moves: [(&Path, &Path); 2]) -> io::R
 /// Reprise d'un remplacement de paire interrompu (voir [`replace_pair`]) :
 /// manifeste present, la nouvelle paire est terminee ; absent, les fichiers
 /// prepares sont supprimes et l'ancienne paire reste. Vrai si une paire a
-/// ete terminee.
-pub fn recover_pair(config_dir: &Path, (crt, key): (&str, &str)) -> io::Result<bool> {
+/// ete terminee. Sous le verrou des paires ([`lock_pairs`]) ; dossier
+/// absent (instance sans ce certificat) : rien a faire.
+pub fn recover_pair(config_dir: &Path, pair: (&str, &str)) -> io::Result<bool> {
+    let crt_path = config_dir.join(pair.0);
+    if !crt_path.parent().unwrap_or(config_dir).is_dir() {
+        return Ok(false);
+    }
+    let _lock = lock_pairs(config_dir, pair.0)?;
+    recover_pair_locked(config_dir, pair)
+}
+
+fn recover_pair_locked(config_dir: &Path, (crt, key): (&str, &str)) -> io::Result<bool> {
     let (crt_path, key_path) = (config_dir.join(crt), config_dir.join(key));
     let dir = crt_path.parent().unwrap_or(config_dir);
     let manifest = pair_manifest(config_dir, crt);
@@ -253,7 +329,8 @@ pub fn recover_pairs(config_dir: &Path) -> io::Result<()> {
 
 /// Renouvelle le certificat serveur `crt` (et sa cle `key`) s'il a passe
 /// les deux tiers de sa validite, ou toujours avec `force`. Vrai si
-/// renouvele. Certificat et cle sont remplaces ensemble ([`replace_pair`]).
+/// renouvele. Certificat et cle sont remplaces ensemble ([`replace_pair`]),
+/// lecture comprise sous le verrou des paires.
 pub fn renew_server(
     config_dir: &Path,
     ca: &pki::Ca,
@@ -261,7 +338,14 @@ pub fn renew_server(
     now: i64,
     force: bool,
 ) -> io::Result<bool> {
-    recover_pair(config_dir, (crt, key))?;
+    if !config_dir.join(crt).exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{crt} absent"),
+        ));
+    }
+    let _lock = lock_pairs(config_dir, crt)?;
+    recover_pair_locked(config_dir, (crt, key))?;
     let pem = fs::read_to_string(config_dir.join(crt))?;
     let due = pki::der_from_pem(&pem)
         .and_then(|der| pki::renewal_due(&der, now))
@@ -271,7 +355,7 @@ pub fn renew_server(
     }
     let mut bundle = ca.renew_server_cert(&pem).map_err(io::Error::other)?;
     let new_key = bundle.key_pem.take().unwrap_or_default();
-    replace_pair(
+    replace_pair_locked(
         config_dir,
         (crt, key),
         bundle.cert_pem.as_bytes(),
@@ -348,7 +432,7 @@ pub async fn renew_all(
         .map_err(|e| format!("reprise d'un renouvellement interrompu : {e}"))?;
     let agent_crt = agent_dir.join(AGENT_CRT);
     let local_agent = match fs::read_to_string(&agent_crt) {
-        Ok(pem) => Some(local_agent_cert(db, &ca, &pem).await?),
+        Ok(pem) => Some(local_agent_cert(db, &ca, config_dir, &pem).await?),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(format!("{} : {e}", agent_crt.display()).into()),
     };
@@ -359,15 +443,18 @@ pub async fn renew_all(
         server_certs.push(pair.0);
     }
     let agent = match local_agent {
-        Some((id, fingerprint, der)) => {
+        Some((id, known, der)) => {
             let bundle = ca.renew_agent_cert(&der)?;
+            // Empreinte connue : la meme qu'au controle (atomique). Base
+            // restauree (`known` vide) : identifiant et ligne locale.
             let noted = sqlx::query(
                 "UPDATE servers SET next_cert_fingerprint = $3 \
                  WHERE id = $1 AND kind = 'local' AND revoked_at IS NULL \
-                 AND (cert_fingerprint = $2 OR next_cert_fingerprint = $2)",
+                 AND ($2::text IS NULL \
+                      OR cert_fingerprint = $2 OR next_cert_fingerprint = $2)",
             )
             .bind(id)
-            .bind(&fingerprint)
+            .bind(known.as_deref())
             .bind(&bundle.fingerprint_sha256)
             .execute(db)
             .await?
@@ -396,14 +483,21 @@ pub async fn renew_all(
 }
 
 /// Certificat PEM de l'agent local accepte pour `renew-certs` : emis par
-/// la CA de l'instance, avec un identifiant d'agent, et d'empreinte
-/// enregistree (actuelle ou suivante) pour le serveur local non revoque.
-/// Renvoie l'identifiant, l'empreinte et le DER.
+/// la CA de l'instance, avec l'identifiant du serveur local non revoque,
+/// et :
+/// - soit d'empreinte enregistree (actuelle ou suivante) pour ce serveur ;
+/// - soit, empreinte inconnue de la base (base restauree depuis une
+///   sauvegarde anterieure a un renouvellement), de meme cle publique que
+///   la copie root `agents/local.crt` (la cle de l'agent ne change jamais).
+///
+/// Renvoie l'identifiant, l'empreinte enregistree (`None` dans le second
+/// cas) et le DER.
 async fn local_agent_cert(
     db: &PgPool,
     ca: &pki::Ca,
+    config_dir: &Path,
     pem: &str,
-) -> Result<(ServerId, String, Vec<u8>), Box<dyn std::error::Error>> {
+) -> Result<(ServerId, Option<String>, Vec<u8>), Box<dyn std::error::Error>> {
     let der = pki::der_from_pem(pem).ok_or("certificat de l'agent illisible")?;
     let ca_der = pki::der_from_pem(ca.cert_pem()).ok_or("certificat de la CA illisible")?;
     if !pki::issued_by(&ca_der, &der) {
@@ -414,22 +508,45 @@ async fn local_agent_cert(
     }
     let id = pki::agent_id_from_cert(&der).ok_or("certificat de l'agent sans identifiant")?;
     let fingerprint = pki::fingerprint_sha256(&der);
-    let revoked: Option<bool> = sqlx::query_scalar(
-        "SELECT revoked_at IS NOT NULL FROM servers \
-         WHERE id = $1 AND kind = 'local' \
-         AND (cert_fingerprint = $2 OR next_cert_fingerprint = $2)",
+    let local: Option<(bool, bool)> = sqlx::query_as(
+        "SELECT revoked_at IS NOT NULL, \
+                (cert_fingerprint = $2 OR next_cert_fingerprint IS NOT DISTINCT FROM $2) \
+         FROM servers WHERE id = $1 AND kind = 'local'",
     )
     .bind(id)
     .bind(&fingerprint)
     .fetch_optional(db)
     .await?;
-    match revoked {
+    match local {
         None => Err(format!(
-            "certificat de l'agent ({fingerprint}) different de celui enregistre pour le \
-             serveur local : agent non renouvele"
+            "certificat de l'agent : {id} n'est pas le serveur local enregistre : agent non renouvele"
         )
         .into()),
-        Some(true) => Err(format!("serveur {id} revoque : agent non renouvele").into()),
-        Some(false) => Ok((id, fingerprint, der)),
+        Some((true, _)) => Err(format!("serveur {id} revoque : agent non renouvele").into()),
+        Some((false, true)) => Ok((id, Some(fingerprint), der)),
+        Some((false, false)) => {
+            // Base restauree : meme cle que la copie root de l'agent local.
+            let copy = config_dir.join(servers::LOCAL_AGENT_CERT);
+            let same_key = fs::read_to_string(&copy)
+                .ok()
+                .and_then(|pem| pki::der_from_pem(&pem))
+                .and_then(|der| pki::public_key_der(&der))
+                .is_some_and(|key| Some(key) == pki::public_key_der(&der));
+            if same_key {
+                tracing::warn!(
+                    "agent local {id} : empreinte {fingerprint} inconnue de la base (base \
+                     restauree ?), meme cle que {} : renouvele",
+                    copy.display()
+                );
+                Ok((id, None, der))
+            } else {
+                Err(format!(
+                    "certificat de l'agent ({fingerprint}) different de celui enregistre pour le \
+                     serveur local, et cle differente de {} : agent non renouvele",
+                    copy.display()
+                )
+                .into())
+            }
+        }
     }
 }

@@ -305,7 +305,8 @@ pub async fn revoke_agent(db: &PgPool, id: ServerId) -> Result<AgentRevoke, Admi
         .await
         .map_err(database)?;
     sqlx::query(
-        "INSERT INTO audit_events (id, actor_id, action, target, detail)          VALUES ($1, NULL, 'server.revoke.cli', 'server', $2)",
+        "INSERT INTO audit_events (id, actor_id, action, target, detail) \
+         VALUES ($1, NULL, 'server.revoke.cli', 'server', $2)",
     )
     .bind(uuid::Uuid::new_v4())
     .bind(json!({ "server_id": id }))
