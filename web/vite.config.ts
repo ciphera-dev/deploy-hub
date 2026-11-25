@@ -22,5 +22,10 @@ function mswWorkerDev(): Plugin {
 export default defineConfig({
   plugins: [tanstackRouter({ target: "react", autoCodeSplitting: false }), react(), tailwindcss(), mswWorkerDev()],
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
-  build: { outDir: "dist" },
+  build: {
+    outDir: "dist",
+    // La CSP (font-src retombe sur default-src 'self') refuse les polices en data: :
+    // elles restent des fichiers sous /assets/, jamais inlinees.
+    assetsInlineLimit: (filePath) => (/\.(woff2?|ttf|otf|eot)$/i.test(filePath) ? false : undefined),
+  },
 });
