@@ -1,25 +1,59 @@
 # Certificats de l'instance
 
 `ciphera init` cree une autorite de certification propre a l'instance
-(`/etc/ciphera/ca/`, 10 ans). Elle signe trois sortes de certificats :
+(`/etc/ciphera/ca/`, 10 ans). Sa cle (`/etc/ciphera/ca/ca.key`) est a root
+(0600) et masquee au plan de controle : seul le signataire root
+`ciphera-certsign.service` (`ciphera admin sign-requests`) la lit. Elle
+signe trois sortes de certificats :
 
 | Certificat | Fichiers | Validite | Renouvellement automatique |
 |---|---|---|---|
-| Lien des agents (QUIC + mTLS) | `/etc/ciphera/tls/link.{crt,key}` | 730 jours | par le plan de controle, aux deux tiers (apres ~487 jours), au demarrage puis toutes les 12 h, recharge a chaud |
+| Lien des agents (QUIC + mTLS) | `/etc/ciphera/tls/link.{crt,key}` | 730 jours | demande du plan de controle au signataire, aux deux tiers (apres ~487 jours), au demarrage puis toutes les 12 h ; meme cle, recharge a chaud |
 | Acces direct du panneau (port 8443) | `/etc/ciphera/tls/panel.{crt,key}` | 730 jours | idem |
 | Certificat client de chaque agent | `/etc/ciphera-agent/agent.crt` (cle : `agent.key`) | 365 jours | sur le lien, aux deux tiers (apres ~244 jours) |
 
 Les certificats des domaines (Let's Encrypt) sont geres a part par le proxy
 du noeud.
 
+## Signataire root (`ciphera-certsign`)
+
+Le plan de controle (compte `ciphera`) n'a que `ca.crt`. Pour chaque
+certificat a renouveler, il ecrit une demande
+`/var/lib/ciphera/cert-requests/<nom>.json` (`<nom>` : identifiant du
+serveur, `link` ou `panel`) : identifiant de la demande, usage, empreinte de
+la cle publique actuelle et, pour un agent, son certificat actuel.
+`ciphera-certsign.path` lance alors `ciphera-certsign.service` (root,
+oneshot), qui :
+
+- ne signe un certificat d'agent que s'il est emis par la CA, porte
+  l'identifiant demande, et que son empreinte est celle enregistree en base
+  pour un serveur non revoque ; toujours pour la **meme cle publique** ;
+- ne signe le lien ou le panneau que pour la cle du certificat en place
+  (memes noms et adresses) ;
+- impose la duree (365 ou 730 jours) et les usages ;
+- refuse toute autre forme et tout lien symbolique, et supprime la demande
+  dans tous les cas ;
+- ecrit la reponse `/var/lib/ciphera/cert-responses/<nom>.crt`
+  (identifiant de la demande en premiere ligne, puis le certificat).
+
+Le plan de controle n'accepte que la reponse a sa propre demande (meme
+identifiant), verifiee (CA, meme cle). Sans reponse apres 10 minutes, la
+demande est reecrite. Journal : `journalctl -u ciphera-certsign`
+(`certificat ... signe`, `demande ... refusee : ...`).
+
+Le signataire tourne aussi a chaque demarrage de la machine, a
+l'installation et a la mise a jour qui l'apporte : il remet alors la cle de
+la CA d'une installation anterieure (compte `ciphera`) a root, en 0600.
+
 ## Renouvellement d'un agent
 
 1. L'agent verifie son certificat toutes les 12 h. Passe les deux tiers de
    sa validite, il se reconnecte au plan de controle.
-2. A la connexion, le plan de controle emet un nouveau certificat pour la
-   **meme cle** et le **meme identifiant** (la cle privee ne quitte jamais
-   l'agent), note son empreinte en `servers.next_cert_fingerprint` et
-   l'envoie (`RenewedCertificate`, protocole version 5).
+2. A la connexion, le plan de controle demande au signataire un nouveau
+   certificat pour la **meme cle** et le **meme identifiant** (la cle
+   privee ne quitte jamais l'agent) ; le signataire note son empreinte en
+   `servers.next_cert_fingerprint` ; le plan de controle l'envoie
+   (`RenewedCertificate`) des que la reponse arrive.
 3. L'agent verifie qu'il est signe par la CA de l'instance (`ca.crt`) et
    porte son identifiant et sa cle, remplace `agent.crt` (ecriture
    atomique) puis se reconnecte avec lui.
@@ -31,15 +65,16 @@ agent qui n'a pas pu ecrire le nouveau fichier se reconnecte comme avant et
 le renouvellement reprend 12 h plus tard. Un serveur revoque n'est jamais
 renouvele.
 
-Journal a surveiller : `journalctl -u ciphera` (`certificat renouvele
-envoye`, `certificat renouvele en service`, `renouvellement ... impossible`)
+Journal a surveiller : `journalctl -u ciphera` (`renouvellement du
+certificat demande au signataire`, `certificat renouvele envoye`,
+`certificat renouvele en service`, `pas de reponse du signataire`)
 et `journalctl -u ciphera-agent` (`certificat de l'agent renouvele`,
 `certificat renouvele refuse`).
 
 ## Certificat deja expire : `ciphera admin renew-certs`
 
-Une machine eteinte plus de 4 mois apres l'echeance des deux tiers (ou une
-CA illisible par le service) peut laisser expirer un certificat : l'agent ne
+Une machine eteinte plus de 4 mois apres l'echeance des deux tiers (ou un
+signataire en echec) peut laisser expirer un certificat : l'agent ne
 se connecte plus (`journalctl -u ciphera-agent` : erreur TLS) ou le panneau
 8443 presente un certificat expire. Sur le serveur :
 
@@ -48,9 +83,11 @@ sudo ciphera admin renew-certs
 sudo systemctl restart ciphera ciphera-agent
 ```
 
-La commande renouvelle, quelle que soit leur date :
+La commande remet d'abord la cle de la CA a root (0600) si besoin, puis
+renouvelle, quelle que soit leur date, avec les memes fonctions de signature
+que le signataire :
 
-- le certificat du lien et celui du panneau (nouvelles cles, memes noms et
+- le certificat du lien et celui du panneau (memes cles, memes noms et
   adresses) ;
 - le certificat de l'agent local (`/etc/ciphera-agent/agent.crt`, meme cle ;
   `--agent-dir` pour un autre dossier), et sa copie
@@ -75,14 +112,13 @@ et :
 Sinon (autre CA, autre identifiant, autre cle, serveur revoque) la commande
 s'arrete avant d'ecrire quoi que ce soit.
 
-Certificat et cle du lien et du panneau sont remplaces ensemble : fichiers
-prepares (`.link.crt.renew`, `.link.key.renew`), puis un manifeste
-(`.link.crt.pair`), puis les renommages. Apres une coupure, le service (au
-demarrage) ou la commande termine le remplacement si le manifeste existe,
-sinon supprime les fichiers prepares : un certificat et une cle qui ne vont
-pas ensemble ne restent jamais en place. Le service et la commande prennent
-un verrou exclusif (`/etc/ciphera/tls/.pair.lock`) pour ces operations : la
-commande peut etre lancee pendant que le service tourne.
+Le certificat du lien et du panneau est remplace par renommage, la cle ne
+change pas. Un remplacement de paire certificat + cle interrompu par une
+version anterieure (fichiers prepares `.link.crt.renew`, `.link.key.renew`,
+manifeste `.link.crt.pair`) est termine si le manifeste existe, sinon
+annule, avant toute lecture. Le service et la commande prennent un verrou
+exclusif (`/etc/ciphera/tls/.pair.lock`) pour ces operations : la commande
+peut etre lancee pendant que le service tourne.
 
 La CA elle-meme (10 ans) n'est pas renouvelee par Ciphera v0.1.
 
@@ -130,10 +166,12 @@ pas de la base.
 Un renouvellement qui echoue n'arrete rien (l'ancien certificat reste en
 service jusqu'a son expiration) mais il est journalise :
 
-- `journalctl -u ciphera -p warning` : `renouvellement de ... impossible`
-  (certificat du lien ou du panneau), `CA de l'instance illisible`
-  (aucun renouvellement automatique), `certificat renouvele de ... non
+- `journalctl -u ciphera -p warning` : `renouvellement de ... non demande`
+  (certificat du lien ou du panneau), `pas de reponse du signataire`,
+  `certificat ... du signataire refuse`, `certificat renouvele de ... non
   enregistre` (base) ;
+- `journalctl -u ciphera-certsign` : `demande ... refusee`, `CA de
+  l'instance illisible`, `base indisponible` ;
 - `journalctl -u ciphera-agent -p warning` : `certificat de l'agent a
   renouveler (expire dans N jour(s))`. Ce message ne revient toutes les
   12 h que si le renouvellement n'aboutit pas ; `certificat renouvele

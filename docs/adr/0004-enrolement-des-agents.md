@@ -26,7 +26,7 @@ Ouvrir le lien à une autre adresse sans mécanisme d'enrôlement obligerait à 
 ### Dépendances
 
 - R37 (confirmation renforcée du propriétaire) pour la création du jeton.
-- R48 (signataire racine séparé) pour la signature des CSR.
+- R48 (signataire racine séparé) pour la signature des CSR. Livré en v0.1 (`ciphera-certsign.service`, `ciphera admin sign-requests`, `agents::signer`) pour les renouvellements : il ne signe aujourd'hui que pour une clé publique déjà enregistrée ; la signature d'une CSR d'enrôlement sera une nouvelle forme de demande, liée au jeton consommé, refusée tant qu'elle n'existe pas.
 - Révocation (R30), déjà livrée.
 
 La règle de refus hors boucle locale n'est levée qu'une fois ces éléments livrés et testés ensemble.
