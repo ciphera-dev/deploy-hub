@@ -37,6 +37,7 @@ use crate::auth::webauthn::request_host;
 use crate::auth::{internal, rate_limit};
 use crate::connectors::github;
 use crate::domain::domains::{self, acme, dns, panel};
+use crate::http::client_ip::ProxyListener;
 use crate::http::settings::{Admin, owner_only};
 use crate::secrets::labels;
 use crate::state::AppState;
@@ -120,8 +121,8 @@ async fn commit_with(
         .map_err(db("transaction"))
 }
 
-/// Requete arrivee par le proxy du noeud (pair en boucle locale, HTTPS)
-/// sous l'hote du domaine du panneau.
+/// Requete arrivee par le proxy du noeud (ecoute locale, pair en boucle
+/// locale, HTTPS) sous l'hote du domaine du panneau.
 struct ViaPanelDomain(bool);
 
 impl FromRequestParts<AppState> for ViaPanelDomain {
@@ -131,10 +132,11 @@ impl FromRequestParts<AppState> for ViaPanelDomain {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let loopback = parts
-            .extensions
-            .get::<ConnectInfo<SocketAddr>>()
-            .is_some_and(|ConnectInfo(addr)| addr.ip().to_canonical().is_loopback());
+        let loopback = parts.extensions.get::<ProxyListener>().is_some()
+            && parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .is_some_and(|ConnectInfo(addr)| addr.ip().to_canonical().is_loopback());
         let https = parts
             .headers
             .get("x-forwarded-proto")

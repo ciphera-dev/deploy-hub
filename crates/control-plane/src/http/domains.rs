@@ -12,7 +12,7 @@ use api_types::domains::{
 };
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -25,6 +25,7 @@ use uuid::Uuid;
 use crate::auth::internal;
 use crate::authz::{Require, lvl, res};
 use crate::domain::domains::{self, DomainError, acme, dns};
+use crate::http::panel_host;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -164,15 +165,26 @@ async fn list(
 async fn create(
     State(state): State<AppState>,
     auth: Require<res::Domains, lvl::Write>,
+    headers: HeaderMap,
+    uri: Uri,
     query: Result<Query<ProjectQuery>, QueryRejection>,
     body: Result<Json<NewDomain>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let project = project_id(query)?;
     let Json(input) = body.map_err(|_| unprocessable("Corps de requête invalide."))?;
+    // Nom par lequel le panneau est joint : jamais un domaine de projet.
+    let current = panel_host::request_host_name(&headers, &uri);
     let mut tx = begin(&state).await?;
-    let id = domains::create(&mut tx, &state.cfg, project, &input, auth.user.id)
-        .await
-        .map_err(domain_error)?;
+    let id = domains::create(
+        &mut tx,
+        &state.cfg,
+        current.as_deref(),
+        project,
+        &input,
+        auth.user.id,
+    )
+    .await
+    .map_err(domain_error)?;
     let found = one(&mut tx, id).await?;
     audit(
         &mut tx,
@@ -264,13 +276,17 @@ async fn remove(
 }
 
 /// `POST /api/domains/{id}/verify` : A/AAAA vers l'IP du noeud. Correct :
-/// en ligne et certificat demande.
+/// en ligne et certificat demande. Refuse (409 `reserved_host`) un hote
+/// reserve au panneau ou par lequel la requete joint le panneau.
 async fn verify(
     State(state): State<AppState>,
     auth: Require<res::Domains, lvl::Write>,
+    headers: HeaderMap,
+    uri: Uri,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let id = domain_id(&id)?;
+    let current = panel_host::request_host_name(&headers, &uri);
     let (v4, v6) = state.cfg.node_ips();
     if v4.is_none() && v6.is_none() {
         return Err(domain_error(DomainError::NoNodeIp));
@@ -282,6 +298,9 @@ async fn verify(
             .await
             .map_err(db("connexion a la base"))?;
         let found = one(&mut conn, id).await?;
+        if domains::refused(&state.cfg, current.as_deref(), &found.domain.host) {
+            return Err(domain_error(DomainError::Reserved));
+        }
         if !domains::ready(&mut conn, &found)
             .await
             .map_err(db("port du service"))?

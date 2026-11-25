@@ -4255,7 +4255,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Hote deja utilise ou reserve au panneau */
+            /** @description Hote deja utilise, reserve au panneau ou par lequel la requete joint le panneau */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4582,6 +4582,13 @@ export interface operations {
             };
             /** @description Domaine introuvable */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Hote reserve au panneau, ou par lequel la requete joint le panneau (reserved_host) */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

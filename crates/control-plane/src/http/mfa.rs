@@ -26,7 +26,6 @@ use super::auth::audit;
 use crate::auth::session::{self, Session, SessionToken};
 use crate::auth::{
     CurrentUser, csrf, factors, internal, password, rate_limit, recovery, totp, unauthenticated,
-    webauthn,
 };
 use crate::http::client_ip::ClientIp;
 use crate::secrets::labels;
@@ -589,8 +588,7 @@ async fn methods(
     .fetch_one(&state.db)
     .await
     .map_err(|e| internal("lecture des seconds facteurs", e))?;
-    let available =
-        webauthn::relying_party(&state.cfg, webauthn::request_host(&headers, &uri)).is_some();
+    let available = super::webauthn::rp_for(&state, &headers, &uri).is_some();
     let body = MfaMethods {
         totp,
         webauthn: passkey && available,

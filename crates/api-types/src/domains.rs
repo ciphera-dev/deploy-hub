@@ -162,7 +162,7 @@ fn list_domains() {}
         (status = 201, description = "Domaine ajoute (DNS a verifier)", body = Domain),
         (status = 403, description = "Role insuffisant (developer et plus)"),
         (status = 404, description = "Projet ou service introuvable"),
-        (status = 409, description = "Hote deja utilise ou reserve au panneau"),
+        (status = 409, description = "Hote deja utilise, reserve au panneau ou par lequel la requete joint le panneau"),
         (status = 422, description = "Nom invalide (sslip.io et nip.io compris), ou port interne manquant"),
     )
 )]
@@ -225,6 +225,7 @@ fn delete_domain() {}
         (status = 200, description = "Resultat de la verification (A/AAAA vers l'IP du noeud) ; DNS correct : en ligne, certificat demande", body = Domain),
         (status = 403, description = "Role insuffisant (developer et plus)"),
         (status = 404, description = "Domaine introuvable"),
+        (status = 409, description = "Hote reserve au panneau, ou par lequel la requete joint le panneau (reserved_host)"),
         (status = 422, description = "Port interne manquant, ou IP du noeud inconnue"),
     )
 )]

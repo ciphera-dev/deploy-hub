@@ -84,14 +84,25 @@ fn no_store(body: impl IntoResponse) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], body).into_response()
 }
 
+/// Relying party pour cette requete : variables WebAuthn, sinon origine
+/// publique (domaine du panneau confirme ou `CIPHERA_PUBLIC_URL`), sinon
+/// hote de la requete.
+pub fn rp_for(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Option<Rp> {
+    let public = state.panel.public_url(&state.cfg);
+    store::relying_party(
+        &state.cfg,
+        public.as_deref(),
+        store::request_host(headers, uri),
+    )
+}
+
 /// Relying party et instance webauthn-rs pour cette requete.
 fn relying_party(
     state: &AppState,
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Result<(Rp, Webauthn), ApiError> {
-    let rp = store::relying_party(&state.cfg, store::request_host(headers, uri))
-        .ok_or_else(unavailable)?;
+    let rp = rp_for(state, headers, uri).ok_or_else(unavailable)?;
     let webauthn = store::webauthn(&rp).map_err(|e| {
         tracing::warn!(error = %e, "configuration WebAuthn refusee");
         unavailable()
@@ -108,7 +119,7 @@ fn options_body(ceremony_id: Uuid, options: serde_json::Value) -> Response {
 
 /// `GET /api/auth/webauthn/status`
 async fn status(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let available = store::relying_party(&state.cfg, store::request_host(&headers, &uri)).is_some();
+    let available = rp_for(&state, &headers, &uri).is_some();
     no_store(Json(WebauthnStatus { available }))
 }
 

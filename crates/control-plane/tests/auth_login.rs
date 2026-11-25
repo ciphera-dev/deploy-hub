@@ -9,6 +9,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, header};
 use control_plane::app::build_router;
 use control_plane::auth::password;
+use control_plane::http::client_ip::ProxyListener;
 use control_plane::state::AppState;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -48,6 +49,8 @@ struct Req<'a> {
     cookie: Option<&'a str>,
     csrf: Option<&'a str>,
     peer: Option<&'a str>,
+    /// Requete recue par l'ecoute locale du proxy.
+    proxy: bool,
     xff: Option<&'a str>,
     body: Option<Value>,
 }
@@ -98,6 +101,9 @@ async fn call(state: &AppState, method: &str, path: &str, r: Req<'_>) -> Reply {
     let mut req = req.body(body).unwrap();
     let peer: SocketAddr = r.peer.unwrap_or(DIRECT).parse().unwrap();
     req.extensions_mut().insert(ConnectInfo(peer));
+    if r.proxy {
+        req.extensions_mut().insert(ProxyListener);
+    }
     let res = build_router(state.clone()).oneshot(req).await.unwrap();
     let status = res.status().as_u16();
     // Bloc : l'emprunt de la reponse se termine avant l'attente (futur Send).
@@ -626,13 +632,43 @@ async fn xff_ignored_from_non_proxy_peer() {
     .await;
     assert_limited(&r);
 
-    // Depuis le proxy local (loopback), l'en-tete fait foi.
+    // Pair en boucle locale sur l'acces direct (8443) : l'en-tete n'est pas
+    // cru non plus, toutes ces requetes comptent pour 127.0.0.1.
+    for i in 0..5 {
+        let xff = format!("198.51.100.{}", 100 + i);
+        let r = fail(
+            &env.state,
+            EMAIL,
+            Req {
+                peer: Some("127.0.0.1:41000"),
+                xff: Some(&xff),
+                ..Req::default()
+            },
+        )
+        .await;
+        assert_eq!(r.status, 401);
+    }
+    let r = login_as(
+        &env.state,
+        EMAIL,
+        PASSWORD,
+        Req {
+            peer: Some("127.0.0.1:41000"),
+            xff: Some("198.51.100.200"),
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_limited(&r);
+
+    // Depuis l'ecoute locale du proxy, l'en-tete fait foi.
     for _ in 0..5 {
         let r = fail(
             &env.state,
             EMAIL,
             Req {
                 peer: Some("127.0.0.1:41000"),
+                proxy: true,
                 xff: Some("198.51.100.1"),
                 ..Req::default()
             },
@@ -642,6 +678,7 @@ async fn xff_ignored_from_non_proxy_peer() {
     }
     let via_proxy = |xff| Req {
         peer: Some("127.0.0.1:41000"),
+        proxy: true,
         xff: Some(xff),
         ..Req::default()
     };

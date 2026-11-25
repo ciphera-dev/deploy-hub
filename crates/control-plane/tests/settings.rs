@@ -339,10 +339,11 @@ async fn ip_allowlist_blocks_others_403() {
     )
     .await;
     assert_eq!(r.status, 403, "{}", r.raw);
-    // Par le proxy du noeud (boucle locale) : X-Forwarded-For fait foi.
+    // Par l'ecoute locale du proxy du noeud : X-Forwarded-For fait foi.
     let via_proxy = |ip: &'static str| Req {
         cookie: Some(&owner.0),
         peer: Some("127.0.0.1:40000"),
+        proxy: true,
         headers: vec![("x-forwarded-for", ip.into())],
         ..Req::default()
     };

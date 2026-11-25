@@ -14,6 +14,7 @@ pub mod notifications;
 pub mod organization;
 pub mod overview;
 pub mod panel_domain;
+pub mod panel_host;
 pub mod password_reset;
 pub mod project_git;
 pub mod project_overview;

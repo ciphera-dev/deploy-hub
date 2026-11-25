@@ -2,9 +2,13 @@
 //! credentials stockes.
 //!
 //! - RP ID et origine : `CIPHERA_WEBAUTHN_RP_ID` / `CIPHERA_WEBAUTHN_RP_ORIGIN`,
-//!   sinon l'hote par lequel le panneau est joint (en-tete `Host`). Les
+//!   sinon l'origine publique (domaine du panneau confirme, sinon
+//!   `CIPHERA_PUBLIC_URL`) des qu'elle porte un nom de domaine, et seulement
+//!   a defaut l'hote par lequel le panneau est joint (en-tete `Host`). Les
 //!   navigateurs refusent un RP ID qui est une adresse IP : WebAuthn est alors
 //!   indisponible (`relying_party` renvoie `None`). `localhost` est accepte.
+//!   Changer de domaine du panneau change le RP ID : les passkeys enregistrees
+//!   sous l'ancien domaine ne fonctionnent plus (l'interface le signale).
 //! - Ceremonies : etat (defi compris) garde cote serveur, a usage unique
 //!   (`take` le supprime), valable 5 minutes. Enregistrement et second facteur
 //!   sont lies a la session qui les a demandes ; la connexion sans mot de
@@ -50,8 +54,10 @@ pub fn request_host<'a>(headers: &'a HeaderMap, uri: &'a Uri) -> Option<&'a str>
 }
 
 /// RP ID et origine, ou `None` si WebAuthn est indisponible (RP ID qui est
-/// une adresse IP, configuration ou hote invalide).
-pub fn relying_party(cfg: &Config, host: Option<&str>) -> Option<Rp> {
+/// une adresse IP, configuration ou hote invalide). `public_origin` :
+/// origine publique du panneau (`PanelSwitch::public_url`), prioritaire sur
+/// `host` quand elle porte un nom de domaine.
+pub fn relying_party(cfg: &Config, public_origin: Option<&str>, host: Option<&str>) -> Option<Rp> {
     let (id, origin) = match (&cfg.webauthn_rp_id, &cfg.webauthn_rp_origin) {
         (id, Some(origin)) => {
             let origin = Url::parse(origin).ok()?;
@@ -68,22 +74,29 @@ pub fn relying_party(cfg: &Config, host: Option<&str>) -> Option<Rp> {
             };
             (id.clone(), Url::parse(&origin).ok()?)
         }
-        (None, None) => {
-            // Nom d'hote et port seulement : rien qui puisse changer le sens de l'URL.
-            let host = host?;
-            if host.is_empty()
-                || host.len() > 260
-                || !host
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b))
-            {
-                return None;
+        (None, None) => match public_origin
+            .and_then(|o| Url::parse(o).ok())
+            .and_then(|o| Some((o.domain()?.to_string(), o.clone())))
+        {
+            // Origine publique nommee : elle fait foi, quel que soit `Host`.
+            Some(public) => public,
+            None => {
+                // Nom d'hote et port seulement : rien qui puisse changer le sens de l'URL.
+                let host = host?;
+                if host.is_empty()
+                    || host.len() > 260
+                    || !host
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b))
+                {
+                    return None;
+                }
+                let origin = Url::parse(&format!("https://{host}")).ok()?;
+                // `domain()` est vide pour une adresse IP.
+                let id = origin.domain()?.to_string();
+                (id, origin)
             }
-            let origin = Url::parse(&format!("https://{host}")).ok()?;
-            // `domain()` est vide pour une adresse IP.
-            let id = origin.domain()?.to_string();
-            (id, origin)
-        }
+        },
     };
     let id = id.to_ascii_lowercase();
     let ip_literal = id.parse::<IpAddr>().is_ok() || id.starts_with('[');
@@ -450,11 +463,11 @@ mod tests {
     fn default_relying_party_is_the_request_host() {
         let c = cfg(None, None);
         assert_eq!(
-            relying_party(&c, Some("Panel.Example.com:8443")),
+            relying_party(&c, None, Some("Panel.Example.com:8443")),
             rp("panel.example.com", "https://panel.example.com:8443")
         );
         assert_eq!(
-            relying_party(&c, Some("localhost:8443")),
+            relying_party(&c, None, Some("localhost:8443")),
             rp("localhost", "https://localhost:8443")
         );
         for host in [
@@ -467,7 +480,7 @@ mod tests {
             Some("a@b.com"),
             Some("a b"),
         ] {
-            assert_eq!(relying_party(&c, host), None, "{host:?}");
+            assert_eq!(relying_party(&c, None, host), None, "{host:?}");
         }
     }
 
@@ -475,31 +488,71 @@ mod tests {
     fn configured_relying_party_wins_over_host() {
         let c = cfg(Some("panel.example.com"), None);
         assert_eq!(
-            relying_party(&c, Some("203.0.113.7:8443")),
+            relying_party(&c, None, Some("203.0.113.7:8443")),
             rp("panel.example.com", "https://panel.example.com:8443")
         );
         let c = cfg(None, Some("https://panel.example.com"));
         assert_eq!(
-            relying_party(&c, None),
+            relying_party(&c, None, None),
             rp("panel.example.com", "https://panel.example.com")
         );
         let c = cfg(Some("example.com"), Some("https://panel.example.com"));
         assert_eq!(
-            relying_party(&c, None),
+            relying_party(&c, None, None),
             rp("example.com", "https://panel.example.com")
         );
-        assert_eq!(relying_party(&cfg(Some("203.0.113.7"), None), None), None);
-        assert_eq!(relying_party(&cfg(Some("::1"), None), None), None);
         assert_eq!(
-            relying_party(&cfg(None, Some("https://203.0.113.7:8443")), None),
+            relying_party(&cfg(Some("203.0.113.7"), None), None, None),
+            None
+        );
+        assert_eq!(relying_party(&cfg(Some("::1"), None), None, None), None);
+        assert_eq!(
+            relying_party(&cfg(None, Some("https://203.0.113.7:8443")), None, None),
             None
         );
         assert_eq!(
-            relying_party(&cfg(None, Some("http://panel.example.com")), None),
+            relying_party(&cfg(None, Some("http://panel.example.com")), None, None),
             None,
             "http seulement pour localhost"
         );
-        assert_eq!(relying_party(&cfg(None, Some("not a url")), None), None);
+        assert_eq!(
+            relying_party(&cfg(None, Some("not a url")), None, None),
+            None
+        );
+        // Variables dediees : prioritaires sur l'origine publique.
+        assert_eq!(
+            relying_party(
+                &cfg(Some("panel.example.com"), None),
+                Some("https://other.example.org"),
+                None
+            ),
+            rp("panel.example.com", "https://panel.example.com:8443")
+        );
+    }
+
+    #[test]
+    fn public_origin_wins_over_host_unless_it_is_an_ip() {
+        let c = cfg(None, None);
+        assert_eq!(
+            relying_party(
+                &c,
+                Some("https://panel.example.com"),
+                Some("evil.example.org")
+            ),
+            rp("panel.example.com", "https://panel.example.com")
+        );
+        assert_eq!(
+            relying_party(&c, Some("https://203.0.113.7:8443"), Some("localhost:8443")),
+            rp("localhost", "https://localhost:8443")
+        );
+        assert_eq!(
+            relying_party(
+                &c,
+                Some("https://203.0.113.7:8443"),
+                Some("203.0.113.7:8443")
+            ),
+            None
+        );
     }
 
     #[test]

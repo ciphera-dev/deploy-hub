@@ -1,15 +1,22 @@
 //! Ecouteurs du panneau (A-I1) : connexions muettes, en-tetes lents et
-//! plafonds de connexions, sur de vrais sockets.
+//! plafonds de connexions, sur de vrais sockets ; hotes reconnus sur l'acces
+//! direct (421 pour un nom non declare).
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, header};
 use axum::routing::get;
 use axum_server::Handle;
+use control_plane::domain::domains::panel::{Panel, PanelSwitch};
 use control_plane::http::listener::{self, ConnLimits, Hardening};
+use control_plane::http::panel_host;
+use shared::config::Config;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tower::ServiceExt;
 
 const FAST: Hardening = Hardening {
     first_request: Duration::from_millis(400),
@@ -129,4 +136,124 @@ fn public_and_local_bounds() {
     assert!(p.max_per_ip < p.max_connections);
     // Le plafond tient sous LimitNOFILE de ciphera.service (65536).
     assert!(p.max_connections + Hardening::LOCAL.max_connections < 65536 / 2);
+}
+
+// --- Hotes reconnus sur l'acces direct (8443) -------------------------------
+
+fn direct_config(pairs: &'static [(&'static str, &'static str)]) -> std::sync::Arc<Config> {
+    std::sync::Arc::new(
+        Config::from_lookup(|name| {
+            if name == "CIPHERA_DATABASE_URL" {
+                return Some("postgres://u:p@127.0.0.1/c".to_string());
+            }
+            pairs
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        })
+        .unwrap(),
+    )
+}
+
+/// Statut et corps d'une requete sur l'acces direct sous l'hote `host`.
+async fn direct_get(
+    cfg: std::sync::Arc<Config>,
+    panel: PanelSwitch,
+    host: Option<&str>,
+) -> (u16, String) {
+    let app = panel_host::direct(Router::new().route("/", get(|| async { "ok" })), cfg, panel);
+    let mut req = Request::builder().uri("/");
+    if let Some(h) = host {
+        req = req.header(header::HOST, h);
+    }
+    let res = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+    let status = res.status().as_u16();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 16)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test]
+async fn unknown_host_on_8443_gets_421() {
+    let cfg = direct_config(&[
+        ("CIPHERA_PUBLIC_URL", "https://panel.example.com:8443"),
+        ("CIPHERA_PANEL_ALIASES", "admin.example.com"),
+    ]);
+    // Domaine du panneau enregistre mais pas encore confirme : non reconnu.
+    let panel = PanelSwitch::default();
+    panel.set(Some(Panel {
+        id: uuid::Uuid::new_v4(),
+        host: "pending.example.net".into(),
+        confirmed: false,
+    }));
+    for host in [
+        Some("app.example.org"),
+        Some("app.example.org:8443"),
+        Some("evil.panel.example.com"),
+        Some("pending.example.net:8443"),
+        Some("localhost.example.org"),
+        None,
+    ] {
+        let (status, body) = direct_get(cfg.clone(), panel.clone(), host).await;
+        assert_eq!(status, 421, "{host:?}");
+        assert!(body.contains("CIPHERA_PANEL_ALIASES"), "{body}");
+        assert!(
+            !body.contains("app.example.org"),
+            "hote non repris : {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ip_and_alias_hosts_served() {
+    let cfg = direct_config(&[
+        ("CIPHERA_PUBLIC_URL", "https://Panel.Example.com:8443"),
+        ("CIPHERA_WEBAUTHN_RP_ID", "rp.example.com"),
+        (
+            "CIPHERA_PANEL_ALIASES",
+            "admin.example.com, ops.example.com",
+        ),
+    ]);
+    let panel = PanelSwitch::default();
+    panel.set(Some(Panel {
+        id: uuid::Uuid::new_v4(),
+        host: "confirmed.example.net".into(),
+        confirmed: true,
+    }));
+    for host in [
+        "203.0.113.7",
+        "203.0.113.7:8443",
+        "[2001:db8::1]:8443",
+        "[::1]",
+        "127.0.0.1:8443",
+        "localhost",
+        "LOCALHOST:8443",
+        "panel.example.com:8443",
+        "rp.example.com",
+        "admin.example.com:8443",
+        "OPS.example.com.",
+        "confirmed.example.net:8443",
+    ] {
+        let (status, body) = direct_get(cfg.clone(), panel.clone(), Some(host)).await;
+        assert_eq!((status, body.as_str()), (200, "ok"), "{host}");
+    }
+    // Sans aucun nom declare : IP et localhost seulement.
+    let bare = direct_config(&[]);
+    assert_eq!(
+        direct_get(
+            bare.clone(),
+            PanelSwitch::default(),
+            Some("198.51.100.4:8443")
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        direct_get(bare, PanelSwitch::default(), Some("panel.example.com"))
+            .await
+            .0,
+        421
+    );
 }

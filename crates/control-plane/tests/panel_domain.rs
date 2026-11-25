@@ -180,6 +180,7 @@ async fn via_proxy(state: &AppState, s: &Session, method: &str, path: &str, host
             cookie: Some(&s.0),
             csrf: Some(&s.1),
             peer: Some("127.0.0.1:40000"),
+            proxy: true,
             host: Some(host),
             headers: vec![("x-forwarded-proto", "https".into())],
             ..Req::default()
@@ -727,8 +728,9 @@ async fn panel_domain_can_be_cancelled_before_confirmation() {
     assert_eq!(audit, 2);
 }
 
-/// Confirmation telle que le panneau la recoit : pair TCP `peer`, en-tete
-/// `Host` et en-tetes supplementaires (ceux que le client aurait pu poser).
+/// Confirmation telle que l'ecoute locale du proxy la recoit : pair TCP
+/// `peer`, en-tete `Host` et en-tetes supplementaires (ceux que le client
+/// aurait pu poser).
 async fn confirm_as(
     state: &AppState,
     s: &Session,
@@ -745,6 +747,7 @@ async fn confirm_as(
             cookie: Some(&s.0),
             csrf: Some(&s.1),
             peer: Some(peer),
+            proxy: true,
             host: Some(host),
             headers,
             body,
@@ -844,6 +847,25 @@ async fn panel_domain_confirm_only_through_the_proxy_on_the_panel_host() {
         assert_eq!(r.code(), "confirm_from_domain", "{why}");
         assert!(env.state.panel.listens_8443(), "{why}");
     }
+    // Pair en boucle locale sur l'acces direct (hors ecoute locale du
+    // proxy), meme avec tout le reste correct.
+    let r = call(
+        &env.state,
+        "POST",
+        &format!("{PATH}/confirm"),
+        Req {
+            cookie: Some(&owner.0),
+            csrf: Some(&owner.1),
+            peer: Some("127.0.0.1:40000"),
+            host: Some(HOST),
+            headers: vec![https()],
+            ..Req::default()
+        },
+    )
+    .await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "confirm_from_domain");
+    assert!(env.state.panel.listens_8443());
     // Le proxy (boucle locale, HTTPS, hote du panneau, port compris).
     let r = confirm_as(
         &env.state,

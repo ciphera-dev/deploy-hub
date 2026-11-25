@@ -17,13 +17,13 @@
 //! | `CIPHERA_DB_USER`            | `ciphera` (sans URL) |
 //! | `CIPHERA_DB_NAME`            | `ciphera` (sans URL) |
 //! | `CIPHERA_DB_PASSWORD_FILE`   | `<CIPHERA_CONFIG_DIR>/db_password` (sans URL) |
-//! | `CIPHERA_WEBAUTHN_RP_ID`     | facultatif : hote du panneau (en-tete `Host`) |
+//! | `CIPHERA_WEBAUTHN_RP_ID`     | facultatif : nom de domaine de l'origine publique (domaine du panneau confirme, sinon `CIPHERA_PUBLIC_URL`), a defaut hote du panneau (en-tete `Host`) |
 //! | `CIPHERA_WEBAUTHN_RP_ORIGIN` | facultatif : `https://<RP ID>[:port du panneau]` |
 //! | `CIPHERA_PUBLIC_URL`         | facultatif : origine publique du panneau (`https://hote[:port]`, `http` pour localhost seulement) ; liens envoyes par e-mail |
 //! | `CIPHERA_GITHUB_API_URL`     | `https://api.github.com` (origine de l'API GitHub ; `http` pour localhost seulement, tests) |
 //! | `CIPHERA_PUBLIC_IP`          | facultatif : IP publique du noeud (verification DNS des domaines, domaine genere `<projet>.<ip>.sslip.io`) ; sans valeur, l'hote de `CIPHERA_PUBLIC_URL` s'il est une IP, sinon l'IP du certificat du panneau (`ciphera init --public-ip`) |
 //! | `CIPHERA_PUBLIC_IP6`         | facultatif : IPv6 publique du noeud (enregistrements AAAA des domaines) quand `CIPHERA_PUBLIC_IP` est une IPv4 |
-//! | `CIPHERA_PANEL_ALIASES`      | facultatif : autres noms du panneau, separes par des virgules, reserves comme son domaine (`CIPHERA_PUBLIC_URL`, `CIPHERA_WEBAUTHN_RP_ID`) |
+//! | `CIPHERA_PANEL_ALIASES`      | facultatif : autres noms DNS du panneau, separes par des virgules, reserves comme son domaine (`CIPHERA_PUBLIC_URL`, `CIPHERA_WEBAUTHN_RP_ID`) ; l'acces direct (8443) ne sert que les IP, `localhost` et ces noms reserves (421 sinon) |
 //! | `CIPHERA_UPDATE_CHECK`       | `0` : verification de la derniere version desactivee (`1` pour l'activer ; aucune telemetrie) |
 //! | `CIPHERA_RELEASE_BASE_URL`   | `https://get.ciphera.ch` (origine des releases lue par la verification ; `http` pour localhost seulement, tests) |
 //!

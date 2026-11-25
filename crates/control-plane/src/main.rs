@@ -14,6 +14,7 @@ use control_plane::domain::logs::{self, hub::LogHub};
 use control_plane::domain::metrics;
 use control_plane::domain::variables::VariableSecrets;
 use control_plane::http::listener::{self, ConnLimits, Hardening};
+use control_plane::http::panel_host;
 use control_plane::init::{self, InitOptions};
 use control_plane::jobs::worker::{self, Handlers, WorkerConfig};
 use control_plane::mail::Delivery;
@@ -428,6 +429,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let direct_open = state.panel.subscribe();
     let panel = state.panel.clone();
+    let direct_hosts = state.panel.clone();
     // File de taches : deploiements, nettoyage des images, ACME, metriques
     // et notifications (sans gestionnaire, une tache echoue de facon
     // terminale). Priorite par genre (deploiements d'abord) ; ACME et
@@ -500,7 +502,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "HTTPS sur {https_addr} (jusqu'a la confirmation d'un domaine du panneau), ecoute locale du proxy sur {local_addr}"
     );
     // Ecouteurs bornes (delais, plafonds de connexions) : voir http::listener.
-    let https = serve_direct(https_addr, tls_config, router.clone(), direct_open, stop_rx);
+    // Acces direct : 421 pour un nom non declare (http::panel_host).
+    let direct_router = panel_host::direct(router.clone(), cfg.clone(), direct_hosts);
+    let https = serve_direct(https_addr, tls_config, direct_router, direct_open, stop_rx);
     let local = listener::plain(
         local_addr,
         Hardening::LOCAL,
@@ -510,8 +514,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ),
     )
     .handle(handle.clone())
-    // Adresse du pair TCP : boucle locale (le proxy pose X-Forwarded-For).
-    .serve(router.into_make_service_with_connect_info::<SocketAddr>());
+    // Adresse du pair TCP : boucle locale ; requetes marquees, seules a
+    // pouvoir faire croire X-Forwarded-For (pose par le proxy).
+    .serve(panel_host::local(router).into_make_service_with_connect_info::<SocketAddr>());
     // Redirection HTTP facultative (CIPHERA_HTTP_PORT) : le port 80 appartient
     // au proxy du noeud, qui redirige deja les hotes IP vers le panneau.
     let panel_port = cfg.panel_port;

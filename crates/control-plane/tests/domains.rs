@@ -369,6 +369,102 @@ async fn panel_domain_reserved_409() {
     }
 }
 
+/// Appel sous l'hote `host` (en-tete `Host` de la requete).
+async fn send_as_host(
+    state: &AppState,
+    s: &Session,
+    host: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Reply {
+    call(
+        state,
+        "POST",
+        path,
+        Req {
+            cookie: Some(&s.0),
+            csrf: Some(&s.1),
+            host: Some(host),
+            body,
+            ..Req::default()
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn domain_create_refuses_current_host() {
+    let mut env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let p = project(&env.state, &dev, "by-dns").await;
+    let path = format!("/api/domains?project={p}");
+    // Le nom par lequel le panneau est joint (8443) ne devient pas un
+    // domaine de projet, y compris par l'option www.
+    for (host, body) in [
+        (
+            "panel-by-dns.example.org:8443",
+            json!({ "host": "Panel-By-Dns.example.org", "internal_port": 3000 }),
+        ),
+        (
+            "www.by-dns.example.org",
+            json!({ "host": "by-dns.example.org", "www": true, "internal_port": 3000 }),
+        ),
+    ] {
+        let r = send_as_host(&env.state, &dev, host, &path, Some(body)).await;
+        assert_eq!(r.status, 409, "{host} : {}", r.raw);
+        assert_eq!(r.code(), "reserved_host");
+    }
+    // Depuis l'IP du noeud : accepte.
+    let r = send_as_host(
+        &env.state,
+        &dev,
+        "203.0.113.7:8443",
+        &path,
+        Some(json!({ "host": "shop.by-dns.example.org", "internal_port": 3000 })),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    env.dns.set("shop.by-dns.example.org", &[NODE_IP]);
+    // La verification refuse aussi l'hote de la requete...
+    let verify_path = format!("/api/domains/{id}/verify");
+    let r = send_as_host(
+        &env.state,
+        &dev,
+        "shop.by-dns.example.org:8443",
+        &verify_path,
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "reserved_host");
+    // ... et un nom reserve au panneau apres la creation du domaine.
+    let mut reserved = env.state.clone();
+    reserved.cfg = Arc::new(
+        Config::from_lookup(|name| match name {
+            "CIPHERA_DATABASE_URL" => Some("postgres://u:p@127.0.0.1/c".into()),
+            "CIPHERA_PUBLIC_IP" => Some(NODE_IP.into()),
+            "CIPHERA_PANEL_ALIASES" => Some("shop.by-dns.example.org".into()),
+            _ => None,
+        })
+        .unwrap(),
+    );
+    let r = send_as_host(&reserved, &dev, "203.0.113.7:8443", &verify_path, None).await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "reserved_host");
+    let status: String = sqlx::query_scalar("SELECT dns_status FROM domains WHERE id = $1")
+        .bind(Uuid::parse_str(&id).unwrap())
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+    assert_eq!(status, "pending", "rien d'enregistre");
+    // Sous un autre hote : verification normale.
+    let r = send_as_host(&env.state, &dev, "203.0.113.7:8443", &verify_path, None).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["dns_status"], "ok");
+    drain(&mut env);
+}
+
 #[tokio::test]
 async fn internal_port_required_before_a_domain_goes_live_422() {
     let env = Env::new().await;

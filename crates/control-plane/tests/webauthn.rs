@@ -11,6 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use common::api::{Reply, Req, call};
 use control_plane::auth::password;
+use control_plane::domain::domains::panel::Panel;
 use control_plane::mail::{Delivery, OutgoingMail};
 use control_plane::state::AppState;
 use serde_json::{Value, json};
@@ -669,6 +670,99 @@ async fn ip_literal_rp_id_is_unavailable() {
     .await;
     assert_eq!(r.status, 409, "{}", r.raw);
     assert_eq!(r.code(), "webauthn_unavailable");
+}
+
+/// RP ID annonce aux options de connexion sous l'hote `host` (`None` si
+/// WebAuthn est indisponible).
+async fn login_rp_id(state: &AppState, host: &str) -> Option<String> {
+    let r = call(
+        state,
+        "POST",
+        "/api/auth/webauthn/assert/options",
+        Req {
+            host: Some(host),
+            body: Some(json!({ "mode": "login" })),
+            ..Req::default()
+        },
+    )
+    .await;
+    match r.status {
+        200 => Some(
+            r.json()["options"]["publicKey"]["rpId"]
+                .as_str()?
+                .to_string(),
+        ),
+        _ => {
+            assert_eq!(r.code(), "webauthn_unavailable", "{}", r.raw);
+            None
+        }
+    }
+}
+
+#[tokio::test]
+async fn rp_id_uses_public_origin() {
+    // CIPHERA_PUBLIC_URL fixe le RP ID, quel que soit l'hote de la requete.
+    let env = env_with(&[("CIPHERA_PUBLIC_URL", "https://Panel.Example.com:8443")]).await;
+    for host in [
+        "other.example.org:8443",
+        "203.0.113.7:8443",
+        "localhost:8443",
+    ] {
+        assert_eq!(
+            login_rp_id(&env.state, host).await.as_deref(),
+            Some("panel.example.com"),
+            "{host}"
+        );
+    }
+
+    // Domaine du panneau confirme : il prime sur l'hote (et sur l'URL publique).
+    let env = env_with(&[("CIPHERA_PUBLIC_URL", "https://panel.example.com:8443")]).await;
+    let panel = Panel {
+        id: Uuid::new_v4(),
+        host: "panel.example.net".into(),
+        confirmed: false,
+    };
+    // Pas encore confirme : l'URL publique fait foi.
+    env.state.panel.set(Some(panel.clone()));
+    assert_eq!(
+        login_rp_id(&env.state, "panel.example.net")
+            .await
+            .as_deref(),
+        Some("panel.example.com")
+    );
+    env.state.panel.set(Some(Panel {
+        confirmed: true,
+        ..panel
+    }));
+    for host in ["panel.example.net", "other.example.org:8443"] {
+        assert_eq!(
+            login_rp_id(&env.state, host).await.as_deref(),
+            Some("panel.example.net"),
+            "{host}"
+        );
+    }
+
+    // Origine publique en adresse IP (pas de RP ID possible) : l'hote de la
+    // requete reste utilise, localhost compris.
+    let env = env_with(&[("CIPHERA_PUBLIC_URL", "https://203.0.113.7:8443")]).await;
+    assert_eq!(
+        login_rp_id(&env.state, "localhost:8443").await.as_deref(),
+        Some("localhost")
+    );
+    assert_eq!(login_rp_id(&env.state, "203.0.113.7:8443").await, None);
+
+    // Variables WebAuthn dediees : elles priment toujours.
+    let env = env_with(&[
+        ("CIPHERA_PUBLIC_URL", "https://panel.example.com:8443"),
+        ("CIPHERA_WEBAUTHN_RP_ID", "rp.example.com"),
+    ])
+    .await;
+    assert_eq!(
+        login_rp_id(&env.state, "panel.example.com:8443")
+            .await
+            .as_deref(),
+        Some("rp.example.com")
+    );
 }
 
 #[tokio::test]

@@ -1103,7 +1103,7 @@
             "description": "Projet ou service introuvable"
           },
           "409": {
-            "description": "Hote deja utilise ou reserve au panneau"
+            "description": "Hote deja utilise, reserve au panneau ou par lequel la requete joint le panneau"
           },
           "422": {
             "description": "Nom invalide (sslip.io et nip.io compris), ou port interne manquant"
@@ -1406,6 +1406,9 @@
           },
           "404": {
             "description": "Domaine introuvable"
+          },
+          "409": {
+            "description": "Hote reserve au panneau, ou par lequel la requete joint le panneau (reserved_host)"
           },
           "422": {
             "description": "Port interne manquant, ou IP du noeud inconnue"

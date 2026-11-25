@@ -3,7 +3,7 @@
 //! Le middleware [`layer`] s'applique a `/api/*` et au panneau (SPA) : une
 //! adresse hors liste recoit 403 `ip_not_allowed`. L'adresse est celle de
 //! [`client_ip`] (pair TCP ; `X-Forwarded-For` seulement depuis le proxy du
-//! noeud en boucle locale). Liste vide : aucune restriction.
+//! noeud, sur son ecoute locale). Liste vide : aucune restriction.
 //!
 //! Exemptes, car appelees par des machines et non par l'equipe : les deploy
 //! hooks (`/v1/hooks/deploy/{id}`), le webhook GitHub, les defis ACME et
@@ -202,7 +202,11 @@ pub async fn layer(State(state): State<AppState>, request: Request, next: Next) 
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ConnectInfo(addr)| addr.ip());
-    let ip = client_ip::resolve(peer, request.headers());
+    let via_proxy = request
+        .extensions()
+        .get::<client_ip::ProxyListener>()
+        .is_some();
+    let ip = client_ip::resolve(peer, via_proxy, request.headers());
     if list.iter().any(|net| net.contains(ip)) {
         return next.run(request).await;
     }

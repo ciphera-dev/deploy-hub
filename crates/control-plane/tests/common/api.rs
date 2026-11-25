@@ -7,6 +7,7 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, header};
 use control_plane::app::build_router;
+use control_plane::http::client_ip::ProxyListener;
 use control_plane::state::AppState;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -18,6 +19,9 @@ pub struct Req<'a> {
     pub cookie: Option<&'a str>,
     pub csrf: Option<&'a str>,
     pub peer: Option<&'a str>,
+    /// Requete recue par l'ecoute locale du proxy (marqueur
+    /// `ProxyListener`) ; sinon, acces direct.
+    pub proxy: bool,
     /// En-tete `Host` (absent par defaut).
     pub host: Option<&'a str>,
     pub body: Option<Value>,
@@ -91,6 +95,9 @@ pub async fn call(state: &AppState, method: &str, path: &str, r: Req<'_>) -> Rep
     let mut req = req.body(body).unwrap();
     let peer: SocketAddr = r.peer.unwrap_or(DIRECT).parse().unwrap();
     req.extensions_mut().insert(ConnectInfo(peer));
+    if r.proxy {
+        req.extensions_mut().insert(ProxyListener);
+    }
     let res = build_router(state.clone()).oneshot(req).await.unwrap();
     let status = res.status().as_u16();
     let (set_cookie, retry_after, cache_control) = {

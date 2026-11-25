@@ -143,6 +143,12 @@ pub fn reserved(cfg: &Config, host: &str) -> bool {
     cfg.reserved_hosts().iter().any(|h| h == host)
 }
 
+/// Hote refuse a un projet : reserve au panneau, ou nom par lequel la
+/// requete courante joint le panneau (`current_host`, normalise).
+pub fn refused(cfg: &Config, current_host: Option<&str>, host: &str) -> bool {
+    reserved(cfg, host) || current_host == Some(host)
+}
+
 fn dns_status(s: &str) -> DnsStatus {
     match s {
         "ok" => DnsStatus::Ok,
@@ -436,9 +442,12 @@ async fn has_primary(conn: &mut PgConnection, environment: Uuid) -> sqlx::Result
 
 /// Ajoute un domaine (DNS a verifier). Le premier domaine servant un
 /// service devient principal ; `www` ajoute `www.<hote>` en redirection.
+/// `current_host` : nom par lequel la requete joint le panneau, refuse
+/// comme les hotes reserves.
 pub async fn create(
     conn: &mut PgConnection,
     cfg: &Config,
+    current_host: Option<&str>,
     project: Uuid,
     input: &NewDomain,
     actor: Uuid,
@@ -469,7 +478,7 @@ pub async fn create(
         .chain(www.as_ref())
         .cloned()
         .collect();
-    if hosts.iter().any(|h| reserved(cfg, h)) || panel_host(conn, &hosts).await? {
+    if hosts.iter().any(|h| refused(cfg, current_host, h)) || panel_host(conn, &hosts).await? {
         return Err(DomainError::Reserved);
     }
     let environment = production(conn, project).await?;

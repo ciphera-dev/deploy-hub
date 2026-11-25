@@ -33,6 +33,18 @@ curl -fsSL https://get.ciphera.ch/install.sh | sudo CIPHERA_APP_EGRESS_DENY_PRIV
 
 Le réglage est gardé dans `/etc/ciphera-egress/egress.env` (root, `CIPHERA_APP_EGRESS_DENY_PRIVATE=0` ou `1`) : après une modification à la main, il s'applique en 5 minutes au plus (`ciphera-egress-check.timer`) ou tout de suite par `sudo systemctl start ciphera-egress-check.service`.
 
+### Accès au panneau par un nom DNS
+
+L'accès direct au panneau (`https://<IP>:8443`, certificat auto-signé) répond par son adresse IP et par `localhost`. Pour le joindre sur ce port par un nom DNS, déclarez ce nom dans `/etc/ciphera/ciphera.env`, puis redémarrez le service `ciphera` :
+
+```sh
+CIPHERA_PANEL_ALIASES=admin.exemple.com,ops.exemple.com
+```
+
+Les noms reconnus sur le port 8443 sont l'hôte de `CIPHERA_PUBLIC_URL`, `CIPHERA_WEBAUTHN_RP_ID`, ces alias et le domaine du panneau confirmé. Tout autre nom reçoit `421 Misdirected Request`. Un nom réservé au panneau ne peut pas devenir le domaine d'un projet, et un domaine de projet ne peut pas être créé ni vérifié sous le nom par lequel on joint le panneau.
+
+Les passkeys sont liées à l'origine publique du panneau (domaine confirmé, sinon `CIPHERA_PUBLIC_URL`). Si ce domaine change, les passkeys enregistrées sous l'ancien ne fonctionnent plus : il faut les enregistrer à nouveau.
+
 ## Stack
 
 | Couche | Choix |
