@@ -1086,8 +1086,14 @@ async fn oversized_github_response_rejected() {
     assert_eq!(r.status, 502, "{}", r.raw);
     assert_eq!(r.code(), "github_unavailable");
 
-    // Metadonnees (jeton) au-dela de 1 Mio.
+    // Metadonnees (jeton) au-dela de 1 Mio : la liste des depots est simulee
+    // et valide, seule la borne peut expliquer l'echec.
     server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/installation/repositories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "repositories": [] })))
+        .mount(&server)
+        .await;
     let big = format!(
         "{{\"token\":\"{INSTALLATION_TOKEN}\",\"expires_at\":\"{}\",\"pad\":\"{}\"}}",
         expires,
@@ -1105,6 +1111,87 @@ async fn oversized_github_response_rejected() {
         .await;
     let r = send(&state, &dev, "GET", "/api/git/providers/github/repos", None).await;
     assert_eq!(r.status, 502, "{}", r.raw);
+    let reached = server.received_requests().await.unwrap();
+    assert!(
+        reached
+            .iter()
+            .all(|q| q.url.path() != "/installation/repositories"),
+        "le jeton trop gros ne doit pas etre utilise"
+    );
+}
+
+/// Serveur brut : `/app/installations` repond normalement, le jeton arrive en
+/// morceaux (sans `Content-Length`) et depasse 1 Mio. Renvoie l'URL et le
+/// compteur de requetes recues sur `/installation/repositories`.
+async fn chunked_oversized_token_server() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let lists = Arc::new(AtomicUsize::new(0));
+    let seen = lists.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let seen = seen.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 16 * 1024];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let line = head.lines().next().unwrap_or_default().to_string();
+                if line.contains("/installation/repositories") {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                }
+                if line.starts_with("GET /app/installations") {
+                    let body = r#"[{"id":42}]"#;
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(reply.as_bytes()).await;
+                } else if line.starts_with("POST /app/installations/42/access_tokens") {
+                    let _ = socket
+                        .write_all(
+                            b"HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+                        )
+                        .await;
+                    let chunk = format!("{:x}\r\n{}\r\n", 64 * 1024, "x".repeat(64 * 1024));
+                    for _ in 0..32 {
+                        if socket.write_all(chunk.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                    let _ = socket.write_all(b"0\r\n\r\n").await;
+                } else {
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                        .await;
+                }
+            });
+        }
+    });
+    (url, lists)
+}
+
+#[tokio::test]
+async fn oversized_chunked_github_response_rejected() {
+    let (mut state, _pg) = common::state().await;
+    let (url, lists) = chunked_oversized_token_server().await;
+    state.cfg = Arc::new(
+        Config::from_lookup(|name| match name {
+            "CIPHERA_DATABASE_URL" => Some("postgres://u:p@127.0.0.1/c".to_string()),
+            "CIPHERA_GITHUB_API_URL" => Some(url.clone()),
+            _ => None,
+        })
+        .unwrap(),
+    );
+    install_app(&state).await;
+    let dev = login(&state, "developer").await;
+    let r = send(&state, &dev, "GET", "/api/git/providers/github/repos", None).await;
+    assert_eq!(r.status, 502, "{}", r.raw);
+    assert_eq!(lists.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

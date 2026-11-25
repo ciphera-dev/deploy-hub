@@ -889,7 +889,7 @@ async fn git_access(
                 })?;
             state
                 .github
-                .repository_token(base, app.app_id, &pem, repository, now)
+                .repository_token(base, app.app_id, &pem, repository, link.repo_id, now)
                 .await
                 .map_err(GitAccessError::from_github)?
         }
@@ -959,15 +959,20 @@ async fn check_repo_identity(
         }
         Some(_) => Err(GitAccessError::Fail("Le dépôt a changé d'identité.".into())),
         None => {
-            sqlx::query(
+            // Un build concurrent a pu enregistrer un autre id entre-temps.
+            let recorded = sqlx::query(
                 "UPDATE git_sources SET github_repo_id = $2, via_app = true \
-                 WHERE project_id = $1 AND github_repo_id IS NULL",
+                 WHERE project_id = $1 AND (github_repo_id IS NULL OR github_repo_id = $2)",
             )
             .bind(link.project_id)
             .bind(resolved)
             .execute(&state.db)
             .await
-            .map_err(|e| GitAccessError::Retry(db_error("enregistrement de l'id du depot", e)))?;
+            .map_err(|e| GitAccessError::Retry(db_error("enregistrement de l'id du depot", e)))?
+            .rows_affected();
+            if recorded == 0 {
+                return Err(GitAccessError::Fail("Le dépôt a changé d'identité.".into()));
+            }
             tracing::info!(
                 project_id = %link.project_id,
                 repo_id = resolved,
@@ -991,6 +996,11 @@ impl GitAccessError {
             github::app::GithubError::Key => {
                 GitAccessError::Fail("Clé de la GitHub App inutilisable.".into())
             }
+            // Redirection non suivie : le depot a ete renomme ou transfere.
+            github::app::GithubError::Status(301) => GitAccessError::Fail(
+                "Dépôt renommé ou transféré : recréez le projet avec le nouveau nom du dépôt."
+                    .into(),
+            ),
             github::app::GithubError::Status(status) => {
                 tracing::warn!(status, "GitHub : statut inattendu");
                 GitAccessError::Retry(HandlerError::retry("GitHub ne repond pas comme prevu"))

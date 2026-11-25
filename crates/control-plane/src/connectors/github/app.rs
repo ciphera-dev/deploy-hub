@@ -85,6 +85,42 @@ impl GithubError {
     }
 }
 
+/// Portee d'un jeton d'installation.
+#[derive(Clone, Copy)]
+enum TokenScope<'a> {
+    /// Un depot par son id (lecture du contenu) : la portee la plus precise.
+    Id(i64),
+    /// Un depot par son nom seul, tant que l'id est inconnu.
+    Name(&'a str),
+    /// Liste des depots de l'installation : metadonnees en lecture seule.
+    List,
+}
+
+impl TokenScope<'_> {
+    fn cache_key(&self) -> Option<String> {
+        match self {
+            // `#` n'est pas valide dans un nom de depot : pas de collision.
+            TokenScope::Id(id) => Some(format!("#{id}")),
+            TokenScope::Name(name) => Some((*name).to_string()),
+            TokenScope::List => None,
+        }
+    }
+
+    fn body(&self) -> serde_json::Value {
+        match self {
+            TokenScope::Id(id) => json!({
+                "repository_ids": [id],
+                "permissions": { "contents": "read" },
+            }),
+            TokenScope::Name(name) => json!({
+                "repositories": [name],
+                "permissions": { "contents": "read" },
+            }),
+            TokenScope::List => json!({ "permissions": { "metadata": "read" } }),
+        }
+    }
+}
+
 struct CachedToken {
     token: Zeroizing<String>,
     /// Echeance, en secondes depuis l'epoque Unix.
@@ -341,37 +377,30 @@ impl GithubClient {
     }
 
     /// Jeton d'installation : celui du cache s'il vit encore plus de 5 min,
-    /// sinon un nouveau (signe par le JWT de l'App). Avec `repo` (nom seul,
-    /// sans proprietaire), le jeton est limite a ce depot en lecture du
-    /// contenu ; sans `repo`, il couvre toute l'installation (liste des
-    /// depots seulement). Un cache distinct par (installation, depot).
+    /// sinon un nouveau (signe par le JWT de l'App), limite selon `scope`.
+    /// Un cache distinct par (installation, portee).
     async fn installation_token(
         &self,
         base: &str,
         jwt: &str,
         installation: i64,
-        repo: Option<&str>,
+        scope: TokenScope<'_>,
         now: i64,
     ) -> Result<Zeroizing<String>, GithubError> {
-        let key = (installation, repo.map(str::to_string));
+        let key = (installation, scope.cache_key());
         if let Ok(tokens) = self.tokens.lock()
             && let Some(cached) = tokens.get(&key)
             && cached.expires_at - now > TOKEN_REFRESH_MARGIN_SECS
         {
             return Ok(cached.token.clone());
         }
-        let mut request = self
+        let request = self
             .request(
                 Method::POST,
                 format!("{base}/app/installations/{installation}/access_tokens"),
             )
-            .bearer_auth(jwt);
-        if let Some(repo) = repo {
-            request = request.json(&json!({
-                "repositories": [repo],
-                "permissions": { "contents": "read" },
-            }));
-        }
+            .bearer_auth(jwt)
+            .json(&scope.body());
         let fresh: AccessToken = Self::send(request).await?;
         // Echeance illisible : jeton utilise une fois, pas mis en cache.
         let expires_at = fresh
@@ -416,15 +445,17 @@ impl GithubClient {
     }
 
     /// Jeton d'installation limite en lecture du contenu de `repository`
-    /// (`proprietaire/nom`, deja valide) : `None` si l'App n'est pas installee
-    /// sur ce depot. Le jeton n'est garde qu'en memoire (cache par
-    /// installation et depot).
+    /// (`proprietaire/nom`, deja valide), par id de depot quand il est connu
+    /// (`repo_id`), sinon par nom : `None` si l'App n'est pas installee sur ce
+    /// depot. Le jeton n'est garde qu'en memoire (cache par installation et
+    /// portee).
     pub async fn repository_token(
         &self,
         base: &str,
         app_id: i64,
         pem: &[u8],
         repository: &str,
+        repo_id: Option<i64>,
         now: i64,
     ) -> Result<Option<Zeroizing<String>>, GithubError> {
         let jwt = app_jwt(app_id, pem, now)?;
@@ -439,7 +470,13 @@ impl GithubClient {
         .await;
         match installation {
             Ok(i) => self
-                .installation_token(base, &jwt, i.id, Some(name), now)
+                .installation_token(
+                    base,
+                    &jwt,
+                    i.id,
+                    repo_id.map_or(TokenScope::Name(name), TokenScope::Id),
+                    now,
+                )
                 .await
                 .map(Some),
             Err(GithubError::Status(404)) => Ok(None),
@@ -496,7 +533,7 @@ impl GithubClient {
         let mut repos: Vec<GithubRepo> = Vec::new();
         for installation in self.installations(base, &jwt).await? {
             let token = self
-                .installation_token(base, &jwt, installation.id, None, now)
+                .installation_token(base, &jwt, installation.id, TokenScope::List, now)
                 .await?;
             for r in self.installation_repos(base, &token).await? {
                 repos.push(GithubRepo {
@@ -544,7 +581,7 @@ pub async fn resolve_link(state: &AppState, repository: &str) -> Result<RepoLink
     // build qui obtient un jeton d'installation lie le projet a l'App.
     let token = match state
         .github
-        .repository_token(base, app.app_id, &pem, repository, now)
+        .repository_token(base, app.app_id, &pem, repository, None, now)
         .await
     {
         Ok(Some(token)) => token,

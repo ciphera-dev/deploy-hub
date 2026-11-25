@@ -266,14 +266,20 @@ class ApiHandler(Base):
         if m:
             if not self.jwt_ok():
                 return self.json(401, {"message": "Bad credentials"})
-            # Corps vide : jeton de toute l'installation (liste des depots).
-            # Sinon il doit se limiter au depot, en lecture du contenu.
+            # Le jeton se limite au depot (nom ou id, lecture du contenu) ou,
+            # pour la liste des depots, aux metadonnees en lecture.
             if body:
                 try:
                     wanted = json.loads(body)
                 except ValueError:
                     return self.json(422, {"message": "Invalid request"})
-                if wanted != {"repositories": [REPO], "permissions": {"contents": "read"}}:
+                scoped = {"permissions": {"contents": "read"}}
+                allowed = [
+                    {**scoped, "repositories": [REPO]},
+                    {**scoped, "repository_ids": [1]},
+                    {"permissions": {"metadata": "read"}},
+                ]
+                if wanted not in allowed:
                     return self.json(422, {"message": "Invalid request"})
             with self.state.lock:
                 if int(m.group(1)) != INSTALLATION_ID or not self.state.installed:

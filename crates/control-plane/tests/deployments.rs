@@ -1233,13 +1233,15 @@ async fn install_token_scoped_to_repo() {
         .filter(|r| r.url.path() == "/app/installations/42/access_tokens")
         .map(|r| serde_json::from_slice(&r.body).unwrap())
         .collect();
-    assert!(!minted.is_empty());
-    for body in minted {
-        assert_eq!(
-            body,
-            json!({ "repositories": ["web"], "permissions": { "contents": "read" } })
-        );
-    }
+    // Creation : id inconnu, jeton limite par nom ; build : id connu, jeton
+    // limite par id.
+    assert_eq!(
+        minted,
+        vec![
+            json!({ "repositories": ["web"], "permissions": { "contents": "read" } }),
+            json!({ "repository_ids": [777], "permissions": { "contents": "read" } }),
+        ]
+    );
 }
 
 #[tokio::test]
