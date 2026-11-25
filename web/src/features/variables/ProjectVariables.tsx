@@ -199,7 +199,21 @@ export function ProjectVariables({ project }: { project: Project }) {
     });
   const applyHere = (g: GlobalVariable) =>
     guarded(async () => {
-      const result = await updateGlobalVariable(g.id, { projects: [...g.projects, project.id] });
+      // Liste relue juste avant l'écriture : le PATCH remplace toute la portée, une
+      // liste en cache ferait perdre le secret aux projets ajoutés entre-temps.
+      let fresh: GlobalVariable | undefined;
+      try {
+        fresh = (await fetchGlobalVariables()).find((x) => x.id === g.id);
+      } catch {
+        flash("Lecture impossible pour le moment. Réessayez.", 5000);
+        return;
+      }
+      if (!fresh) {
+        flash("Variable introuvable.", 5000);
+        void client.invalidateQueries({ queryKey: GLOBAL_VARIABLES_QUERY_KEY });
+        return;
+      }
+      const result = await updateGlobalVariable(fresh.id, { projects: [...new Set([...fresh.projects, project.id])] });
       if (!result.ok) {
         flash(result.message, 5000);
         return;

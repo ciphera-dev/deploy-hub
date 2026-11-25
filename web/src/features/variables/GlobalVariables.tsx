@@ -108,7 +108,7 @@ function VarModal({ initial, projects, onClose, onSave }: { initial?: GlobalVari
   );
 }
 
-function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (rows: [string, string][], secret: boolean) => void }) {
+function ImportModal({ noProjects, onClose, onImport }: { noProjects: boolean; onClose: () => void; onImport: (rows: [string, string][], secret: boolean) => void }) {
   const [txt, setTxt] = useState(IMPORT_SAMPLE);
   const [secret, setSecret] = useState(false);
   const rows = parseDotenv(txt);
@@ -121,7 +121,7 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (ro
       footer={
         <>
           <Button onClick={onClose}>Annuler</Button>
-          <Button variant="inverse" disabled={!rows.length} onClick={() => onImport(rows, secret)}>
+          <Button variant="inverse" disabled={!rows.length || (secret && noProjects)} onClick={() => onImport(rows, secret)}>
             Importer {rows.length}
           </Button>
         </>
@@ -129,7 +129,7 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (ro
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <textarea aria-label="Contenu .env" value={txt} onChange={(e) => setTxt(e.target.value)} spellCheck="false" style={{ height: 180, resize: "vertical", padding: 12, borderRadius: "var(--radius-lg)", border: "1px solid var(--border-strong)", background: "var(--gray-0)", color: "var(--text-body)", font: "400 12px/1.6 var(--font-mono)", outline: "none" }}></textarea>
-        <Switch checked={secret} onChange={setSecret} label="Importer comme secrets" description="Toutes les valeurs seront chiffrées et masquées." />
+        <Switch checked={secret} onChange={setSecret} label="Importer comme secrets" description={secret && noProjects ? "Un secret nomme ses projets : créez d'abord un projet." : "Toutes les valeurs seront chiffrées et masquées."} />
       </div>
     </Modal>
   );
@@ -372,7 +372,7 @@ function GlobalVariables() {
         )}
       </div>
       {modal?.type === "edit" && <VarModal initial={modal.row} projects={projects} onClose={close} onSave={(d) => void save(modal.row, d)} />}
-      {modal?.type === "import" && <ImportModal onClose={close} onImport={(r, s) => void importRows(r, s)} />}
+      {modal?.type === "import" && <ImportModal noProjects={projects.length === 0} onClose={close} onImport={(r, s) => void importRows(r, s)} />}
     </div>
   );
 }
