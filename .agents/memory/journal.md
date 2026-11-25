@@ -317,3 +317,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 00:55 — Session v0.1-sdd — claude-code (orchestrateur) — Task R15 : Remédiation audit — vérification de l'adresse e-mail
 - fait : Changement d'adresse et inscription ouverte confirmés par lien, mot de passe choisi à la confirmation, comptes en attente encadrés et purgés, délai mesuré sur les demandes
 - résultat : relecture : 4 Importants corrigés en 3 tours, approuvée
+
+## 2026-11-25 01:08 — Session v0.1-sdd — claude-code (orchestrateur) — Task R14 : Remédiation audit — origine des liens de réinitialisation, remise à zéro du second facteur
+- fait : Origine des liens côté serveur, délai limité aux liens forgot, reset-mfa réservé aux gestionnaires avec mot de passe et CLI
+- résultat : relecture : 2 Importants corrigés, approuvée
