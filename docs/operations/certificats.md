@@ -3,8 +3,10 @@
 `ciphera init` cree une autorite de certification propre a l'instance
 (`/etc/ciphera/ca/`, 10 ans). Sa cle (`/etc/ciphera/ca/ca.key`) est a root
 (0600) et masquee au plan de controle : seul le signataire root
-`ciphera-certsign.service` (`ciphera admin sign-requests`) la lit. Elle
-signe trois sortes de certificats :
+`ciphera-certsign.service` (`ciphera admin sign-requests`) la lit. Le
+dossier `ca/` (0750) et `ca.crt` (0640) sont a root, groupe `ciphera` : le
+service lit le certificat mais ne peut ni remplacer ni supprimer la cle ou
+le certificat. Elle signe trois sortes de certificats :
 
 | Certificat | Fichiers | Validite | Renouvellement automatique |
 |---|---|---|---|
@@ -32,18 +34,48 @@ oneshot), qui :
   (memes noms et adresses) ;
 - impose la duree (365 ou 730 jours) et les usages ;
 - refuse toute autre forme et tout lien symbolique, et supprime la demande
-  dans tous les cas ;
+  dans tous les cas ; une entree impossible a supprimer (nom non UTF-8,
+  dossier non vide nomme `*.json`) est deplacee dans
+  `/var/lib/ciphera/cert-rejected/` (root 0700) et journalisee une fois,
+  pour que `ciphera-certsign.path` ne relance pas le signataire sans fin ;
 - ecrit la reponse `/var/lib/ciphera/cert-responses/<nom>.crt`
   (identifiant de la demande en premiere ligne, puis le certificat).
 
+Ce que le signataire garantit face a un plan de controle compromis : il ne
+signe que pour une cle publique deja certifiee par la CA, pour le meme
+identifiant ou les memes noms (aucun certificat pour une cle nouvelle, ni
+de CA, ni d'une autre duree). Les controles en base (serveur enregistre,
+non revoque) protegent contre une erreur, pas contre un service compromis :
+la base appartient au service, qui peut la modifier.
+
 Le plan de controle n'accepte que la reponse a sa propre demande (meme
 identifiant), verifiee (CA, meme cle). Sans reponse apres 10 minutes, la
-demande est reecrite. Journal : `journalctl -u ciphera-certsign`
-(`certificat ... signe`, `demande ... refusee : ...`).
+demande est reecrite, puis apres un delai double a chaque fois (au plus
+12 h). Journal : `journalctl -u ciphera-certsign` (`certificat ... signe`,
+`demande ... refusee : ...`). Une demande refusee ou abandonnee (base
+indisponible) ne met pas `ciphera-certsign.service` en echec ; seuls une
+CA illisible, un dossier de la CA non protege ou un dossier de demandes
+inutilisable le font.
 
 Le signataire tourne aussi a chaque demarrage de la machine, a
-l'installation et a la mise a jour qui l'apporte : il remet alors la cle de
-la CA d'une installation anterieure (compte `ciphera`) a root, en 0600.
+l'installation et a la mise a jour qui l'apporte : il remet alors le
+dossier de la CA d'une installation anterieure (compte `ciphera`) a root
+(cle 0600, `ca.crt` 0640 et `ca/` 0750, groupe conserve). Il refuse de
+tourner sous un autre compte que root, comme `ciphera admin renew-certs`.
+A l'installation ou a la reparation, un echec du signataire n'arrete
+`install.sh` que si la cle de la CA n'est toujours pas a root en 0600 ;
+sinon un avertissement est affiche.
+
+Le `.path` et le signataire surveillent `/var/lib/ciphera` : un
+`CIPHERA_DATA_DIR` different dans `ciphera.env` n'est pas pris en charge
+par le renouvellement (les demandes ne seraient jamais signees ; le journal
+du service le signale par `pas de reponse du signataire`).
+
+Limite connue : le dossier `/etc/ciphera` lui-meme reste au compte
+`ciphera` quand `ciphera init` l'a cree. Hors de la sandbox du service
+(`/etc` y est en lecture seule), ce compte peut donc renommer `ca/` en
+entier : la cle reste illisible (root 0600), mais l'instance perd sa CA
+(deni de service, sans gain de cle). A traiter avec la rotation de la CA.
 
 ## Renouvellement d'un agent
 
@@ -171,7 +203,8 @@ service jusqu'a son expiration) mais il est journalise :
   `certificat ... du signataire refuse`, `certificat renouvele de ... non
   enregistre` (base) ;
 - `journalctl -u ciphera-certsign` : `demande ... refusee`, `CA de
-  l'instance illisible`, `base indisponible` ;
+  l'instance illisible`, `base indisponible`, `entree ... du dossier des
+  demandes : mise de cote ...` ;
 - `journalctl -u ciphera-agent -p warning` : `certificat de l'agent a
   renouveler (expire dans N jour(s))`. Ce message ne revient toutes les
   12 h que si le renouvellement n'aboutit pas ; `certificat renouvele
