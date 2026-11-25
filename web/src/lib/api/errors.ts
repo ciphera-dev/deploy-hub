@@ -20,6 +20,12 @@ function pathOf(url: string): string {
   }
 }
 
+/** Code d'erreur stable du corps `{ error: { code } }`, s'il y en a un. */
+export function errorCode(error: unknown): string | undefined {
+  const code = (error as { error?: { code?: unknown } } | undefined)?.error?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
 interface FetchResult<T> {
   data?: T;
   error?: unknown;

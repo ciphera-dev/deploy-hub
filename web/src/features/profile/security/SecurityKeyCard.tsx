@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { Button, Icon, IconButton, Modal, TextField } from "@/design-system";
 import { fetchWebauthnStatus, ME_QUERY_KEY } from "@/features/auth/api";
+import { SESSION_EXPIRED_MESSAGE } from "@/lib/api/session";
 
 import { RecoveryCodesModal } from "./EnrollTotp";
 import { deletePasskey, listPasskeys, PASSKEYS_QUERY_KEY, registerPasskey, type DeleteResult, type Passkey, type RegisterResult } from "./api";
@@ -23,6 +24,7 @@ function registerMessage(result: Extract<RegisterResult, { ok: false }>): string
 
 function deleteMessage(result: Extract<DeleteResult, { ok: false }>): string {
   if (result.reason === "password") return "Mot de passe incorrect.";
+  if (result.reason === "session_expired") return SESSION_EXPIRED_MESSAGE;
   if (result.reason === "required_by_org") return "Votre organisation impose la vérification en deux étapes : gardez au moins une méthode.";
   if (result.reason === "rate_limited") return "Trop de tentatives. Réessayez dans quelques minutes.";
   return "Suppression impossible pour le moment. Réessayez.";

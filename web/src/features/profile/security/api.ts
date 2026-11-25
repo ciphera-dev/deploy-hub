@@ -1,6 +1,7 @@
 import { api } from "@/lib/api/client";
 import { setCsrfToken } from "@/lib/api/csrf";
 import { unwrap } from "@/lib/api/errors";
+import { notifySessionExpired } from "@/lib/api/session";
 import type { components } from "@/lib/api/schema";
 import { creationOptions, isCancellation, registrationJson } from "@/features/auth/webauthn";
 
@@ -12,6 +13,8 @@ export type StartResult = { ok: true; setup: TotpStart } | { ok: false; reason: 
 /** Seul un 401 `invalid_credentials` est un mot de passe faux ; les autres 401 (session expiree) restent generiques. */
 function failure(status: number, error?: unknown): FactorFailure {
   const code = (error as { error?: { code?: unknown } } | undefined)?.error?.code;
+  // 401 sans `invalid_credentials` : la session a expire, on passe par la page de reconnexion.
+  if (status === 401 && code !== "invalid_credentials") notifySessionExpired();
   return status === 401 && code === "invalid_credentials" ? "password" : status === 429 ? "rate_limited" : "unavailable";
 }
 
@@ -85,7 +88,7 @@ export async function registerPasskey(name: string, password: string): Promise<R
   }
 }
 
-export type DeleteResult = { ok: true } | { ok: false; reason: "password" | "required_by_org" | "rate_limited" | "unavailable" };
+export type DeleteResult = { ok: true } | { ok: false; reason: "password" | "required_by_org" | "rate_limited" | "session_expired" | "unavailable" };
 
 /** Supprime une cle du compte (mot de passe redemande). */
 export async function deletePasskey(id: string, password: string): Promise<DeleteResult> {
@@ -98,7 +101,7 @@ export async function deletePasskey(id: string, password: string): Promise<Delet
   const { status } = result.response;
   // 404 : deja supprimee (autre onglet) ; la liste sera relue.
   if (status === 204 || status === 404) return { ok: true };
-  if (status === 401) return { ok: false, reason: "password" };
+  if (status === 401) return { ok: false, reason: failure(status, result.error) === "password" ? "password" : "session_expired" };
   if (status === 409) return { ok: false, reason: "required_by_org" };
   if (status === 429) return { ok: false, reason: "rate_limited" };
   return { ok: false, reason: "unavailable" };

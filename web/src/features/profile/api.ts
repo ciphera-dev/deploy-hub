@@ -1,5 +1,6 @@
 import { api } from "@/lib/api/client";
-import { unwrap } from "@/lib/api/errors";
+import { errorCode, unwrap } from "@/lib/api/errors";
+import { notifySessionExpired, SESSION_EXPIRED_MESSAGE } from "@/lib/api/session";
 import type { components } from "@/lib/api/schema";
 
 export type ProfileUpdate = components["schemas"]["UpdateMe"];
@@ -22,6 +23,13 @@ function serverMessage(error: unknown): string | undefined {
   return typeof message === "string" ? message : undefined;
 }
 
+/** 401 : seul le code `invalid_credentials` est un mot de passe faux ; sinon la session a expiré (page de reconnexion). */
+function unauthorized(error: unknown, wrongPassword: string): { ok: false; message: string } {
+  if (errorCode(error) === "invalid_credentials") return { ok: false, message: wrongPassword };
+  notifySessionExpired();
+  return { ok: false, message: SESSION_EXPIRED_MESSAGE };
+}
+
 const UNREACHABLE: Outcome = { ok: false, message: "Serveur injoignable. Réessayez." };
 const RATE_LIMITED = "Trop de tentatives. Réessayez dans quelques minutes.";
 
@@ -38,7 +46,7 @@ export async function updateProfile(body: ProfileUpdate): Promise<ProfileOutcome
   }
   if (result.data) return { ok: true, emailPending: result.response.status === 202 };
   const { status } = result.response;
-  if (status === 401) return { ok: false, message: "Mot de passe actuel incorrect." };
+  if (status === 401) return unauthorized(result.error, "Mot de passe actuel incorrect.");
   if (status === 429) return { ok: false, message: serverMessage(result.error) ?? RATE_LIMITED };
   if (status === 409 || status === 422) return { ok: false, message: serverMessage(result.error) ?? "Valeur refusée." };
   return { ok: false, message: "Modification impossible pour le moment. Réessayez." };
@@ -102,7 +110,7 @@ export async function disableTotp(password: string): Promise<Outcome> {
   }
   const { status } = result.response;
   if (status === 204) return { ok: true };
-  if (status === 401) return { ok: false, message: "Mot de passe incorrect." };
+  if (status === 401) return unauthorized(result.error, "Mot de passe incorrect.");
   if (status === 409) return { ok: false, message: "Votre organisation impose la vérification en deux étapes : gardez au moins une méthode." };
   if (status === 429) return { ok: false, message: RATE_LIMITED };
   return { ok: false, message: "Désactivation impossible pour le moment. Réessayez." };
