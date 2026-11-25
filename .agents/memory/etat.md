@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-25 03:33
+# État courant — mis à jour le 2026-11-25 04:18
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R24 : Remédiation audit — ordre des services Compose autour de la sonde, annulation tardive — statut : TERMINÉ (TERMINÉ (relecture : 1 Important corrigé, approuvée))
+Task R55 : Remédiation audit — restauration des services Compose dépendants — statut : TERMINÉ (TERMINÉ (relecture : 2 Importants corrigés, approuvée))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R55 : Remédiation audit — restauration des services Compose dépendants
 - Task R24 : Remédiation audit — ordre des services Compose autour de la sonde, annulation tardive
 - Task R19 : Remédiation audit — quotas des flux de journaux et bornes mémoire
 - Task R22 : Remédiation audit — nettoyage des déploiements confirmé par l'agent
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R17 : Remédiation audit — variables, import .env, masquage multi-motifs
 - Task R21 : Remédiation audit — GitHub, dépôt identifié par son id, jeton restreint
 - Task R14 : Remédiation audit — origine des liens de réinitialisation, remise à zéro du second facteur
-- Task R15 : Remédiation audit — vérification de l'adresse e-mail
 
 ## Prochaine étape exacte
-Lancer R55 (restauration des dépendances) ; intégrer R4, R25
+Intégrer R25 (correction en cours), R4 ; R26 en cours ; lancer R27
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -34,7 +34,6 @@ Lancer R55 (restauration des dépendances) ; intégrer R4, R25
 ## Fichiers clés touchés dans cette tâche
 - `crates/agent/src/deploy.rs`
 - `crates/agent/src/state.rs`
-- `crates/control-plane/src/orchestrator.rs`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

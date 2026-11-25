@@ -345,3 +345,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 03:33 — Session v0.1-sdd — claude-code (orchestrateur) — Task R24 : Remédiation audit — ordre des services Compose autour de la sonde, annulation tardive
 - fait : Ordre en trois temps, retrait des services nouveaux, notes en état local v6 avec garde « servi », annulation relue avant l'envoi
 - résultat : TERMINÉ (relecture : 1 Important corrigé, approuvée)
+
+## 2026-11-25 04:18 — Session v0.1-sdd — claude-code (orchestrateur) — Task R55 : Remédiation audit — restauration des services Compose dépendants
+- fait : Configuration relue en mémoire, recréation à l'identique en échec ou annulation, issue explicite si incomplète, verrou et garde par projet
+- résultat : TERMINÉ (relecture : 2 Importants corrigés, approuvée)
