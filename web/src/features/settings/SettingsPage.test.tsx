@@ -221,8 +221,11 @@ it("zone de danger : export JSON, transfert en v0.2, suppression avec mot de pas
   expect(click).toHaveBeenCalled();
   click.mockRestore();
 
+  expect(screen.getByText(/projet\(s\) avec leurs données et volumes/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Supprimer" }));
   const dialog = await screen.findByRole("dialog");
+  // Les données et volumes des projets sont effacés aussi : annoncé.
+  expect(within(dialog).getByText("Les données et volumes de tous les projets, sur tous les serveurs")).toBeInTheDocument();
   const confirm = within(dialog).getByRole("button", { name: "Supprimer définitivement" });
   expect(confirm).toBeDisabled();
   fireEvent.change(within(dialog).getByLabelText("Mot de passe du compte"), { target: { value: "mauvais" } });

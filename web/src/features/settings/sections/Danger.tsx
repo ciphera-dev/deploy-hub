@@ -11,7 +11,7 @@ const PHRASE = "SUPPRIMER";
 
 const fld: CSSProperties = { height: 42, padding: "0 12px", borderRadius: 10, border: "1px solid var(--border-default)", background: "var(--surface-raised)", color: "var(--text-strong)", font: "400 14px/1 var(--font-sans)", outline: "none", width: "100%", boxSizing: "border-box" };
 
-const ERASED = ["Tous les projets et leurs déploiements (conteneurs, domaines, certificats)", "Les variables et secrets", "Les accès de tous les membres (vous restez propriétaire)", "La GitHub App de l'instance (à supprimer aussi sur GitHub)"];
+const ERASED = ["Tous les projets et leurs déploiements (conteneurs, domaines, certificats)", "Les données et volumes de tous les projets, sur tous les serveurs", "Les variables et secrets", "Les accès de tous les membres (vous restez propriétaire)", "La GitHub App de l'instance (à supprimer aussi sur GitHub)"];
 
 /** Issue de la suppression : projets gardés (agent injoignable), GitHub App à supprimer à la main. */
 function Outcome({ result }: { result: OrganizationDeleted }) {
@@ -164,7 +164,7 @@ function DangerRows({ zone }: { zone: DangerZone }) {
     },
     {
       t: "Supprimer l'organisation",
-      d: `Supprime définitivement les ${zone.projects} projet(s), les variables et l'accès des ${Math.max(zone.members - 1, 0)} autre(s) membre(s).`,
+      d: `Supprime définitivement les ${zone.projects} projet(s) avec leurs données et volumes, les variables et l'accès des ${Math.max(zone.members - 1, 0)} autre(s) membre(s).`,
       action: (
         <button type="button" onClick={() => setDel(true)} style={btn(true)}>
           Supprimer

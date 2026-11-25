@@ -976,6 +976,8 @@ where
     /// projet (etiquette `dev.ciphera.project`), etat local et images de ses
     /// deploiements, avec `purge_volumes` ses volumes Compose, et son reseau
     /// sont supprimes. Routes recalculees si un deploiement servi part.
+    /// L'etat local n'est efface qu'une fois tout retire de Docker : sur un
+    /// echec, il reste (le retrait reprend au prochain ordre).
     /// Rejouable : `Ok` quand plus rien ne reste. L'etat de buildkitd du
     /// projet est supprime par l'appelant, apres (`BuildkitManager`).
     pub async fn remove_project(
@@ -990,6 +992,9 @@ where
                 tracing::info!("projet {project} supprime : operation {id} annulee");
             }
         }
+        // Docker d'abord : sur un echec (conteneur, volumes, reseau), l'etat
+        // local du projet reste et l'erreur empeche l'accuse ; l'ordre
+        // revient a la reconnexion et reprend tout.
         let label = project.to_string();
         let mut failure: Option<DeployError> = None;
         for c in self
@@ -997,11 +1002,27 @@ where
             .list_managed(&[(PROJECT_LABEL, label.as_str())])
             .await?
         {
-            if let Err(e) = self.docker.remove(&c.id).await {
+            // Avec la purge, les volumes anonymes des conteneurs aussi.
+            let removed = if purge_volumes {
+                self.docker.remove_with_volumes(&c.id).await
+            } else {
+                self.docker.remove(&c.id).await
+            };
+            if let Err(e) = removed {
                 tracing::warn!("projet {project} : suppression de {} : {e}", c.name);
                 failure = Some(e.into());
             }
         }
+        if let Some(e) = failure {
+            return Err(e);
+        }
+        if purge_volumes {
+            let n = self.docker.remove_project_volumes(project).await?;
+            tracing::info!("projet {project} : {n} volume(s) supprime(s)");
+        }
+        self.docker
+            .remove_network(&project_network(project))
+            .await?;
         let mut serving = false;
         for r in self
             .db
@@ -1020,16 +1041,6 @@ where
         if serving && let Err(e) = self.router.refresh(self.docker.as_ref(), &self.db).await {
             tracing::warn!("{e}");
         }
-        if let Some(e) = failure {
-            return Err(e);
-        }
-        if purge_volumes {
-            let n = self.docker.remove_project_volumes(project).await?;
-            tracing::info!("projet {project} : {n} volume(s) supprime(s)");
-        }
-        self.docker
-            .remove_network(&project_network(project))
-            .await?;
         tracing::info!("projet {project} supprime de ce serveur");
         Ok(())
     }

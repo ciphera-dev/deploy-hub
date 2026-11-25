@@ -1876,6 +1876,31 @@ fn limited_plan(bundle: &Value) -> Result<ComposePlan, String> {
     ComposePlan::with_limits(bundle, "web", ProjectId::new(), DeploymentId::new(), limits)
 }
 
+/// Volumes sans nom dans l'ensemble : nommes d'apres le projet stable, pour
+/// que le service expose (projet `ciphera-d-<id>`) garde ses donnees d'un
+/// deploiement a l'autre et que le retrait du projet les retrouve.
+#[test]
+fn compose_volumes_are_named_after_the_stable_project() {
+    let mut bundle = compose_bundle();
+    bundle["volumes"] = json!({"uploads": null, "logs": {}});
+    bundle["services"]["api"]["volumes"] =
+        json!([{"type": "volume", "source": "logs", "target": "/logs"}]);
+    let plan = limited_plan(&bundle).unwrap();
+    assert_eq!(
+        plan.file["volumes"],
+        json!({
+            "uploads": {"name": "shop-production_uploads"},
+            "logs": {"name": "shop-production_logs"}
+        })
+    );
+    // Nom deja present : garde.
+    let plan = limited_plan(&compose_bundle()).unwrap();
+    assert_eq!(
+        plan.file["volumes"]["uploads"]["name"],
+        json!("shop-production_uploads")
+    );
+}
+
 #[test]
 fn compose_exposed_service_gets_user_and_read_only_root() {
     let mut plan = limited_plan(&compose_bundle()).unwrap();
@@ -2717,6 +2742,112 @@ async fn remove_project_keeps_volumes_unless_purged() {
     assert_eq!(bench.docker.volume_names().len(), 1);
     assert!(!bench.docker.has_network(&project_network(project)));
     assert!(bench.db.deployments().unwrap().is_empty());
+}
+
+/// Purge : les volumes du projet sont reconnus a leur nom
+/// (`cp-<projet>-<env>_<cle>`), y compris ceux que Compose a etiquetes avec
+/// le projet du service expose (`ciphera-d-<deploiement>`) ; les volumes
+/// anonymes partent avec les conteneurs. Rien d'un autre projet, ni un
+/// volume hors Compose, n'est touche.
+#[tokio::test(start_paused = true)]
+async fn remove_project_purge_removes_volumes_of_the_exposed_service_and_anonymous_ones() {
+    let bench = Bench::new();
+    bench.sync_routes().await;
+    let (project, other) = (ProjectId::new(), ProjectId::new());
+    let env = EnvironmentId::new();
+    let v1 = spec(project, ServiceId::new(), "ciphera/web-production:v1");
+    deploy_ok(&bench, &v1).await;
+    let stable = compose_project_name(project, env);
+    let other_stable = compose_project_name(other, env);
+    let exposed = format!("ciphera-d-{}", v1.deployment_id);
+    // Volume monte par le seul service expose : etiquete `ciphera-d-<id>`.
+    bench
+        .docker
+        .add_volume_created_by(&format!("{stable}_uploads"), &exposed);
+    bench.docker.add_volume(&stable, "data");
+    // Autre projet, meme si cree sous un projet `ciphera-d-` : garde.
+    bench.docker.add_volume_created_by(
+        &format!("{other_stable}_uploads"),
+        &format!("ciphera-d-{}", DeploymentId::new()),
+    );
+    // Nom approchant sans la forme `<env 8 hexa>_<cle>` : garde.
+    bench
+        .docker
+        .add_volume_created_by(&format!("{stable}x_data"), &stable);
+
+    bench.deployer.remove_project(project, true).await.unwrap();
+
+    let mut kept = vec![format!("{other_stable}_uploads"), format!("{stable}x_data")];
+    kept.sort();
+    assert_eq!(bench.docker.volume_names(), kept);
+    let calls = bench.docker.calls();
+    let container = format!("id-ciphera-d-{}", v1.deployment_id);
+    assert!(
+        calls.contains(&format!("remove-v:{container}")),
+        "{calls:?}"
+    );
+    assert!(!calls.contains(&format!("remove:{container}")));
+}
+
+/// Echec de Docker pendant le retrait (conteneur, volumes, reseau) : erreur
+/// (pas d'accuse, l'ordre revient a la reconnexion) et l'etat local du
+/// projet reste ; l'ordre suivant termine le retrait.
+#[tokio::test(start_paused = true)]
+async fn remove_project_keeps_local_state_when_docker_fails() {
+    use std::sync::atomic::Ordering;
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("app.example.com", Some(web))])
+        .await
+        .unwrap();
+    let v1 = spec(project, web, "ciphera/web-production:v1");
+    deploy_ok(&bench, &v1).await;
+    let env = EnvironmentId::new();
+    bench
+        .docker
+        .add_volume(&compose_project_name(project, env), "data");
+
+    for flag in [
+        &bench.docker.fail_remove,
+        &bench.docker.fail_volumes,
+        &bench.docker.fail_network,
+    ] {
+        flag.store(true, Ordering::SeqCst);
+        assert!(bench.deployer.remove_project(project, true).await.is_err());
+        flag.store(false, Ordering::SeqCst);
+        assert!(
+            bench.db.record(v1.deployment_id).unwrap().is_some(),
+            "etat local garde"
+        );
+        assert!(
+            !bench
+                .docker
+                .calls()
+                .contains(&format!("rmi:{}", v1.deployment_id))
+        );
+    }
+    bench.deployer.remove_project(project, true).await.unwrap();
+    assert!(bench.db.record(v1.deployment_id).unwrap().is_none());
+    assert!(bench.upstreams("app.example.com").is_empty());
+    assert!(bench.docker.volume_names().is_empty());
+    assert!(!bench.docker.has_network(&project_network(project)));
+}
+
+/// Sans purge, les conteneurs partent sans leurs volumes anonymes.
+#[tokio::test(start_paused = true)]
+async fn remove_project_without_purge_keeps_anonymous_volumes() {
+    let bench = Bench::new();
+    bench.sync_routes().await;
+    let project = ProjectId::new();
+    let v1 = spec(project, ServiceId::new(), "ciphera/web-production:v1");
+    deploy_ok(&bench, &v1).await;
+    bench.deployer.remove_project(project, false).await.unwrap();
+    let calls = bench.docker.calls();
+    let container = format!("id-ciphera-d-{}", v1.deployment_id);
+    assert!(calls.contains(&format!("remove:{container}")), "{calls:?}");
+    assert!(!calls.iter().any(|c| c.starts_with("remove-v:")));
 }
 
 /// Premier deploiement Compose d'un service en echec : ses services non

@@ -381,16 +381,28 @@ pub fn compose_project_prefix(project: ProjectId) -> String {
     format!("{COMPOSE_PROJECT_PREFIX}{}-", project.0.simple())
 }
 
-/// Le volume appartient a un projet Compose de `prefix`
-/// (`compose_project_prefix`) : etiquette de Compose et nom
-/// (`<projet Compose>_<cle>`) concordants.
+/// Le volume appartient au projet de `prefix` (`compose_project_prefix`) :
+/// volume cree par Compose (etiquette `com.docker.compose.project`) dont le
+/// nom est `cp-<UUID du projet>-<8 caracteres hexa de l'environnement>_<cle>`.
+/// Le nom fait foi, pas l'etiquette : Compose etiquette un volume avec le
+/// projet de la commande qui le cree (`ciphera-d-<deploiement>` pour un
+/// volume monte seulement par le service expose), alors que la politique
+/// Compose et `ComposePlan` imposent le nom `<projet stable>_<cle>`.
 pub fn is_project_volume(name: &str, labels: &HashMap<String, String>, prefix: &str) -> bool {
-    labels.get(COMPOSE_PROJECT_KEY).is_some_and(|p| {
-        p.starts_with(prefix)
-            && name
-                .strip_prefix(p.as_str())
-                .is_some_and(|rest| rest.starts_with('_'))
-    })
+    if !labels.contains_key(COMPOSE_PROJECT_KEY) {
+        return false;
+    }
+    let Some(rest) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((env, key)) = rest.split_once('_') else {
+        return false;
+    };
+    env.len() == 8
+        && env
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && !key.is_empty()
 }
 
 /// Montage d'un conteneur.
@@ -904,6 +916,12 @@ pub trait DockerOps: Send + Sync + 'static {
     /// Supprime (de force) un conteneur gere par Ciphera ; absent : rien a
     /// faire ; non gere : `NotManaged`, laisse tel quel.
     fn remove(&self, id: &ContainerId) -> impl Future<Output = Result<(), DockerError>> + Send;
+    /// Comme `remove`, avec les volumes anonymes du conteneur (`VOLUME` de
+    /// l'image sans volume nomme) : retrait d'un projet avec ses donnees.
+    fn remove_with_volumes(
+        &self,
+        id: &ContainerId,
+    ) -> impl Future<Output = Result<(), DockerError>> + Send;
     /// Conteneurs geres par Ciphera (arretes compris) portant toutes les
     /// etiquettes `labels`.
     fn list_managed(
@@ -1131,10 +1149,16 @@ impl BollardDocker {
     /// son SIGKILL (PID 1 zombie le temps que l'espace de noms des processus
     /// se vide), nouvel essai, `REMOVE_ATTEMPTS` au plus.
     async fn force_remove(&self, id: &str) -> Result<(), DockerError> {
+        self.force_remove_opts(id, false).await
+    }
+
+    /// `force_remove`, avec les volumes anonymes du conteneur si `volumes`.
+    async fn force_remove_opts(&self, id: &str, volumes: bool) -> Result<(), DockerError> {
         let mut attempt = 1;
         loop {
             let options = RemoveContainerOptions {
                 force: true,
+                v: volumes,
                 ..Default::default()
             };
             match self.docker.remove_container(id, Some(options)).await {
@@ -1405,6 +1429,15 @@ impl DockerOps for BollardDocker {
         self.remove_impl(id).await
     }
 
+    async fn remove_with_volumes(&self, id: &ContainerId) -> Result<(), DockerError> {
+        check_name(&id.0)?;
+        let Some(info) = self.inspect_managed(&id.0).await? else {
+            return Ok(());
+        };
+        self.force_remove_opts(info.id.as_deref().unwrap_or(&id.0), true)
+            .await
+    }
+
     async fn list_managed(
         &self,
         labels: &[(&str, &str)],
@@ -1458,10 +1491,10 @@ impl DockerOps for BollardDocker {
     async fn remove_project_volumes(&self, project: ProjectId) -> Result<usize, DockerError> {
         let prefix = compose_project_prefix(project);
         let options = ListVolumesOptions {
-            filters: Some(HashMap::from([(
-                "label".to_string(),
-                vec![COMPOSE_PROJECT_KEY.to_string()],
-            )])),
+            filters: Some(HashMap::from([
+                ("label".to_string(), vec![COMPOSE_PROJECT_KEY.to_string()]),
+                ("name".to_string(), vec![prefix.clone()]),
+            ])),
         };
         let volumes = self
             .docker

@@ -57,6 +57,12 @@ pub struct FakeDocker {
     pub networks: Mutex<HashSet<String>>,
     /// Volumes existants : nom -> etiquettes.
     pub volumes: Mutex<HashMap<String, HashMap<String, String>>>,
+    /// `remove` et `remove_with_volumes` echouent (erreur d'API) tant que vrai.
+    pub fail_remove: AtomicBool,
+    /// `remove_project_volumes` echoue tant que vrai.
+    pub fail_volumes: AtomicBool,
+    /// `remove_network` echoue tant que vrai.
+    pub fail_network: AtomicBool,
 }
 
 impl FakeDocker {
@@ -89,6 +95,16 @@ impl FakeDocker {
         self.volumes.lock().unwrap().insert(
             format!("{compose_project}_{key}"),
             HashMap::from([(COMPOSE_PROJECT_KEY.to_string(), compose_project.to_string())]),
+        );
+    }
+
+    /// Volume `name` cree par le projet Compose `created_by` (etiquette de
+    /// Compose), par exemple `ciphera-d-<id>` pour un volume monte seulement
+    /// par le service expose.
+    pub fn add_volume_created_by(&self, name: &str, created_by: &str) {
+        self.volumes.lock().unwrap().insert(
+            name.to_string(),
+            HashMap::from([(COMPOSE_PROJECT_KEY.to_string(), created_by.to_string())]),
         );
     }
 
@@ -271,6 +287,22 @@ impl DockerOps for FakeDocker {
 
     async fn remove(&self, id: &ContainerId) -> Result<(), DockerError> {
         self.calls.lock().unwrap().push(format!("remove:{}", id.0));
+        if self.fail_remove.load(Ordering::SeqCst) {
+            return Err(DockerError::Api(format!("suppression de {} refusee", id.0)));
+        }
+        self.containers.lock().unwrap().remove(&id.0);
+        self.health.lock().unwrap().remove(&id.0);
+        Ok(())
+    }
+
+    async fn remove_with_volumes(&self, id: &ContainerId) -> Result<(), DockerError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("remove-v:{}", id.0));
+        if self.fail_remove.load(Ordering::SeqCst) {
+            return Err(DockerError::Api(format!("suppression de {} refusee", id.0)));
+        }
         self.containers.lock().unwrap().remove(&id.0);
         self.health.lock().unwrap().remove(&id.0);
         Ok(())
@@ -311,6 +343,9 @@ impl DockerOps for FakeDocker {
 
     async fn remove_network(&self, name: &str) -> Result<(), DockerError> {
         self.calls.lock().unwrap().push(format!("rmnet:{name}"));
+        if self.fail_network.load(Ordering::SeqCst) {
+            return Err(DockerError::Api(format!("reseau {name} : refus")));
+        }
         // Comme Docker : refuse tant qu'un conteneur du projet y est attache.
         if let Some(project) = network_project(name) {
             let project = project.to_string();
@@ -342,6 +377,9 @@ impl DockerOps for FakeDocker {
     }
 
     async fn remove_project_volumes(&self, project: ProjectId) -> Result<usize, DockerError> {
+        if self.fail_volumes.load(Ordering::SeqCst) {
+            return Err(DockerError::Api("volumes : refus".into()));
+        }
         let prefix = compose_project_prefix(project);
         let mut volumes = self.volumes.lock().unwrap();
         let doomed: Vec<String> = volumes

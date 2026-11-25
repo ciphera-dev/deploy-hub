@@ -25,7 +25,8 @@
 //!   commande).
 //!
 //! Les services non exposes tournent dans le projet Compose stable de
-//! l'environnement (nom normalise, `<projet>-<env>`) et sont relances un par
+//! l'environnement (`cp-<UUID du projet>-<8 premiers caracteres de l'UUID de
+//! l'environnement>`) et sont relances un par
 //! un dans l'ordre de `depends_on` (Compose ne recree que ceux dont la
 //! configuration a change : nouvelle image construite, par exemple). Le
 //! service expose tourne dans un projet Compose propre au deploiement
@@ -396,6 +397,22 @@ impl ComposePlan {
             .as_object_mut()
             .ok_or_else(|| err("ensemble Compose invalide"))?;
         doc.remove("name");
+        // Volumes nommes d'apres le projet stable, quel que soit le projet
+        // Compose qui les cree (le service expose tourne sous
+        // `ciphera-d-<deploiement>`) : memes donnees d'un deploiement a
+        // l'autre, et retrait du projet par leur nom.
+        if let Some(volumes) = doc.get_mut("volumes").and_then(Value::as_object_mut) {
+            for (key, v) in volumes.iter_mut() {
+                if v.is_null() {
+                    *v = Value::Object(Map::new());
+                }
+                let v = v
+                    .as_object_mut()
+                    .ok_or_else(|| format!("volume {key} invalide"))?;
+                v.entry("name")
+                    .or_insert_with(|| Value::String(format!("{stable_name}_{key}")));
+            }
+        }
         doc.insert(
             "networks".into(),
             json!({ "default": { "name": project_network(project), "external": true } }),
