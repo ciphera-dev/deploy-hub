@@ -23,7 +23,12 @@
 //! - **Suppression pendant une emission** : chaque `RemoveCertificate`
 //!   incremente un compteur par hote ; une emission note ce compteur a son
 //!   debut (`Ticket`) et n'installe rien s'il a change entre-temps (ni
-//!   certificat ni cle chiffree orphelins).
+//!   certificat ni cle chiffree orphelins). Le compteur n'est tenu que
+//!   pendant qu'une emission de l'hote est en cours : il est purge a la fin
+//!   de la derniere.
+//! - **Expiration** : un certificat expire n'est ni installe, ni charge du
+//!   disque (avertissement journalise ; le plan de controle l'apprend par
+//!   `Missing`), ni servi s'il expire en cours de route.
 //!
 //! Aucune cle privee (ni certificat, ni compte ACME) n'est journalisee ni
 //! renvoyee : seules la fin de validite et l'emetteur sortent du proxy.
@@ -185,20 +190,61 @@ pub struct Installed {
     pub issuer: String,
 }
 
+impl Installed {
+    /// Le certificat est-il encore valide a `now` (secondes Unix) ?
+    fn valid_at(&self, now: i64) -> bool {
+        self.not_after > now
+    }
+}
+
+/// Suppressions suivies pendant les emissions en cours : par hote, nombre
+/// d'emissions en cours et de suppressions vues depuis le debut de la
+/// premiere.
+#[derive(Debug, Default)]
+struct Removals {
+    hosts: HashMap<String, HostRemovals>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct HostRemovals {
+    in_flight: u32,
+    removed: u64,
+}
+
+type SharedRemovals = Arc<Mutex<Removals>>;
+
+fn lock_removals(shared: &SharedRemovals) -> std::sync::MutexGuard<'_, Removals> {
+    shared.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Emission en cours pour un hote : nombre de suppressions de l'hote vu a
-/// son debut (`CertStore::ticket`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// son debut (`CertStore::ticket`). Sa destruction (fin ou abandon de
+/// l'emission) libere le suivi de l'hote.
+#[derive(Debug)]
 pub struct Ticket {
     host: String,
     removals: u64,
+    shared: SharedRemovals,
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        let mut state = lock_removals(&self.shared);
+        if let Some(entry) = state.hosts.get_mut(&self.host) {
+            entry.in_flight = entry.in_flight.saturating_sub(1);
+            if entry.in_flight == 0 {
+                state.hosts.remove(&self.host);
+            }
+        }
+    }
 }
 
 /// Certificats par nom d'hote, en memoire et (sauf en test) chiffres sur
 /// disque.
 pub struct CertStore {
     certs: ArcSwap<HashMap<String, Arc<Installed>>>,
-    /// Verrou des ecritures ; nombre de suppressions par hote.
-    write: Mutex<HashMap<String, u64>>,
+    /// Verrou des ecritures ; suppressions suivies pendant les emissions.
+    write: SharedRemovals,
     disk: Option<(PathBuf, Arc<SecretBox>)>,
 }
 
@@ -215,7 +261,7 @@ impl CertStore {
     pub fn memory() -> Self {
         Self {
             certs: ArcSwap::from_pointee(HashMap::new()),
-            write: Mutex::new(HashMap::new()),
+            write: SharedRemovals::default(),
             disk: None,
         }
     }
@@ -256,7 +302,7 @@ impl CertStore {
         tracing::info!(certificats = certs.len(), "certificats charges");
         Ok(Self {
             certs: ArcSwap::from_pointee(certs),
-            write: Mutex::new(HashMap::new()),
+            write: SharedRemovals::default(),
             disk: Some((dir, sealer)),
         })
     }
@@ -265,20 +311,39 @@ impl CertStore {
         self.certs.load().get(host).cloned()
     }
 
-    /// Un certificat existe pour `host` (redirection 80 -> 443).
+    /// Un certificat valide existe pour `host` (redirection 80 -> 443).
     pub fn has(&self, host: &str) -> bool {
-        self.certs.load().contains_key(host)
+        self.serving(host).is_some()
     }
 
-    fn lock_write(&self) -> std::sync::MutexGuard<'_, HashMap<String, u64>> {
-        self.write.lock().unwrap_or_else(|p| p.into_inner())
+    /// Certificat de `host` s'il est encore valide (jamais un expire).
+    pub fn serving(&self, host: &str) -> Option<Arc<CertifiedKey>> {
+        self.get(host)
+            .filter(|c| c.valid_at(unix_now()))
+            .map(|c| c.key.clone())
+    }
+
+    fn lock_write(&self) -> std::sync::MutexGuard<'_, Removals> {
+        lock_removals(&self.write)
+    }
+
+    /// Hotes dont le compteur de suppressions est encore tenu (emissions en
+    /// cours seulement).
+    pub fn pending_removals(&self) -> usize {
+        self.lock_write().hosts.len()
     }
 
     /// Debut d'une emission pour `host` (voir `install_ticket`).
     pub fn ticket(&self, host: &str) -> Ticket {
+        let mut state = self.lock_write();
+        let entry = state.hosts.entry(host.to_string()).or_default();
+        entry.in_flight += 1;
+        let removals = entry.removed;
+        drop(state);
         Ticket {
             host: host.to_string(),
-            removals: self.lock_write().get(host).copied().unwrap_or(0),
+            removals,
+            shared: self.write.clone(),
         }
     }
 
@@ -310,7 +375,7 @@ impl CertStore {
         let bundle = Zeroizing::new(format!("{key_pem}\n{chain_pem}"));
         let installed = Arc::new(parse_bundle(bundle.as_bytes(), host)?);
         let removals = self.lock_write();
-        if removals.get(host).copied().unwrap_or(0) != ticket.removals {
+        if removals.hosts.get(host).map_or(0, |h| h.removed) != ticket.removals {
             return Err(AcmeError(
                 "domaine supprime pendant l'emission : certificat abandonne".into(),
             ));
@@ -336,7 +401,10 @@ impl CertStore {
     /// retiree.
     pub fn remove(&self, host: &str) -> bool {
         let mut removals = self.lock_write();
-        *removals.entry(host.to_string()).or_insert(0) += 1;
+        // Sans emission en cours pour cet hote, il n'y a rien a invalider.
+        if let Some(entry) = removals.hosts.get_mut(host) {
+            entry.removed += 1;
+        }
         let current = self.certs.load();
         let held = current.contains_key(host);
         if held {
@@ -386,6 +454,9 @@ fn parse_bundle(pem: &[u8], host: &str) -> Result<Installed, AcmeError> {
         return Err(AcmeError(format!("le certificat ne couvre pas {host}")));
     }
     let not_after = cert.validity().not_after.timestamp();
+    if not_after <= unix_now() {
+        return Err(AcmeError(format!("certificat expire pour {host}")));
+    }
     let issuer = cert
         .issuer()
         .iter_common_name()
@@ -452,7 +523,7 @@ impl ResolvesServerCert for CertResolver {
     fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         let found = hello.server_name().and_then(|name| {
             let name = name.trim_end_matches('.').to_ascii_lowercase();
-            self.store.get(&name).map(|c| c.key.clone())
+            self.store.serving(&name)
         });
         if found.is_none() {
             self.miss();
@@ -793,6 +864,15 @@ mod tests {
         (ck.cert.pem(), ck.signing_key.serialize_pem())
     }
 
+    fn expired(host: &str) -> (String, String) {
+        let mut params = rcgen::CertificateParams::new(vec![host.to_string()]).unwrap();
+        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+        params.not_after = rcgen::date_time_ymd(2021, 1, 1);
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        (cert.pem(), key.serialize_pem())
+    }
+
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ciphera-proxy-acme-{}-{}",
@@ -997,5 +1077,81 @@ mod tests {
         );
         assert!(store.install("bad host", "", "").is_err());
         assert!(!store.has("app.example.com"));
+    }
+
+    /// Un certificat expire n'est ni installe, ni charge du disque, ni servi.
+    #[test]
+    fn expired_cert_not_loaded() {
+        let host = "old.example.com";
+        let (chain, key) = expired(host);
+        let memory = CertStore::memory();
+        let err = memory.install(host, &chain, &key).unwrap_err();
+        assert!(err.0.contains("expire"), "{err}");
+        assert!(!memory.has(host));
+
+        // Fichier chiffre valide mais expire, a cote d'un certificat valide.
+        let dir = temp_dir();
+        let sealer = Arc::new(load_or_create_key(&dir).unwrap());
+        let store = CertStore::open(&dir, sealer.clone()).unwrap();
+        let (good_chain, good_key) = self_signed("fresh.example.com");
+        store
+            .install("fresh.example.com", &good_chain, &good_key)
+            .unwrap();
+        let sealed = sealer
+            .seal(
+                format!(
+                    "{key}
+{chain}"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        write_private(&dir.join("certs").join(format!("{host}.age")), &sealed).unwrap();
+        let reloaded = CertStore::open(&dir, sealer).unwrap();
+        assert!(reloaded.has("fresh.example.com"));
+        assert!(
+            !reloaded.has(host),
+            "certificat expire ignore au chargement"
+        );
+        assert!(reloaded.get(host).is_none());
+
+        // Expire apres le chargement : plus servi non plus.
+        let held = reloaded.get("fresh.example.com").unwrap();
+        let stale = Installed {
+            key: held.key.clone(),
+            not_after: unix_now() - 1,
+            issuer: String::new(),
+        };
+        let mut next = HashMap::clone(&reloaded.certs.load());
+        next.insert("fresh.example.com".to_string(), Arc::new(stale));
+        reloaded.certs.store(Arc::new(next));
+        assert!(!reloaded.has("fresh.example.com"));
+        assert!(reloaded.serving("fresh.example.com").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Le compteur de suppressions ne garde que les hotes dont une emission
+    /// est en cours ; il est purge des que la derniere est terminee.
+    #[test]
+    fn removals_purged() {
+        let store = CertStore::memory();
+        // Aucune emission en cours : rien a retenir.
+        store.remove("a.example.com");
+        assert_eq!(store.pending_removals(), 0);
+
+        let (chain, key) = self_signed("b.example.com");
+        let first = store.ticket("b.example.com");
+        let second = store.ticket("b.example.com");
+        store.remove("b.example.com");
+        assert_eq!(store.pending_removals(), 1);
+        assert!(store.install_ticket(&first, &chain, &key).is_err());
+        drop(first);
+        assert_eq!(store.pending_removals(), 1, "une emission reste en cours");
+        drop(second);
+        assert_eq!(store.pending_removals(), 0);
+
+        // Installation sans accroc : rien ne subsiste non plus.
+        store.install("b.example.com", &chain, &key).unwrap();
+        assert_eq!(store.pending_removals(), 0);
     }
 }
