@@ -9,7 +9,7 @@ import { timeAgo } from "@/features/projects/format";
 import { ApiError } from "@/lib/api/errors";
 import { copyText } from "@/lib/clipboard";
 
-import { bulkProjectVariables, deleteProjectVariable, download, envLabel, fetchProjectVariables, fetchVariablesStatus, projectVariablesQueryKey, putProjectVariable, shortSecretKeys, shortSecretNotice, variablesStatusQueryKey, type ProjectVariable } from "./api";
+import { bulkProjectVariables, deleteProjectVariable, download, envLabel, fetchGlobalVariables, fetchProjectVariables, fetchVariablesStatus, GLOBAL_VARIABLES_QUERY_KEY, projectVariablesQueryKey, putProjectVariable, shortSecretKeys, shortSecretNotice, updateGlobalVariable, variablesStatusQueryKey, type GlobalVariable, type ProjectVariable } from "./api";
 import { dotenvLine } from "./dotenv";
 
 // Port de prototypes/dashboard/ProjectVariables.jsx (structure, libellés, tokens).
@@ -25,7 +25,9 @@ import { dotenvLine } from "./dotenv";
 //   le bandeau ;
 // - les globales remplacées par le projet ne sont pas listées par l'API
 //   (seule la valeur effective l'est) ;
-// - écriture réservée aux rôles développeur et plus (ops : lecture).
+// - écriture réservée aux rôles développeur et plus (ops : lecture) ;
+// - un secret global nomme ses projets : un administrateur voit ceux qui ne
+//   visent pas encore ce projet et peut les « Appliquer à ce projet ».
 
 const hair = "1px solid var(--border-subtle)";
 const lbl: CSSProperties = { font: "400 12px/1 var(--font-sans)", color: "var(--text-subtle)" };
@@ -138,9 +140,12 @@ export function ProjectVariables({ project }: { project: Project }) {
   const { flash } = useToast();
   const role = useRole();
   const canEdit = role === "owner" || role === "admin" || role === "developer";
+  const isAdmin = role === "owner" || role === "admin";
   const actions = useDeploymentActions(project.id);
   const query = useQuery({ queryKey: projectVariablesQueryKey(project.id, env), queryFn: () => fetchProjectVariables(project.id, env) });
   const status = useQuery({ queryKey: variablesStatusQueryKey(project.id, env), queryFn: () => fetchVariablesStatus(project.id, env) });
+  // Liste réservée aux administrateurs (Variables › Admin) : aucune requête sinon.
+  const allGlobals = useQuery({ queryKey: GLOBAL_VARIABLES_QUERY_KEY, queryFn: fetchGlobalVariables, enabled: isAdmin });
   const [q, setQ] = useState("");
   const [edit, setEdit] = useState<string | null>(null);
   const [reveal, setReveal] = useState<Record<string, boolean>>({});
@@ -154,6 +159,7 @@ export function ProjectVariables({ project }: { project: Project }) {
   const rows = query.data ?? [];
   const own = rows.filter((r) => !r.inherited);
   const globals = rows.filter((r) => r.inherited);
+  const notApplied = (allGlobals.data ?? []).filter((g) => g.secret && !g.all_projects && !g.projects.includes(project.id) && g.environments.includes(env));
   const list = own.filter((r) => r.key.toLowerCase().includes(q.toLowerCase()));
   const pending = rows.filter((r) => r.pending_apply).length;
   // Suppressions comprises : aucune ligne ne les porte.
@@ -190,6 +196,17 @@ export function ProjectVariables({ project }: { project: Project }) {
       setEdit(null);
       const notice = shortSecretNotice(short ? [d.k] : []);
       if (notice) flash(notice, 6000);
+    });
+  const applyHere = (g: GlobalVariable) =>
+    guarded(async () => {
+      const result = await updateGlobalVariable(g.id, { projects: [...g.projects, project.id] });
+      if (!result.ok) {
+        flash(result.message, 5000);
+        return;
+      }
+      void client.invalidateQueries({ queryKey: GLOBAL_VARIABLES_QUERY_KEY });
+      void client.invalidateQueries({ queryKey: projectVariablesQueryKey(project.id, env) });
+      flash(`${g.key} appliquée à ce projet`);
     });
   const del = (r: ProjectVariable) =>
     guarded(async () => {
@@ -357,6 +374,18 @@ export function ProjectVariables({ project }: { project: Project }) {
               </div>
             ))}
             {!globals.length && <div style={{ padding: "16px 40px", ...lbl }}>Aucune variable globale pour {E}.</div>}
+            {notApplied.map((g) => (
+              <div key={g.id} data-testid={`apply-${g.key}`} style={{ display: "grid", gridTemplateColumns: "minmax(0,1.2fr) minmax(0,1.6fr) minmax(0,1fr)", gap: 12, alignItems: "center", minHeight: 44, padding: "0 16px 0 40px", borderTop: hair }}>
+                <span style={{ ...cell, display: "flex", alignItems: "center", gap: 8, font: "500 12px/1 var(--font-mono)", color: "var(--text-body)" }}>
+                  <Icon name="Lock" size={11} color="var(--text-subtle)" />
+                  {g.key}
+                </span>
+                <span style={lbl}>Secret global non appliqué à ce projet</span>
+                <span style={{ justifySelf: "end" }}>
+                  <Button onClick={() => void applyHere(g)}>Appliquer à ce projet</Button>
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </div>

@@ -15,7 +15,10 @@ import { createGlobalVariable, deleteGlobalVariable, download, ENVIRONMENTS, env
 // - un secret n'est jamais relu (« Écriture seule », « Laisser vide pour
 //   conserver ») ; l'export (serveur) ne contient ni les secrets ni leurs clés ;
 // - les projets viennent de l'API ; l'import crée une variable par ligne
-//   (tous projets, tous environnements).
+//   (tous environnements ; tous projets, ou la liste actuelle des projets
+//   pour un secret) ;
+// - un secret ne vise jamais « tous les projets » (le serveur le refuse) ;
+//   l'écran Projet propose « Appliquer à ce projet ».
 
 const lbl: CSSProperties = { font: "400 12px/1 var(--font-sans)", color: "var(--text-subtle)" };
 const ENVS: string[] = [...ENVIRONMENTS];
@@ -30,9 +33,9 @@ function useIsAdmin(): boolean {
   return !!me.data && me.data !== MFA_PENDING && (me.data.role === "owner" || me.data.role === "admin");
 }
 
-function chip(on: boolean, txt: string, onClick: () => void) {
+function chip(on: boolean, txt: string, onClick: () => void, disabled = false) {
   return (
-    <button key={txt} type="button" aria-pressed={on} onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 6, height: 28, padding: "0 10px", borderRadius: 99, cursor: "pointer", font: "500 12px/1 var(--font-sans)", border: "1px solid " + (on ? "var(--gray-500)" : "var(--border-strong)"), background: on ? "var(--surface-selected)" : "transparent", color: on ? "var(--text-strong)" : "var(--text-muted)" }}>
+    <button key={txt} type="button" aria-pressed={on} disabled={disabled} onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 6, height: 28, padding: "0 10px", borderRadius: 99, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.45 : 1, font: "500 12px/1 var(--font-sans)", border: "1px solid " + (on ? "var(--gray-500)" : "var(--border-strong)"), background: on ? "var(--surface-selected)" : "transparent", color: on ? "var(--text-strong)" : "var(--text-muted)" }}>
       {on && <Icon name="Check" size={11} />}
       {txt}
     </button>
@@ -53,7 +56,8 @@ function VarModal({ initial, projects, onClose, onSave }: { initial?: GlobalVari
   const [v, setV] = useState(initial && !initial.secret ? (initial.value ?? "") : "");
   const [secret, setSecret] = useState(initial?.secret ?? false);
   const [envs, setEnvs] = useState<string[]>(initial?.environments ?? [...ENVS]);
-  const [all, setAll] = useState(!initial || initial.all_projects);
+  // Un secret nomme ses projets : « Tous les projets » est réservé aux publiques.
+  const [all, setAll] = useState((!initial || initial.all_projects) && !initial?.secret);
   const [proj, setProj] = useState<string[]>(initial?.projects ?? []);
   const tog = (arr: string[], set: (x: string[]) => void, x: string) => set(arr.includes(x) ? arr.filter((y) => y !== x) : [...arr, x]);
   const ok = !!k && (!!v || !!initial?.secret) && envs.length > 0 && (all || proj.length > 0);
@@ -77,7 +81,15 @@ function VarModal({ initial, projects, onClose, onSave }: { initial?: GlobalVari
           <TextField label="Clé" mono placeholder="API_URL" value={k} onChange={setK} style={{ flex: 1 }} />
           <TextField label="Valeur" mono type={secret ? "password" : "text"} autoComplete="off" placeholder={initial?.secret ? "Laisser vide pour conserver" : "valeur"} value={v} onChange={setV} style={{ flex: 1.4 }} />
         </div>
-        <Switch checked={secret} onChange={setSecret} label="Secret" description="Chiffré (age) et en écriture seule : la valeur ne sera plus jamais affichée." />
+        <Switch
+          checked={secret}
+          onChange={(on) => {
+            setSecret(on);
+            if (on) setAll(false);
+          }}
+          label="Secret"
+          description="Chiffré (age) et en écriture seule : la valeur ne sera plus jamais affichée."
+        />
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <span style={lbl}>Environnements</span>
           <div style={{ display: "flex", gap: 6 }}>{ENVS.map((e) => chip(envs.includes(e), envLabel(e), () => tog(envs, setEnvs, e)))}</div>
@@ -85,9 +97,10 @@ function VarModal({ initial, projects, onClose, onSave }: { initial?: GlobalVari
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <span style={lbl}>Projets</span>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {chip(all, "Tous les projets", () => setAll(true))}
+            {chip(all, "Tous les projets", () => setAll(true), secret)}
             {chip(!all, "Sélection", () => setAll(false))}
           </div>
+          {secret && <span style={lbl}>Un secret nomme ses projets : il n'est jamais envoyé à tous les projets, y compris ceux de demain.</span>}
           {!all && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingTop: 4 }}>{projects.map((p) => chip(proj.includes(p.id), p.name, () => tog(proj, setProj, p.id)))}</div>}
         </div>
       </div>
@@ -102,7 +115,7 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (ro
   return (
     <Modal
       title="Importer un fichier .env"
-      description={rows.length + " variable(s) détectée(s), appliquées à tous les projets et environnements."}
+      description={rows.length + " variable(s) détectée(s), appliquées à tous les environnements (secrets : aux projets actuels)."}
       onClose={onClose}
       width={560}
       footer={
@@ -222,7 +235,8 @@ function GlobalVariables() {
       let done = 0;
       const short: string[] = [];
       for (const [key, value] of pairs) {
-        const result = await createGlobalVariable({ key, value, secret, environments: [...ENVS], all_projects: true, projects: [] });
+        // Un secret nomme ses projets : la liste actuelle, jamais « tous ».
+        const result = await createGlobalVariable({ key, value, secret, environments: [...ENVS], all_projects: !secret, projects: secret ? projects.map((p) => p.id) : [] });
         if (!result.ok) {
           flash(`${key} : ${result.message}`, 5000);
           break;

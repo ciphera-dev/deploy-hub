@@ -31,7 +31,7 @@ const g = (n: number, v: Omit<GlobalVariable, "id">): GlobalVariable => ({ id: `
 
 export const GLOBAL_VARIABLES: GlobalVariable[] = [
   g(1, { key: "SENTRY_DSN", value: "https://8f2c@o4501.ingest.sentry.io/77", secret: false, environments: ALL, all_projects: true, projects: [], updated_at: ago(3), updated_by: "Alex Martin" }),
-  g(2, { key: "RESEND_API_KEY", value: null, secret: true, environments: ["production"], all_projects: true, projects: [], updated_at: ago(12), updated_by: "Lina Moreau" }),
+  g(2, { key: "RESEND_API_KEY", value: null, secret: true, environments: ["production"], all_projects: false, projects: [WEB.id, BILLING.id, MARKETING.id], updated_at: ago(12), updated_by: "Lina Moreau" }),
   g(3, { key: "S3_BUCKET", value: "ciphera-assets-eu", secret: false, environments: ["production", "staging"], all_projects: false, projects: [WEB.id, MARKETING.id], updated_at: ago(30), updated_by: "Alex Martin" }),
   g(4, { key: "S3_SECRET_ACCESS_KEY", value: null, secret: true, environments: ["production", "staging"], all_projects: false, projects: [WEB.id, MARKETING.id], updated_at: ago(30), updated_by: "Alex Martin" }),
   g(5, { key: "LOG_LEVEL", value: "info", secret: false, environments: ["production"], all_projects: true, projects: [], updated_at: ago(60), updated_by: "Yanis Benali" }),

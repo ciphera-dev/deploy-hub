@@ -84,6 +84,27 @@ it("nouvelle variable : POST avec le jeton CSRF et la sélection de projets", as
   });
 });
 
+it("secret : « Tous les projets » est désactivé, avec explication", async () => {
+  mount();
+  await screen.findByTestId("gvar-SENTRY_DSN", {}, { timeout: 5000 });
+  screen.getByRole("button", { name: "Nouvelle variable" }).click();
+  const dialog = await screen.findByRole("dialog", { name: "Nouvelle variable globale" });
+  const all = within(dialog).getByRole("button", { name: "Tous les projets" });
+  expect(all).toBeEnabled();
+  expect(all).toHaveAttribute("aria-pressed", "true");
+  within(dialog).getByRole("switch", { name: "Secret" }).click();
+  await waitFor(() => expect(all).toBeDisabled());
+  expect(all).toHaveAttribute("aria-pressed", "false");
+  expect(within(dialog).getByText("Un secret nomme ses projets : il n'est jamais envoyé à tous les projets, y compris ceux de demain.")).toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "Sélection" })).toHaveAttribute("aria-pressed", "true");
+  // Sans projet choisi, l'enregistrement reste impossible.
+  fireEvent.change(within(dialog).getByLabelText("Clé"), { target: { value: "TOKEN" } });
+  fireEvent.change(within(dialog).getByLabelText("Valeur"), { target: { value: "s3cret-value" } });
+  expect(within(dialog).getByRole("button", { name: "Enregistrer" })).toBeDisabled();
+  (await within(dialog).findByRole("button", { name: "billing-api" })).click();
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Enregistrer" })).toBeEnabled());
+});
+
 it("export : fichier du serveur, sans secrets", async () => {
   const createObjectURL = vi.fn((blob: Blob) => {
     void blob;
@@ -122,4 +143,17 @@ it("développeur : réservé aux administrateurs, aucune requête", async () => 
   mount();
   expect(await screen.findByText("Réservé aux administrateurs.", {}, { timeout: 5000 })).toBeInTheDocument();
   expect(gets).toBe(0);
+});
+
+it("import .env en secrets : la liste explicite des projets, jamais « tous »", async () => {
+  mount();
+  await screen.findByTestId("gvar-SENTRY_DSN", {}, { timeout: 5000 });
+  screen.getByRole("button", { name: "Importer .env" }).click();
+  const dialog = await screen.findByRole("dialog", { name: "Importer un fichier .env" });
+  fireEvent.change(within(dialog).getByLabelText("Contenu .env"), { target: { value: "A_KEY=1\n" } });
+  within(dialog).getByRole("switch", { name: "Importer comme secrets" }).click();
+  await waitFor(() => expect(within(dialog).getByRole("switch", { name: "Importer comme secrets" })).toBeChecked());
+  within(dialog).getByRole("button", { name: "Importer 1" }).click();
+  await waitFor(() => expect(posts).toHaveLength(1));
+  expect(posts[0].body).toEqual({ key: "A_KEY", value: "1", secret: true, environments: ["production", "preview", "staging"], all_projects: false, projects: PROJECT_SUMMARIES.map((p) => p.id) });
 });

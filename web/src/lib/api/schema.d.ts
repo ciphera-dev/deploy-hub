@@ -2141,7 +2141,10 @@ export interface components {
         };
         /** @description Variable globale. */
         GlobalVariable: {
-            /** @description Tous les projets, sinon ceux de `projects`. */
+            /**
+             * @description Tous les projets, sinon ceux de `projects`. Toujours faux pour un
+             *     secret, qui nomme ses projets.
+             */
             all_projects: boolean;
             /** @description Noms des environnements concernes (`production`, `preview`, `staging`). */
             environments: string[];
@@ -2343,6 +2346,7 @@ export interface components {
         };
         /** @description Corps de `POST /api/variables`. */
         NewGlobalVariable: {
+            /** @description Tous les projets : refuse (422) pour un secret, qui nomme ses projets. */
             all_projects: boolean;
             /** @description 1 a 16 noms d'environnement. */
             environments: string[];
@@ -7975,7 +7979,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Cle, valeur, environnements ou projets invalides */
+            /** @description Cle, valeur, environnements ou projets invalides, secret pour tous les projets, ou portee qui recoupe une autre globale de la meme cle */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -8101,7 +8105,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Cle, valeur, environnements ou projets invalides */
+            /** @description Cle, valeur, environnements ou projets invalides, secret pour tous les projets, ou portee qui recoupe une autre globale de la meme cle */
             422: {
                 headers: {
                     [name: string]: unknown;

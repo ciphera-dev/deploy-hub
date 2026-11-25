@@ -8,13 +8,15 @@ import { AppProviders, createAppQueryClient } from "@/app/providers";
 import { createAppRouter } from "@/app/router";
 import { setCsrfToken } from "@/lib/api/csrf";
 import { PROJECT_SUMMARIES, projectDetail } from "@/mocks/fixtures/projects";
-import { PROJECT_VARIABLES } from "@/mocks/fixtures/variables";
+import { GLOBAL_VARIABLES, PROJECT_VARIABLES } from "@/mocks/fixtures/variables";
 
 const WEB = PROJECT_SUMMARIES[0];
 let role = "owner";
 let puts: { env: string | null; body: unknown; csrf: string | null }[] = [];
 let bulks: { env: string | null; body: unknown }[] = [];
 let envPending = false;
+let patches: { id: string; body: unknown; csrf: string | null }[] = [];
+let globalGets = 0;
 
 const server = setupServer(
   http.get("*/api/me", () => HttpResponse.json({ id: "u1", name: "Alice Martin", email: "alice@example.com", role, csrf_token: "csrf-1" })),
@@ -22,6 +24,14 @@ const server = setupServer(
   http.get("*/api/projects/:id", ({ params }) => HttpResponse.json(projectDetail(PROJECT_SUMMARIES.find((p) => p.id === params.id)!))),
   http.get("*/api/projects/:id/variables/status", () => HttpResponse.json({ pending_apply: envPending })),
   http.get("*/api/projects/:id/variables", () => HttpResponse.json(PROJECT_VARIABLES)),
+  http.get("*/api/variables", () => {
+    globalGets += 1;
+    return HttpResponse.json(GLOBAL_VARIABLES);
+  }),
+  http.patch("*/api/variables/:id", async ({ params, request }) => {
+    patches.push({ id: String(params.id), body: await request.json(), csrf: request.headers.get("x-csrf-token") });
+    return HttpResponse.json(GLOBAL_VARIABLES[0]);
+  }),
   http.put("*/api/projects/:id/variables", async ({ request }) => {
     puts.push({ env: new URL(request.url).searchParams.get("env"), body: await request.json(), csrf: request.headers.get("x-csrf-token") });
     return HttpResponse.json(PROJECT_VARIABLES);
@@ -40,6 +50,8 @@ beforeEach(() => {
   puts = [];
   bulks = [];
   envPending = false;
+  patches = [];
+  globalGets = 0;
 });
 afterEach(() => server.resetHandlers());
 
@@ -174,4 +186,23 @@ it("rien à appliquer : pas de bandeau", async () => {
   await screen.findByTestId("var-PORT", {}, { timeout: 5000 });
   await new Promise((r) => setTimeout(r, 50));
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
+it("secret global non appliqué : « Appliquer à ce projet » ajoute ce projet à sa portée", async () => {
+  mount(`/projects/${WEB.id}/variables`);
+  const row = await screen.findByTestId("apply-STRIPE_WEBHOOK_SECRET", {}, { timeout: 5000 });
+  // Déjà appliqué à ce projet : pas proposé.
+  expect(screen.queryByTestId("apply-RESEND_API_KEY")).not.toBeInTheDocument();
+  within(row).getByRole("button", { name: "Appliquer à ce projet" }).click();
+  await waitFor(() => expect(patches).toHaveLength(1));
+  const stripe = GLOBAL_VARIABLES.find((g) => g.key === "STRIPE_WEBHOOK_SECRET")!;
+  expect(patches[0]).toEqual({ id: stripe.id, body: { projects: [...stripe.projects, WEB.id] }, csrf: "csrf-1" });
+});
+
+it("développeur : aucune liste des globales demandée, aucune proposition d'application", async () => {
+  role = "developer";
+  mount(`/projects/${WEB.id}/variables`);
+  await screen.findByTestId("var-PORT", {}, { timeout: 5000 });
+  expect(screen.queryByRole("button", { name: "Appliquer à ce projet" })).not.toBeInTheDocument();
+  expect(globalGets).toBe(0);
 });
