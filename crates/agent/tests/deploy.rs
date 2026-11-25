@@ -3408,6 +3408,62 @@ async fn compose_cancel_during_probe_removes_new_services() {
     );
 }
 
+/// Agent arrete pendant la sonde d'un deploiement Compose : au demarrage
+/// suivant, le service nouveau qu'il avait lance (en marche) est retire ;
+/// les services du deploiement servi restent.
+#[tokio::test(start_paused = true)]
+async fn compose_new_services_of_an_interrupted_deploy_removed_at_startup() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.com", Some(web))])
+        .await
+        .unwrap();
+    for n in 100..105 {
+        bench.probe.answer(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let first = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    bench.deploy(&first).await.0.unwrap();
+    for n in 105..120 {
+        bench
+            .probe
+            .hang
+            .lock()
+            .unwrap()
+            .insert(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let tries = bench.probe.tries.lock().unwrap().len();
+    let mut second = compose_spec_with(&bench, project, web, &worker_bundle(true));
+    second.healthcheck.interval_secs = 1;
+    let (tx, _rx) = mpsc::channel(1024);
+    bench.deployer.spawn_deploy(second.clone(), tx);
+    wait_until("sonde en cours", || {
+        bench.probe.tries.lock().unwrap().len() > tries
+    })
+    .await;
+    let mailer = "cid-shop-production-mailer-1";
+    assert!(bench.docker.container(mailer).unwrap().running);
+
+    // Redemarrage : nouvel agent, meme etat local, meme Docker.
+    bench.restarted().sweep().await;
+
+    assert!(
+        bench.docker.container(mailer).is_none(),
+        "service nouveau retire"
+    );
+    for kept in ["worker", "api", "cache"] {
+        assert!(
+            bench
+                .docker
+                .container(&format!("cid-shop-production-{kept}-1"))
+                .is_some(),
+            "{kept}"
+        );
+    }
+    assert!(bench.db.compose_created().unwrap().is_empty());
+}
+
 /// Balayage : reseau de projet vide d'un projet inconnu supprime ; ceux d'un
 /// projet deploye, d'un projet qui a encore un conteneur, et les autres
 /// reseaux restent.

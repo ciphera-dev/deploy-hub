@@ -17,7 +17,7 @@ use shared::ids::{DeploymentId, ProjectId, ServiceId};
 
 use crate::docker::ContainerId;
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Tables de la version 1 (Task 19).
 const SCHEMA_V1: &str = "
@@ -71,6 +71,18 @@ ALTER TABLE deployments ADD COLUMN project_id TEXT;
 /// gardee quand `inspect` echoue.
 const MIGRATE_V5: &str = "
 ALTER TABLE deployments ADD COLUMN runs_as_root INTEGER NOT NULL DEFAULT 0 CHECK (runs_as_root IN (0, 1));
+";
+
+/// Version 6 : services Compose nouveaux lances par un deploiement pas encore
+/// servi (retires au demarrage si l'agent s'est arrete avant son issue).
+const MIGRATE_V6: &str = "
+CREATE TABLE IF NOT EXISTS compose_created (
+    deployment_id TEXT NOT NULL,
+    project_id    TEXT NOT NULL,
+    stable        TEXT NOT NULL,
+    service       TEXT NOT NULL,
+    PRIMARY KEY (deployment_id, service)
+);
 ";
 
 #[derive(Debug)]
@@ -166,6 +178,9 @@ impl StateDb {
         }
         if version < 5 {
             tx.execute_batch(MIGRATE_V5)?;
+        }
+        if version < 6 {
+            tx.execute_batch(MIGRATE_V6)?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
@@ -416,6 +431,75 @@ impl StateDb {
             );
         }
         Ok(out)
+    }
+
+    /// Service Compose nouveau `service` (projet Compose stable `stable`)
+    /// lance par le deploiement `id`, pas encore servi.
+    pub fn put_compose_created(
+        &self,
+        id: DeploymentId,
+        project: ProjectId,
+        stable: &str,
+        service: &str,
+    ) -> Result<(), StateError> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO compose_created (deployment_id, project_id, stable, service)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![id.to_string(), project.to_string(), stable, service],
+        )?;
+        Ok(())
+    }
+
+    /// Services Compose nouveaux gardes : deploiement, projet, projet
+    /// Compose stable, service.
+    pub fn compose_created(
+        &self,
+    ) -> Result<Vec<(DeploymentId, ProjectId, String, String)>, StateError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT deployment_id, project_id, stable, service FROM compose_created
+             ORDER BY deployment_id, service",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, project, stable, service) = row?;
+            let id = id
+                .parse::<DeploymentId>()
+                .map_err(|_| StateError::Corrupt("identifiant de deploiement"))?;
+            let project = project
+                .parse::<ProjectId>()
+                .map_err(|_| StateError::Corrupt("identifiant de projet"))?;
+            out.push((id, project, stable, service));
+        }
+        Ok(out)
+    }
+
+    /// Oublie le service Compose nouveau `service` du deploiement `id`, ou
+    /// tous ceux du deploiement si `service` est `None`.
+    pub fn remove_compose_created(
+        &self,
+        id: DeploymentId,
+        service: Option<&str>,
+    ) -> Result<(), StateError> {
+        match service {
+            Some(s) => self.conn().execute(
+                "DELETE FROM compose_created WHERE deployment_id = ?1 AND service = ?2",
+                params![id.to_string(), s],
+            )?,
+            None => self.conn().execute(
+                "DELETE FROM compose_created WHERE deployment_id = ?1",
+                params![id.to_string()],
+            )?,
+        };
+        Ok(())
     }
 
     /// `true` si un ensemble etait enregistre.

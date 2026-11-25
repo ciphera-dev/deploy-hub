@@ -29,6 +29,9 @@
 //! du deploiement nomme les services deja en place qu'il a mis a jour (ils
 //! ne sont pas restaures). Les services sans lien avec le service expose ne
 //! sont jamais touches avant la reussite de la sonde.
+//! Les services nouveaux sont aussi notes dans l'etat local jusqu'a la
+//! bascule : si l'agent s'arrete avant l'issue, le demarrage suivant les
+//! retire (`sweep`). Un retrait qui echoue garde la note (reprise).
 //!
 //! La bascule exige une table de routes du plan de controle recue depuis le
 //! demarrage (sinon `Switch` echoue, « routes not synced ») : l'ancien
@@ -576,6 +579,10 @@ where
         };
         // Services Compose acquis au deploiement servi.
         self.compose_runs().remove(&id);
+        if let Err(e) = self.db.remove_compose_created(id, None) {
+            // Garde au demarrage : un deploiement servi n'est jamais defait.
+            tracing::warn!("deploiement {id} : services Compose nouveaux : {e}");
+        }
         remove_path(Path::new(&self.deploy_dir(id)));
         // Issue gardee avant de rendre la main (un `Stop` en attente la lit).
         let record = || {
@@ -883,7 +890,10 @@ where
 
     /// `docker compose up` d'un service non expose du deploiement Compose
     /// `id`, note avant le lancement (une annulation pendant `up` le
-    /// retrouve) : mis a jour s'il etait `existing`, sinon nouveau.
+    /// retrouve) : mis a jour s'il etait `existing`, sinon nouveau. Un
+    /// service nouveau est aussi garde dans l'etat local : apres un arret de
+    /// l'agent avant l'issue, le demarrage le retire
+    /// ([`Deployer::sweep_interrupted_compose`]).
     async fn up_tracked(
         &self,
         id: DeploymentId,
@@ -892,22 +902,36 @@ where
         env: &[proto::EnvVar],
         sink: &ProgressSink,
     ) -> Result<(), DeployError> {
-        let (stable, file, dir) = {
-            let mut runs = self.compose_runs();
+        let (project, stable, file, dir) = {
+            let runs = self.compose_runs();
             let run = runs
-                .get_mut(&id)
+                .get(&id)
                 .ok_or_else(|| DeployError::Compose("deploiement Compose inconnu".into()))?;
-            let name = service.as_str().to_string();
-            let list = if existing {
-                &mut run.updated
-            } else {
-                &mut run.created
-            };
-            if !list.contains(&name) {
-                list.push(name);
-            }
-            (run.stable.clone(), run.file.clone(), run.dir.clone())
+            (
+                run.project,
+                run.stable.clone(),
+                run.file.clone(),
+                run.dir.clone(),
+            )
         };
+        if !existing {
+            self.db
+                .put_compose_created(id, project, stable.as_str(), service.as_str())?;
+        }
+        {
+            let mut runs = self.compose_runs();
+            if let Some(run) = runs.get_mut(&id) {
+                let name = service.as_str().to_string();
+                let list = if existing {
+                    &mut run.updated
+                } else {
+                    &mut run.created
+                };
+                if !list.contains(&name) {
+                    list.push(name);
+                }
+            }
+        }
         self.compose
             .up(&stable, &file, service, &dir, env, sink)
             .await
@@ -935,26 +959,23 @@ where
     /// Deploiement Compose `id` en echec ou annule avant la bascule : les
     /// services nouveaux qu'il a lances sont retires ; ceux deja en place
     /// qu'il a relances sont nommes dans son journal (`sink`), non
-    /// restaures.
-    async fn undo_compose(&self, id: DeploymentId, sink: Option<&ProgressSink>) {
-        let Some(run) = self.compose_runs().remove(&id) else {
-            return;
+    /// restaures. `false` si un retrait a echoue : les services non retires
+    /// restent notes (memoire et etat local), un appel suivant reprend.
+    async fn undo_compose(&self, id: DeploymentId, sink: Option<&ProgressSink>) -> bool {
+        let Some(mut run) = self.compose_runs().remove(&id) else {
+            return true;
         };
+        let mut left = Vec::new();
         for service in &run.created {
-            let list = match self
-                .compose_service_containers(run.stable.as_str(), run.project, Some(service))
+            if self
+                .remove_compose_service(id, run.project, run.stable.as_str(), service)
                 .await
             {
-                Ok(list) => list,
-                Err(e) => {
-                    tracing::warn!("deploiement {id} : service Compose {service} illisible : {e}");
-                    continue;
+                if let Err(e) = self.db.remove_compose_created(id, Some(service)) {
+                    tracing::warn!("deploiement {id} : service Compose {service} : {e}");
                 }
-            };
-            for c in list {
-                if let Err(e) = self.docker.remove(&c.id).await {
-                    tracing::warn!("service Compose {} : suppression : {e}", c.name);
-                }
+            } else {
+                left.push(service.clone());
             }
         }
         if !run.updated.is_empty() {
@@ -965,6 +986,75 @@ where
             tracing::warn!("deploiement {id} : {message}");
             if let Some(sink) = sink {
                 sink.log(LogStream::Stderr, &message).await;
+            }
+        }
+        if left.is_empty() {
+            return true;
+        }
+        run.created = left;
+        run.updated.clear();
+        run.later.clear();
+        self.compose_runs().insert(id, run);
+        false
+    }
+
+    /// Retire les conteneurs du service non expose `service` du projet
+    /// Compose stable `stable` ; `false` si Docker a echoue.
+    async fn remove_compose_service(
+        &self,
+        id: DeploymentId,
+        project: ProjectId,
+        stable: &str,
+        service: &str,
+    ) -> bool {
+        let list = match self
+            .compose_service_containers(stable, project, Some(service))
+            .await
+        {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!("deploiement {id} : service Compose {service} illisible : {e}");
+                return false;
+            }
+        };
+        let mut complete = true;
+        for c in list {
+            if let Err(e) = self.docker.remove(&c.id).await {
+                tracing::warn!("service Compose {} : suppression : {e}", c.name);
+                complete = false;
+            }
+        }
+        complete
+    }
+
+    /// Au demarrage (aucune operation en cours) : services Compose nouveaux
+    /// lances par un deploiement que l'arret de l'agent a interrompu avant
+    /// son issue, retires (en marche ou non). Ceux d'un deploiement servi
+    /// lui appartiennent : seulement oublies. Sur un echec de Docker, la
+    /// note reste (reprise au prochain demarrage).
+    async fn sweep_interrupted_compose(&self) {
+        let entries = match self.db.compose_created() {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("services Compose interrompus illisibles : {e}");
+                return;
+            }
+        };
+        for (id, project, stable, service) in entries {
+            if self.ops.is_running(id) || self.compose_runs().contains_key(&id) {
+                continue;
+            }
+            if !self.is_serving(id) {
+                if !self
+                    .remove_compose_service(id, project, &stable, &service)
+                    .await
+                {
+                    continue;
+                }
+                tracing::info!("service Compose {service} du deploiement interrompu {id} retire");
+            }
+            if let Err(e) = self.db.remove_compose_created(id, Some(&service)) {
+                tracing::warn!("deploiement {id} : service Compose {service} : {e}");
             }
         }
     }
@@ -1075,7 +1165,7 @@ where
     /// la suppression.
     pub async fn remove(&self, id: DeploymentId) -> bool {
         let _ = self.ops.cancel(id, |_| ()).await;
-        self.undo_compose(id, None).await;
+        let compose_undone = self.undo_compose(id, None).await;
         let serving = self.is_serving(id);
         let label = id.to_string();
         let containers = match self
@@ -1095,7 +1185,7 @@ where
         if serving {
             doomed.extend(self.compose_siblings(id, &containers).await);
         }
-        let mut complete = true;
+        let mut complete = compose_undone;
         for c in &doomed {
             if let Err(e) = self.docker.remove(c).await {
                 tracing::warn!("deploiement {id} : suppression de {} : {e}", c.0);
@@ -1510,7 +1600,8 @@ where
     }
 
     /// Au demarrage (aucune operation en cours) : restes d'un arret brutal,
-    /// conteneurs `railpack prepare`, dossiers de build et de deploiement.
+    /// conteneurs `railpack prepare`, dossiers de build et de deploiement,
+    /// services Compose nouveaux d'un deploiement interrompu.
     /// Bacs a sable reconnus par leurs etiquettes reservees (gere, role
     /// `prepare`, deploiement valide, hors de tout projet Compose), jamais
     /// par leur nom.
@@ -1546,6 +1637,7 @@ where
                 remove_path(&entry.path());
             }
         }
+        self.sweep_interrupted_compose().await;
     }
 }
 
