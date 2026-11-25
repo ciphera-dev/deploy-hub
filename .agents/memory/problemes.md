@@ -182,3 +182,7 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 ## 2026-11-25 — CI rouge (e2e-golden-path) : polices en data: refusées par la CSP
 - Symptôme : 15 violations « font-src data » relevées par l'écouteur CSP ajouté en R33 (polices woff/woff2 inlinées par Vite sous `assetsInlineLimit`) ; défaut antérieur à R33, rendu visible par lui.
 - Correction (fix/csp-fonts) : les polices ne sont jamais inlinées (fichiers sous /assets/, servis par embed.rs avec cache immuable) ; `check-dist` échoue sur toute URI data: autre qu'image/* dans le CSS, le JS ou le HTML. La CSP n'est pas élargie.
+
+## 2026-11-25 — CI rouge (test) après R36 : hooks de test à empreinte identique
+- Symptôme : `team::removed_member_hooks_deleted` échoue sur la contrainte `deploy_hooks_token_hash_key` (migration 0037, R36) : le test insérait trois hooks avec la même empreinte.
+- Correction (fix/ci-team-hooks) : empreintes distinctes par hook dans le test ; aucun changement de production.

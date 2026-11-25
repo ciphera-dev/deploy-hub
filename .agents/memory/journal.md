@@ -413,3 +413,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 11:37 — Session v0.1-sdd — claude-code (orchestrateur) — Task R34 : Écoute HTTP du panneau : SPA, en-têtes, santé, délais
 - fait : Repli SPA GET/HEAD, CSP complétée, version de /api/health réservée, délai de corps, inactivité HTTP/2 par connexion
 - résultat : TERMINÉ (relecture approuvée, 2 tours)
+
+## 2026-11-25 11:46 — Session v0.1-sdd — claude-code (orchestrateur) — Task fix/ci-team-hooks : CI : empreintes de hooks distinctes dans le test d'équipe
+- fait : Test team.rs adapté à la contrainte UNIQUE de 0037
+- résultat : TERMINÉ

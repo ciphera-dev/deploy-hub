@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-25 11:37
+# État courant — mis à jour le 2026-11-25 11:46
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R34 : Écoute HTTP du panneau : SPA, en-têtes, santé, délais — statut : TERMINÉ (TERMINÉ (relecture approuvée, 2 tours))
+Task fix/ci-team-hooks : CI : empreintes de hooks distinctes dans le test d'équipe — statut : TERMINÉ (TERMINÉ)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task fix/ci-team-hooks : CI : empreintes de hooks distinctes dans le test d'équipe
 - Task R34 : Écoute HTTP du panneau : SPA, en-têtes, santé, délais
 - Task R36 : Autorisations par objet, contraintes de schéma, OpenAPI
 - Task fix/csp-fonts : CSP : polices servies en fichiers
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R33 : Panneau web : journaux, CSP des styles, copie, 401, jetons d'URL
 - Task R32 : Proxy : socket de pilotage, certificats expirés
 - Task fix/ci-panel-witness : CI : témoin du panneau sondé avant son démarrage
-- Task R30 : PKI et lien agent
 
 ## Prochaine étape exacte
-R51 ; R35, R48 en cours ; R4 en rebasage
+Vérifier la CI ; R51
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,22 +32,7 @@ R51 ; R35, R48 en cours ; R4 en rebasage
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `Cargo.lock`
-- `crates/api-types/src/health.rs`
-- `crates/control-plane/Cargo.toml`
-- `crates/control-plane/src/app.rs`
-- `crates/control-plane/src/embed.rs`
-- `crates/control-plane/src/http/health.rs`
-- `crates/control-plane/src/http/listener.rs`
-- `crates/control-plane/src/http/security_headers.rs`
-- `crates/control-plane/src/main.rs`
-- `crates/control-plane/tests/common/mod.rs`
-- `crates/control-plane/tests/headers.rs`
-- `crates/control-plane/tests/health.rs`
-- `crates/control-plane/tests/listener.rs`
-- `crates/control-plane/tests/spa.rs`
-- `openapi.json`
-- `web/src/lib/api/schema.d.ts`
+- `crates/control-plane/tests/team.rs`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
