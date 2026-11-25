@@ -920,6 +920,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "bytes",
+ "ciphera-proxy",
  "http",
  "instant-acme",
  "pingora",
