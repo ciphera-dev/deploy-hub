@@ -903,3 +903,46 @@ fn deploy_cut_is_read_only_at_a_field_boundary() {
     assert!(d.env.is_empty() && d.environment_id.is_none() && d.run_as.is_none());
     assert!(codec::decode::<ControlToAgent>(&cut_tail(&msg, full - env_start - 1)).is_err());
 }
+
+/// Encodage postcard d'une `Route` fige octet par octet : un changement
+/// silencieux des champs (ordre, ajout, type) casse ce test au lieu de
+/// decaler en production la lecture des routes suivantes d'une table.
+#[test]
+fn route_wire_encoding_is_pinned() {
+    let route = Route {
+        host: "p.example".into(),
+        path_prefix: "/".into(),
+        upstreams: Vec::new(),
+        redirect_to: None,
+        tls: TlsMode::Acme,
+        service: None,
+        panel_confirmed: true,
+    };
+    let mut want = vec![9];
+    want.extend_from_slice(b"p.example");
+    want.extend_from_slice(&[1, b'/']);
+    // upstreams vide, redirect_to None, TlsMode::Acme, service None,
+    // panel_confirmed vrai (dernier champ).
+    want.extend_from_slice(&[0, 0, 0, 0, 1]);
+    let bytes = postcard::to_stdvec(&route).unwrap();
+    assert_eq!(bytes, want);
+    assert_eq!(postcard::from_bytes::<Route>(&bytes).unwrap(), route);
+    let unconfirmed = Route {
+        panel_confirmed: false,
+        ..route
+    };
+    let mut want_false = want.clone();
+    *want_false.last_mut().unwrap() = 0;
+    assert_eq!(postcard::to_stdvec(&unconfirmed).unwrap(), want_false);
+    // Table entiere : chaque route porte son champ, rien n'est decale.
+    let table = ControlToAgent::ApplyRoutes(vec![unconfirmed.clone(), unconfirmed]);
+    let bytes = postcard::to_stdvec(&table).unwrap();
+    assert_eq!(
+        &bytes[bytes.len() - 2 * want.len()..][..want.len()],
+        &want_false[..]
+    );
+    assert_eq!(
+        postcard::from_bytes::<ControlToAgent>(&bytes).unwrap(),
+        table
+    );
+}
