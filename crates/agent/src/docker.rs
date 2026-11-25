@@ -1663,18 +1663,13 @@ impl DockerOps for BollardDocker {
         if check_name(&id.0).is_err() {
             return stream::empty().boxed();
         }
-        let options = LogsOptions {
-            follow,
-            stdout: true,
-            stderr: true,
-            timestamps: true,
-            tail: start.docker_tail(),
-            ..Default::default()
-        };
         // La ligne en attente a la fin du flux n'est complete que si le
         // conteneur est sorti (`log_complete`) : execution relevee avant la
         // lecture, comparee a celle d'apres.
         let before = run_mark(&self.docker, &id.0).await;
+        // TTY (ou conteneur illisible) : sans horodatage (`logs_options`).
+        let tty = before.as_ref().is_none_or(|m| m.tty);
+        let options = logs_options(start, follow, tty);
         let docker = self.docker.clone();
         let name = id.0.clone();
         let exited = move || async move {
@@ -2460,12 +2455,17 @@ struct RunMark {
     exited: bool,
     started_at: String,
     finished_at: String,
+    /// Conteneur a TTY (`Config.Tty`).
+    tty: bool,
 }
 
 /// Execution courante du conteneur ; `None` s'il reste illisible.
 async fn run_mark(docker: &Docker, name: &str) -> Option<RunMark> {
-    let state = docker.inspect_container(name, None).await.ok()?.state?;
+    let info = docker.inspect_container(name, None).await.ok()?;
+    let tty = info.config.and_then(|c| c.tty).unwrap_or(false);
+    let state = info.state?;
     Some(RunMark {
+        tty,
         exited: matches!(
             state.status,
             Some(ContainerStateStatusEnum::EXITED | ContainerStateStatusEnum::DEAD)
@@ -2473,6 +2473,23 @@ async fn run_mark(docker: &Docker, name: &str) -> Option<RunMark> {
         started_at: state.started_at.unwrap_or_default(),
         finished_at: state.finished_at.unwrap_or_default(),
     })
+}
+
+/// Options de `docker logs`. Pour un conteneur a TTY, sans horodatage :
+/// Docker y ecrit une ligne longue en messages partiels que bollard ne
+/// recoupe qu'au `\n` (un seul element `Console`) ; avec `timestamps`,
+/// l'horodatage du message suivant resterait au milieu de la ligne et
+/// separerait un secret en deux morceaux jamais masques. Les lignes prennent
+/// alors l'heure de reception (`split_log_chunk`).
+fn logs_options(start: LogStart, follow: bool, tty: bool) -> LogsOptions {
+    LogsOptions {
+        follow,
+        stdout: true,
+        stderr: true,
+        timestamps: !tty,
+        tail: start.docker_tail(),
+        ..Default::default()
+    }
 }
 
 /// Journal complet a la fin propre d'une lecture : jamais en suivi (le flux
@@ -2957,10 +2974,50 @@ mod tests {
         assert_eq!(shown, [INCOMPLETE_LINE]);
     }
 
+    /// Conteneur a TTY : Docker ecrit la ligne longue en deux messages
+    /// partiels que bollard rend en un seul element `Console` (recoupe au
+    /// `\n`). Lue avec les options de `logs`, la ligne garde le secret
+    /// entier.
+    #[tokio::test]
+    async fn tty_long_line_is_read_without_timestamps_and_the_secret_stays_whole() {
+        let secret = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+        let (line, _) = straddling_frames(secret);
+        let (a, b) = line.split_at(16_384);
+        let start = LogStart::Tail(10);
+        let options = logs_options(start, true, true);
+        // Ce que Docker ecrit avec ces options.
+        let (first, long) = if options.timestamps {
+            (
+                "2026-11-21T10:20:29Z debut\n".to_string(),
+                format!("2026-11-21T10:20:30.1Z {a}2026-11-21T10:20:30.2Z {b}\n"),
+            )
+        } else {
+            ("debut\n".to_string(), format!("{a}{b}\n"))
+        };
+        let console = |s: String| {
+            Ok(bollard::container::LogOutput::Console {
+                message: s.into_bytes().into(),
+            })
+        };
+        let items = vec![console(first), console(long)];
+        let lines = assembled(items, start.window(), false).await;
+        // Entier, le secret sera masque par le plan de controle ; coupe par
+        // un horodatage, son debut ne le serait pas.
+        assert!(
+            lines.iter().all(|l| l.line.contains(secret)),
+            "secret coupe par un horodatage"
+        );
+        let shown: Vec<_> = lines.iter().map(|l| l.line.as_str()).collect();
+        assert_eq!(shown, [line.as_str()]);
+        // Sans TTY, les horodatages restent demandes.
+        assert!(logs_options(start, true, false).timestamps);
+    }
+
     #[test]
     fn pending_line_is_complete_only_for_an_exited_container_read_without_follow() {
         let run = |exited: bool, finished: &str| RunMark {
             exited,
+            tty: false,
             started_at: "2026-11-21T10:00:00Z".to_string(),
             finished_at: finished.to_string(),
         };
