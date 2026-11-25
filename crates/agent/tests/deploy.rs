@@ -3408,6 +3408,118 @@ async fn compose_cancel_during_probe_removes_new_services() {
     );
 }
 
+/// Projet Compose servi (`worker_bundle(false)`), adresses des sondes
+/// toutes valides.
+async fn served_worker_stack(bench: &Bench, project: ProjectId, web: ServiceId) {
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.com", Some(web))])
+        .await
+        .unwrap();
+    for n in 100..160 {
+        bench.probe.answer(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let first = compose_spec_with(bench, project, web, &worker_bundle(false));
+    bench.deploy(&first).await.0.unwrap();
+}
+
+const MAILER: &str = "cid-shop-production-mailer-1";
+
+/// Echec de Docker au retrait d'un service nouveau (`mailer`) : la note
+/// reste ; un deploiement suivant qui sert `mailer` l'adopte. Ni le
+/// demarrage suivant ni le retrait du deploiement en echec ne le retirent.
+#[tokio::test(start_paused = true)]
+async fn compose_service_adopted_after_a_failed_removal_is_kept() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    served_worker_stack(&bench, project, web).await;
+
+    // D1 : sonde en echec, retrait de `mailer` refuse par Docker.
+    *bench.probe.fail_first.lock().unwrap() = 5;
+    bench.docker.fail_remove.store(true, Ordering::SeqCst);
+    let d1 = compose_spec_with(&bench, project, web, &worker_bundle(true));
+    assert!(bench.deploy(&d1).await.0.is_err());
+    bench.docker.fail_remove.store(false, Ordering::SeqCst);
+    assert!(bench.docker.container(MAILER).is_some());
+    assert_eq!(bench.db.compose_created().unwrap().len(), 1, "note gardee");
+
+    // D2 : `mailer` deja en place, servi par D2.
+    let d2 = compose_spec_with(&bench, project, web, &worker_bundle(true));
+    bench.deploy(&d2).await.0.unwrap();
+    assert!(bench.db.compose_created().unwrap().is_empty());
+
+    bench.restarted().sweep().await;
+    assert!(bench.docker.container(MAILER).is_some(), "demarrage");
+    assert!(bench.deployer.remove(d1.deployment_id).await);
+    assert!(bench.docker.container(MAILER).is_some(), "RemoveDeployment");
+}
+
+/// Note restee d'un deploiement servi puis remplace (effacement perdu),
+/// et note d'un deploiement inconnu sur un service servi : la bascule
+/// suivante oublie les notes de son ensemble, et la garde finale ne retire
+/// jamais un service de l'ensemble servi.
+#[tokio::test(start_paused = true)]
+async fn stale_note_never_removes_a_serving_service() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    served_worker_stack(&bench, project, web).await;
+    let d1 = compose_spec_with(&bench, project, web, &worker_bundle(true));
+    bench.deploy(&d1).await.0.unwrap();
+    // Effacement perdu apres la bascule de D1.
+    bench
+        .db
+        .put_compose_created(d1.deployment_id, project, "shop-production", "mailer")
+        .unwrap();
+    let d2 = compose_spec_with(&bench, project, web, &worker_bundle(true));
+    bench.deploy(&d2).await.0.unwrap();
+    assert!(bench.db.compose_created().unwrap().is_empty());
+
+    // Note sans bascule pour l'oublier : la garde finale tient.
+    let stray = DeploymentId::new();
+    bench
+        .db
+        .put_compose_created(stray, project, "shop-production", "mailer")
+        .unwrap();
+    bench.restarted().sweep().await;
+    assert!(bench.docker.container(MAILER).is_some());
+    assert!(bench.db.compose_created().unwrap().is_empty());
+}
+
+/// Note restee dans l'etat local seulement (apres un redemarrage) :
+/// `RemoveDeployment` la traite ; tant que Docker refuse le retrait, il ne
+/// s'accuse pas.
+#[tokio::test(start_paused = true)]
+async fn remove_deployment_handles_persisted_notes_before_acking() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    served_worker_stack(&bench, project, web).await;
+    let d1 = DeploymentId::new();
+    let label = project.to_string();
+    bench.docker.add_container(
+        "ghost",
+        "shop-production-ghost-1",
+        &[
+            (COMPOSE_LABEL, "shop-production"),
+            (COMPOSE_PROJECT_LABEL, "shop-production"),
+            (COMPOSE_SERVICE_LABEL, "ghost"),
+            (PROJECT_LABEL, label.as_str()),
+        ],
+        None,
+    );
+    bench
+        .db
+        .put_compose_created(d1, project, "shop-production", "ghost")
+        .unwrap();
+
+    bench.docker.fail_remove.store(true, Ordering::SeqCst);
+    assert!(!bench.deployer.remove(d1).await, "pas d'accuse");
+    assert_eq!(bench.db.compose_created().unwrap().len(), 1);
+    bench.docker.fail_remove.store(false, Ordering::SeqCst);
+    assert!(bench.deployer.remove(d1).await);
+    assert!(bench.docker.container("ghost").is_none());
+    assert!(bench.db.compose_created().unwrap().is_empty());
+}
+
 /// Agent arrete pendant la sonde d'un deploiement Compose : au demarrage
 /// suivant, le service nouveau qu'il avait lance (en marche) est retire ;
 /// les services du deploiement servi restent.

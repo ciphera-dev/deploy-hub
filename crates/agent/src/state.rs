@@ -74,7 +74,9 @@ ALTER TABLE deployments ADD COLUMN runs_as_root INTEGER NOT NULL DEFAULT 0 CHECK
 ";
 
 /// Version 6 : services Compose nouveaux lances par un deploiement pas encore
-/// servi (retires au demarrage si l'agent s'est arrete avant son issue).
+/// servi (retires au demarrage si l'agent s'est arrete avant son issue), et
+/// services non exposes de l'ensemble de chaque deploiement Compose bascule
+/// (jamais retires tant que ce deploiement est servi).
 const MIGRATE_V6: &str = "
 CREATE TABLE IF NOT EXISTS compose_created (
     deployment_id TEXT NOT NULL,
@@ -82,6 +84,12 @@ CREATE TABLE IF NOT EXISTS compose_created (
     stable        TEXT NOT NULL,
     service       TEXT NOT NULL,
     PRIMARY KEY (deployment_id, service)
+);
+CREATE TABLE IF NOT EXISTS compose_serving (
+    deployment_id TEXT NOT NULL,
+    stable        TEXT NOT NULL,
+    service       TEXT NOT NULL,
+    PRIMARY KEY (deployment_id, stable, service)
 );
 ";
 
@@ -259,9 +267,29 @@ impl StateDb {
 
     /// `true` si le deploiement etait enregistre.
     pub fn remove_deployment(&self, id: DeploymentId) -> Result<bool, StateError> {
-        let n = self.conn().execute(
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let n = tx.execute(
             "DELETE FROM deployments WHERE deployment_id = ?1",
             params![id.to_string()],
+        )?;
+        tx.execute(
+            "DELETE FROM compose_serving WHERE deployment_id = ?1",
+            params![id.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(n > 0)
+    }
+
+    /// Le service non expose `service` du projet Compose stable `stable`
+    /// fait partie de l'ensemble d'un deploiement servi.
+    pub fn compose_service_served(&self, stable: &str, service: &str) -> Result<bool, StateError> {
+        let n: i64 = self.conn().query_row(
+            "SELECT count(*) FROM compose_serving c
+             JOIN deployments d ON d.deployment_id = c.deployment_id
+             WHERE d.serving = 1 AND c.stable = ?1 AND c.service = ?2",
+            params![stable, service],
+            |r| r.get(0),
         )?;
         Ok(n > 0)
     }
@@ -345,6 +373,19 @@ impl StateDb {
     /// Fait de `id` le deploiement servi de son service ; renvoie celui qui
     /// l'etait avant (`None` s'il n'y en avait pas ou si c'etait deja `id`).
     pub fn set_serving(&self, id: DeploymentId) -> Result<Option<DeploymentId>, StateError> {
+        self.set_serving_compose(id, None)
+    }
+
+    /// Comme [`StateDb::set_serving`] ; pour un deploiement Compose,
+    /// `compose` donne son projet Compose stable et ses services non
+    /// exposes : dans la meme transaction, ils sont notes comme ensemble de
+    /// `id`, et toute note « service nouveau » qui les vise (de n'importe
+    /// quel deploiement) est oubliee.
+    pub fn set_serving_compose(
+        &self,
+        id: DeploymentId,
+        compose: Option<(&str, &[String])>,
+    ) -> Result<Option<DeploymentId>, StateError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let key = id.to_string();
@@ -378,6 +419,23 @@ impl StateDb {
             "UPDATE deployments SET serving = 1, updated_at = ?2 WHERE deployment_id = ?1",
             params![key, now_secs()],
         )?;
+        if let Some((stable, services)) = compose {
+            tx.execute(
+                "DELETE FROM compose_created WHERE deployment_id = ?1",
+                params![key],
+            )?;
+            for service in services {
+                tx.execute(
+                    "DELETE FROM compose_created WHERE stable = ?1 AND service = ?2",
+                    params![stable, service],
+                )?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO compose_serving (deployment_id, stable, service)
+                     VALUES (?1, ?2, ?3)",
+                    params![key, stable, service],
+                )?;
+            }
+        }
         tx.commit()?;
         previous
             .filter(|p| *p != key)
