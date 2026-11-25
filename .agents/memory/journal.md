@@ -437,3 +437,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 14:01 — Session v0.1-sdd — claude-code (orchestrateur) — Task R51 : Nom du panneau caché, HSTS des sous-domaines
 - fait : 404 par IP après confirmation, alerte unrecognized_name, HSTS selon la PSL avec option apex, psl 2.1.263
 - résultat : TERMINÉ (relecture approuvée, 3 tours)
+
+## 2026-11-25 19:08 — Session v0.1-sdd — claude-code (orchestrateur) — Task R37 : Setup, step-up, organisation, audit
+- fait : Jeton de setup 24 h en fragment, step-up mot de passe + second facteur, suppression d'organisation protégée, purge d'audit, env root
+- résultat : TERMINÉ (relecture approuvée, 1 tour)
