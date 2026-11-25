@@ -2581,10 +2581,13 @@
             }
           },
           "401": {
-            "description": "`invalid_credentials` (mot de passe)"
+            "description": "`invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code`"
           },
           "403": {
             "description": "Proprietaire seulement, ou jeton CSRF absent ou invalide"
+          },
+          "409": {
+            "description": "`other_owners` (autres proprietaires a retirer d'abord, Parametres > Equipe) ou `second_factor_unavailable`"
           },
           "422": {
             "description": "`confirmation_required` (saisir SUPPRIMER) ou requete invalide"
@@ -3046,7 +3049,7 @@
             }
           },
           "401": {
-            "description": "`invalid_credentials` : mot de passe incorrect"
+            "description": "`invalid_credentials` (mot de passe incorrect), `second_factor_required` (code du second facteur absent) ou `invalid_code`"
           },
           "403": {
             "description": "Role insuffisant, ou jeton CSRF absent ou invalide"
@@ -3189,7 +3192,7 @@
             }
           },
           "401": {
-            "description": "`invalid_credentials` : mot de passe absent ou incorrect pour une extension"
+            "description": "`invalid_credentials` (mot de passe absent ou incorrect pour une extension), `second_factor_required` ou `invalid_code`"
           },
           "403": {
             "description": "Role insuffisant, ou jeton CSRF absent ou invalide"
@@ -4876,7 +4879,7 @@
             }
           },
           "401": {
-            "description": "Jeton invalide"
+            "description": "`invalid_setup_token`, ou `setup_token_expired` (24 h passees : `ciphera admin setup-token`)"
           },
           "410": {
             "description": "Assistant deja termine"
@@ -4928,7 +4931,7 @@
             }
           },
           "401": {
-            "description": "Jeton invalide"
+            "description": "`invalid_setup_token`, ou `setup_token_expired` (24 h passees : `ciphera admin setup-token`)"
           },
           "410": {
             "description": "Assistant deja termine"
@@ -6269,6 +6272,15 @@
           "confirm"
         ],
         "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Code du second facteur (application d'authentification ou code de\nsecours) : exige si le compte en a un.",
+            "maxLength": 64
+          },
           "confirm": {
             "type": "string",
             "description": "Doit valoir exactement `SUPPRIMER`."
@@ -7388,6 +7400,15 @@
           "password"
         ],
         "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Code du second facteur (application d'authentification ou code de\nsecours) : exige si le compte en a un.",
+            "maxLength": 64
+          },
           "expires_at": {
             "type": [
               "string",
@@ -8745,7 +8766,7 @@
           "password": {
             "type": "string",
             "format": "password",
-            "description": "12 caracteres au minimum, 1024 au maximum. Jamais renvoye ni journalise.",
+            "description": "12 caracteres au minimum, 1024 au maximum. Jamais renvoye ni journalise,\nefface de la memoire apres usage.",
             "maxLength": 1024,
             "minLength": 12
           }
@@ -9101,6 +9122,15 @@
           "expires_at"
         ],
         "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Code du second facteur, avec le mot de passe, si le compte en a un.",
+            "maxLength": 64
+          },
           "expires_at": {
             "type": "string",
             "description": "RFC 3339, dans le futur et dans les 365 jours. Pas de valeur nulle :\nun hook n'est jamais sans expiration."

@@ -3,13 +3,15 @@
 //!   sans aucun secret. Chaque champ est choisi un par un (liste blanche) :
 //!   ni valeur de variable (meme non secrete), ni jeton, ni cle, ni hachage,
 //!   ni graine TOTP, ni secret de webhook ou mot de passe SMTP ;
-//! - `DELETE /api/organization { password, confirm: "SUPPRIMER" }` :
-//!   re-authentification par le mot de passe (meme limite que les seconds
-//!   facteurs), puis suppression de chaque projet comme
+//! - `DELETE /api/organization { password, code?, confirm: "SUPPRIMER" }` :
+//!   refusee (409 `other_owners`) tant qu'un autre proprietaire existe (a
+//!   retirer d'abord par Equipe) ; puis step-up (`auth::step_up` : mot de
+//!   passe, plus le code du second facteur si le compte en a un), puis
+//!   suppression de chaque projet comme
 //!   `DELETE /api/projects/{id}` (conteneurs et images retires des agents,
 //!   routes et certificats), des variables globales, des taches et metriques
-//!   orphelines, des invitations, de tous les comptes sauf le proprietaire qui
-//!   la demande et de la GitHub App locale (a supprimer a la main sur
+//!   orphelines, des invitations, de tous les autres comptes (aucun n'est
+//!   proprietaire) et de la GitHub App locale (a supprimer a la main sur
 //!   GitHub). Toutes les sessions sont revoquees, la sienne comprise.
 //!   Restent : l'instance et sa configuration (domaine du panneau, TLS, SMTP),
 //!   les serveurs (vides) et le journal d'audit. Pas de retour au setup.
@@ -32,15 +34,36 @@ use serde_json::{Value, json};
 use shared::error::ApiError;
 use uuid::Uuid;
 
-use crate::auth::{internal, rate_limit, session};
+use crate::auth::step_up::{self, StepUp};
+use crate::auth::{internal, session};
 use crate::domain::domains::{self, panel};
 use crate::http::client_ip::ClientIp;
-use crate::http::me::{Reauth, reauthenticate};
 use crate::http::projects::{Removal, delete_project};
 use crate::http::settings::{Admin, audit, owner_only};
 use crate::state::AppState;
 
 const MAX_BODY: usize = 8 * 1024;
+
+/// Un autre proprietaire que `actor`, s'il en existe (verrouille dans une
+/// transaction).
+async fn other_owner<'c>(
+    conn: impl sqlx::PgExecutor<'c>,
+    actor: Uuid,
+) -> Result<Option<Uuid>, ApiError> {
+    sqlx::query_scalar("SELECT id FROM users WHERE role = 'owner' AND id <> $1 LIMIT 1 FOR UPDATE")
+        .bind(actor)
+        .fetch_optional(conn)
+        .await
+        .map_err(|e| internal("lecture des proprietaires", e))
+}
+
+fn other_owners_refused() -> ApiError {
+    ApiError::new(
+        409,
+        "other_owners",
+        "D'autres propriétaires existent : retirez-les d'abord (Paramètres → Équipe), puis supprimez l'organisation.",
+    )
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -210,19 +233,26 @@ async fn remove(
             format!("Tapez {DELETE_PHRASE} pour confirmer."),
         ));
     }
-    let ip = ip.to_string();
-    let attempt = match reauthenticate(
+    // Les autres proprietaires ne sont jamais supprimes avec l'organisation :
+    // ils sont retires d'abord (Parametres > Equipe). Avant le step-up :
+    // aucun essai n'est consomme.
+    if other_owner(&state.db, actor).await?.is_some() {
+        return Err(other_owners_refused());
+    }
+    let proof = match step_up::verify(
         &state,
         &auth.user,
-        &ip,
+        ip,
         input.password,
+        input.code,
         "organization.delete.failure",
     )
     .await?
     {
-        Reauth::Verified(attempt, _) => attempt,
-        Reauth::Limited(response) => return Ok(response),
+        StepUp::Verified(proof) => proof,
+        StepUp::Limited(response) => return Ok(response),
     };
+    let ip = ip.to_string();
 
     // 1. Projets, un par un (chacun dans sa transaction : ce qui est fait le
     // reste si la suite echoue, et une nouvelle demande reprend le reste).
@@ -258,6 +288,12 @@ async fn remove(
         .execute(&mut *tx)
         .await
         .map_err(db("verrou de la suppression"))?;
+    // Code consomme et tentatives validees avec la suppression des comptes.
+    proof.commit(&mut tx).await?;
+    // Proprietaire nomme entre-temps : aucun compte n'est supprime.
+    if other_owner(&mut *tx, actor).await?.is_some() {
+        return Err(other_owners_refused());
+    }
     for (context, sql) in [
         ("variables globales", "DELETE FROM global_variables"),
         ("invitations", "DELETE FROM invitations"),
@@ -296,9 +332,6 @@ async fn remove(
             .fetch_optional(&mut *tx)
             .await
             .map_err(db("suppression de la GitHub App"))?;
-    rate_limit::mark_mfa_success(&mut tx, attempt)
-        .await
-        .map_err(db("enregistrement de la tentative"))?;
     // Toutes les sessions, celle de la demande comprise.
     sqlx::query("DELETE FROM sessions")
         .execute(&mut *tx)

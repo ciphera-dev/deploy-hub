@@ -1,20 +1,28 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { SetupWizard } from "@/features/setup/SetupWizard";
-import { stripTokenFromAddressBar } from "@/features/setup/token";
+import { stripTokenFromAddressBar, tokenFromLocation } from "@/features/setup/token";
+import { heldToken, stashToken } from "@/lib/url-token";
 
-// Route /setup : l'adresse imprimee par `ciphera init` porte le jeton (?token=...).
+// Route /setup : l'adresse imprimee par `ciphera init` (ou `ciphera admin setup-token`)
+// porte le jeton dans le fragment (#token=...), jamais envoye au serveur ni journalise.
+// L'ancien ?token= reste accepte. Le jeton est range en memoire puis la page est
+// rechargee sans lui (remplacement d'entree d'historique).
 export const Route = createFileRoute("/_setup/setup")({
-  validateSearch: (search: Record<string, unknown>): { token?: string } =>
-    typeof search.token === "string" && search.token ? { token: search.token } : {},
+  beforeLoad: ({ location }) => {
+    const token = tokenFromLocation(location.hash, location.search);
+    if (token) {
+      stashToken("setup", token);
+      throw redirect({ to: "/setup", replace: true });
+    }
+  },
   component: SetupPage,
 });
 
 function SetupPage() {
-  const { token } = Route.useSearch();
   // Lu une seule fois et garde en memoire : jamais dans localStorage ni sessionStorage.
-  const [kept] = useState<string | null>(token ?? null);
+  const [kept] = useState<string | null>(() => heldToken("setup") ?? null);
   useEffect(stripTokenFromAddressBar, []);
   return <SetupWizard token={kept} />;
 }

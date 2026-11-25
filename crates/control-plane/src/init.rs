@@ -39,6 +39,8 @@ use rand::TryRng;
 use rand::rngs::SysRng;
 use zeroize::Zeroizing;
 
+use crate::setup_token;
+
 /// Fichiers geres par l'init, relatifs a `config_dir`.
 const DB_PASSWORD: &str = "db_password";
 const AGE_KEY: &str = "age.key";
@@ -46,7 +48,7 @@ const CA_CRT: &str = "ca/ca.crt";
 const CA_KEY: &str = "ca/ca.key";
 const PANEL_CRT: &str = "tls/panel.crt";
 const PANEL_KEY: &str = "tls/panel.key";
-const SETUP_TOKEN: &str = "setup_token";
+const SETUP_TOKEN: &str = setup_token::FILE;
 const LINK_CRT: &str = crate::agents::transport::LINK_CRT;
 const LINK_KEY: &str = crate::agents::transport::LINK_KEY;
 const LOCAL_AGENT_CRT: &str = crate::agents::servers::LOCAL_AGENT_CERT;
@@ -113,7 +115,8 @@ impl InitReport {
     pub fn render(&self) -> String {
         format!(
             "Ciphera est initialise.\n\
-             Ouvrez cette adresse pour creer le compte administrateur (jeton a usage unique) :\n\
+             Ouvrez cette adresse pour creer le compte administrateur (jeton a usage unique, \
+             valable 24 heures ; ensuite : sudo ciphera admin setup-token) :\n\
              {}\n\
              Empreinte SHA-256 : {}\n\
              Comparez cette empreinte a celle du certificat affiche par votre navigateur \
@@ -179,6 +182,11 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
     // 2. Tout generer en memoire.
     let db_password = Zeroizing::new(URL_SAFE.encode(&random::<32>()?[..]));
     let token = Zeroizing::new(URL_SAFE_NO_PAD.encode(&random::<32>()?[..]));
+    // Jeton valable 24 heures (echeance ecrite dans le fichier).
+    let token_file = setup_token::render(
+        &token,
+        setup_token::unix_now().saturating_add(setup_token::LIFETIME.as_secs()),
+    );
     let identity = age::x25519::Identity::generate();
     let age_key = Zeroizing::new(format!("{}\n", identity.to_string().expose_secret()));
 
@@ -216,7 +224,7 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
         (LINK_CRT, link.cert_pem.as_bytes()),
         (LINK_KEY, link_key.as_bytes()),
         (LOCAL_AGENT_CRT, agent_cert.cert_pem.as_bytes()),
-        (SETUP_TOKEN, token.as_bytes()),
+        (SETUP_TOKEN, token_file.as_bytes()),
     ];
     let agent_files: [(&str, &[u8]); 3] = [
         (AGENT_KEY, agent_key.key_pem().as_bytes()),
@@ -290,7 +298,7 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
 
     let addr = SocketAddr::new(opts.public_ip, opts.panel_port);
     Ok(InitReport {
-        setup_url: format!("https://{addr}/setup?token={}", token.as_str()),
+        setup_url: setup_token::url(addr, &token),
         fingerprint: panel.fingerprint_sha256,
         warnings,
     })
@@ -463,7 +471,7 @@ fn chown_all(paths: &[PathBuf], owner: &str) -> Option<String> {
         ));
     };
     for p in paths {
-        if std::os::unix::fs::chown(p, Some(uid), Some(gid)).is_err() {
+        if chown_nofollow(p, Some(uid), Some(gid)).is_err() {
             return Some(format!(
                 "changement de proprietaire impossible pour {}",
                 p.display()
@@ -473,20 +481,66 @@ fn chown_all(paths: &[PathBuf], owner: &str) -> Option<String> {
     None
 }
 
+/// Ouvre `path` sans jamais suivre de lien symbolique (le dernier element ne
+/// doit pas en etre un) : fichier ordinaire ou dossier seulement.
+#[cfg(unix)]
+fn open_nofollow(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits() as i32)
+        .open(path)?;
+    let kind = file.metadata()?.file_type();
+    if !kind.is_file() && !kind.is_dir() {
+        return Err(std::io::Error::other("ni fichier ni dossier"));
+    }
+    Ok(file)
+}
+
+/// Change le proprietaire de `path` par son descripteur (`fchown`), ouvert
+/// sans suivre de lien : un lien pose a la place d'un fichier est refuse au
+/// lieu de faire changer le proprietaire de sa cible.
+#[cfg(unix)]
+pub(crate) fn chown_nofollow(
+    path: &Path,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> std::io::Result<()> {
+    let file = open_nofollow(path)?;
+    std::os::unix::fs::fchown(&file, uid, gid)
+}
+
 /// Groupe du compte `owner` et droits `mode` sur chaque chemin, proprietaire
-/// inchange (root).
+/// inchange (root). Par descripteur, sans suivre de lien.
 #[cfg(unix)]
 fn share_with_group(paths: &[(PathBuf, u32)], owner: &str) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
     let (_, gid) = lookup_user(owner)?;
     for (p, mode) in paths {
-        let done = std::os::unix::fs::chown(p, None, Some(gid))
-            .and_then(|()| fs::set_permissions(p, fs::Permissions::from_mode(*mode)));
+        let done = open_nofollow(p).and_then(|file| {
+            std::os::unix::fs::fchown(&file, None, Some(gid))?;
+            file.set_permissions(fs::Permissions::from_mode(*mode))
+        });
         if done.is_err() {
             return Some(format!("groupe ou droits non appliques a {}", p.display()));
         }
     }
     None
+}
+
+/// `(uid, gid)` du compte systeme `name` ; `None` s'il est introuvable ou
+/// hors Unix.
+pub fn account_ids(name: &str) -> Option<(u32, u32)> {
+    #[cfg(unix)]
+    {
+        lookup_user(name)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = name;
+        None
+    }
 }
 
 #[cfg(not(unix))]
@@ -553,6 +607,37 @@ mod tests {
             shared_targets(dir),
             [(dir.join("ca"), 0o750), (dir.join("ca/ca.crt"), 0o640)]
         );
+    }
+
+    /// Un lien symbolique a la place d'un fichier ou d'un dossier est refuse :
+    /// le proprietaire de sa cible ne change jamais.
+    #[cfg(unix)]
+    #[test]
+    fn chown_does_not_follow_symlink() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!("ciphera-chown-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        let target = dir.join("cible");
+        fs::write(&target, "x").unwrap();
+        let meta = fs::metadata(&target).unwrap();
+        let (uid, gid) = (meta.uid(), meta.gid());
+        // Le compte courant peut se « donner » ses propres fichiers.
+        chown_nofollow(&target, Some(uid), Some(gid)).unwrap();
+        chown_nofollow(&dir.join("sub"), Some(uid), Some(gid)).unwrap();
+        for (link, to) in [("lien", target.clone()), ("lien-dossier", dir.join("sub"))] {
+            std::os::unix::fs::symlink(&to, dir.join(link)).unwrap();
+            assert!(chown_nofollow(&dir.join(link), Some(uid), Some(gid)).is_err());
+        }
+        let links = [(dir.join("lien"), 0o640)];
+        assert!(
+            share_with_group(&links, "root").is_some() || lookup_user("root").is_none(),
+            "lien refuse aussi pour le groupe"
+        );
+        assert_eq!(
+            fs::metadata(&target).unwrap().mode() & 0o777,
+            meta.mode() & 0o777
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

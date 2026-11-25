@@ -111,6 +111,11 @@ pub struct DeleteOrganization {
     /// Mot de passe du compte (re-authentification).
     #[schema(value_type = String, format = Password, max_length = 1024)]
     pub password: Zeroizing<String>,
+    /// Code du second facteur (application d'authentification ou code de
+    /// secours) : exige si le compte en a un.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = Password, max_length = 64)]
+    pub code: Option<Zeroizing<String>>,
     /// Doit valoir exactement `SUPPRIMER`.
     pub confirm: String,
 }
@@ -119,6 +124,7 @@ impl fmt::Debug for DeleteOrganization {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeleteOrganization")
             .field("password", &"***")
+            .field("code", &self.code.as_ref().map(|_| "***"))
             .field("confirm", &self.confirm)
             .finish()
     }
@@ -280,7 +286,8 @@ pub fn export_organization() {}
     params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
     responses(
         (status = 200, description = "Organisation supprimee (voir `complete`)", body = OrganizationDeleted),
-        (status = 401, description = "`invalid_credentials` (mot de passe)"),
+        (status = 401, description = "`invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code`"),
+        (status = 409, description = "`other_owners` (autres proprietaires a retirer d'abord, Parametres > Equipe) ou `second_factor_unavailable`"),
         (status = 403, description = "Proprietaire seulement, ou jeton CSRF absent ou invalide"),
         (status = 422, description = "`confirmation_required` (saisir SUPPRIMER) ou requete invalide"),
         (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),

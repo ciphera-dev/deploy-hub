@@ -251,6 +251,34 @@ it("zone de danger : export JSON, transfert en v0.2, suppression avec mot de pas
   expect(screen.getByRole("button", { name: "Se reconnecter" })).toBeInTheDocument();
 });
 
+it("suppression de l'organisation : code du second facteur demandé d'emblée, refus « autres propriétaires » affiché", async () => {
+  me = { ...OWNER, totp_enabled: true };
+  server.use(
+    http.delete("*/api/organization", async ({ request }) => {
+      await record(request);
+      const body = requests.at(-1)!.body as { code?: string };
+      if (body.code !== "123456") return HttpResponse.json({ error: { code: "invalid_code", message: "Code de vérification incorrect." } }, { status: 401 });
+      return HttpResponse.json({ error: { code: "other_owners", message: "D'autres propriétaires existent : retirez-les d'abord (Paramètres → Équipe), puis supprimez l'organisation." } }, { status: 409 });
+    }),
+  );
+  mount("/settings/danger");
+  fireEvent.click(await screen.findByRole("button", { name: "Supprimer" }, { timeout: 5000 }));
+  const dialog = await screen.findByRole("dialog");
+  const confirm = within(dialog).getByRole("button", { name: "Supprimer définitivement" });
+  fireEvent.change(within(dialog).getByLabelText("Mot de passe du compte"), { target: { value: "bon mot de passe" } });
+  fireEvent.change(within(dialog).getByPlaceholderText("SUPPRIMER"), { target: { value: "SUPPRIMER" } });
+  // Compte avec second facteur : le code est exigé avant l'envoi.
+  expect(confirm).toBeDisabled();
+  fireEvent.change(within(dialog).getByLabelText(/Code de vérification/), { target: { value: "000000" } });
+  fireEvent.click(confirm);
+  expect(await within(dialog).findByText("Code de vérification incorrect.")).toBeInTheDocument();
+  expect(requests[0]).toMatchObject({ method: "DELETE", path: "/api/organization", body: { password: "bon mot de passe", confirm: "SUPPRIMER", code: "000000" } });
+
+  fireEvent.change(within(dialog).getByLabelText(/Code de vérification/), { target: { value: "123456" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Supprimer définitivement" }));
+  expect(await within(dialog).findByText(/retirez-les d'abord \(Paramètres → Équipe\)/)).toBeInTheDocument();
+});
+
 it("domaine du panel : confirmation depuis le domaine, retrait qui ramène l'accès 8443", async () => {
   panel = { domain: "panel.example.org", status: "awaiting_confirmation", error: null };
   mount("/settings/panel-domain");

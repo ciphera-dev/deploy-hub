@@ -10,11 +10,14 @@
 //!    `deploy/systemd/ciphera.service` par un test) ;
 //! 2. `/etc/ciphera/ciphera.env` (surcharges de l'administrateur), lu comme
 //!    root avec des controles : fichier ordinaire, jamais un lien, taille
-//!    bornee, proprietaire root ou `ciphera`, non modifiable par le groupe
-//!    ni les autres. Ce fichier est modifiable par le compte `ciphera` : les
-//!    cles qui designent un fichier ou un dossier (`*_FILE`, `*_DIR` de
-//!    configuration et de donnees) y sont ignorees, sinon root lirait pour
-//!    lui un fichier choisi par ce compte ;
+//!    bornee, proprietaire root, non modifiable par le groupe ni les autres
+//!    (`install.sh` le pose en `root:ciphera 0640`). Un fichier qui ne
+//!    respecte pas ces regles fait echouer la commande, avec la correction a
+//!    appliquer : jamais une valeur ecrite par un autre compte que root. Le
+//!    plan de controle n'ecrit jamais ce fichier. Les cles qui designent un
+//!    fichier ou un dossier (`*_FILE`, `*_DIR` de configuration et de
+//!    donnees) y restent ignorees : les commandes root lisent les chemins de
+//!    l'unite ;
 //! 3. l'environnement du processus (choix explicite de l'operateur).
 
 use std::io;
@@ -121,19 +124,31 @@ pub fn read_env_file(path: &Path) -> io::Result<Option<String>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let service = std::fs::read_to_string("/etc/passwd")
-            .ok()
-            .and_then(|t| uid_of(&t, "ciphera"));
-        if meta.uid() != 0 && Some(meta.uid()) != service {
-            return Err(refused("proprietaire inattendu (root ou ciphera)"));
-        }
-        if meta.mode() & 0o022 != 0 {
-            return Err(refused("modifiable par le groupe ou les autres"));
-        }
+        check_owner_and_mode(meta.uid(), meta.mode()).map_err(refused)?;
     }
     let mut text = String::new();
     (&file).take(MAX_ENV_FILE_BYTES).read_to_string(&mut text)?;
     Ok(Some(text))
+}
+
+/// Correction proposee quand `ciphera.env` est refuse.
+const FIX: &str = "corriger avec : chown root:ciphera /etc/ciphera/ciphera.env && chmod 0640 /etc/ciphera/ciphera.env";
+
+/// `ciphera.env` n'est utilise par les commandes root que s'il appartient a
+/// root et n'est modifiable ni par le groupe ni par les autres.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn check_owner_and_mode(uid: u32, mode: u32) -> Result<(), String> {
+    if uid != 0 {
+        return Err(format!(
+            "refuse : le fichier doit appartenir a root ; {FIX}"
+        ));
+    }
+    if mode & 0o022 != 0 {
+        return Err(format!(
+            "refuse : modifiable par le groupe ou les autres ; {FIX}"
+        ));
+    }
+    Ok(())
 }
 
 /// Configuration d'une commande d'administration : celle du service.
@@ -145,16 +160,6 @@ pub fn admin_config() -> Result<shared::config::Config, Box<dyn std::error::Erro
         |name| std::env::var(name).ok(),
         &file,
     ))?)
-}
-
-/// Uid de `name` dans un texte au format `/etc/passwd`.
-#[cfg_attr(not(unix), allow(dead_code))]
-fn uid_of(passwd: &str, name: &str) -> Option<u32> {
-    passwd.lines().find_map(|l| {
-        let mut f = l.split(':');
-        (f.next()? == name).then_some(())?;
-        f.nth(1)?.parse().ok()
-    })
 }
 
 #[cfg(test)]
@@ -252,11 +257,36 @@ mod tests {
     }
 
     #[test]
-    fn uid_is_read_from_passwd() {
-        let passwd =
-            "root:x:0:0::/root:/bin/sh\nciphera:x:998:998::/var/lib/ciphera:/usr/sbin/nologin\n";
-        assert_eq!(uid_of(passwd, "ciphera"), Some(998));
-        assert_eq!(uid_of(passwd, "nobody"), None);
+    fn root_cli_refuses_writable_env() {
+        // root:ciphera 0640 (pose par install.sh) et root 0600 : acceptes.
+        assert!(check_owner_and_mode(0, 0o100640).is_ok());
+        assert!(check_owner_and_mode(0, 0o100600).is_ok());
+        // Compte du service (ou tout autre) proprietaire : refuse, meme en 0600.
+        let err = check_owner_and_mode(998, 0o100600).unwrap_err();
+        assert!(
+            err.contains("root") && err.contains("chown root:ciphera"),
+            "{err}"
+        );
+        // Modifiable par le groupe ou les autres : refuse.
+        for mode in [0o100660, 0o100602, 0o100666] {
+            let err = check_owner_and_mode(0, mode).unwrap_err();
+            assert!(err.contains("chmod 0640"), "{mode:o} : {err}");
+        }
+    }
+
+    /// Fichier reel du compte des tests : refuse s'il n'est pas root.
+    #[cfg(unix)]
+    #[test]
+    fn env_file_not_owned_by_root_is_refused() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("ciphera-env-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ciphera.env");
+        std::fs::write(&file, "CIPHERA_DB_PORT=1\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let root = std::fs::metadata(&file).unwrap().uid() == 0;
+        assert_eq!(read_env_file(&file).is_ok(), root);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]

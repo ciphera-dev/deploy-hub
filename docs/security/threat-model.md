@@ -26,7 +26,7 @@ Hors périmètre v0.1 : nœuds distants enrôlés (le lien QUIC existe mais seul
 | Clés TLS | `tls/panel.key`, `tls/link.key` ; clés ACME et certificats du proxy chiffrés dans son état | Confidentialité du panneau et des apps |
 | Clé privée de l'agent | `agent.key` dans l'état de l'agent (générée côté agent, la CA ne reçoit que la clé publique) | Authentifie l'agent auprès du plan de contrôle |
 | Mot de passe de la base | `/etc/ciphera/db_password` (0600) et copie `postgres/db_password` | Accès complet aux données |
-| Jeton de setup | `/etc/ciphera/setup_token`, à usage unique | Création du premier owner |
+| Jeton de setup | `/etc/ciphera/setup_token`, à usage unique, 24 h, porté par le fragment `#token=` de l'URL | Création du premier owner |
 | Sessions | jeton aléatoire de 32 octets en cookie `__Host-ciphera_session` ; seule l'empreinte SHA-256 en base (`auth/session.rs`) | Accès au panneau |
 | Secrets applicatifs | variables de projet et globales, scellées age, jamais renvoyées par l'API (`http/variables.rs`) | Secrets des clients |
 | Clé privée et secret de webhook de la GitHub App | `github_app.private_key_sealed`, `webhook_secret_sealed` (age) | Accès aux dépôts et déclenchement des déploiements |
@@ -111,7 +111,7 @@ Le plan de contrôle et le proxy ne lancent aucun sous-processus.
 | Clé HMAC des demandes de mise à jour | dérivée de `age.key` (étiquette `ciphera/update-request/v1`) | jamais stockée | Suit `age.key` |
 | GitHub App (clé privée, secret de webhook) | manifeste GitHub (`connectors/github/manifest.rs`) | scellés age en base | Déconnexion de l'App ; rotation côté GitHub |
 | Deploy hooks `dh_…` | aléatoires, montrés une fois | empreinte en base | Suppression du hook |
-| Jeton de setup | `ciphera init`, usage unique | `/etc/ciphera/setup_token` | Assistant verrouillé dès qu'un compte existe |
+| Jeton de setup | `ciphera init` ou `sudo ciphera admin setup-token` (tant qu'aucun compte n'existe), usage unique, 24 h | `/etc/ciphera/setup_token` | Assistant verrouillé dès qu'un compte existe ; expiré : 401 `setup_token_expired` |
 
 ## 6. STRIDE par frontière
 

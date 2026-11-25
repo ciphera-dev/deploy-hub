@@ -113,8 +113,12 @@ export async function exportOrganization(): Promise<Result<string>> {
   return settle(() => api.POST("/api/organization/export", { parseAs: "text" }));
 }
 
-export function deleteOrganization(password: string, confirm: string): Promise<Result<OrganizationDeleted>> {
-  return settle(() => api.DELETE("/api/organization", { body: { password, confirm } }));
+/**
+ * Mot de passe, plus le code du second facteur (application ou code de secours) si le compte
+ * en a un ; refus 409 `other_owners` tant que d'autres proprietaires existent.
+ */
+export function deleteOrganization(password: string, confirm: string, code?: string): Promise<Result<OrganizationDeleted>> {
+  return settle(() => api.DELETE("/api/organization", { body: { password, confirm, ...(code ? { code } : {}) } }));
 }
 
 export async function fetchPanelDomain(): Promise<PanelDomain> {

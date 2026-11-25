@@ -4,6 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use zeroize::Zeroizing;
 
 /// Reponse de `GET /api/setup/status`.
 #[derive(Debug, Serialize, ToSchema)]
@@ -36,9 +37,10 @@ pub struct SetupChecks {
 pub struct SetupAdmin {
     pub name: String,
     pub email: String,
-    /// 12 caracteres au minimum, 1024 au maximum. Jamais renvoye ni journalise.
-    #[schema(format = Password, min_length = 12, max_length = 1024)]
-    pub password: String,
+    /// 12 caracteres au minimum, 1024 au maximum. Jamais renvoye ni journalise,
+    /// efface de la memoire apres usage.
+    #[schema(value_type = String, format = Password, min_length = 12, max_length = 1024)]
+    pub password: Zeroizing<String>,
 }
 
 // Pas de derive : le mot de passe ne doit jamais apparaitre dans un journal.
@@ -105,7 +107,7 @@ pub fn status() {}
     params(("X-Setup-Token" = String, Header, description = "Jeton de setup imprime par `ciphera init`")),
     responses(
         (status = 200, description = "Resultat des verifications", body = SetupChecks),
-        (status = 401, description = "Jeton invalide"),
+        (status = 401, description = "`invalid_setup_token`, ou `setup_token_expired` (24 h passees : `ciphera admin setup-token`)"),
         (status = 410, description = "Assistant deja termine"),
         (status = 503, description = "Fichier du jeton absent"),
     )
@@ -122,7 +124,7 @@ pub fn checks() {}
     request_body = SetupComplete,
     responses(
         (status = 201, description = "Compte cree ; cookie de session pose", body = SetupCompleted),
-        (status = 401, description = "Jeton invalide"),
+        (status = 401, description = "`invalid_setup_token`, ou `setup_token_expired` (24 h passees : `ciphera admin setup-token`)"),
         (status = 410, description = "Assistant deja termine"),
         (status = 422, description = "Champ invalide"),
         (status = 503, description = "Fichier du jeton absent"),

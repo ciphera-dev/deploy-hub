@@ -21,7 +21,9 @@ Le script :
 2. vérifie la signature minisign puis le SHA-256 ;
 3. s'arrête sans rien installer si une vérification échoue ;
 4. installe les binaires et les unités systemd ;
-5. affiche l'URL de l'assistant d'installation avec un jeton à usage unique.
+5. affiche l'URL de l'assistant d'installation avec un jeton à usage unique (`https://<IP>:8443/setup#token=…`), valable 24 heures. Passé ce délai, et tant qu'aucun compte n'existe, `sudo ciphera admin setup-token` en génère un nouveau et réimprime l'URL.
+
+`/etc/ciphera/ciphera.env` appartient à root (`root:ciphera`, mode 0640) : les commandes `sudo ciphera admin …` refusent un fichier qui n'appartient pas à root ou qui est modifiable par le groupe ou les autres (corriger avec `chown root:ciphera /etc/ciphera/ciphera.env && chmod 0640 /etc/ciphera/ciphera.env`).
 
 Le détail est dans [docs/adr/0003-installation-et-verification-des-releases.md](docs/adr/0003-installation-et-verification-des-releases.md).
 

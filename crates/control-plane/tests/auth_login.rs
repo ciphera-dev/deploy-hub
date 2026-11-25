@@ -960,3 +960,49 @@ async fn password_never_logged() {
     assert!(!out.contains(wrong));
     assert!(!out.to_lowercase().contains("example.com"), "aucun e-mail");
 }
+
+#[tokio::test]
+async fn failed_login_audit_purged() {
+    let (state, _pg) = common::state().await;
+    let insert = |action: &'static str, days: i32| {
+        let db = state.db.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO audit_events (id, at, action, detail) \
+                 VALUES ($1, now() - make_interval(days => $2), $3, '{}'::jsonb)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(days)
+            .bind(action)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+    };
+    for action in control_plane::auth::audit_purge::FAILED_LOGIN_ACTIONS {
+        insert(action, 91).await;
+        insert(action, 89).await;
+    }
+    // Les autres evenements anciens restent.
+    insert("organization.delete", 400).await;
+    insert("auth.login.success", 400).await;
+
+    let removed = control_plane::auth::audit_purge::purge(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(removed, 4);
+    let left: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_events WHERE at < now() - interval '90 days' ORDER BY action",
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(left, vec!["auth.login.success", "organization.delete"]);
+    let recent: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE at > now() - interval '90 days'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(recent, 4);
+}

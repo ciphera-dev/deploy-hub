@@ -227,12 +227,16 @@ fn init_report_matches_files() {
     let tmp = TempDir::new();
     let report = init::run(&opts(tmp.path())).unwrap();
 
-    // URL : jeton lu dans le fichier, port et IP demandes.
-    let token = read(tmp.path(), "setup_token");
+    // URL : jeton lu dans le fichier (dans le fragment), port et IP demandes ;
+    // echeance a 24 heures.
+    let stored = control_plane::setup_token::parse(&read(tmp.path(), "setup_token")).unwrap();
+    let token = stored.token.to_string();
     assert_eq!(
         report.setup_url,
-        format!("https://{IP}:8443/setup?token={token}")
+        format!("https://{IP}:8443/setup#token={token}")
     );
+    let left = stored.expires_at.unwrap() - control_plane::setup_token::unix_now();
+    assert!((24 * 3600 - 60..=24 * 3600).contains(&left), "{left}");
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&token)
         .unwrap();
@@ -306,7 +310,7 @@ fn init_brackets_ipv6_in_url() {
     assert!(
         report
             .setup_url
-            .starts_with("https://[2001:db8::1]:8443/setup?token="),
+            .starts_with("https://[2001:db8::1]:8443/setup#token="),
         "{}",
         report.setup_url
     );
@@ -331,7 +335,7 @@ fn cli_init_prints_url_and_fingerprint() {
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
-        stdout.contains(&format!("https://{IP}:8443/setup?token=")),
+        stdout.contains(&format!("https://{IP}:8443/setup#token=")),
         "{stdout}"
     );
     assert!(stdout.contains("Empreinte SHA-256 : "), "{stdout}");

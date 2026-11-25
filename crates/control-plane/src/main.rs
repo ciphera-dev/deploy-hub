@@ -70,6 +70,17 @@ enum AdminCommand {
         #[arg(long, env = "CIPHERA_AGENT_DIR", default_value = "/etc/ciphera-agent")]
         agent_dir: PathBuf,
     },
+    /// Nouveau lien de l'assistant d'installation (valable 24 heures), tant
+    /// qu'aucun compte n'existe ; en root. Le lien precedent ne vaut plus rien.
+    SetupToken {
+        /// Adresse IP du panneau dans le lien (par defaut : celle du
+        /// certificat du panneau).
+        #[arg(long)]
+        public_ip: Option<IpAddr>,
+        /// Compte systeme du service, proprietaire du fichier du jeton.
+        #[arg(long, default_value = "ciphera")]
+        owner: String,
+    },
     /// Revoque un serveur (definitif) : son agent est deconnecte par le
     /// service en quelques secondes et ne peut plus se reconnecter.
     RevokeAgent {
@@ -127,6 +138,9 @@ async fn main() {
         }
         Some(Command::Admin(AdminCommand::RenewCerts { agent_dir })) => {
             std::process::exit(run_renew_certs(&agent_dir).await)
+        }
+        Some(Command::Admin(AdminCommand::SetupToken { public_ip, owner })) => {
+            std::process::exit(run_setup_token(public_ip, &owner).await)
         }
         Some(Command::Admin(AdminCommand::RevokeAgent { id })) => {
             std::process::exit(run_revoke_agent(&id).await)
@@ -464,6 +478,50 @@ async fn run_clear_ip_allowlist() -> i32 {
     }
 }
 
+/// Nouveau lien de l'assistant d'installation sur la sortie standard (il
+/// porte le jeton) ; messages sans secret sur la sortie d'erreur.
+async fn run_setup_token(public_ip: Option<IpAddr>, owner: &str) -> i32 {
+    use control_plane::setup_token;
+    if !running_as_root() {
+        eprintln!("erreur : ciphera admin setup-token se lance en root");
+        return 1;
+    }
+    let result = async {
+        let cfg = control_plane::cli::env::admin_config()?;
+        let account = init::account_ids(owner);
+        if cfg!(unix) && account.is_none() {
+            return Err(format!("compte systeme {owner} introuvable").into());
+        }
+        let cert = std::fs::read_to_string(cfg.config_dir.join("tls/panel.crt")).ok();
+        let ip = public_ip
+            .or_else(|| cert.as_deref().and_then(pki::ip_from_cert_pem))
+            .ok_or("adresse IP du panneau introuvable : relancer avec --public-ip")?;
+        let fingerprint = cert
+            .as_deref()
+            .and_then(pki::der_from_pem)
+            .map(|der| pki::fingerprint_sha256(&der));
+        let db = admin_db(&cfg).await?;
+        let token = admin::setup_token(&db, &cfg.config_dir, account).await?;
+        let url = setup_token::url(SocketAddr::new(ip, cfg.panel_port), &token);
+        Ok::<_, Box<dyn std::error::Error>>((url, fingerprint))
+    }
+    .await;
+    match result {
+        Ok((url, fingerprint)) => {
+            println!("{url}");
+            if let Some(fp) = fingerprint {
+                eprintln!("empreinte SHA-256 du certificat du panneau : {fp}");
+            }
+            eprintln!("valable 24 heures, usage unique ; le lien precedent ne vaut plus rien");
+            0
+        }
+        Err(e) => {
+            eprintln!("erreur : {e}");
+            1
+        }
+    }
+}
+
 /// Revoque un serveur ; message sur la sortie d'erreur.
 async fn run_revoke_agent(id: &str) -> i32 {
     let result = async {
@@ -635,6 +693,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     ));
     // Agregation horaire des metriques (sur la file de taches).
     let metrics_rollup = tokio::spawn(metrics::run(db.clone(), stop_rx.clone()));
+    // Purge quotidienne des echecs de connexion anciens du journal d'audit.
+    let audit_purge = tokio::spawn(control_plane::auth::audit_purge::run(
+        db.clone(),
+        stop_rx.clone(),
+    ));
     // Bascule vers le domaine du panneau restee sans certificat : abandonnee.
     let panel_expiry = tokio::spawn(control_plane::domain::domains::panel::run_expiry(
         state.clone(),
@@ -710,6 +773,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = log_hub.await;
     let _ = log_store.await;
     let _ = metrics_rollup.await;
+    let _ = audit_purge.await;
     let _ = panel_expiry.await;
     served?;
     Ok(())

@@ -1868,6 +1868,12 @@ export interface components {
         };
         /** @description Corps de `DELETE /api/organization`. */
         DeleteOrganization: {
+            /**
+             * Format: password
+             * @description Code du second facteur (application d'authentification ou code de
+             *     secours) : exige si le compte en a un.
+             */
+            code?: string | null;
             /** @description Doit valoir exactement `SUPPRIMER`. */
             confirm: string;
             /**
@@ -2346,6 +2352,12 @@ export interface components {
         };
         /** @description Corps de `POST /api/projects/{id}/deploy-hooks`. */
         NewDeployHook: {
+            /**
+             * Format: password
+             * @description Code du second facteur (application d'authentification ou code de
+             *     secours) : exige si le compte en a un.
+             */
+            code?: string | null;
             /**
              * @description RFC 3339, dans le futur et dans les 365 jours. Absent : 90 jours apres
              *     la creation.
@@ -2918,7 +2930,8 @@ export interface components {
             name: string;
             /**
              * Format: password
-             * @description 12 caracteres au minimum, 1024 au maximum. Jamais renvoye ni journalise.
+             * @description 12 caracteres au minimum, 1024 au maximum. Jamais renvoye ni journalise,
+             *     efface de la memoire apres usage.
              */
             password: string;
         };
@@ -3054,6 +3067,11 @@ export interface components {
         };
         /** @description Corps de `PATCH /api/projects/{id}/deploy-hooks/{hookId}`. */
         UpdateDeployHook: {
+            /**
+             * Format: password
+             * @description Code du second facteur, avec le mot de passe, si le compte en a un.
+             */
+            code?: string | null;
             /**
              * @description RFC 3339, dans le futur et dans les 365 jours. Pas de valeur nulle :
              *     un hook n'est jamais sans expiration.
@@ -5671,7 +5689,7 @@ export interface operations {
                     "application/json": components["schemas"]["OrganizationDeleted"];
                 };
             };
-            /** @description `invalid_credentials` (mot de passe) */
+            /** @description `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code` */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -5680,6 +5698,13 @@ export interface operations {
             };
             /** @description Proprietaire seulement, ou jeton CSRF absent ou invalide */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `other_owners` (autres proprietaires a retirer d'abord, Parametres > Equipe) ou `second_factor_unavailable` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6051,7 +6076,7 @@ export interface operations {
                     "application/json": components["schemas"]["CreatedDeployHook"];
                 };
             };
-            /** @description `invalid_credentials` : mot de passe incorrect */
+            /** @description `invalid_credentials` (mot de passe incorrect), `second_factor_required` (code du second facteur absent) ou `invalid_code` */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -6165,7 +6190,7 @@ export interface operations {
                     "application/json": components["schemas"]["DeployHook"];
                 };
             };
-            /** @description `invalid_credentials` : mot de passe absent ou incorrect pour une extension */
+            /** @description `invalid_credentials` (mot de passe absent ou incorrect pour une extension), `second_factor_required` ou `invalid_code` */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7539,7 +7564,7 @@ export interface operations {
                     "application/json": components["schemas"]["SetupChecks"];
                 };
             };
-            /** @description Jeton invalide */
+            /** @description `invalid_setup_token`, ou `setup_token_expired` (24 h passees : `ciphera admin setup-token`) */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7587,7 +7612,7 @@ export interface operations {
                     "application/json": components["schemas"]["SetupCompleted"];
                 };
             };
-            /** @description Jeton invalide */
+            /** @description `invalid_setup_token`, ou `setup_token_expired` (24 h passees : `ciphera admin setup-token`) */
             401: {
                 headers: {
                     [name: string]: unknown;

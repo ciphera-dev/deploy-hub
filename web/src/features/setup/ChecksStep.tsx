@@ -3,7 +3,7 @@ import { useEffect, type ReactNode } from "react";
 
 import { Icon, type IconName } from "@/design-system";
 
-import { fetchChecks, type SetupCheck } from "./api";
+import { fetchChecks, rejectionMessage, type SetupCheck } from "./api";
 import { RowCard, SetupButton, Spinner, StepHeading, lbl } from "./ui";
 
 const META: Record<string, { label: string; icon: IconName }> = {
@@ -32,7 +32,8 @@ export function ChecksStep({ token, onReady, onClosed }: ChecksStepProps) {
     refetchOnMount: "always",
   });
   const data = query.data;
-  const rejected = data && "rejected" in data ? data.rejected : null;
+  const refusal = data && "rejected" in data ? data : null;
+  const rejected = refusal ? refusal.rejected : null;
   const checks = data && "checks" in data ? data.checks : null;
   const ready = !!checks && checks.every((c) => c.ok);
 
@@ -44,9 +45,8 @@ export function ChecksStep({ token, onReady, onClosed }: ChecksStepProps) {
   return (
     <>
       <StepHeading title="Bienvenue sur Ciphera" subtitle="Nous vérifions que ce serveur peut faire tourner votre instance." />
-      {!token && <Problem>Lien d'installation incomplet. Ouvrez l'adresse affichée par « ciphera init » sur le serveur : elle contient le jeton d'installation.</Problem>}
-      {rejected === 401 && <Problem>Jeton d'installation invalide. Ouvrez de nouveau l'adresse affichée par « ciphera init ».</Problem>}
-      {rejected === 503 && <Problem>Jeton d'installation introuvable sur le serveur. Relancez « ciphera init » puis ouvrez la nouvelle adresse.</Problem>}
+      {!token && <Problem>Lien d'installation incomplet. Ouvrez l'adresse affichée sur le serveur (« ciphera init » ou « sudo ciphera admin setup-token ») : elle contient le jeton d'installation.</Problem>}
+      {refusal && refusal.rejected !== 410 && <Problem>{rejectionMessage(refusal)}</Problem>}
       {query.isError && <Problem>Les vérifications n'ont pas pu être effectuées.</Problem>}
       {token && (query.isPending || checks) && (
         <RowCard>

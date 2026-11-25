@@ -2,12 +2,14 @@
 //! double authentification (TOTP, codes de secours, passkeys), et l'extracteur
 //! `CurrentUser` des routes reservees aux comptes connectes.
 
+pub mod audit_purge;
 pub mod csrf;
 pub mod factors;
 pub mod password;
 pub mod rate_limit;
 pub mod recovery;
 pub mod session;
+pub mod step_up;
 pub mod totp;
 pub mod webauthn;
 

@@ -660,6 +660,141 @@ async fn hook_creation_requires_step_up() {
     assert!(!ok.raw.contains(PASSWORD));
 }
 
+/// Evite de calculer un code juste avant un changement de fenetre de 30 s.
+async fn away_from_step_boundary() {
+    let into = unix_now() as u64 % 30;
+    if into >= 26 {
+        tokio::time::sleep(std::time::Duration::from_secs(31 - into)).await;
+    }
+}
+
+/// TOTP enrolee par l'API ; renvoie la session tournee, le generateur et
+/// les codes de secours (fenetre d'enrolement oubliee).
+async fn enrol_totp(
+    state: &AppState,
+    s: &(String, String),
+) -> ((String, String), totp_rs::Totp, Vec<String>) {
+    let start = send(
+        state,
+        s,
+        "POST",
+        "/api/me/mfa/totp/start",
+        Some(json!({ "current_password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(start.status, 200, "{}", start.raw);
+    let uri = start.json()["otpauth_uri"].as_str().unwrap().to_string();
+    let secret = uri
+        .split(['?', '&'])
+        .find_map(|p| p.strip_prefix("secret="))
+        .unwrap()
+        .to_string();
+    let totp = totp_rs::Builder::new()
+        .with_secret(totp_rs::Secret::try_from_base32(&secret).unwrap())
+        .with_skew(0)
+        .build()
+        .unwrap();
+    away_from_step_boundary().await;
+    let confirm = send(
+        state,
+        s,
+        "POST",
+        "/api/me/mfa/totp/confirm",
+        Some(json!({ "code": totp.generate(unix_now() as u64).to_string() })),
+    )
+    .await;
+    assert_eq!(confirm.status, 200, "{}", confirm.raw);
+    let codes = confirm.json()["recovery_codes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap().to_string())
+        .collect();
+    sqlx::query("UPDATE user_totp SET last_used_step = NULL")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    ((confirm.token(), confirm.csrf()), totp, codes)
+}
+
+#[tokio::test]
+async fn hook_step_up_requires_the_second_factor() {
+    let (state, _pg) = common::state().await;
+    let (project, _) = git_project(&state, "web").await;
+    let admin = login(&state, "admin").await;
+    let (admin, totp, codes) = enrol_totp(&state, &admin).await;
+    let url = format!("/api/projects/{project}/deploy-hooks");
+
+    // Compte avec second facteur : mot de passe seul refuse, rien n'est cree.
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        &url,
+        Some(json!({ "name": "CI", "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "second_factor_required");
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        &url,
+        Some(json!({ "name": "CI", "password": PASSWORD, "code": "abcd-efgh" })),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_code");
+    assert_eq!(count(&state, "SELECT count(*) FROM deploy_hooks").await, 0);
+
+    // Mot de passe et code TOTP : cree ; le meme code ne resert pas.
+    away_from_step_boundary().await;
+    let code = totp.generate(unix_now() as u64).to_string();
+    let r = send(
+        &state,
+        &admin,
+        "POST",
+        &url,
+        Some(json!({ "name": "CI", "password": PASSWORD, "code": code })),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+    let hook_id = r.json()["hook"]["id"].as_str().unwrap().to_string();
+    let path = format!("{url}/{hook_id}");
+    let later = in_days(&state, 200).await;
+    let r = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": later, "password": PASSWORD, "code": code })),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_code");
+    // Rallonger : mot de passe seul refuse ; avec un code de secours, accepte.
+    let r = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": later, "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "second_factor_required");
+    let r = send(
+        &state,
+        &admin,
+        "PATCH",
+        &path,
+        Some(json!({ "expires_at": later, "password": PASSWORD, "code": codes[0] })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+}
+
 #[tokio::test]
 async fn deploy_hook_wrong_secret_404_constant_time() {
     let (state, _pg) = common::state().await;

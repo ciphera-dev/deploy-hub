@@ -127,8 +127,10 @@ test("parcours complet : setup, TOTP, GitHub, déploiement, HTTPS, rollback", as
   const nav = page.getByRole("navigation", { name: "Navigation principale" });
 
   await test.step("assistant d'installation", async () => {
-    await page.goto(`/setup?token=${encodeURIComponent(token)}`);
+    // Adresse affichee par install.sh : jeton dans le fragment, retire de la barre d'adresse.
+    await page.goto(`/setup#token=${encodeURIComponent(token)}`);
     await expect(page.getByText("Toutes les vérifications sont passées.")).toBeVisible({ timeout: MINUTE });
+    expect(page.url()).not.toContain(token);
     await page.getByRole("button", { name: "Continuer" }).click();
     await page.getByLabel("Prénom").fill(ADMIN.first);
     await page.getByLabel("Nom", { exact: true }).fill(ADMIN.last);

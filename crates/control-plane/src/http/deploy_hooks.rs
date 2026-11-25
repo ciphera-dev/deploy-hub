@@ -2,9 +2,11 @@
 //! `PATCH|DELETE /api/projects/{id}/deploy-hooks/{hookId}` (admin, CSRF,
 //! audit) et la route publique `POST /v1/hooks/deploy/{hookId}`.
 //!
-//! La creation exige le mot de passe du compte (re-authentification, meme
-//! limite que les autres actions sensibles) et fixe une expiration (90 jours
-//! par defaut, modifiable) : un hook expire est refuse comme un secret faux.
+//! La creation exige un step-up (`auth::step_up` : mot de passe du compte,
+//! plus le code du second facteur si le compte en a un ; memes limites que
+//! les seconds facteurs) et fixe une expiration (90 jours par defaut,
+//! modifiable ; la rallonger exige aussi le step-up) : un hook expire est
+//! refuse comme un secret faux.
 //!
 //! Route publique (hors `/api/`, donc hors CSRF), dans cet ordre :
 //! 0. limite en memoire par IP (`public_limit::HOOK_PER_IP` appels par
@@ -40,8 +42,8 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::client_ip::ClientIp;
-use super::me::{Reauth, reauthenticate};
 use super::mfa::rate_limited;
+use crate::auth::step_up::{self, StepUp};
 use crate::auth::{internal, rate_limit};
 use crate::authz::{Require, lvl, res};
 use crate::domain::deployments::orchestrator::{self, Guard, Origin, Requested};
@@ -167,19 +169,20 @@ async fn create(
             "20 deploy hooks au plus par projet.",
         ));
     }
-    // Re-authentification : un hook declenche des deploiements sans session.
-    // Apres les controles ci-dessus : une demande refusee ne coute aucun essai.
-    let attempt = match reauthenticate(
+    // Step-up : un hook declenche des deploiements sans session. Apres les
+    // controles ci-dessus : une demande refusee ne coute aucun essai.
+    let proof = match step_up::verify(
         &state,
         &auth.user,
-        &ip.to_string(),
+        ip,
         input.password,
+        input.code,
         "deploy_hook.create.failure",
     )
     .await?
     {
-        Reauth::Verified(attempt, _) => attempt,
-        Reauth::Limited(response) => return Ok(response),
+        StepUp::Verified(proof) => proof,
+        StepUp::Limited(response) => return Ok(response),
     };
     let token = hooks::generate().map_err(|e| internal("generateur aleatoire", e))?;
     let hook = hooks::insert(
@@ -192,9 +195,7 @@ async fn create(
     )
     .await
     .map_err(|e| internal("creation du deploy hook", e))?;
-    rate_limit::mark_mfa_success(&mut tx, attempt)
-        .await
-        .map_err(|e| internal("limitation de debit", e))?;
+    proof.commit(&mut tx).await?;
     audit(&mut tx, auth.user.id, "deploy_hook.create", id, hook).await?;
     let created = hooks::get(&mut tx, hook)
         .await
@@ -256,9 +257,8 @@ async fn update(
         .await
         .map_err(|e| internal("expiration du deploy hook", e))?
         .ok_or_else(hook_not_found)?;
-    // Rallonger ou reactiver un hook expire redonne un secret valide : mot de
-    // passe exige. Raccourcir reste libre.
-    let mut attempt = None;
+    // Rallonger ou reactiver un hook expire redonne un secret valide : step-up
+    // exige. Raccourcir reste libre.
     if extends {
         let Some(password) = input.password.filter(|p| !p.is_empty()) else {
             return Err(ApiError::new(
@@ -267,23 +267,19 @@ async fn update(
                 "Saisissez votre mot de passe pour rallonger l'expiration.",
             ));
         };
-        match reauthenticate(
+        match step_up::verify(
             &state,
             &auth.user,
-            &ip.to_string(),
+            ip,
             password,
+            input.code,
             "deploy_hook.update.failure",
         )
         .await?
         {
-            Reauth::Verified(id, _) => attempt = Some(id),
-            Reauth::Limited(response) => return Ok(response),
+            StepUp::Verified(proof) => proof.commit(&mut tx).await?,
+            StepUp::Limited(response) => return Ok(response),
         }
-    }
-    if let Some(attempt) = attempt {
-        rate_limit::mark_mfa_success(&mut tx, attempt)
-            .await
-            .map_err(|e| internal("limitation de debit", e))?;
     }
     if !hooks::set_expiry(&mut tx, id, hook, &input.expires_at)
         .await

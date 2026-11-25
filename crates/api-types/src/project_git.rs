@@ -72,6 +72,11 @@ pub struct NewDeployHook {
     /// Mot de passe du compte (re-authentification).
     #[schema(value_type = String, format = Password, max_length = 1024)]
     pub password: Zeroizing<String>,
+    /// Code du second facteur (application d'authentification ou code de
+    /// secours) : exige si le compte en a un.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = Password, max_length = 64)]
+    pub code: Option<Zeroizing<String>>,
     /// RFC 3339, dans le futur et dans les 365 jours. Absent : 90 jours apres
     /// la creation.
     #[serde(default)]
@@ -83,6 +88,7 @@ impl fmt::Debug for NewDeployHook {
         f.debug_struct("NewDeployHook")
             .field("name", &self.name)
             .field("password", &"<masque>")
+            .field("code", &self.code.as_ref().map(|_| "<masque>"))
             .field("expires_at", &self.expires_at)
             .finish()
     }
@@ -100,6 +106,10 @@ pub struct UpdateDeployHook {
     #[serde(default)]
     #[schema(value_type = Option<String>, format = Password, max_length = 1024)]
     pub password: Option<Zeroizing<String>>,
+    /// Code du second facteur, avec le mot de passe, si le compte en a un.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = Password, max_length = 64)]
+    pub code: Option<Zeroizing<String>>,
 }
 
 impl fmt::Debug for UpdateDeployHook {
@@ -107,6 +117,7 @@ impl fmt::Debug for UpdateDeployHook {
         f.debug_struct("UpdateDeployHook")
             .field("expires_at", &self.expires_at)
             .field("password", &self.password.as_ref().map(|_| "<masque>"))
+            .field("code", &self.code.as_ref().map(|_| "<masque>"))
             .finish()
     }
 }
@@ -207,7 +218,7 @@ pub fn list_deploy_hooks() {}
         (status = 201, description = "Deploy hook cree", body = CreatedDeployHook),
         (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
         (status = 404, description = "Projet introuvable"),
-        (status = 401, description = "`invalid_credentials` : mot de passe incorrect"),
+        (status = 401, description = "`invalid_credentials` (mot de passe incorrect), `second_factor_required` (code du second facteur absent) ou `invalid_code`"),
         (status = 409, description = "`too_many_hooks` : 20 deploy hooks au plus par projet"),
         (status = 422, description = "Nom, mot de passe ou date d'expiration invalide"),
         (status = 429, description = "Trop de tentatives de mot de passe"),
@@ -231,7 +242,7 @@ pub fn create_deploy_hook() {}
         (status = 200, description = "Deploy hook mis a jour", body = DeployHook),
         (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
         (status = 404, description = "Projet ou deploy hook introuvable"),
-        (status = 401, description = "`invalid_credentials` : mot de passe absent ou incorrect pour une extension"),
+        (status = 401, description = "`invalid_credentials` (mot de passe absent ou incorrect pour une extension), `second_factor_required` ou `invalid_code`"),
         (status = 422, description = "Date invalide, passee ou au-dela de 365 jours"),
         (status = 429, description = "Trop de tentatives de mot de passe"),
     )

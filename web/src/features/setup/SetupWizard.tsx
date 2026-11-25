@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CipheraLogo, Icon } from "@/design-system";
 import { ApiError } from "@/lib/api/errors";
 
-import { fetchStatus, submitSetup, type SetupPayload } from "./api";
+import { fetchStatus, rejectionMessage, submitSetup, type SetupPayload } from "./api";
 import { ChecksStep } from "./ChecksStep";
 import { OrganizationStep } from "./OrganizationStep";
 import { languageOf, REGIONS, slugify, type Region } from "./regions";
@@ -50,8 +50,7 @@ export function SetupWizard({ token }: SetupWizardProps) {
         setAdmin(EMPTY_ADMIN);
         void navigate({ to: "/" });
       } else if (result.rejected === 410) goLogin();
-      else if (result.rejected === 401) setError("Jeton d'installation invalide. Ouvrez de nouveau l'adresse affichée par « ciphera init ».");
-      else setError("Jeton d'installation introuvable sur le serveur. Relancez « ciphera init ».");
+      else setError(rejectionMessage(result));
     },
     onError: (e) => setError(e instanceof ApiError && e.status === 422 ? "Certains champs sont invalides. Revenez en arrière pour les corriger." : "L'installation n'a pas pu aboutir. Réessayez."),
   });

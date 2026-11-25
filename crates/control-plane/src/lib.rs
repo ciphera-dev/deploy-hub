@@ -15,5 +15,6 @@ pub mod init;
 pub mod jobs;
 pub mod mail;
 pub mod secrets;
+pub mod setup_token;
 pub mod state;
 pub mod tls;

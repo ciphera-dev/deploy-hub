@@ -134,8 +134,9 @@ wait_for 300 "curl -fsk $panel/api/health" || {
 	diagnose
 	die "panneau injoignable apres l'installation"
 }
-token=$(cat /etc/ciphera/setup_token)
-[ -n "$token" ] || die "jeton d'installation absent"
+# Jeton lu dans l'adresse affichee par install.sh (fragment `#token=`).
+token=$(sed -n 's|^https://[^ ]*/setup#token=\([A-Za-z0-9_-]*\)$|\1|p' "$work/install.log" | head -n 1)
+[ -n "$token" ] || die "adresse d'installation (/setup#token=) absente de la sortie d'install.sh"
 printf '::add-mask::%s\n' "$token"
 
 # --- 2. Pebble et son DNS de test ---------------------------------------------

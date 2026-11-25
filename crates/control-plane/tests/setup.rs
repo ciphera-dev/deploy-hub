@@ -278,6 +278,87 @@ async fn wrong_token_401() {
 }
 
 #[tokio::test]
+async fn setup_token_expires() {
+    let env = env().await;
+    let file = env.config.0.join("setup_token");
+    let now = control_plane::setup_token::unix_now();
+    let checks = || call(&env.state, "POST", "/api/setup/checks", Some(TOKEN), None);
+
+    // Echeance ecrite dans le fichier : valable avant, refuse apres.
+    std::fs::write(
+        &file,
+        control_plane::setup_token::render(TOKEN, now + 3600).as_str(),
+    )
+    .unwrap();
+    assert_eq!(checks().await.status, 200);
+    std::fs::write(
+        &file,
+        control_plane::setup_token::render(TOKEN, now - 1).as_str(),
+    )
+    .unwrap();
+    let r = checks().await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.json()["error"]["code"], "setup_token_expired");
+    assert!(r.raw.contains("ciphera admin setup-token"));
+    let r = complete(&env.state, Some(TOKEN), payload("a@example.com", PASSWORD)).await;
+    assert_eq!(r.json()["error"]["code"], "setup_token_expired");
+    assert_eq!(count_users(&env.state).await, 0);
+    // Un autre jeton reste « invalide » : l'echeance ne se revele qu'au detenteur.
+    let r = call(&env.state, "POST", "/api/setup/checks", Some("nope"), None).await;
+    assert_eq!(r.json()["error"]["code"], "invalid_setup_token");
+
+    // Fichier sans echeance (version precedente) : 24 h apres sa modification.
+    std::fs::write(&file, format!("{TOKEN}\n")).unwrap();
+    assert_eq!(checks().await.status, 200);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600))
+        .unwrap();
+    assert_eq!(
+        checks().await.json()["error"]["code"],
+        "setup_token_expired"
+    );
+}
+
+#[tokio::test]
+async fn setup_token_regenerated_by_cli() {
+    let env = env().await;
+    let file = env.config.0.join("setup_token");
+    std::fs::write(
+        &file,
+        control_plane::setup_token::render(TOKEN, control_plane::setup_token::unix_now() - 1)
+            .as_str(),
+    )
+    .unwrap();
+
+    let fresh = control_plane::cli::admin::setup_token(&env.state.db, &env.config.0, None)
+        .await
+        .unwrap();
+    assert_ne!(fresh.as_str(), TOKEN);
+    let text = std::fs::read_to_string(&file).unwrap();
+    let stored = control_plane::setup_token::parse(&text).unwrap();
+    assert_eq!(stored.token.as_str(), fresh.as_str());
+    let left = stored.expires_at.unwrap() - control_plane::setup_token::unix_now();
+    assert!((24 * 3600 - 60..=24 * 3600).contains(&left), "{left}");
+    // L'ancien jeton ne vaut plus rien ; le nouveau ouvre l'assistant.
+    let r = call(&env.state, "POST", "/api/setup/checks", Some(TOKEN), None).await;
+    assert_eq!(r.json()["error"]["code"], "invalid_setup_token");
+    let r = call(&env.state, "POST", "/api/setup/checks", Some(&fresh), None).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+
+    // Un compte existe : plus de jeton, fichier inchange.
+    let r = complete(&env.state, Some(&fresh), payload("a@example.com", PASSWORD)).await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+    let err = control_plane::cli::admin::setup_token(&env.state.db, &env.config.0, None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("compte"), "{err}");
+    assert!(!file.exists());
+}
+
+#[tokio::test]
 async fn token_file_deleted_after_complete() {
     let env = env().await;
     assert!(env.config.0.join("setup_token").exists());

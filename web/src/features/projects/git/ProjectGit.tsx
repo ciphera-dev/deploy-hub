@@ -175,13 +175,13 @@ function GitForm({ project, saved }: { project: Project; saved: GitSettings }) {
   };
 
   const hookName = `Hook ${(hooks.data?.length ?? 0) + 1}`;
-  /** Renvoie le message d'échec (affiché dans la modale), ou null si le hook est créé. */
-  const addHook = async (password: string, expiresAt: string): Promise<string | null> => {
+  /** Renvoie l'échec (affiché dans la modale), ou null si le hook est créé. */
+  const addHook = async (password: string, expiresAt: string, code?: string): Promise<{ message: string; code?: string } | null> => {
     if (busy.current) return null;
     busy.current = true;
     try {
-      const result = await createDeployHook(project.id, hookName, password, expiresAt);
-      if (!result.ok) return result.message;
+      const result = await createDeployHook(project.id, hookName, password, expiresAt, code);
+      if (!result.ok) return { message: result.message, code: result.code };
       setCreating(false);
       setCreated(result.created);
       await client.invalidateQueries({ queryKey: hooksQueryKey(project.id) });

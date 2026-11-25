@@ -1,9 +1,10 @@
 //! Assistant d'installation : `/api/setup/*`.
 //!
-//! Le jeton de setup (`<config_dir>/setup_token`, ecrit par `ciphera init`)
-//! est a usage unique. Il cesse d'etre valable des qu'un compte existe, meme
-//! si le fichier traine encore, et le fichier est supprime apres la creation
-//! du proprietaire. La creation est une transaction SERIALIZABLE gardee par
+//! Le jeton de setup (`<config_dir>/setup_token`, ecrit par `ciphera init` ou
+//! `ciphera admin setup-token`, voir `crate::setup_token`) est a usage unique
+//! et expire 24 heures apres son emission (401 `setup_token_expired`). Il
+//! cesse d'etre valable des qu'un compte existe, meme si le fichier traine
+//! encore, et le fichier est supprime apres la creation du proprietaire. La creation est une transaction SERIALIZABLE gardee par
 //! `INSERT ... WHERE NOT EXISTS (SELECT 1 FROM users)` : en cas de course,
 //! un seul appel gagne, les autres recoivent 410.
 //!
@@ -27,11 +28,13 @@ use sqlx::PgPool;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
+use zeroize::Zeroizing;
+
 use crate::auth::password;
 use crate::auth::session::{self, SessionToken};
+use crate::setup_token::{self, FILE as TOKEN_FILE};
 use crate::state::AppState;
 
-const TOKEN_FILE: &str = "setup_token";
 const TOKEN_HEADER: &str = "x-setup-token";
 /// Corps JSON maximal : bien au-dessus d'un formulaire legitime (mot de passe de 1024 caracteres).
 const MAX_BODY: usize = 16 * 1024;
@@ -83,8 +86,19 @@ async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError
         return Err(gone());
     }
     let path = state.cfg.config_dir.join(TOKEN_FILE);
-    let expected = match tokio::fs::read_to_string(&path).await {
-        Ok(contents) => contents.trim().to_string(),
+    let read = async {
+        let text = Zeroizing::new(tokio::fs::read_to_string(&path).await?);
+        let modified = tokio::fs::metadata(&path).await?.modified().ok();
+        Ok::<_, std::io::Error>((text, modified))
+    };
+    let (expected, expires_at) = match read.await {
+        Ok((text, modified)) => match setup_token::parse(&text) {
+            Some(stored) => {
+                let expires_at = setup_token::effective_expiry(&stored, modified);
+                (stored.token, expires_at)
+            }
+            None => return Err(missing_token()),
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Le fichier disparait juste apres la creation du proprietaire :
             // un perdant de la course doit recevoir 410, pas 503.
@@ -95,9 +109,6 @@ async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError
         }
         Err(e) => return Err(internal("lecture du jeton de setup", e)),
     };
-    if expected.is_empty() {
-        return Err(missing_token());
-    }
     let given = headers
         .get(TOKEN_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -111,6 +122,14 @@ async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError
             "Jeton d'installation invalide.",
         ));
     }
+    // Expiration verifiee apres le jeton : seul son detenteur l'apprend.
+    if setup_token::unix_now() >= expires_at {
+        return Err(ApiError::new(
+            401,
+            "setup_token_expired",
+            "Lien d'installation expiré (24 h) : lancez `sudo ciphera admin setup-token` sur le serveur pour en obtenir un nouveau.",
+        ));
+    }
     Ok(())
 }
 
@@ -118,7 +137,7 @@ fn missing_token() -> ApiError {
     ApiError::new(
         503,
         "setup_token_missing",
-        "Jeton d'installation introuvable : relancez `ciphera init` sur le serveur.",
+        "Jeton d'installation introuvable : lancez `sudo ciphera admin setup-token` sur le serveur.",
     )
 }
 
@@ -297,7 +316,7 @@ fn validate_timezone(tz: &str) -> bool {
         })
 }
 
-fn validate(input: SetupComplete) -> Result<(String, Validated), ApiError> {
+fn validate(input: SetupComplete) -> Result<(Zeroizing<String>, Validated), ApiError> {
     let name = input.admin.name.trim().to_string();
     if name.is_empty() || name.chars().count() > 200 {
         return Err(invalid("Nom : 1 à 200 caractères."));

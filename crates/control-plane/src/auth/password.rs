@@ -2,6 +2,7 @@
 //! (19 Mio, 2 passes, 1 voie : minimum recommande par l'OWASP).
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use argon2::Argon2;
@@ -24,6 +25,15 @@ pub const MAX_CONCURRENT: usize = 4;
 pub const MAX_WAIT: Duration = Duration::from_secs(10);
 
 static SLOTS: Semaphore = Semaphore::const_new(MAX_CONCURRENT);
+
+/// Calculs Argon2 delegues depuis le demarrage (tests : verifier qu'un refus
+/// n'en declenche aucun).
+static OFFLOADED: AtomicU64 = AtomicU64::new(0);
+
+/// Nombre de calculs Argon2 delegues par [`offload`] depuis le demarrage.
+pub fn offloaded() -> u64 {
+    OFFLOADED.load(Ordering::Relaxed)
+}
 
 /// Echec d'un calcul Argon2 delegue.
 #[derive(Debug)]
@@ -95,6 +105,7 @@ pub fn verify(password: &str, phc: &str) -> bool {
 pub async fn offload<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, OffloadError> {
+    OFFLOADED.fetch_add(1, Ordering::Relaxed);
     offload_with(&SLOTS, MAX_WAIT, work).await
 }
 

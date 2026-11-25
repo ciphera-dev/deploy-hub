@@ -862,3 +862,39 @@ async fn concurrent_accepts_create_one_account() {
             .unwrap();
     assert_eq!(users, 1);
 }
+
+#[tokio::test]
+async fn invitation_name_control_chars_refused() {
+    let (state, _pg, owner) = owner_env().await;
+    // Nom du lien d'invitation (facultatif) et nom du compte a l'acceptation.
+    let r = invite(
+        &state,
+        &owner,
+        json!({ "email": "nora@example.com", "role": "viewer", "name": "Nora\u{1b}[31m" }),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    let token = token_of(
+        &invite(
+            &state,
+            &owner,
+            json!({ "email": "nora@example.com", "role": "viewer" }),
+        )
+        .await,
+    );
+    for name in ["Nora\nKaci", "Nora\u{0}", "\u{7f}Nora"] {
+        let r = call(
+            &state,
+            "POST",
+            &format!("/api/auth/invitations/{token}/accept"),
+            Req {
+                body: Some(json!({ "name": name, "password": NEW_PASSWORD })),
+                ..Req::default()
+            },
+        )
+        .await;
+        assert_eq!(r.status, 422, "{name:?} : {}", r.raw);
+    }
+    // Le lien reste utilisable avec un nom valide.
+    assert_eq!(accept(&state, &token, None).await.status, 204);
+}

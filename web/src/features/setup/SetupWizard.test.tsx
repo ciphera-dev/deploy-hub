@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vite
 
 import { AppProviders, createAppQueryClient } from "@/app/providers";
 import { createAppRouter } from "@/app/router";
+import { clearHeldTokens } from "@/lib/url-token";
 
 const PASSWORD = "correct horse battery";
 const CHECKS = [
@@ -47,6 +48,7 @@ beforeEach(() => {
   initialized = false;
   checks = CHECKS;
   completeStatus = 201;
+  clearHeldTokens();
   window.history.replaceState(null, "", "/");
 });
 afterEach(() => {
@@ -108,6 +110,37 @@ it("le jeton est retire de la barre d'adresse et n'est stocke nulle part", async
   for (const store of [localStorage, sessionStorage]) {
     expect(JSON.stringify({ ...store })).not.toContain("tok-123");
   }
+});
+
+it("setup_fragment_read : le jeton du fragment #token= est lu puis retiré de l'adresse", async () => {
+  const spy = vi.spyOn(window.history, "replaceState");
+  const { router } = mount("/setup#token=tok-frag");
+  await screen.findByText("Toutes les vérifications sont passées.");
+  expect(seen.tokens).toEqual(["tok-frag"]);
+  expect(window.location.hash).toBe("");
+  expect(window.location.href).not.toContain("tok-frag");
+  expect(router.state.location.hash).toBe("");
+  expect(router.state.location.href).not.toContain("tok-frag");
+  expect(spy.mock.calls.some(([, , url]) => String(url) === "/setup")).toBe(true);
+  for (const store of [localStorage, sessionStorage]) {
+    expect(JSON.stringify({ ...store })).not.toContain("tok-frag");
+  }
+});
+
+it("l'ancien ?token= reste accepté puis est retiré de l'adresse", async () => {
+  const { router } = mount("/setup?token=tok-old");
+  await screen.findByText("Toutes les vérifications sont passées.");
+  expect(seen.tokens).toEqual(["tok-old"]);
+  expect(router.state.location.href).not.toContain("tok-old");
+  expect(window.location.href).not.toContain("tok-old");
+});
+
+it("un jeton expiré (24 h) explique comment en obtenir un nouveau", async () => {
+  server.use(http.post("*/api/setup/checks", () => json({ error: { code: "setup_token_expired", message: "x" } }, 401)));
+  mount();
+  expect(await screen.findByText(/Lien d'installation expiré/)).toBeInTheDocument();
+  expect(screen.getByText(/ciphera admin setup-token/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Continuer" })).toBeDisabled();
 });
 
 it("un assistant deja termine redirige vers /login", async () => {

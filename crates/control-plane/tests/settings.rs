@@ -926,7 +926,7 @@ async fn delete_org_requires_reauth_and_phrase() {
     let mut agent = state.agents.attach_channel(ServerId(local));
     let (owner_id, owner) = login(&state, "owner").await;
     let (_, admin) = login(&state, "admin").await;
-    let (_, other_owner) = login(&state, "owner").await;
+    let (_, developer) = login(&state, "developer").await;
     let (web, web_env) = project(&state, &owner, "web").await;
     let (api, api_env) = project(&state, &owner, "api").await;
     let d1 = deployed(&state, web, web_env, local).await;
@@ -1068,9 +1068,182 @@ async fn delete_org_requires_reauth_and_phrase() {
         assert_eq!(count(&state, sql).await, 1, "{sql}");
     }
     // Toutes les sessions revoquees, celle du proprietaire comprise.
-    for s in [&owner, &admin, &other_owner] {
+    for s in [&owner, &admin, &developer] {
         assert_eq!(send(&state, s, "GET", "/api/me", None).await.status, 401);
     }
+}
+
+#[tokio::test]
+async fn org_delete_refused_with_other_owners() {
+    let (state, _pg) = common::state().await;
+    instance(&state).await;
+    let (_, owner) = login(&state, "owner").await;
+    let (other_id, _) = login(&state, "owner").await;
+    let attempts = || count(&state, "SELECT count(*) FROM mfa_attempts");
+    let before = attempts().await;
+
+    let r = send(
+        &state,
+        &owner,
+        "DELETE",
+        "/api/organization",
+        delete_body(PASSWORD, "SUPPRIMER"),
+    )
+    .await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "other_owners");
+    assert!(
+        r.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Équipe")
+    );
+    // Refus avant la verification : aucun essai consomme, rien de supprime.
+    assert_eq!(attempts().await, before);
+    assert_eq!(count(&state, "SELECT count(*) FROM users").await, 2);
+
+    // Autre proprietaire retire (Equipe) : la suppression passe.
+    sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
+        .bind(other_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let r = send(
+        &state,
+        &owner,
+        "DELETE",
+        "/api/organization",
+        delete_body(PASSWORD, "SUPPRIMER"),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(count(&state, "SELECT count(*) FROM users").await, 1);
+}
+
+/// TOTP du compte enrolee par l'API ; renvoie la session tournee, le
+/// generateur et les codes de secours. La fenetre d'enrolement est oubliee
+/// (un code de la fenetre courante reste utilisable).
+async fn enrol_totp(state: &AppState, s: &Session) -> (Session, totp_rs::Totp, Vec<String>) {
+    let start = send(
+        state,
+        s,
+        "POST",
+        "/api/me/mfa/totp/start",
+        Some(json!({ "current_password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(start.status, 200, "{}", start.raw);
+    let uri = start.json()["otpauth_uri"].as_str().unwrap().to_string();
+    let secret = uri
+        .split(['?', '&'])
+        .find_map(|p| p.strip_prefix("secret="))
+        .unwrap()
+        .to_string();
+    let totp = totp_rs::Builder::new()
+        .with_secret(totp_rs::Secret::try_from_base32(&secret).unwrap())
+        .with_skew(0)
+        .build()
+        .unwrap();
+    away_from_step_boundary().await;
+    let confirm = send(
+        state,
+        s,
+        "POST",
+        "/api/me/mfa/totp/confirm",
+        Some(json!({ "code": totp_now(&totp) })),
+    )
+    .await;
+    assert_eq!(confirm.status, 200, "{}", confirm.raw);
+    let codes = confirm.json()["recovery_codes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap().to_string())
+        .collect();
+    sqlx::query("UPDATE user_totp SET last_used_step = NULL")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    ((confirm.token(), confirm.csrf()), totp, codes)
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn totp_now(totp: &totp_rs::Totp) -> String {
+    totp.generate(unix_now()).to_string()
+}
+
+/// Evite de calculer un code juste avant un changement de fenetre de 30 s.
+async fn away_from_step_boundary() {
+    let into = unix_now() % 30;
+    if into >= 26 {
+        tokio::time::sleep(Duration::from_secs(31 - into)).await;
+    }
+}
+
+#[tokio::test]
+async fn org_delete_requires_second_factor() {
+    let (state, _pg) = common::state().await;
+    instance(&state).await;
+    let (_, owner) = login(&state, "owner").await;
+    let (owner, totp, codes) = enrol_totp(&state, &owner).await;
+    let delete = |body: Value| send(&state, &owner, "DELETE", "/api/organization", Some(body));
+
+    // Mot de passe seul : le second facteur est exige.
+    let r = delete(json!({ "password": PASSWORD, "confirm": "SUPPRIMER" })).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "second_factor_required");
+    // Code faux : refuse et audite.
+    let r = delete(json!({ "password": PASSWORD, "code": "000000", "confirm": "SUPPRIMER" })).await;
+    let r = if r.code() == "invalid_code" {
+        r
+    } else {
+        // 000000 etait le bon code (une chance sur un million) : un autre.
+        delete(json!({ "password": PASSWORD, "code": "999999", "confirm": "SUPPRIMER" })).await
+    };
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_code");
+    // Bon code mais mauvais mot de passe : refuse.
+    away_from_step_boundary().await;
+    let r = delete(
+        json!({ "password": "wrong password value", "code": totp_now(&totp), "confirm": "SUPPRIMER" }),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "invalid_credentials");
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM audit_events WHERE action = 'organization.delete.failure'"
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM audit_events WHERE action = 'organization.delete'"
+        )
+        .await,
+        0
+    );
+
+    // Mot de passe et code de secours : supprimee, le code est consomme.
+    let r = delete(json!({ "password": PASSWORD, "code": codes[0], "confirm": "SUPPRIMER" })).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(
+        count(
+            &state,
+            "SELECT count(*) FROM recovery_codes WHERE used_at IS NOT NULL"
+        )
+        .await,
+        1
+    );
 }
 
 #[tokio::test]

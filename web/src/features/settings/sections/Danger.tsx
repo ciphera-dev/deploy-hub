@@ -1,7 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type CSSProperties, type ReactNode } from "react";
 
 import { Button, Icon, Modal, useToast } from "@/design-system";
+import { asksForCode, hasSecondFactor } from "@/features/auth/step-up";
 import { FormError } from "@/features/auth/ui";
 
 import { DANGER_QUERY_KEY, deleteOrganization, download, exportOrganization, fetchDangerZone, type DangerZone, type OrganizationDeleted } from "../api";
@@ -44,24 +45,30 @@ function Outcome({ result }: { result: OrganizationDeleted }) {
 }
 
 function DeleteModal({ zone, onClose }: { zone: DangerZone; onClose: () => void }) {
+  const queryClient = useQueryClient();
   const [pwd, setPwd] = useState("");
+  const [needsCode, setNeedsCode] = useState(() => hasSecondFactor(queryClient));
+  const [code, setCode] = useState("");
   const [word, setWord] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [result, setResult] = useState<OrganizationDeleted | null>(null);
-  const ok = pwd.length > 0 && word === PHRASE && !busy;
+  const ok = pwd.length > 0 && (!needsCode || code.trim().length > 0) && word === PHRASE && !busy;
 
   const submit = async () => {
     if (!ok) return;
     setBusy(true);
-    const r = await deleteOrganization(pwd, word);
+    const r = await deleteOrganization(pwd, word, needsCode ? code.trim() : undefined);
     setBusy(false);
     if (!r.ok) {
       setErr(r.message);
+      setCode("");
+      if (asksForCode(r.code)) setNeedsCode(true);
       return;
     }
     setPwd("");
+    setCode("");
     setResult(r.data);
   };
 
@@ -108,6 +115,12 @@ function DeleteModal({ zone, onClose }: { zone: DangerZone; onClose: () => void 
             </button>
           </span>
         </label>
+        {needsCode && (
+          <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <span style={{ font: "500 13px/1 var(--font-sans)", color: "var(--text-strong)" }}>Code de vérification (application ou code de secours)</span>
+            <input type="text" autoComplete="one-time-code" maxLength={64} value={code} onChange={(e) => { setCode(e.target.value); setErr(""); }} style={fld} />
+          </label>
+        )}
         <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <span style={{ font: "500 13px/1.4 var(--font-sans)", color: "var(--text-strong)" }}>
             Tapez <span style={{ fontFamily: "var(--font-mono)", padding: "1px 6px", borderRadius: 5, background: "var(--surface-selected)", color: "#f87171" }}>{PHRASE}</span> pour confirmer

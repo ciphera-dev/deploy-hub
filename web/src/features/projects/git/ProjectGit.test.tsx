@@ -127,6 +127,44 @@ it("deploy hook créé : URL secrète montrée une seule fois, puis la liste san
   expect(screen.queryByText(new RegExp(created.token))).not.toBeInTheDocument();
 });
 
+it("deploy hook : le code du second facteur est demandé quand le serveur l'exige, puis envoyé", async () => {
+  let attempts = 0;
+  server.use(
+    http.post("*/api/projects/:id/deploy-hooks", async ({ request }) => {
+      const body = (await request.json()) as { name: string; code?: string };
+      hookPosts.push(body);
+      attempts += 1;
+      if (!body.code) return HttpResponse.json({ error: { code: "second_factor_required", message: "x" } }, { status: 401 });
+      if (body.code !== "123456") return HttpResponse.json({ error: { code: "invalid_code", message: "x" } }, { status: 401 });
+      return HttpResponse.json(createdHook(body.name), { status: 201 });
+    }),
+  );
+  mount(`/projects/${WEB.id}/git`);
+  const hooks = await screen.findByRole("region", { name: "Deploy hooks" }, { timeout: 5000 });
+  await within(hooks).findByText(/CI externe/);
+  within(hooks).getByRole("button", { name: "Créer un deploy hook" }).click();
+  const prompt = await screen.findByRole("dialog", { name: "Créer un deploy hook" });
+  expect(within(prompt).queryByLabelText(/Code de vérification/)).not.toBeInTheDocument();
+  fireEvent.change(within(prompt).getByLabelText("Mot de passe du compte"), { target: { value: "correct horse battery staple" } });
+  within(prompt).getByRole("button", { name: "Créer" }).click();
+  expect(await within(prompt).findByText(/code de votre application d'authentification/)).toBeInTheDocument();
+
+  // Le champ apparaît ; « Créer » reste désactivé tant qu'il est vide.
+  const code = within(prompt).getByLabelText(/Code de vérification/);
+  fireEvent.change(within(prompt).getByLabelText("Mot de passe du compte"), { target: { value: "correct horse battery staple" } });
+  expect(within(prompt).getByRole("button", { name: "Créer" })).toBeDisabled();
+  fireEvent.change(code, { target: { value: "000000" } });
+  within(prompt).getByRole("button", { name: "Créer" }).click();
+  expect(await within(prompt).findByText("Code de vérification incorrect.")).toBeInTheDocument();
+
+  fireEvent.change(within(prompt).getByLabelText("Mot de passe du compte"), { target: { value: "correct horse battery staple" } });
+  fireEvent.change(within(prompt).getByLabelText(/Code de vérification/), { target: { value: " 123456 " } });
+  within(prompt).getByRole("button", { name: "Créer" }).click();
+  await screen.findByRole("dialog", { name: "Deploy hook créé" });
+  expect(attempts).toBe(3);
+  expect((hookPosts[2] as { code?: string }).code).toBe("123456");
+});
+
 it("projet image : pas de réglages Git", async () => {
   mount(`/projects/${IMAGE.id}/git`);
   expect(await screen.findByText("Ce projet déploie une image : il n'a pas de réglages Git.", {}, { timeout: 5000 })).toBeInTheDocument();

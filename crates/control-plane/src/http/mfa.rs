@@ -34,7 +34,7 @@ use crate::state::AppState;
 /// Corps JSON maximal (mot de passe de 1024 caracteres compris).
 const MAX_BODY: usize = 8 * 1024;
 /// Longueur maximale d'un code saisi (espaces et tirets compris).
-const MAX_CODE_LEN: usize = 64;
+pub(crate) const MAX_CODE_LEN: usize = 64;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -51,11 +51,11 @@ pub(super) fn invalid_request() -> ApiError {
     ApiError::new(422, "validation_failed", "Requête invalide.")
 }
 
-fn invalid_code(status: u16) -> ApiError {
+pub(crate) fn invalid_code(status: u16) -> ApiError {
     ApiError::new(status, "invalid_code", "Code incorrect.")
 }
 
-pub(super) fn rate_limited(retry_after: u64) -> Response {
+pub(crate) fn rate_limited(retry_after: u64) -> Response {
     let mut res = ApiError::new(
         429,
         "rate_limited",
@@ -400,7 +400,7 @@ pub(super) fn not_pending() -> ApiError {
 }
 
 /// Ce que le code permettrait de consommer, s'il est valide.
-enum Candidate {
+pub(crate) enum Candidate {
     /// Fenetre TOTP acceptee (posterieure a la derniere utilisee).
     Step(u64),
     /// Code de secours non utilise correspondant.
@@ -408,7 +408,7 @@ enum Candidate {
 }
 
 /// Fenetre TOTP correspondant au code (rien n'est encore enregistre).
-async fn totp_candidate(
+pub(crate) async fn totp_candidate(
     state: &AppState,
     user_id: Uuid,
     code: &str,
@@ -427,7 +427,7 @@ async fn totp_candidate(
 }
 
 /// Code de secours non utilise correspondant a la saisie (rien n'est encore consomme).
-async fn recovery_candidate(
+pub(crate) async fn recovery_candidate(
     state: &AppState,
     user_id: Uuid,
     code: &str,

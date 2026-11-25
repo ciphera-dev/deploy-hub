@@ -90,6 +90,22 @@ fn invitation_expired() -> ApiError {
     )
 }
 
+/// Refus d'un jeton inutilisable : expire s'il n'a pas servi, sinon invalide.
+async fn token_refusal(conn: &mut PgConnection, token_hash: &[u8]) -> Result<ApiError, ApiError> {
+    let expired: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM invitations WHERE token_hash = $1 AND used_at IS NULL)",
+    )
+    .bind(token_hash)
+    .fetch_one(conn)
+    .await
+    .map_err(|e| internal("lecture de l'invitation", e))?;
+    Ok(if expired {
+        invitation_expired()
+    } else {
+        invitation_invalid()
+    })
+}
+
 fn rate_limited(retry_after: u64) -> Response {
     let mut res = ApiError::new(
         429,
@@ -106,11 +122,17 @@ fn no_store(status: StatusCode) -> Response {
     (status, [(header::CACHE_CONTROL, "no-store")]).into_response()
 }
 
-/// Nom saisi : 1 a 200 caracteres (vide permis si `optional`).
+/// Nom saisi : 1 a 200 caracteres (vide permis si `optional`), sans
+/// caractere de controle (meme regle que le profil).
 fn clean_name(name: &str, optional: bool) -> Result<String, ApiError> {
     let name = name.trim();
-    if (name.is_empty() && !optional) || name.chars().count() > MAX_NAME_CHARS {
-        return Err(invalid("Nom : 1 à 200 caractères."));
+    if (name.is_empty() && !optional)
+        || name.chars().count() > MAX_NAME_CHARS
+        || name.chars().any(char::is_control)
+    {
+        return Err(invalid(
+            "Nom : 1 à 200 caractères, sans caractère de contrôle.",
+        ));
     }
     Ok(name.to_string())
 }
@@ -337,10 +359,29 @@ async fn accept(
             return Ok(rate_limited(retry_after));
         }
     };
-    let password_hash = hash_password(&state, attempt, input.password).await?;
-
+    // Jeton verifie avant le calcul Argon2 : un jeton faux ou expire ne coute
+    // aucun hachage (il compte quand meme comme un echec de la limite).
     let token_hash = session::hash_token(&token);
     let now = state.clock.unix_secs();
+    let usable: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM invitations \
+                        WHERE token_hash = $1 AND used_at IS NULL AND expires_at > to_timestamp($2))",
+    )
+    .bind(&token_hash)
+    .bind(now)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| internal("lecture de l'invitation", e))?;
+    if !usable {
+        let mut conn = state
+            .db
+            .acquire()
+            .await
+            .map_err(|e| internal("connexion a la base", e))?;
+        return Err(token_refusal(&mut conn, &token_hash).await?);
+    }
+    let password_hash = hash_password(&state, attempt, input.password).await?;
+
     let mut tx = state
         .db
         .begin()
@@ -357,19 +398,8 @@ async fn accept(
     .await
     .map_err(|e| internal("consommation de l'invitation", e))?;
     let Some((invitation_id, email, role)) = consumed else {
-        let expired: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM invitations \
-                            WHERE token_hash = $1 AND used_at IS NULL)",
-        )
-        .bind(&token_hash)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| internal("lecture de l'invitation", e))?;
-        return Err(if expired {
-            invitation_expired()
-        } else {
-            invitation_invalid()
-        });
+        // Consomme ou expire entre la verification et la transaction.
+        return Err(token_refusal(&mut tx, &token_hash).await?);
     };
 
     // Compte en attente a cette adresse (inscription ouverte) : remplace.

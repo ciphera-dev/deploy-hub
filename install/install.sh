@@ -914,6 +914,40 @@ init_instance() {
 		die "ciphera init a echoue"
 }
 
+# Surcharges du service (/etc/ciphera/ciphera.env), lues par systemd pour
+# ciphera.service et par les commandes root `ciphera admin` (qui refusent un
+# fichier qui n'est pas a root ou qui est modifiable par le groupe) :
+# root:ciphera 0640. Le fichier est refait dans un dossier root, puis mis en
+# place par renommage : aucun chown ni chmod sur un chemin du dossier du
+# service. Contenu repris seulement d'un fichier ordinaire de root (lu sans
+# suivre de lien) ; sinon fichier ecarte, avec un avertissement.
+protect_env_file() {
+	env_file=$CONFIG_DIR/ciphera.env
+	stage=$(mktemp -d /etc/.ciphera-env.XXXXXX) || die "dossier temporaire impossible dans /etc"
+	if [ "$(stat -c %d "$stage")" != "$(stat -c %d "$CONFIG_DIR")" ]; then
+		rmdir "$stage"
+		warn "$CONFIG_DIR sur un autre systeme de fichiers : droits de $env_file non verifies (attendu : root:ciphera 0640)"
+		return 0
+	fi
+	: >"$stage/ciphera.env"
+	if [ -e "$env_file" ] || [ -L "$env_file" ]; then
+		if [ ! -L "$env_file" ] && [ -f "$env_file" ] && [ "$(stat -c %u:%h "$env_file")" = 0:1 ]; then
+			dd if="$env_file" of="$stage/ciphera.env" iflag=nofollow,nonblock bs=65536 count=1 status=none 2>/dev/null ||
+				die "lecture de $env_file impossible"
+		else
+			set_aside=$env_file.ecarte-$(date +%Y%m%d%H%M%S)
+			mv -fT "$env_file" "$set_aside" || die "$env_file inutilisable et impossible a ecarter"
+			warn "$env_file ecarte ($set_aside) : pas un fichier ordinaire de root ; relire son contenu avant de le reprendre"
+		fi
+	fi
+	if ! { chown root:ciphera "$stage/ciphera.env" && chmod 0640 "$stage/ciphera.env" &&
+		mv -fT "$stage/ciphera.env" "$env_file"; }; then
+		rm -rf "$stage"
+		die "mise en place de $env_file impossible"
+	fi
+	rmdir "$stage"
+}
+
 # Cle de la CA absente, ou a root sans droit pour le groupe ni les autres.
 ca_key_protected() {
 	ca_key_file=$CONFIG_DIR/ca/ca.key
@@ -1022,6 +1056,7 @@ main() {
 	check_docker_init
 	install_files
 	init_instance
+	protect_env_file
 	start_services
 
 	say "Ciphera $version est installe et demarre."

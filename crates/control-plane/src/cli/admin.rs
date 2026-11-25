@@ -18,22 +18,28 @@
 //! l'adresse de l'administrateur a change. Le service la relit en quelques
 //! secondes, sans redemarrage.
 //!
+//! `ciphera admin setup-token` : nouveau lien de l'assistant d'installation
+//! (24 heures) tant qu'aucun compte n'existe (premier lien expire ou perdu).
+//!
 //! `ciphera admin revoke-agent <id>` : revoque un serveur (`revoked_at`,
 //! definitif). Le service ferme sa connexion en quelques secondes
 //! (`agents::transport::watch_revocations`, qui appelle
 //! `AgentRegistry::disconnect`) et refuse ses poignees de main suivantes.
 
 use std::fmt;
+use std::path::Path;
 
 use serde_json::json;
 use shared::config::Config;
 use shared::ids::ServerId;
 use sqlx::PgPool;
+use zeroize::Zeroizing;
 
 use crate::connectors::github::{self, app::GithubClient};
 use crate::domain::domains::panel::{self, PanelSwitch};
 use crate::http::password_reset::{self, Origin, audit};
 use crate::secrets::SecretBox;
+use crate::setup_token;
 use crate::state::Clock;
 
 #[derive(Debug)]
@@ -272,6 +278,38 @@ pub async fn clear_ip_allowlist(db: &PgPool) -> Result<u64, AdminError> {
     }
     tx.commit().await.map_err(database)?;
     Ok(entries)
+}
+
+/// Nouveau jeton de l'assistant d'installation (24 heures), tant qu'aucun
+/// compte n'existe ; le precedent cesse aussitot d'etre valable. Le fichier
+/// est donne a `owner` (uid, gid du compte du service) s'il est fourni.
+/// Audite, sans le jeton.
+pub async fn setup_token(
+    db: &PgPool,
+    config_dir: &Path,
+    owner: Option<(u32, u32)>,
+) -> Result<Zeroizing<String>, AdminError> {
+    let accounts: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(db)
+        .await
+        .map_err(database)?;
+    if accounts {
+        return Err(AdminError(
+            "un compte existe deja : l'assistant d'installation est ferme (connexion ou reset-password)"
+                .into(),
+        ));
+    }
+    let token = setup_token::replace(config_dir, owner, setup_token::unix_now())
+        .map_err(|e| AdminError(format!("ecriture du jeton : {e}")))?;
+    sqlx::query(
+        "INSERT INTO audit_events (id, actor_id, action, target, detail) \
+         VALUES ($1, NULL, 'setup.token.cli', 'instance', '{}'::jsonb)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .execute(db)
+    .await
+    .map_err(database)?;
+    Ok(token)
 }
 
 /// Issue de `revoke-agent`.
