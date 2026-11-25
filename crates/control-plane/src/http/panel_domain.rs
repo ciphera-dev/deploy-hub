@@ -122,10 +122,11 @@ async fn commit_with(
     state: &AppState,
     tx: sqlx::Transaction<'static, sqlx::Postgres>,
     next: Option<panel::Panel>,
+    clear_hsts: bool,
 ) -> Result<(), ApiError> {
     state
         .panel
-        .commit_with(next, async move { tx.commit().await })
+        .commit_with(next, clear_hsts, async move { tx.commit().await })
         .await
         .map_err(db("transaction"))
 }
@@ -232,6 +233,7 @@ async fn set(
             .await
             .map_err(db("domaine du panneau"))?;
     let mut replaced = None;
+    let mut new_host = false;
     let id = match existing {
         Some((_, _, true)) => return Err(active_conflict()),
         Some((id, current, false)) if current == host => {
@@ -241,12 +243,19 @@ async fn set(
             id
         }
         other => {
+            // Nouveau domaine : l'option HSTS repart de zero (`remove` la
+            // remet aussi en cas de remplacement).
             if let Some((_, current, _)) = other {
                 panel::remove(&mut tx)
                     .await
                     .map_err(db("domaine du panneau"))?;
                 replaced = Some(current);
+            } else {
+                panel::clear_hsts_option(&mut tx)
+                    .await
+                    .map_err(db("option HSTS"))?;
             }
+            new_host = true;
             insert(&mut tx, &host, actor).await?
         }
     };
@@ -282,6 +291,7 @@ async fn set(
             host,
             confirmed: false,
         }),
+        new_host,
     )
     .await?;
     domains::push_routes(&state).await;
@@ -388,6 +398,7 @@ async fn confirm(
             host: host.clone(),
             confirmed: true,
         }),
+        false,
     )
     .await?;
     tracing::info!(%host, "domaine du panneau confirme : acces direct ferme");
@@ -660,7 +671,7 @@ async fn remove(State(state): State<AppState>, auth: Owner) -> Result<Response, 
         .await
         .map_err(db("audit du domaine du panneau"))?;
     }
-    commit_with(&state, tx, None).await?;
+    commit_with(&state, tx, None, true).await?;
     if let Some(host) = removed {
         domains::push_routes(&state).await;
         domains::remove_certificates(&state, &[host]);

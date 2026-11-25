@@ -123,12 +123,18 @@ impl PanelSwitch {
         });
     }
 
-    /// Pose `next` puis attend `commit` (validation de la transaction, verrou
-    /// consultatif encore tenu) ; si `commit` echoue, l'etat precedent est
-    /// remis. Le tout tourne dans une tache detachee : si l'appelant est
+    /// Pose `next` (et, si `clear_hsts`, l'option HSTS a faux, comme
+    /// [`remove`] ou [`clear_hsts_option`] dans la transaction) puis attend
+    /// `commit` (validation de la transaction, verrou consultatif encore
+    /// tenu) ; si `commit` echoue, l'etat precedent est remis. Le tout tourne dans une tache detachee : si l'appelant est
     /// abandonne (client deconnecte) pendant le commit, la sequence va
     /// quand meme a son terme et l'etat ne diverge pas de la base.
-    pub async fn commit_with<E, F>(&self, next: Option<Panel>, commit: F) -> Result<(), E>
+    pub async fn commit_with<E, F>(
+        &self,
+        next: Option<Panel>,
+        clear_hsts: bool,
+        commit: F,
+    ) -> Result<(), E>
     where
         E: Send + 'static,
         F: std::future::Future<Output = Result<(), E>> + Send + 'static,
@@ -136,10 +142,15 @@ impl PanelSwitch {
         let switch = self.clone();
         let task = tokio::spawn(async move {
             let previous = switch.current();
+            let previous_hsts = switch.hsts_include_subdomains();
             switch.set(next);
+            if clear_hsts {
+                switch.set_hsts_include_subdomains(false);
+            }
             let done = commit.await;
             if done.is_err() {
                 switch.set(previous);
+                switch.set_hsts_include_subdomains(previous_hsts);
             }
             done
         });
@@ -393,12 +404,25 @@ pub async fn sweep(state: &crate::state::AppState) {
     }
 }
 
-/// Retire le domaine du panneau (annulation, retrait ou recours en ligne de
-/// commande). Renvoie l'hote retire.
+/// Retire le domaine du panneau (annulation, remplacement, retrait ou
+/// recours en ligne de commande) et remet l'option HSTS a zero : l'accord
+/// donne pour un domaine ne vaut jamais pour le suivant. Renvoie l'hote
+/// retire.
 pub async fn remove(conn: &mut PgConnection) -> sqlx::Result<Option<String>> {
-    sqlx::query_scalar("DELETE FROM domains WHERE panel RETURNING host")
-        .fetch_optional(conn)
+    let host = sqlx::query_scalar("DELETE FROM domains WHERE panel RETURNING host")
+        .fetch_optional(&mut *conn)
+        .await?;
+    clear_hsts_option(conn).await?;
+    Ok(host)
+}
+
+/// Option HSTS « Inclure les sous-domaines » remise a zero (nouveau domaine
+/// du panneau ou retrait), dans la transaction de l'appelant.
+pub async fn clear_hsts_option(conn: &mut PgConnection) -> sqlx::Result<()> {
+    sqlx::query("UPDATE instance SET hsts_include_subdomains = false WHERE hsts_include_subdomains")
+        .execute(conn)
         .await
+        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -444,13 +468,13 @@ mod tests {
     async fn commit_failure_restores_the_previous_state() {
         let switch = PanelSwitch::default();
         let r: Result<(), &str> = switch
-            .commit_with(Some(panel(true)), async { Err("commit") })
+            .commit_with(Some(panel(true)), false, async { Err("commit") })
             .await;
         assert_eq!(r, Err("commit"));
         assert_eq!(switch.current(), None);
         assert!(switch.listens_8443());
         let ok: Result<(), &str> = switch
-            .commit_with(Some(panel(true)), async { Ok(()) })
+            .commit_with(Some(panel(true)), false, async { Ok(()) })
             .await;
         assert_eq!(ok, Ok(()));
         assert!(!switch.listens_8443());
@@ -467,7 +491,7 @@ mod tests {
             let (r, s) = (release.clone(), started.clone());
             let s2 = switch.clone();
             let caller = tokio::spawn(async move {
-                s2.commit_with(Some(panel(true)), async move {
+                s2.commit_with(Some(panel(true)), false, async move {
                     s.notify_one();
                     r.notified().await;
                     if commit_ok { Ok(()) } else { Err(()) }
@@ -521,6 +545,16 @@ mod tests {
         let ok: Result<(), &str> = switch.commit_hsts_with(true, async { Ok(()) }).await;
         assert_eq!(ok, Ok(()));
         assert!(switch.hsts_include_subdomains());
+        // Changement de domaine : l'option tombe avec le commit, et revient
+        // s'il echoue.
+        let r: Result<(), &str> = switch
+            .commit_with(None, true, async { Err("commit") })
+            .await;
+        assert_eq!(r, Err("commit"));
+        assert!(switch.hsts_include_subdomains());
+        let ok: Result<(), &str> = switch.commit_with(None, true, async { Ok(()) }).await;
+        assert_eq!(ok, Ok(()));
+        assert!(!switch.hsts_include_subdomains());
     }
 
     #[test]

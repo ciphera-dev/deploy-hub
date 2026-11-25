@@ -1364,7 +1364,9 @@ async fn panel_domain_hsts_option() {
     .unwrap();
     assert_eq!(audited, 1);
 
-    // Domaine enregistrable lui-meme : `apex` vrai ; sous-domaine : faux.
+    // Nouveau domaine : l'option est remise a zero (base et memoire), le
+    // consentement ne passe jamais d'un domaine a l'autre. `apex` : domaine
+    // enregistrable lui-meme.
     env.dns.set("example.org", &[NODE_IP]);
     let r = send(
         &env.state,
@@ -1376,9 +1378,47 @@ async fn panel_domain_hsts_option() {
     .await;
     assert_eq!(r.status, 202, "{}", r.raw);
     assert_eq!(r.json()["apex"], true, "{}", r.raw);
+    assert_eq!(r.json()["hsts_include_subdomains"], false, "{}", r.raw);
+    assert!(!env.state.panel.hsts_include_subdomains());
+    assert!(!hsts_option_in_db(&env).await);
+
+    // Accord donne pour ce domaine : garde s'il est enregistre a nouveau.
+    let r = send(
+        &env.state,
+        &owner,
+        "PUT",
+        &format!("{PATH}/hsts"),
+        Some(json!({ "include_subdomains": true })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let r = send(
+        &env.state,
+        &owner,
+        "PUT",
+        PATH,
+        Some(json!({ "domain": "example.org" })),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
     assert_eq!(r.json()["hsts_include_subdomains"], true, "{}", r.raw);
+
+    // Retrait : remise a zero.
     let r = send(&env.state, &owner, "DELETE", PATH, None).await;
     assert_eq!(r.status, 204, "{}", r.raw);
+    assert!(!env.state.panel.hsts_include_subdomains());
+    assert!(!hsts_option_in_db(&env).await);
+
+    // Nouvel enregistrement apres le retrait : l'option repart de zero.
+    let r = send(
+        &env.state,
+        &owner,
+        "PUT",
+        &format!("{PATH}/hsts"),
+        Some(json!({ "include_subdomains": true })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
     env.dns.set(HOST, &[NODE_IP]);
     let r = send(
         &env.state,
@@ -1389,5 +1429,47 @@ async fn panel_domain_hsts_option() {
     )
     .await;
     assert_eq!(r.status, 202, "{}", r.raw);
+    assert_eq!(r.json()["hsts_include_subdomains"], false, "{}", r.raw);
     assert_eq!(r.json()["apex"], false, "{}", r.raw);
+}
+
+async fn hsts_option_in_db(env: &Env) -> bool {
+    sqlx::query_scalar("SELECT hsts_include_subdomains FROM instance")
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap()
+}
+
+/// Recours en ligne de commande : l'option HSTS est remise a zero avec le
+/// domaine retire.
+#[tokio::test]
+async fn reset_panel_domain_cli_clears_the_hsts_option() {
+    use control_plane::cli::admin;
+
+    let mut env = Env::new().await;
+    sqlx::query("INSERT INTO instance (id, name) VALUES ($1, 'Org')")
+        .bind(Uuid::new_v4())
+        .execute(&env.state.db)
+        .await
+        .unwrap();
+    let owner = login(&env.state, "owner").await;
+    confirmed_panel(&mut env, &owner).await;
+    let r = send(
+        &env.state,
+        &owner,
+        "PUT",
+        &format!("{PATH}/hsts"),
+        Some(json!({ "include_subdomains": true })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert!(hsts_option_in_db(&env).await);
+
+    let reset = admin::reset_panel_domain(&env.state.db, &env.state.cfg, None, None)
+        .await
+        .unwrap();
+    assert_eq!(reset.removed.as_deref(), Some(HOST));
+    assert!(!hsts_option_in_db(&env).await);
+    let reloaded = PanelSwitch::load(&env.state.db).await.unwrap();
+    assert!(!reloaded.hsts_include_subdomains());
 }
