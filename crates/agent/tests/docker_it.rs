@@ -634,21 +634,23 @@ async fn long_log_line_is_reassembled_with_the_secret_contiguous() {
          head -c 20000 /dev/zero | tr '\\000' b; echo"
     );
     foreign_container(&api, &name, None, &["sh", "-c", &script]).await;
+    // Lus pendant l'ecriture, les journaux s'arretent sur la derniere trame
+    // partielle complete (32 Kio) : la fin de la ligne attend encore le `\n`
+    // dans Docker. On ne les lit qu'une fois le conteneur sorti.
+    let exit = tokio::time::timeout(WAIT, api.wait_container(&name, None).next())
+        .await
+        .expect("conteneur jamais sorti");
+    assert!(
+        matches!(exit, Some(Ok(ref r)) if r.status_code == 0),
+        "sortie du conteneur : {exit:?}"
+    );
     let id = ContainerId(name.clone());
-    let start = Instant::now();
-    let found = loop {
-        let lines: Vec<_> = docker.logs(&id, 100, false).await.collect().await;
-        if let Some(l) = lines.iter().find(|l| l.line.len() > 30_000) {
-            break l.clone();
-        }
-        assert!(
-            start.elapsed() < WAIT,
-            "ligne attendue : {} lignes",
-            lines.len()
-        );
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    };
+    let lines: Vec<_> = docker.logs(&id, 100, false).await.collect().await;
     remove_container(&api, &name).await;
+    let found = lines
+        .iter()
+        .find(|l| l.line.len() > 30_000)
+        .unwrap_or_else(|| panic!("ligne attendue : {} lignes", lines.len()));
     assert!(
         found.line.contains(SECRET),
         "secret coupe dans la ligne rassemblee"
