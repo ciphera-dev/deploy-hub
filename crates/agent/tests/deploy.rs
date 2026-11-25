@@ -1727,6 +1727,144 @@ async fn startup_sweep_removes_leftover_sandboxes_and_dirs() {
     assert!(Path::new(&bench.builds_dir()).is_dir());
 }
 
+/// Accuses `DeploymentRemoved` recus sur `rx` jusqu'ici.
+fn removal_acks(rx: &mut mpsc::Receiver<AgentToControl>) -> Vec<DeploymentId> {
+    let mut out = Vec::new();
+    while let Ok(m) = rx.try_recv() {
+        if let AgentToControl::DeploymentRemoved { deployment_id } = m {
+            out.push(deployment_id);
+        }
+    }
+    out
+}
+
+/// Suppression Docker en echec : l'etat local est garde, sans accuse ; le
+/// prochain ordre recommence et n'accuse qu'une fois tout supprime.
+#[tokio::test(start_paused = true)]
+async fn agent_keeps_state_when_docker_remove_fails() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("app.example.com", Some(web))])
+        .await
+        .unwrap();
+    let v1 = spec(project, web, "ciphera/web-production:v1");
+    deploy_ok(&bench, &v1).await;
+    let v2 = spec(project, web, "ciphera/web-production:v2");
+    deploy_ok(&bench, &v2).await;
+    let id = v1.deployment_id;
+    let tag = format!("ciphera/web-production:{id}");
+    bench.docker.images.lock().unwrap().push(tag.clone());
+    bench.db.put_bundle(id, "{}").unwrap();
+    let container = format!("id-ciphera-d-{id}");
+    let (tx, mut rx) = mpsc::channel(16);
+
+    // Conteneur (et image) non supprimes : etat garde, aucun accuse.
+    bench.docker.fail_remove.store(true, Ordering::SeqCst);
+    bench.docker.fail_rmi.store(true, Ordering::SeqCst);
+    bench.deployer.remove_acked(id, &tx).await;
+    assert!(removal_acks(&mut rx).is_empty());
+    assert!(bench.db.record(id).unwrap().is_some(), "etat local garde");
+    assert!(bench.db.bundle(id).unwrap().is_some());
+    assert!(bench.docker.container(&container).is_some());
+
+    // Conteneur supprime mais image en echec : toujours garde.
+    bench.docker.fail_remove.store(false, Ordering::SeqCst);
+    bench.deployer.remove_acked(id, &tx).await;
+    assert!(removal_acks(&mut rx).is_empty());
+    assert!(bench.db.record(id).unwrap().is_some());
+    assert!(bench.docker.container(&container).is_none());
+    assert_eq!(*bench.docker.images.lock().unwrap(), vec![tag]);
+
+    // Ordre suivant, Docker revenu : tout part, accuse.
+    bench.docker.fail_rmi.store(false, Ordering::SeqCst);
+    bench.deployer.remove_acked(id, &tx).await;
+    assert_eq!(removal_acks(&mut rx), vec![id]);
+    assert!(bench.db.record(id).unwrap().is_none());
+    assert!(bench.db.bundle(id).unwrap().is_none());
+    assert!(bench.docker.images.lock().unwrap().is_empty());
+    assert!(
+        bench.db.record(v2.deployment_id).unwrap().is_some(),
+        "le servi reste"
+    );
+
+    // Ordre rejoue (deja absent) : accuse de nouveau.
+    bench.deployer.remove_acked(id, &tx).await;
+    assert_eq!(removal_acks(&mut rx), vec![id]);
+}
+
+/// Balayage des restes : conteneurs etiquetes d'un deploiement absent de
+/// l'etat local et images dont l'etat local ne garde rien sont supprimes ;
+/// le reste (deploiements enregistres, build conclu en attente de son
+/// `Deploy`, services Compose sans deploiement, autres conteneurs) reste.
+#[tokio::test(start_paused = true)]
+async fn orphan_labeled_containers_and_images_are_swept() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench.sync_routes().await;
+    let v1 = spec(project, web, "ciphera/web-production:v1");
+    deploy_ok(&bench, &v1).await;
+    let kept = v1.deployment_id;
+    let orphan = DeploymentId::new();
+    let built = DeploymentId::new();
+    let stray_image = DeploymentId::new();
+    bench
+        .db
+        .put_outcome(built, Stage::Image, &StageStatus::Succeeded)
+        .unwrap();
+    let orphan_label = orphan.to_string();
+    let project_label = project.to_string();
+    bench.docker.add_container(
+        "orphan",
+        &format!("ciphera-d-{orphan}"),
+        &[
+            (DEPLOYMENT_LABEL, orphan_label.as_str()),
+            (PROJECT_LABEL, project_label.as_str()),
+        ],
+        None,
+    );
+    bench.docker.add_container(
+        "compose-db",
+        "web-production-db-1",
+        &[
+            (DEPLOYMENT_LABEL, ""),
+            (COMPOSE_LABEL, "web-production"),
+            (PROJECT_LABEL, project_label.as_str()),
+        ],
+        None,
+    );
+    bench
+        .docker
+        .add_container("odd", "odd", &[(DEPLOYMENT_LABEL, "pas-un-uuid")], None);
+    let tag = |id: DeploymentId| format!("ciphera/web-production:{id}");
+    bench.docker.images.lock().unwrap().extend([
+        tag(kept),
+        tag(orphan),
+        tag(built),
+        tag(stray_image),
+        format!("ciphera-staging/{stray_image}-web:build"),
+        "nginx:alpine".to_string(),
+    ]);
+
+    bench.deployer.sweep_orphans().await;
+
+    let kept_container = format!("id-ciphera-d-{kept}");
+    assert!(bench.docker.container(&kept_container).is_some());
+    assert!(
+        bench.docker.container("orphan").is_none(),
+        "orphelin supprime"
+    );
+    assert!(bench.docker.container("compose-db").is_some());
+    assert!(bench.docker.container("odd").is_some());
+    let mut images = bench.docker.images.lock().unwrap().clone();
+    images.sort();
+    let mut expected = vec![tag(kept), tag(built), "nginx:alpine".to_string()];
+    expected.sort();
+    assert_eq!(images, expected);
+    assert!(bench.db.record(kept).unwrap().is_some());
+}
+
 // --- Compose -------------------------------------------------------------------
 
 /// Ensemble Compose tel que produit par le build (forme normalisee).

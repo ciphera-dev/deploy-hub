@@ -829,4 +829,44 @@ async fn empty_project_networks_swept() {
     api.inspect_network(&docker::project_network(live), None)
         .await
         .expect("reseau du projet deploye garde");
+/// Conteneur etiquete d'un deploiement absent de l'etat local (suppression
+/// perdue) : supprime par le balayage ; le deploiement enregistre reste.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel : job agent-docker de la CI"]
+async fn orphan_labeled_container_swept() {
+    pull(APP_IMAGE).await;
+    let mut bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench.networks.push(docker::project_network(project));
+    bench
+        .deployer
+        .apply_routes(vec![route("orphan.example.test", web)])
+        .await
+        .unwrap();
+    let kept = app(project, web, APP_IMAGE, 30);
+    let orphan = app(project, web, APP_IMAGE, 30);
+    for spec in [&kept, &orphan] {
+        let name = format!("ciphera-d-{}", spec.deployment_id);
+        bench.containers.push(name);
+        let (result, stages) = bench.deploy(spec).await;
+        result.unwrap_or_else(|e| panic!("deploiement : {e} ({stages:?})"));
+    }
+    // Etat local perdu pour le second (ancien agent, suppression en echec).
+    assert!(bench.db.remove_deployment(orphan.deployment_id).unwrap());
+
+    bench.deployer.sweep_orphans_of_project(project).await;
+
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    assert!(
+        api.inspect_container(&format!("ciphera-d-{}", orphan.deployment_id), None)
+            .await
+            .is_err(),
+        "conteneur orphelin supprime"
+    );
+    assert!(
+        api.inspect_container(&format!("ciphera-d-{}", kept.deployment_id), None)
+            .await
+            .is_ok(),
+        "deploiement enregistre intact"
+    );
 }

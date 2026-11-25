@@ -63,6 +63,11 @@ pub struct FakeDocker {
     pub fail_volumes: AtomicBool,
     /// `remove_network` echoue tant que vrai.
     pub fail_network: AtomicBool,
+    /// Etiquettes d'image presentes (`remove_deployment_images` retire
+    /// celles du deploiement).
+    pub images: Mutex<Vec<String>>,
+    /// `remove_deployment_images` echoue (erreur d'API) tant que vrai.
+    pub fail_rmi: AtomicBool,
 }
 
 impl FakeDocker {
@@ -400,7 +405,27 @@ impl DockerOps for FakeDocker {
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
+        if self.fail_rmi.load(Ordering::SeqCst) {
+            return Err(DockerError::Api("suppression d'image refusee".into()));
+        }
+        self.images
+            .lock()
+            .unwrap()
+            .retain(|t| !ciphera_agent::docker::is_deployment_image(t, deployment));
         Ok(())
+    }
+
+    async fn image_deployments(&self) -> Result<Vec<DeploymentId>, DockerError> {
+        let mut out: Vec<DeploymentId> = self
+            .images
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|t| ciphera_agent::docker::image_deployment(t))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        Ok(out)
     }
 }
 

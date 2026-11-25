@@ -403,6 +403,21 @@ impl StateDb {
             })
     }
 
+    /// Deploiements dont un ensemble Compose est enregistre.
+    pub fn bundle_ids(&self) -> Result<Vec<DeploymentId>, StateError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT deployment_id FROM compose_bundles")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(
+                row?.parse::<DeploymentId>()
+                    .map_err(|_| StateError::Corrupt("identifiant de deploiement"))?,
+            );
+        }
+        Ok(out)
+    }
+
     /// `true` si un ensemble etait enregistre.
     pub fn remove_bundle(&self, id: DeploymentId) -> Result<bool, StateError> {
         let n = self.conn().execute(

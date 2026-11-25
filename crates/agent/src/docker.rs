@@ -171,6 +171,17 @@ pub fn is_deployment_image(tag: &str, deployment: DeploymentId) -> bool {
     }
 }
 
+/// Deploiement proprietaire de l'etiquette d'image `tag` (voir
+/// `is_deployment_image`), `None` pour toute autre image.
+pub fn image_deployment(tag: &str) -> Option<DeploymentId> {
+    let candidate = match tag.strip_prefix("ciphera-staging/") {
+        Some(rest) => rest.strip_suffix(":build")?.get(..36)?,
+        None => tag.strip_prefix("ciphera/")?.rsplit_once(':')?.1,
+    };
+    let id = candidate.parse::<DeploymentId>().ok()?;
+    is_deployment_image(tag, id).then_some(id)
+}
+
 /// Etat d'un conteneur vu par Docker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Health {
@@ -954,6 +965,11 @@ pub trait DockerOps: Send + Sync + 'static {
         &self,
         project: ProjectId,
     ) -> impl Future<Output = Result<usize, DockerError>> + Send;
+    /// Deploiements qui ont au moins une etiquette d'image
+    /// (`image_deployment`), sans doublon.
+    fn image_deployments(
+        &self,
+    ) -> impl Future<Output = Result<Vec<DeploymentId>, DockerError>> + Send;
 }
 
 /// Adresse sur l'unique reseau de projet parmi `networks` (nom -> adresse).
@@ -1521,6 +1537,22 @@ impl DockerOps for BollardDocker {
         }
         Ok(removed)
     }
+
+    async fn image_deployments(&self) -> Result<Vec<DeploymentId>, DockerError> {
+        let images = self
+            .docker
+            .list_images(Some(ListImagesOptions::default()))
+            .await
+            .map_err(api)?;
+        let mut out: Vec<DeploymentId> = images
+            .iter()
+            .flat_map(|i| i.repo_tags.iter())
+            .filter_map(|t| image_deployment(t))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        Ok(out)
+    }
 }
 
 impl BollardDocker {
@@ -2053,6 +2085,19 @@ mod tests {
             assert!(is_deployment_image(&tag, id), "{tag}");
             assert!(!is_deployment_image(&tag, other), "{tag}");
         }
+        assert_eq!(
+            image_deployment(&format!("ciphera/web-production/web:{id}")),
+            Some(id)
+        );
+        assert_eq!(
+            image_deployment(&format!("ciphera-staging/{id}-web:build")),
+            Some(id)
+        );
+        assert_eq!(
+            image_deployment(&format!("ciphera/web-production:{}", id.0.simple())),
+            None,
+            "forme canonique seulement"
+        );
         for tag in [
             format!("ciphera/web-production:{id}x"),
             format!("docker.io/ciphera/web:{id}"),
@@ -2062,6 +2107,7 @@ mod tests {
             "nginx:alpine".to_string(),
         ] {
             assert!(!is_deployment_image(&tag, id), "{tag}");
+            assert_eq!(image_deployment(&tag), None, "{tag}");
         }
     }
 

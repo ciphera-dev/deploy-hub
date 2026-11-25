@@ -9,6 +9,13 @@
 //! Calcul et suppression se font sous le verrou de l'environnement, comme
 //! la creation d'un rollback : une image choisie ne disparait pas en route.
 //! Les journaux enregistres d'un deploiement supprime le sont aussi.
+//!
+//! Nettoyage confirme : `cleaned_at` n'est pose qu'a l'accuse de l'agent
+//! (`DeploymentRemoved`, voir [`removed`]). Tant qu'il manque, chaque tache
+//! `cleanup` renvoie l'ordre (connexion coupee avant l'ecriture, agent
+//! redemarre, echec de Docker) ; `removal_requested_at` retire entre-temps le
+//! deploiement des retours arriere possibles. Un deploiement jamais envoye a
+//! un agent n'a rien a supprimer : nettoye tout de suite.
 
 use proto::ControlToAgent;
 use shared::ids::{DeploymentId, ServerId};
@@ -37,8 +44,9 @@ pub async fn handle_cleanup(state: &AppState, job: Job) -> Result<(), HandlerErr
     Ok(())
 }
 
-/// Supprime ce qui depasse la retention de `environment`. Renvoie le nombre
-/// de deploiements qui n'ont pas pu etre supprimes (agent absent).
+/// Supprime ce qui depasse la retention de `environment` (ordre renvoye tant
+/// que l'agent n'a pas accuse la suppression). Renvoie le nombre de
+/// deploiements dont l'ordre n'a pas pu partir (agent absent).
 pub async fn cleanup(state: &AppState, environment: Uuid) -> sqlx::Result<usize> {
     let mut tx = state.db.begin().await?;
     lock_environment(&mut tx, environment).await?;
@@ -67,38 +75,70 @@ pub async fn cleanup(state: &AppState, environment: Uuid) -> sqlx::Result<usize>
     .await?;
     let mut pending = 0;
     for (id, server, dispatched) in candidates {
-        let removed = match (server, dispatched) {
+        let Some(server) = server.filter(|_| dispatched) else {
             // Rien n'a jamais ete envoye a un agent : rien a supprimer.
-            (_, false) | (None, _) => true,
-            (Some(server), true) => {
-                match state.agents.send(
-                    ServerId(server),
-                    ControlToAgent::RemoveDeployment {
-                        deployment_id: DeploymentId(id),
-                    },
-                ) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        tracing::warn!(deployment = %id, %server, "suppression differee : {e}");
-                        false
-                    }
-                }
-            }
+            mark_cleaned(&mut tx, state, id).await?;
+            continue;
         };
-        if removed {
-            sqlx::query(
-                "UPDATE deployments SET cleaned_at = to_timestamp($2::float8) WHERE id = $1",
-            )
-            .bind(id)
-            .bind(state.clock.unix_secs())
-            .execute(&mut *tx)
-            .await?;
-            // Ses journaux partent avec ses conteneurs et ses images.
-            logs::store::delete(&mut tx, id).await?;
-        } else {
-            pending += 1;
+        match state.agents.send(
+            ServerId(server),
+            ControlToAgent::RemoveDeployment {
+                deployment_id: DeploymentId(id),
+            },
+        ) {
+            Ok(()) => {
+                // Nettoye a l'accuse de l'agent seulement.
+                sqlx::query(
+                    "UPDATE deployments \
+                     SET removal_requested_at = COALESCE(removal_requested_at, to_timestamp($2::float8)) \
+                     WHERE id = $1",
+                )
+                .bind(id)
+                .bind(state.clock.unix_secs())
+                .execute(&mut *tx)
+                .await?;
+            }
+            Err(e) => {
+                tracing::warn!(deployment = %id, %server, "suppression differee : {e}");
+                pending += 1;
+            }
         }
     }
     tx.commit().await?;
     Ok(pending)
+}
+
+/// Pose `cleaned_at` et supprime les journaux enregistres de `id`.
+async fn mark_cleaned(
+    conn: &mut sqlx::PgConnection,
+    state: &AppState,
+    id: Uuid,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE deployments SET cleaned_at = to_timestamp($2::float8) WHERE id = $1")
+        .bind(id)
+        .bind(state.clock.unix_secs())
+        .execute(&mut *conn)
+        .await?;
+    // Ses journaux partent avec ses conteneurs et ses images.
+    logs::store::delete(conn, id).await
+}
+
+/// Accuse `DeploymentRemoved` de l'agent `server` : conteneurs et images de
+/// `id` supprimes (ou deja absents). Seul un deploiement termine de ce
+/// serveur, pas encore nettoye, est marque ; un accuse d'un autre serveur ou
+/// d'un deploiement inconnu (projet supprime) est ignore.
+pub async fn removed(state: &AppState, server: Uuid, id: Uuid) -> sqlx::Result<()> {
+    let mut tx = state.db.begin().await?;
+    let found: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM deployments WHERE id = $1 AND server_id = $2 AND cleaned_at IS NULL \
+         AND status IN ('success', 'failed', 'cancelled') FOR UPDATE",
+    )
+    .bind(id)
+    .bind(server)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if found.is_some() {
+        mark_cleaned(&mut tx, state, id).await?;
+    }
+    tx.commit().await
 }

@@ -942,6 +942,11 @@ async fn stored_lines_are_capped_truncated_and_removed_with_the_deployment() {
             .unwrap(),
         0
     );
+    // Envoye a l'agent : lignes gardees jusqu'a son accuse.
+    assert!(count(env.deployment).await > 0, "en attente de l'accuse");
+    retention::removed(&env.state, env.server, env.deployment)
+        .await
+        .unwrap();
     assert_eq!(count(env.deployment).await, 0, "plus ancien : nettoye");
     assert_eq!(count(other).await, 0, "au-dela des 5 conserves : nettoye");
     for id in &newer {

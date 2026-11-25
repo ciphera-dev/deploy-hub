@@ -111,9 +111,11 @@ fn select() -> String {
                 {created} AS created_at, {started} AS started_at, {finished} AS finished_at, \
                 (EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::bigint AS duration_ms, \
                 (cur.id IS NOT NULL AND cur.id = d.id) AS current, \
-                (d.status = 'success' AND d.cleaned_at IS NULL AND d.server_id IS NOT NULL \
+                (d.status = 'success' AND d.cleaned_at IS NULL AND d.removal_requested_at IS NULL \
+                 AND d.server_id IS NOT NULL \
                  AND (d.image_from IS NULL OR EXISTS (SELECT 1 FROM deployments o \
-                      WHERE o.id = d.image_from AND o.cleaned_at IS NULL))) AS can_rollback, \
+                      WHERE o.id = d.image_from AND o.cleaned_at IS NULL \
+                      AND o.removal_requested_at IS NULL))) AS can_rollback, \
                 COALESCE((SELECT json_agg(json_build_object( \
                       'stage', s.stage, 'status', s.status, \
                       'started_at', {s_started}, 'finished_at', {s_finished}, \

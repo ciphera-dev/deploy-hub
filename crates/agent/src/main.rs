@@ -24,6 +24,9 @@ const ROUTES_FILE: &str = "routes.json";
 /// Envois de la table gardee apres le demarrage (secondes d'attente avant
 /// chacun) : amonts recalcules a mesure que Docker relance les conteneurs.
 const ROUTES_RESTORE_DELAYS: [u64; 5] = [0, 5, 15, 30, 60];
+/// Balayage des conteneurs et images de deploiement absents de l'etat local
+/// (`Deployer::sweep_orphans`) : au demarrage, puis a cet intervalle.
+const ORPHAN_SWEEP_EVERY: Duration = Duration::from_secs(3600);
 
 #[cfg(unix)]
 type Proxy = ciphera_agent::proxy_client::ProxyHandle;
@@ -141,8 +144,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_routes_file(routes_file),
     );
-    // Restes d'un arret brutal (bac a sable, dossiers), avant tout ordre.
+    // Restes d'un arret brutal (bac a sable, dossiers), avant tout ordre ;
+    // puis, toutes les heures, conteneurs et images de deploiements absents
+    // de l'etat local (suppression perdue ou en echec).
     deployer.sweep().await;
+    deployer.sweep_orphans().await;
+    {
+        let deployer = deployer.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(ORPHAN_SWEEP_EVERY).await;
+                deployer.sweep_orphans().await;
+            }
+        });
+    }
     // Table de routes gardee renvoyee au proxy sans attendre le plan de
     // controle (redemarrage de la machine), puis recalculee quelques fois
     // le temps que Docker relance les conteneurs servis.
@@ -246,9 +261,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let outbox = outbox_tx.clone();
                     tokio::spawn(async move { deployer.stop(deployment_id, &outbox).await });
                 }
+                // Accuse `DeploymentRemoved` seulement si tout a ete supprime.
                 ControlToAgent::RemoveDeployment { deployment_id } => {
                     let deployer = deployer.clone();
-                    tokio::spawn(async move { deployer.remove(deployment_id).await });
+                    let outbox = outbox_tx.clone();
+                    tokio::spawn(
+                        async move { deployer.remove_acked(deployment_id, &outbox).await },
+                    );
                 }
                 // Projet supprime : builds et deploiements en cours annules,
                 // conteneurs, reseau, volumes (sur demande) et etat de son

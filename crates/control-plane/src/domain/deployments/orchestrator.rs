@@ -377,10 +377,11 @@ pub async fn rollback(state: &AppState, source: Uuid, actor: Uuid) -> Result<Uui
     let src: Source = sqlx::query_as(
         "SELECT d.project_id, d.server_id, d.image, COALESCE(d.image_from, d.id) AS image_owner, \
                 d.compose_service, d.commit_sha, d.branch, \
-                (d.status = 'success' AND d.cleaned_at IS NULL AND d.server_id IS NOT NULL \
-                 AND d.image IS NOT NULL \
+                (d.status = 'success' AND d.cleaned_at IS NULL AND d.removal_requested_at IS NULL \
+                 AND d.server_id IS NOT NULL AND d.image IS NOT NULL \
                  AND (d.image_from IS NULL OR EXISTS (SELECT 1 FROM deployments o \
-                      WHERE o.id = d.image_from AND o.cleaned_at IS NULL))) AS rollbackable \
+                      WHERE o.id = d.image_from AND o.cleaned_at IS NULL \
+                      AND o.removal_requested_at IS NULL))) AS rollbackable \
          FROM deployments d WHERE d.id = $1",
     )
     .bind(source)
@@ -1429,6 +1430,9 @@ pub async fn on_agent_message(state: &AppState, server: ServerId, msg: AgentToCo
         AgentToControl::ProjectRemoved { project_id } => {
             on_project_removed(state, server.0, project_id.0).await
         }
+        AgentToControl::DeploymentRemoved { deployment_id } => {
+            super::retention::removed(state, server.0, deployment_id.0).await
+        }
         _ => Ok(()),
     };
     if let Err(e) = result {
@@ -1675,11 +1679,16 @@ async fn override_failure(
 /// 4. sinon, aucun ordre parti : il est envoye maintenant ;
 /// 5. sinon, perdu : `failed` et `RemoveDeployment`.
 ///
+/// Tout deploiement rapporte par l'agent (en place ou en cours) mais inconnu
+/// de la base pour ce serveur (projet supprime pendant son absence) ou deja
+/// nettoye recoit `RemoveDeployment` (`remove_strays`).
+///
 /// Puis la table des routes est renvoyee et le nettoyage remis en file,
 /// meme si une etape precedente a echoue (base indisponible) : le proxy du
 /// noeud ne reste jamais sans table apres une reconnexion.
 pub async fn reconcile(state: &AppState, server: Uuid, agent: &AgentState) -> sqlx::Result<()> {
     let pending = reconcile_deployments(state, server, agent).await;
+    let strays = remove_strays(state, server, agent).await;
     // Table des routes apres chaque `Hello` (agent reconnecte).
     let routes = async {
         let mut conn = state.db.acquire().await?;
@@ -1693,7 +1702,44 @@ pub async fn reconcile(state: &AppState, server: Uuid, agent: &AgentState) -> sq
     // Retraits de projet sans accuse (agent absent a la suppression, accuse
     // perdu) : renvoyes.
     let removals = resend_project_removals(state, server).await;
-    pending.and(routes).and(cleanups).and(removals)
+    pending.and(strays).and(routes).and(cleanups).and(removals)
+}
+
+/// `RemoveDeployment` pour chaque deploiement rapporte par l'agent `server`
+/// (en place ou en cours) qui n'est pas un deploiement de ce serveur encore
+/// en place selon la base : inconnu (projet supprime), d'un autre serveur ou
+/// deja nettoye. L'agent l'a garde ou n'a jamais recu l'ordre : il est
+/// renvoye a chaque `State` jusqu'a sa disparition.
+async fn remove_strays(state: &AppState, server: Uuid, agent: &AgentState) -> sqlx::Result<()> {
+    let mut reported: Vec<Uuid> = agent
+        .deployments
+        .iter()
+        .map(|d| d.deployment_id.0)
+        .chain(agent.in_progress.iter().map(|d| d.0))
+        .collect();
+    reported.sort_unstable();
+    reported.dedup();
+    if reported.is_empty() {
+        return Ok(());
+    }
+    let live: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM deployments WHERE id = ANY($1) AND server_id = $2 AND cleaned_at IS NULL",
+    )
+    .bind(&reported)
+    .bind(server)
+    .fetch_all(&state.db)
+    .await?;
+    for id in reported.into_iter().filter(|id| !live.contains(id)) {
+        tracing::info!(deployment = %id, %server, "deploiement inconnu ou deja nettoye rapporte par l'agent : retire");
+        send_logged(
+            state,
+            server,
+            ControlToAgent::RemoveDeployment {
+                deployment_id: DeploymentId(id),
+            },
+        );
+    }
+    Ok(())
 }
 
 async fn reconcile_deployments(

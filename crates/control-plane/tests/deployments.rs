@@ -295,14 +295,18 @@ fn deploys(orders: &[ControlToAgent]) -> Vec<Uuid> {
         .collect()
 }
 
+/// Deploiements vises par `RemoveDeployment`, chacun une fois (l'ordre est
+/// renvoye par chaque tache `cleanup` tant que l'agent ne l'a pas accuse).
 fn removals(orders: &[ControlToAgent]) -> Vec<Uuid> {
-    orders
-        .iter()
-        .filter_map(|o| match o {
-            ControlToAgent::RemoveDeployment { deployment_id } => Some(deployment_id.0),
-            _ => None,
-        })
-        .collect()
+    let mut out: Vec<Uuid> = Vec::new();
+    for o in orders {
+        if let ControlToAgent::RemoveDeployment { deployment_id } = o
+            && !out.contains(&deployment_id.0)
+        {
+            out.push(deployment_id.0);
+        }
+    }
+    out
 }
 
 fn stops(orders: &[ControlToAgent]) -> Vec<Uuid> {
@@ -753,7 +757,15 @@ async fn retention_keeps_last_5() {
     for _ in 0..7 {
         ids.push(successful_deploy(&mut env, p).await);
         env.run_jobs().await;
-        removed.extend(removals(&env.orders()));
+        let sent = removals(&env.orders());
+        // Accuse de l'agent : sans lui, l'ordre repartirait a chaque tache.
+        for id in &sent {
+            env.agent_says(AgentToControl::DeploymentRemoved {
+                deployment_id: DeploymentId(*id),
+            })
+            .await;
+        }
+        removed.extend(sent);
     }
     assert_eq!(removed, vec![ids[0], ids[1]], "les deux plus anciens");
     assert_eq!(env.get(ids[0]).await["can_rollback"], false);
@@ -2003,6 +2015,174 @@ async fn remove_project_resent_after_reconnect() {
     let mut env = Env::new().await;
     let (p, _) = image_project(&env.state, "web").await;
     successful_deploy(&mut env, p).await;
+/// `cleaned_at` du deploiement (`None` : pas encore nettoye).
+async fn cleaned(env: &Env, id: Uuid) -> Option<f64> {
+    sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM cleaned_at)::float8 FROM deployments WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&env.state.db)
+    .await
+    .unwrap()
+}
+
+/// Deploiement en echec (healthcheck) apres `v1` servi : candidat au
+/// nettoyage. Renvoie son identifiant, ordres lus.
+async fn failed_deploy(env: &mut Env, project: Uuid) -> Uuid {
+    let id = deploy(&env.state, project).await;
+    env.run_jobs().await;
+    assert_eq!(builds(&env.orders()), vec![id]);
+    env.build_ok(id).await;
+    env.orders();
+    env.progress(
+        id,
+        Stage::Healthcheck,
+        StageStatus::Failed {
+            message: "healthcheck en echec".into(),
+        },
+    )
+    .await;
+    assert_eq!(env.status(id).await, "failed");
+    id
+}
+
+fn running_deployment(id: Uuid, serving: bool) -> RunningDeployment {
+    RunningDeployment {
+        deployment_id: DeploymentId(id),
+        service_id: shared::ids::ServiceId::new(),
+        image: proto::ImageRef("x:1".into()),
+        healthy: true,
+        serving,
+        runs_as_root: false,
+    }
+}
+
+/// Le nettoyage n'est enregistre qu'a l'accuse de l'agent : un ordre perdu
+/// avec la connexion (mis en file, jamais ecrit) repart a la reconnexion, et
+/// le deploiement n'est plus proposable au retour arriere entre-temps.
+#[tokio::test]
+async fn cleaned_at_only_after_ack() {
+    let mut env = Env::new().await;
+    let (p, _) = image_project(&env.state, "web").await;
+    let v1 = successful_deploy(&mut env, p).await;
+    env.run_jobs().await;
+    env.orders();
+    let v2 = failed_deploy(&mut env, p).await;
+    sqlx::query(
+        "INSERT INTO deployment_logs (deployment_id, ts_ms, stream, line) \
+         VALUES ($1, 0, 'stdout', 'ligne')",
+    )
+    .bind(v2)
+    .execute(&env.state.db)
+    .await
+    .unwrap();
+
+    // Ordre mis en file : pas encore nettoye.
+    env.run_jobs().await;
+    assert_eq!(removals(&env.orders()), vec![v2]);
+    assert_eq!(cleaned(&env, v2).await, None, "aucun accuse");
+
+    // Le deploiement en cours de retrait n'est plus proposable au retour
+    // arriere (son image peut deja avoir disparu).
+    let requested: Option<f64> = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM removal_requested_at)::float8 FROM deployments WHERE id = $1",
+    )
+    .bind(v2)
+    .fetch_one(&env.state.db)
+    .await
+    .unwrap();
+    assert!(requested.is_some());
+
+    // Connexion coupee avant l'ecriture : l'ordre en file est perdu.
+    env.state.agents.disconnect(ServerId(env.server));
+    env.agent = env.state.agents.attach_channel(ServerId(env.server));
+    env.agent_says(AgentToControl::State(AgentState {
+        deployments: vec![running_deployment(v1, true)],
+        in_progress: vec![],
+        outcomes: vec![],
+    }))
+    .await;
+    env.run_jobs().await;
+    assert_eq!(
+        removals(&env.orders()),
+        vec![v2],
+        "l'ordre repart a la reconnexion"
+    );
+    assert_eq!(cleaned(&env, v2).await, None);
+
+    // Accuse d'un autre serveur : ignore.
+    orchestrator::on_agent_message(
+        &env.state,
+        ServerId::new(),
+        AgentToControl::DeploymentRemoved {
+            deployment_id: DeploymentId(v2),
+        },
+    )
+    .await;
+    assert_eq!(cleaned(&env, v2).await, None);
+
+    // Accuse de l'agent : nettoye, journaux supprimes, plus aucun ordre.
+    env.agent_says(AgentToControl::DeploymentRemoved {
+        deployment_id: DeploymentId(v2),
+    })
+    .await;
+    assert!(cleaned(&env, v2).await.is_some());
+    let logs: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM deployment_logs WHERE deployment_id = $1")
+            .bind(v2)
+            .fetch_one(&env.state.db)
+            .await
+            .unwrap();
+    assert_eq!(logs, 0, "journaux partis avec le deploiement");
+    env.agent_says(AgentToControl::State(AgentState {
+        deployments: vec![running_deployment(v1, true)],
+        in_progress: vec![],
+        outcomes: vec![],
+    }))
+    .await;
+    env.run_jobs().await;
+    assert!(removals(&env.orders()).is_empty());
+
+    // Un accuse pour un deploiement servi (non termine) ne le marque pas.
+    assert_eq!(cleaned(&env, v1).await, None);
+}
+
+/// A chaque `State`, un deploiement rapporte par l'agent mais inconnu de la
+/// base (projet supprime agent absent) ou deja nettoye est retire.
+#[tokio::test]
+async fn unknown_deployment_in_state_is_removed() {
+    let mut env = Env::new().await;
+    let (p, _) = image_project(&env.state, "web").await;
+    let live = successful_deploy(&mut env, p).await;
+    env.run_jobs().await;
+    env.orders();
+    let old = failed_deploy(&mut env, p).await;
+    env.run_jobs().await;
+    env.orders();
+    env.agent_says(AgentToControl::DeploymentRemoved {
+        deployment_id: DeploymentId(old),
+    })
+    .await;
+    assert!(cleaned(&env, old).await.is_some());
+
+    let unknown = Uuid::new_v4();
+    let building = Uuid::new_v4();
+    let state = AgentState {
+        deployments: vec![
+            running_deployment(live, true),
+            running_deployment(old, false),
+            running_deployment(unknown, false),
+        ],
+        in_progress: vec![DeploymentId(building)],
+        outcomes: vec![],
+    };
+    env.agent_says(AgentToControl::State(state.clone())).await;
+    let removed: HashSet<Uuid> = removals(&env.orders()).into_iter().collect();
+    assert_eq!(removed, HashSet::from([old, unknown, building]));
+    assert_eq!(env.status(live).await, "success", "le servi reste");
+
+    // Projet supprime pendant l'absence de l'agent : ses conteneurs sont
+    // retires a la reconnexion.
     env.state.agents.disconnect(ServerId(env.server));
     let admin = login(&env.state, "admin").await;
     let r = send(
@@ -2020,4 +2200,12 @@ async fn remove_project_resent_after_reconnect() {
     env.agent_says(AgentToControl::State(AgentState::default()))
         .await;
     assert_eq!(project_removals(&env.orders()), vec![(p, false)]);
+    env.agent = env.state.agents.attach_channel(ServerId(env.server));
+    env.agent_says(AgentToControl::State(AgentState {
+        deployments: vec![running_deployment(live, true)],
+        in_progress: vec![],
+        outcomes: vec![],
+    }))
+    .await;
+    assert_eq!(removals(&env.orders()), vec![live]);
 }

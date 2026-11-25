@@ -30,7 +30,11 @@
 //! rapportee de nouveau ; de meme pour le deploiement servi. Sur un autre
 //! deploiement termine, `Stop` arrete ses conteneurs. `RemoveDeployment`
 //! supprime conteneurs, images et ensemble Compose d'un deploiement
-//! (retention, suppression d'un projet). `Restart` redemarre les
+//! (retention, suppression d'un projet) puis l'accuse par
+//! `DeploymentRemoved` ; si Docker echoue, l'etat local est garde, sans
+//! accuse, et l'ordre suivant recommence. Au demarrage et toutes les
+//! heures, les conteneurs et images de deploiements absents de l'etat local
+//! sont supprimes (`sweep_orphans`). `Restart` redemarre les
 //! conteneurs du deploiement servi (et son ensemble Compose).
 //!
 //! `RemoveProject` (suppression d'un projet) : le projet est marque retire
@@ -937,36 +941,172 @@ where
     /// conteneurs, images, ensemble Compose et etat local supprimes. Le
     /// deploiement servi d'un projet Compose emporte aussi les services non
     /// exposes de son projet Compose. Routes recalculees s'il etait servi.
-    pub async fn remove(&self, id: DeploymentId) {
+    ///
+    /// Renvoie `true` si tout a ete supprime ou etait deja absent : l'etat
+    /// local est alors oublie. Si Docker echoue (liste, conteneur ou image),
+    /// l'etat local est garde et `false` renvoye : le prochain ordre refait
+    /// la suppression.
+    pub async fn remove(&self, id: DeploymentId) -> bool {
         let _ = self.ops.cancel(id, |_| ()).await;
         let serving = self.is_serving(id);
         let label = id.to_string();
-        let containers = self
+        let containers = match self
             .docker
             .list_managed(&[(DEPLOYMENT_LABEL, label.as_str())])
             .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("deploiement {id} : conteneurs illisibles : {e}");
-                Vec::new()
-            });
+        {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!(
+                    "deploiement {id} : conteneurs illisibles, suppression reportee : {e}"
+                );
+                return false;
+            }
+        };
         let mut doomed: Vec<ContainerId> = containers.iter().map(|c| c.id.clone()).collect();
         if serving {
             doomed.extend(self.compose_siblings(id, &containers).await);
         }
+        let mut complete = true;
         for c in &doomed {
             if let Err(e) = self.docker.remove(c).await {
                 tracing::warn!("deploiement {id} : suppression de {} : {e}", c.0);
+                complete = false;
             }
         }
         if let Err(e) = self.docker.remove_deployment_images(id).await {
             tracing::warn!("deploiement {id} : images : {e}");
+            complete = false;
         }
-        let _ = self.db.remove_deployment(id);
-        let _ = self.db.remove_bundle(id);
-        remove_path(Path::new(&format!("{}/{id}", self.cfg.builds_dir)));
-        remove_path(Path::new(&self.deploy_dir(id)));
+        if complete {
+            if let Err(e) = self.db.remove_deployment(id).and(self.db.remove_bundle(id)) {
+                tracing::error!("deploiement {id} : etat local : {e}");
+                complete = false;
+            }
+            remove_path(Path::new(&format!("{}/{id}", self.cfg.builds_dir)));
+            remove_path(Path::new(&self.deploy_dir(id)));
+        } else {
+            tracing::warn!("deploiement {id} : suppression incomplete, etat local garde");
+        }
         if serving && let Err(e) = self.router.refresh(self.docker.as_ref(), &self.db).await {
             tracing::warn!("{e}");
+        }
+        complete
+    }
+
+    /// [`Deployer::remove`] puis, s'il a abouti, accuse
+    /// `AgentToControl::DeploymentRemoved` : le plan de controle ne tient le
+    /// deploiement pour nettoye qu'a cet accuse.
+    pub async fn remove_acked(&self, id: DeploymentId, outbox: &mpsc::Sender<AgentToControl>) {
+        if self.remove(id).await {
+            let _ = outbox
+                .send(AgentToControl::DeploymentRemoved { deployment_id: id })
+                .await;
+        }
+    }
+
+    /// Balayage des restes (au demarrage et toutes les heures) : conteneurs
+    /// etiquetes d'un deploiement absent de l'etat local (ni enregistre, ni en
+    /// cours) et images de deploiement dont l'etat local ne garde rien (ni
+    /// enregistrement, ni issue, ni ensemble Compose, ni operation). Etat
+    /// local illisible : rien n'est supprime.
+    pub async fn sweep_orphans(&self) {
+        self.sweep_orphans_in(None).await;
+    }
+
+    /// [`Deployer::sweep_orphans`] limite aux conteneurs du projet `project`
+    /// et aux images de leurs deploiements (Docker partage, tests).
+    pub async fn sweep_orphans_of_project(&self, project: ProjectId) {
+        self.sweep_orphans_in(Some(project)).await;
+    }
+
+    async fn sweep_orphans_in(&self, project: Option<ProjectId>) {
+        // Docker lu avant l'etat local : un objet cree ensuite par une
+        // operation n'est pas dans la liste, un objet liste dont l'operation
+        // a commence entre-temps est vu par `in_progress`.
+        let project_label = project.map(|p| p.to_string());
+        let scope: Vec<(&str, &str)> = project_label
+            .as_deref()
+            .map(|p| vec![(PROJECT_LABEL, p)])
+            .unwrap_or_default();
+        // `project` : seules les images des conteneurs supprimes sont visees.
+        let containers = match self.docker.list_managed(&scope).await {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!("balayage des restes : conteneurs illisibles : {e}");
+                return;
+            }
+        };
+        let images = match project {
+            Some(_) => Vec::new(),
+            None => match self.docker.image_deployments().await {
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::warn!("balayage des restes : images illisibles : {e}");
+                    Vec::new()
+                }
+            },
+        };
+        // Operations lues avant l'etat local : une operation terminee entre
+        // les deux lectures a deja ecrit son enregistrement ou son issue.
+        let in_progress = self.ops.in_progress();
+        let records = match self.db.deployments() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("balayage des restes saute, etat local illisible : {e}");
+                return;
+            }
+        };
+        let (Ok(outcomes), Ok(bundles)) = (self.db.outcomes(), self.db.bundle_ids()) else {
+            tracing::error!("balayage des restes saute, etat local illisible");
+            return;
+        };
+        let recorded: std::collections::HashSet<DeploymentId> = records
+            .iter()
+            .map(|r| r.deployment.deployment_id)
+            .chain(in_progress.iter().copied())
+            .collect();
+        let mut known = recorded.clone();
+        known.extend(outcomes.iter().map(|o| o.deployment_id));
+        known.extend(bundles);
+
+        let mut doomed_images: Vec<DeploymentId> = Vec::new();
+        for c in &containers {
+            // Forme canonique seulement (celle que pose l'agent).
+            let Some(id) = c.labels.get(DEPLOYMENT_LABEL).and_then(|d| {
+                d.parse::<DeploymentId>()
+                    .ok()
+                    .filter(|id| id.to_string() == *d)
+            }) else {
+                continue;
+            };
+            if recorded.contains(&id) || self.ops.is_running(id) {
+                continue;
+            }
+            tracing::info!(
+                "conteneur {} du deploiement {id} absent de l'etat local : supprime",
+                c.name
+            );
+            if let Err(e) = self.docker.remove(&c.id).await {
+                tracing::warn!("{} : {e}", c.name);
+            }
+            if project.is_some() && !known.contains(&id) && !doomed_images.contains(&id) {
+                doomed_images.push(id);
+            }
+        }
+        for id in images {
+            if !known.contains(&id) && !doomed_images.contains(&id) {
+                doomed_images.push(id);
+            }
+        }
+        for id in doomed_images {
+            if self.ops.is_running(id) {
+                continue;
+            }
+            tracing::info!("images du deploiement {id} absent de l'etat local : supprimees");
+            if let Err(e) = self.docker.remove_deployment_images(id).await {
+                tracing::warn!("deploiement {id} : images : {e}");
+            }
         }
     }
 
