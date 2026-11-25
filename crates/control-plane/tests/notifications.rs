@@ -212,6 +212,41 @@ impl Env {
         panic!("file de taches sans fin");
     }
 
+    /// Taches `notify` en file, telles quelles : la file n'en laisse qu'une
+    /// en cours a la fois, mais une reprise apres bail echu peut en faire
+    /// tourner deux (les tests de concurrence les executent sans la file).
+    async fn queued_notify_jobs(&self) -> Vec<jobs::Job> {
+        let rows: Vec<(uuid::Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT id, payload FROM jobs WHERE kind = 'notify' AND status = 'queued'              ORDER BY created_at",
+        )
+        .fetch_all(&self.state.db)
+        .await
+        .unwrap();
+        rows.into_iter()
+            .map(|(id, payload)| jobs::Job {
+                id: shared::ids::JobId(id),
+                kind: JobKind::Notify,
+                payload,
+                attempts: 1,
+                max_attempts: 6,
+            })
+            .collect()
+    }
+
+    /// Execute les taches `notify` en file hors de la file (voir
+    /// `queued_notify_jobs`) et les marque terminees.
+    async fn run_outside_queue(&self) {
+        for job in self.queued_notify_jobs().await {
+            let id = job.id;
+            notifications::handle(&self.state, job).await.unwrap();
+            sqlx::query("UPDATE jobs SET status = 'done', finished_at = now() WHERE id = $1")
+                .bind(id)
+                .execute(&self.state.db)
+                .await
+                .unwrap();
+        }
+    }
+
     fn sent(&self) -> Vec<OutgoingMail> {
         self.outbox.lock().unwrap().clone()
     }
@@ -488,12 +523,9 @@ async fn the_hourly_cap_is_exact_with_concurrent_jobs() {
             Ok(())
         })
     });
-    // Toutes les taches prises puis executees en meme temps.
+    // Toutes les taches executees en meme temps (reprises simultanees).
     let mut set = tokio::task::JoinSet::new();
-    while let Some(job) = jobs::claim(&env.state.db, &env.state.clock, "test")
-        .await
-        .unwrap()
-    {
+    for job in env.queued_notify_jobs().await {
         let state = slow.clone();
         set.spawn(async move { notifications::handle(&state, job).await });
     }
@@ -621,7 +653,7 @@ async fn an_alert_held_while_the_digest_runs_goes_out_in_a_later_digest() {
         deployment_id: late,
     })
     .await;
-    env.run().await;
+    env.run_outside_queue().await;
     running.await.unwrap().unwrap();
     assert!(
         jobs::complete(&env.state.db, &env.state.clock, digest_job, "test")
@@ -682,4 +714,74 @@ async fn the_hourly_sweep_recovers_orphaned_reservations_and_held_alerts() {
         );
     }
     assert_eq!(held(&env).await, 0);
+}
+
+/// Reservations encore `pending` (envoi en cours ou interrompu).
+async fn pending(env: &Env) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM notification_deliveries WHERE status = 'pending'")
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap()
+}
+
+/// Serveur SMTP injoignable : la tache s'arrete au premier echec de
+/// connexion (pas un essai par destinataire) et demande une reprise ;
+/// aucune reservation ne reste.
+#[tokio::test]
+async fn notify_stops_at_first_connection_failure() {
+    let mut env = Env::new().await;
+    env.smtp(true).await;
+    for _ in 0..3 {
+        env.user("developer", None).await;
+    }
+    let p = env.project("down").await;
+    let id = env.deployment(p, "failed").await;
+    let attempts = Arc::new(AtomicU64::new(0));
+    let a = attempts.clone();
+    env.state.mail = Delivery::from_fn(move |_mailer, _mail| {
+        a.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(MailError::connection("serveur SMTP injoignable")) })
+    });
+    env.notify(Event::DeployFailed { deployment_id: id }).await;
+    assert_eq!(env.run().await, 1, "reprise demandee");
+    assert_eq!(attempts.load(Ordering::SeqCst), 1, "arret au premier echec");
+    assert_eq!(pending(&env).await, 0);
+}
+
+/// Duree totale d'une tache bornee : un envoi qui ne finit pas rend la
+/// main a l'echeance, sa reservation est rendue et la reprise est demandee.
+#[tokio::test]
+async fn notify_job_duration_is_bounded() {
+    let mut env = Env::new().await;
+    env.smtp(true).await;
+    let fast = env.user("owner", None).await;
+    let slow = env.user("admin", None).await;
+    let p = env.project("slow").await;
+    let id = env.deployment(p, "failed").await;
+    let sink = env.outbox.clone();
+    let stuck = slow.clone();
+    env.state.mail = Delivery::from_fn(move |_mailer, mail| {
+        let stall = mail.to == stuck;
+        if !stall {
+            sink.lock().unwrap().push(mail);
+        }
+        Box::pin(async move {
+            if stall {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+            Ok(())
+        })
+    });
+    env.notify(Event::DeployFailed { deployment_id: id }).await;
+    let job = jobs::claim(&env.state.db, &env.state.clock, "test")
+        .await
+        .unwrap()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let outcome = notifications::handle_within(&env.state, job, Duration::from_millis(500)).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let err = outcome.expect_err("tache interrompue a l'echeance");
+    assert!(err.retry, "{}", err.message);
+    assert_eq!(env.recipients(), HashSet::from([fast]));
+    assert_eq!(pending(&env).await, 0, "reservation rendue");
 }

@@ -199,7 +199,7 @@ pub fn delete_deploy_hook() {}
     responses(
         (status = 202, description = "Deploiement mis en file", body = HookTriggered),
         (status = 404, description = "Hook inconnu ou secret invalide"),
-        (status = 429, description = "Trop de tentatives (`Retry-After`)"),
+        (status = 429, description = "Trop de tentatives (`Retry-After`), ou `too_many_queued` : 10 deploiements deja en file"),
     )
 )]
 #[allow(dead_code)]

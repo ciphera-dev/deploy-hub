@@ -236,6 +236,7 @@ pub struct NewDeployment {
         (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
         (status = 404, description = "Projet ou environnement introuvable"),
         (status = 422, description = "Corps invalide"),
+        (status = 429, description = "`too_many_queued` : 10 deploiements deja en file sur l'environnement"),
     )
 )]
 #[allow(dead_code)]
@@ -312,6 +313,7 @@ pub fn cancel_deployment() {}
         (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
         (status = 404, description = "Deploiement introuvable"),
         (status = 409, description = "`not_rollbackable` : deploiement non reussi ou image supprimee"),
+        (status = 429, description = "`too_many_queued` : 10 deploiements deja en file sur l'environnement"),
     )
 )]
 #[allow(dead_code)]

@@ -270,10 +270,10 @@ async fn priority_then_run_at_order() {
     let low = jobs::enqueue(&db, JobKind::Cleanup, json!({}), None)
         .await
         .unwrap();
-    let high = jobs::enqueue(&db, JobKind::Deploy, json!({}), None)
+    let high = jobs::enqueue(&db, JobKind::Cleanup, json!({}), None)
         .await
         .unwrap();
-    set(&db, high, "UPDATE jobs SET priority = 10 WHERE id = $1").await;
+    set(&db, high, "UPDATE jobs SET priority = 20 WHERE id = $1").await;
     assert_eq!(
         jobs::claim(&db, &clock, "w").await.unwrap().unwrap().id,
         high
@@ -282,6 +282,99 @@ async fn priority_then_run_at_order() {
         jobs::claim(&db, &clock, "w").await.unwrap().unwrap().id,
         low
     );
+}
+
+/// Priorite selon le genre : deploiement, puis emission ACME, nettoyage et
+/// notification, quel que soit l'ordre d'arrivee.
+#[tokio::test]
+async fn priority_follows_the_job_kind() {
+    let (db, _guard) = common::database().await;
+    let clock = Clock::system();
+    for kind in [
+        JobKind::Notify,
+        JobKind::Cleanup,
+        JobKind::AcmeIssue,
+        JobKind::Deploy,
+    ] {
+        jobs::enqueue(&db, kind, json!({}), None).await.unwrap();
+    }
+    let priorities: Vec<i16> =
+        sqlx::query_scalar("SELECT priority FROM jobs ORDER BY created_at, priority")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(priorities, vec![0, 10, 50, 100]);
+    let mut order = Vec::new();
+    while let Some(job) = jobs::claim(&db, &clock, "w").await.unwrap() {
+        order.push(job.kind);
+    }
+    assert_eq!(
+        order,
+        vec![
+            JobKind::Deploy,
+            JobKind::AcmeIssue,
+            JobKind::Cleanup,
+            JobKind::Notify
+        ]
+    );
+}
+
+/// Purge des taches terminees (`done`, `dead`) de plus de 7 jours ; les
+/// taches en file ou recentes restent.
+#[tokio::test]
+async fn finished_jobs_purged() {
+    let (db, _guard) = common::database().await;
+    let clock = Clock::system();
+    let mut ids = Vec::new();
+    for _ in 0..5 {
+        ids.push(
+            jobs::enqueue(&db, JobKind::Update, json!({}), None)
+                .await
+                .unwrap(),
+        );
+    }
+    let [old_done, old_dead, recent_done, recent_dead, old_queued] = ids[..] else {
+        unreachable!()
+    };
+    set(
+        &db,
+        old_done,
+        "UPDATE jobs SET status = 'done', finished_at = now() - interval '8 days' WHERE id = $1",
+    )
+    .await;
+    set(
+        &db,
+        old_dead,
+        "UPDATE jobs SET status = 'dead', finished_at = now() - interval '8 days' WHERE id = $1",
+    )
+    .await;
+    set(
+        &db,
+        recent_done,
+        "UPDATE jobs SET status = 'done', finished_at = now() - interval '6 days' WHERE id = $1",
+    )
+    .await;
+    set(
+        &db,
+        recent_dead,
+        "UPDATE jobs SET status = 'dead', finished_at = now() - interval '1 day' WHERE id = $1",
+    )
+    .await;
+    set(
+        &db,
+        old_queued,
+        "UPDATE jobs SET created_at = now() - interval '30 days', \
+         run_at = now() + interval '1 day' WHERE id = $1",
+    )
+    .await;
+    assert_eq!(jobs::purge_finished(&db, &clock).await.unwrap(), 2);
+    let left: HashSet<JobId> = sqlx::query_scalar("SELECT id FROM jobs")
+        .fetch_all(&db)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(left, HashSet::from([recent_done, recent_dead, old_queued]));
 }
 
 fn quick_config(id: &str) -> WorkerConfig {
@@ -508,10 +601,13 @@ async fn acme_jobs_have_their_own_concurrency_limit() {
         .unwrap();
     let clock = Clock::system();
     let first = jobs::claim(&db, &clock, "w").await.unwrap().unwrap();
-    assert_eq!(first.id, a);
+    assert_eq!(first.id, deploy, "le deploiement passe en premier");
     let second = jobs::claim(&db, &clock, "w").await.unwrap().unwrap();
-    assert_eq!(second.id, deploy, "la seconde emission attend");
-    assert!(jobs::claim(&db, &clock, "w").await.unwrap().is_none());
+    assert_eq!(second.id, a);
+    assert!(
+        jobs::claim(&db, &clock, "w").await.unwrap().is_none(),
+        "la seconde emission attend"
+    );
     assert!(jobs::complete(&db, &clock, a, "w").await.unwrap());
     let third = jobs::claim(&db, &clock, "w").await.unwrap().unwrap();
     assert_eq!(third.id, b);
@@ -596,4 +692,119 @@ async fn listen_failure_at_startup_is_retried() {
         "tache prise apres le retour de la base : {:?}",
         row(&db, id).await
     );
+}
+
+/// Notifications lentes (SMTP muet) : une seule tache `notify` en cours a
+/// la fois, les autres creneaux restent aux deploiements.
+#[tokio::test]
+async fn slow_notify_jobs_do_not_block_deploy() {
+    let (db, _guard) = common::database().await;
+    let handlers = Handlers::new()
+        .register(JobKind::Notify, |_| async {
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            Ok(())
+        })
+        .register(JobKind::Deploy, |_| async { Ok(()) });
+    let mut cfg = quick_config("t");
+    cfg.concurrency = 4;
+    cfg.shutdown_grace = Duration::from_millis(200);
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let w = tokio::spawn(worker::run(
+        db.clone(),
+        Clock::system(),
+        handlers,
+        cfg,
+        stop_rx,
+    ));
+    let mut notifies = Vec::new();
+    for n in 0..4 {
+        notifies.push(
+            jobs::enqueue(&db, JobKind::Notify, json!({ "n": n }), None)
+                .await
+                .unwrap(),
+        );
+    }
+    wait_status(&db, notifies[0], "running").await;
+    // Laisse au travailleur le temps de prendre ce qu'il peut.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let deploy = jobs::enqueue(&db, JobKind::Deploy, json!({}), None)
+        .await
+        .unwrap();
+    for _ in 0..40 {
+        if row(&db, deploy).await.0 == "done" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let deploy_status = row(&db, deploy).await.0;
+    let running: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind = 'notify' AND status = 'running'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    stop_tx.send(true).unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(10), w).await;
+    assert_eq!(deploy_status, "done", "le deploiement n'attend pas");
+    assert_eq!(running, 1, "une seule notification en cours");
+}
+
+/// Une tache qui passe `dead` (echec terminal, ou bail echu a la derniere
+/// tentative) est confiee au gestionnaire de fin de son genre.
+#[tokio::test]
+async fn dead_jobs_reach_their_dead_handler() {
+    let (db, _guard) = common::database().await;
+    let (clock, offset) = shifted_clock();
+    let dead = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let d = dead.clone();
+    let handlers = Handlers::new()
+        .register(JobKind::Update, |_| async {
+            Err(HandlerError::fatal("refus definitif"))
+        })
+        .on_dead(JobKind::Update, move |job, error| {
+            let d = d.clone();
+            async move {
+                d.lock().unwrap().push((job.payload.clone(), error));
+            }
+        });
+    // Prise par un travailleur tombe, a sa derniere tentative.
+    let expired = jobs::enqueue(&db, JobKind::Update, json!({ "n": 1 }), None)
+        .await
+        .unwrap();
+    set(
+        &db,
+        expired,
+        "UPDATE jobs SET max_attempts = 1 WHERE id = $1",
+    )
+    .await;
+    jobs::claim(&db, &clock, "w-tombe").await.unwrap().unwrap();
+    offset.store(301, Ordering::SeqCst);
+
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let w = tokio::spawn(worker::run(
+        db.clone(),
+        clock.clone(),
+        handlers,
+        quick_config("t"),
+        stop_rx,
+    ));
+    let failing = jobs::enqueue(&db, JobKind::Update, json!({ "n": 2 }), None)
+        .await
+        .unwrap();
+    wait_status(&db, failing, "dead").await;
+    wait_status(&db, expired, "dead").await;
+    for _ in 0..100 {
+        if dead.lock().unwrap().len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    stop_tx.send(true).unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(10), w).await;
+    let mut seen = dead.lock().unwrap().clone();
+    seen.sort_by_key(|(p, _)| p["n"].as_i64());
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[0].0, json!({ "n": 1 }));
+    assert!(seen[0].1.contains("bail"), "{}", seen[0].1);
+    assert_eq!(seen[1], (json!({ "n": 2 }), "refus definitif".to_string()));
 }

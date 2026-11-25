@@ -2265,3 +2265,160 @@ async fn unknown_deployment_in_state_is_removed() {
     .await;
     assert_eq!(removals(&env.orders()), vec![live]);
 }
+
+/// Au plus 10 deploiements en file par environnement : au-dela, 429
+/// `too_many_queued` et rien n'est enregistre (manuel et rollback).
+#[tokio::test]
+async fn queued_cap_returns_429() {
+    let mut env = Env::new().await;
+    let (p, environment) = image_project(&env.state, "web").await;
+    let served = successful_deploy(&mut env, p).await;
+    env.run_jobs().await;
+    env.orders();
+    for _ in 0..10 {
+        deploy(&env.state, p).await;
+    }
+    let dev = login(&env.state, "developer").await;
+    let r = send(
+        &env.state,
+        &dev,
+        "POST",
+        &format!("/api/projects/{p}/deployments"),
+        Some(json!({ "environment": "production" })),
+    )
+    .await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+    assert_eq!(r.code(), "too_many_queued");
+    let r = send(
+        &env.state,
+        &dev,
+        "POST",
+        &format!("/api/deployments/{served}/rollback"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+    assert_eq!(r.code(), "too_many_queued");
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM deployments WHERE environment_id = $1 AND status = 'queued'",
+    )
+    .bind(environment)
+    .fetch_one(&env.state.db)
+    .await
+    .unwrap();
+    assert_eq!(queued, 10);
+}
+
+/// Erreur durable de GitHub (requete refusee) : le deploiement echoue tout
+/// de suite avec sa cause, sans attendre le chien de garde.
+#[tokio::test]
+async fn github_durable_error_fails_deployment() {
+    let mut env = Env::new().await;
+    let server = github_mock(&mut env).await;
+    let (p, _) = acme_web(&env).await;
+    server.reset().await;
+    let expires = jiff::Timestamp::now()
+        .checked_add(jiff::SignedDuration::from_hours(1))
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/web/installation"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 42 })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/42/access_tokens"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "token": INSTALLATION_TOKEN,
+            "expires_at": expires.to_string(),
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/web"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let id = deploy(&env.state, p).await;
+    env.run_jobs().await;
+    assert!(builds(&env.orders()).is_empty());
+    let d = env.get(id).await;
+    assert_eq!(d["status"], "failed");
+    assert!(d["error"].as_str().unwrap().starts_with("GitHub : "), "{d}");
+}
+
+/// Tache de deploiement morte (GitHub en panne a chaque tentative) : son
+/// deploiement finit `failed` au lieu de rester en cours sans ordre.
+#[tokio::test]
+async fn dead_job_fails_deployment() {
+    let mut env = Env::new().await;
+    let server = github_mock(&mut env).await;
+    let (p, _) = acme_web(&env).await;
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/web/installation"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let id = deploy(&env.state, p).await;
+    sqlx::query("UPDATE jobs SET max_attempts = 1 WHERE kind = 'deploy'")
+        .execute(&env.state.db)
+        .await
+        .unwrap();
+    let handlers = orchestrator::register(
+        control_plane::jobs::worker::Handlers::new(),
+        env.state.clone(),
+    );
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let mut cfg = control_plane::jobs::worker::WorkerConfig::new("t".into());
+    cfg.poll_interval = Duration::from_millis(50);
+    let w = tokio::spawn(control_plane::jobs::worker::run(
+        env.state.db.clone(),
+        env.state.clock.clone(),
+        handlers,
+        cfg,
+        stop_rx,
+    ));
+    let mut status = String::new();
+    for _ in 0..200 {
+        status = env.status(id).await;
+        if status == "failed" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    stop_tx.send(true).unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(10), w).await;
+    assert_eq!(status, "failed");
+    let error: String = sqlx::query_scalar("SELECT error FROM deployments WHERE id = $1")
+        .bind(id)
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+    assert!(error.contains("GitHub"), "{error}");
+    assert!(builds(&env.orders()).is_empty());
+}
+
+/// Nettoyage d'un environnement deja en file : pas de seconde tache (une
+/// reconnexion, ou deux fins de deploiement, n'en empilent pas).
+#[tokio::test]
+async fn cleanup_job_deduplicated() {
+    let mut env = Env::new().await;
+    let (p, environment) = image_project(&env.state, "web").await;
+    successful_deploy(&mut env, p).await;
+    env.run_jobs().await;
+    failed_deploy(&mut env, p).await;
+    env.orders();
+    for _ in 0..3 {
+        env.agent_says(AgentToControl::State(AgentState::default()))
+            .await;
+    }
+    let cleanups: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind = 'cleanup' AND status = 'queued' \
+         AND payload->>'environment_id' = $1",
+    )
+    .bind(environment.to_string())
+    .fetch_one(&env.state.db)
+    .await
+    .unwrap();
+    assert_eq!(cleanups, 1);
+}

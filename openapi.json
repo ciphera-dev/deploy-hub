@@ -1016,6 +1016,9 @@
           },
           "409": {
             "description": "`not_rollbackable` : deploiement non reussi ou image supprimee"
+          },
+          "429": {
+            "description": "`too_many_queued` : 10 deploiements deja en file sur l'environnement"
           }
         }
       }
@@ -2824,6 +2827,9 @@
           },
           "422": {
             "description": "Corps invalide"
+          },
+          "429": {
+            "description": "`too_many_queued` : 10 deploiements deja en file sur l'environnement"
           }
         }
       }
@@ -5040,7 +5046,7 @@
             "description": "Hook inconnu ou secret invalide"
           },
           "429": {
-            "description": "Trop de tentatives (`Retry-After`)"
+            "description": "Trop de tentatives (`Retry-After`), ou `too_many_queued` : 10 deploiements deja en file"
           }
         }
       }

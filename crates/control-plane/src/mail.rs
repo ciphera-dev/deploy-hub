@@ -110,7 +110,22 @@ impl MailError {
     fn new(context: &str, error: impl fmt::Display) -> Self {
         MailError(format!("{context} ({error})"))
     }
+
+    /// Serveur SMTP injoignable ou inutilisable (connexion, TLS, delai,
+    /// reponse illisible), et non un refus du serveur.
+    pub fn connection(detail: impl fmt::Display) -> Self {
+        Self::new(UNREACHABLE, detail)
+    }
+
+    /// Vrai pour une erreur de [`MailError::connection`] : les envois
+    /// suivants echoueraient de meme, inutile de les tenter.
+    pub fn is_connection(&self) -> bool {
+        self.0.starts_with(UNREACHABLE)
+    }
 }
+
+/// Debut du message d'une erreur de connexion ([`MailError::connection`]).
+const UNREACHABLE: &str = "serveur SMTP injoignable";
 
 /// Message a envoyer, en texte brut.
 #[derive(Clone)]
@@ -199,10 +214,15 @@ impl Mailer {
             .header(ContentType::TEXT_PLAIN)
             .body(mail.text)
             .map_err(|e| MailError::new("message invalide", e))?;
-        self.transport
-            .send(message)
-            .await
-            .map_err(|e| MailError::new("envoi SMTP refuse", e))?;
+        self.transport.send(message).await.map_err(|e| {
+            // Code SMTP 4xx ou 5xx : refus du serveur ; sinon il n'a pas ete
+            // joint ou utilise.
+            if e.is_transient() || e.is_permanent() {
+                MailError::new("envoi SMTP refuse", e)
+            } else {
+                MailError::connection(e)
+            }
+        })?;
         Ok(())
     }
 }

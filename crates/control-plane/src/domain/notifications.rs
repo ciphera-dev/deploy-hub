@@ -34,8 +34,13 @@
 //!   resume les reservations orphelines (arret sur la derniere tentative) et
 //!   replanifie le resume des comptes qui ont des notifications retenues ;
 //!   [`purge`] supprime les envois de plus de 30 jours.
+//! - **Tache bornee** : une seule tache `notify` en cours sur l'instance
+//!   (`jobs::NOTIFY_CONCURRENCY`) ; elle s'arrete au premier echec de
+//!   connexion au serveur SMTP et dure au plus [`JOB_BUDGET`]. Les
+//!   destinataires restants sont servis par la reprise.
 
 use std::fmt::Write as _;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool};
@@ -45,7 +50,7 @@ use crate::authz::{self, Level, Resource, Role};
 use crate::http::me::default_prefs;
 use crate::jobs::worker::{HandlerError, Handlers};
 use crate::jobs::{self, Job, JobKind, Schedule};
-use crate::mail::{self, Mailer, OutgoingMail};
+use crate::mail::{self, MailError, Mailer, OutgoingMail};
 use crate::state::AppState;
 
 /// E-mails de notification par compte, par budget et par heure glissante.
@@ -58,6 +63,8 @@ pub const EXPIRING_SOON_SECS: i64 = 7 * 86_400;
 const MAX_ATTEMPTS: i32 = 6;
 /// Duree de conservation des envois (bien au-dela des reprises).
 const KEEP_SECS: f64 = 30.0 * 86_400.0;
+/// Duree maximale d'une tache `notify`, tous destinataires compris.
+pub const JOB_BUDGET: Duration = Duration::from_secs(120);
 
 /// Evenement notifie. La charge utile ne porte que des identifiants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -360,8 +367,20 @@ async fn schedule_digest(
 
 /// Tache `notify` : envoie la notification a chaque destinataire qui ne l'a
 /// pas encore recue, ou le resume d'un compte. Un envoi en echec demande
-/// une reprise (les autres destinataires sont servis).
+/// une reprise (les autres destinataires sont servis), sauf un echec de
+/// connexion au serveur SMTP ou l'echeance de [`JOB_BUDGET`], qui arretent
+/// la tache : la reprise sert les destinataires restants.
 pub async fn handle(state: &AppState, job: Job) -> Result<(), HandlerError> {
+    handle_within(state, job, JOB_BUDGET).await
+}
+
+/// Comme [`handle`], avec une duree maximale donnee (tests).
+pub async fn handle_within(
+    state: &AppState,
+    job: Job,
+    budget: Duration,
+) -> Result<(), HandlerError> {
+    let deadline = tokio::time::Instant::now() + budget;
     let event: Event = serde_json::from_value(job.payload.clone())
         .map_err(|_| HandlerError::fatal("charge utile de notification illisible"))?;
     let mailer = match mail::ready(state).await {
@@ -374,7 +393,7 @@ pub async fn handle(state: &AppState, job: Job) -> Result<(), HandlerError> {
         }
     };
     if let Event::Digest { user_id } = event {
-        return digest(state, job.id, mailer, user_id).await;
+        return digest(state, job.id, mailer, user_id, deadline).await;
     }
     let db = &state.db;
     let Some(notice) = notice(db, &event)
@@ -393,9 +412,15 @@ pub async fn handle(state: &AppState, job: Job) -> Result<(), HandlerError> {
     .map_err(|e| db_error("lecture des destinataires", e))?;
     let key = event.key();
     let mut failed = 0;
+    // Cause de l'arret avant le dernier destinataire.
+    let mut stopped: Option<&str> = None;
     for r in recipients {
         if !notice.allows(&r.role) || !r.wants(&event) {
             continue;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            stopped = Some("duree maximale de la tache atteinte");
+            break;
         }
         let now = state.clock.unix_secs();
         let slot = reserve(db, &event, r.id, now)
@@ -405,10 +430,15 @@ pub async fn handle(state: &AppState, job: Job) -> Result<(), HandlerError> {
             continue;
         }
         let message = compose(&notice, &link, &r.timezone, &r.email);
-        let sent = state.mail.send(mailer.clone(), message).await;
+        let sent = send_before(state, mailer.clone(), message, deadline).await;
         if let Err(e) = &sent {
             tracing::warn!(error = %e, event = %key, "notification non envoyee");
             failed += 1;
+            if tokio::time::Instant::now() >= deadline {
+                stopped = Some("duree maximale de la tache atteinte");
+            } else if e.is_connection() {
+                stopped = Some("serveur SMTP injoignable");
+            }
         }
         // Envoye : `sent`. Echec : reservation rendue, la reprise reessaie.
         let query = if sent.is_ok() {
@@ -424,6 +454,14 @@ pub async fn handle(state: &AppState, job: Job) -> Result<(), HandlerError> {
             .execute(db)
             .await
             .map_err(|e| db_error("enregistrement de l'envoi", e))?;
+        if stopped.is_some() {
+            break;
+        }
+    }
+    if let Some(cause) = stopped {
+        return Err(HandlerError::retry(format!(
+            "envoi interrompu ({cause}) : reprise pour les destinataires restants"
+        )));
     }
     if failed > 0 {
         return Err(HandlerError::retry(format!(
@@ -431,6 +469,19 @@ pub async fn handle(state: &AppState, job: Job) -> Result<(), HandlerError> {
         )));
     }
     Ok(())
+}
+
+/// Envoi abandonne a `deadline` (erreur de connexion : rien ne dit qu'il est
+/// parti, la reservation est rendue et la reprise le refait).
+async fn send_before(
+    state: &AppState,
+    mailer: Mailer,
+    message: OutgoingMail,
+    deadline: tokio::time::Instant,
+) -> Result<(), MailError> {
+    tokio::time::timeout_at(deadline, state.mail.send(mailer, message))
+        .await
+        .unwrap_or_else(|_| Err(MailError::connection("duree maximale de la tache atteinte")))
 }
 
 /// Resume des notifications retenues du compte : chaque alerte encore
@@ -446,6 +497,7 @@ async fn digest(
     job: shared::ids::JobId,
     mailer: Mailer,
     user: Uuid,
+    deadline: tokio::time::Instant,
 ) -> Result<(), HandlerError> {
     let db = &state.db;
     sqlx::query("UPDATE jobs SET dedupe_key = NULL WHERE id = $1")
@@ -518,7 +570,7 @@ async fn digest(
     let total = alerts.len() + successes;
     if total > 0 {
         let message = digest_mail(&r.email, &alerts, successes);
-        if let Err(e) = state.mail.send(mailer, message).await {
+        if let Err(e) = send_before(state, mailer, message, deadline).await {
             tracing::warn!(error = %e, "resume des notifications non envoye");
             return Err(HandlerError::retry("resume des notifications non envoye"));
         }

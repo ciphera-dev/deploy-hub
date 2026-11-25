@@ -18,7 +18,17 @@
 //!   erreur. Un echec peut demander une reprise differee (`run_at`).
 //! - **Deduplication** : une `dedupe_key` est unique parmi les taches non
 //!   terminales (`queued`, `running`) ; `enqueue` renvoie alors la tache
-//!   existante, sans erreur.
+//!   existante, sans erreur. `enqueue_unless_queued` ne cree pas de seconde
+//!   tache identique (meme genre, meme charge utile) en attente.
+//! - **Priorite** : fixee par le genre ([`JobKind::priority`]) ; les
+//!   deploiements passent avant les certificats, le nettoyage et les
+//!   notifications. Emissions ACME et notifications ont chacune leur plafond
+//!   de taches en cours ([`ACME_CONCURRENCY`], [`NOTIFY_CONCURRENCY`]) : un
+//!   serveur lent ne prive pas les deploiements de travailleurs.
+//! - **Fin d'une tache morte** : le gestionnaire de fin du genre
+//!   (`Handlers::on_dead`) est appele quand une tache passe `dead`.
+//! - **Purge** : les taches terminees (`done`, `dead`) sont supprimees apres
+//!   [`FINISHED_RETENTION`] (entretien horaire, `purge_finished`).
 //!
 //! # Donnees
 //!
@@ -35,7 +45,10 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-pub use queue::{Schedule, claim, complete, enqueue, enqueue_in, enqueue_with, fail, heartbeat};
+pub use queue::{
+    Schedule, claim, claim_next, complete, enqueue, enqueue_in, enqueue_unless_queued,
+    enqueue_with, fail, heartbeat, purge_finished, reap_expired,
+};
 use serde_json::Value;
 use shared::ids::JobId;
 
@@ -54,6 +67,13 @@ pub const NOTIFY_CHANNEL: &str = "ciphera_jobs";
 /// 200 s l'issue du proxy) : les autres travailleurs restent aux autres
 /// taches.
 pub const ACME_CONCURRENCY: i64 = 1;
+
+/// Notifications e-mail en cours a la fois sur l'instance (un serveur SMTP
+/// muet retient sa tache jusqu'a 2 minutes).
+pub const NOTIFY_CONCURRENCY: i64 = 1;
+
+/// Duree de conservation des taches terminees (`done`, `dead`).
+pub const FINISHED_RETENTION: Duration = Duration::from_secs(7 * 86_400);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum JobKind {
@@ -74,6 +94,17 @@ impl JobKind {
         JobKind::Update,
         JobKind::Notify,
     ];
+
+    /// Priorite de prise (plus grand = plus urgent) : deploiement 100,
+    /// emission ACME 50, nettoyage 10, le reste 0.
+    pub fn priority(self) -> i16 {
+        match self {
+            JobKind::Deploy => 100,
+            JobKind::AcmeIssue => 50,
+            JobKind::Cleanup => 10,
+            JobKind::MetricsRollup | JobKind::Update | JobKind::Notify => 0,
+        }
+    }
 
     /// Valeur stockee (contrainte `CHECK` de la migration).
     pub fn as_str(self) -> &'static str {

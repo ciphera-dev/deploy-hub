@@ -4170,6 +4170,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description `too_many_queued` : 10 deploiements deja en file sur l'environnement */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     list_domains: {
@@ -5938,6 +5945,13 @@ export interface operations {
             };
             /** @description Corps invalide */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `too_many_queued` : 10 deploiements deja en file sur l'environnement */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7993,7 +8007,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Trop de tentatives (`Retry-After`) */
+            /** @description Trop de tentatives (`Retry-After`), ou `too_many_queued` : 10 deploiements deja en file */
             429: {
                 headers: {
                     [name: string]: unknown;

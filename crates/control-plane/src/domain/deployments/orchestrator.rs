@@ -30,7 +30,8 @@ use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
 use super::{
-    CleanupJob, DeployJob, LOST_GRACE, STALE_AFTER, WATCHDOG_EVERY, clean_message, lock_environment,
+    CleanupJob, DeployJob, LOST_GRACE, STALE_AFTER, WATCHDOG_EVERY, clean_message,
+    lock_environment, queue_full,
 };
 use crate::agents::registry::SendError;
 use crate::connectors::github;
@@ -55,6 +56,13 @@ pub fn register(handlers: Handlers, state: AppState) -> Handlers {
         .register(JobKind::Deploy, move |job| {
             let state = deploy_state.clone();
             async move { handle_deploy(&state, job).await }
+        })
+        .on_dead(JobKind::Deploy, {
+            let state = state.clone();
+            move |job, error| {
+                let state = state.clone();
+                async move { fail_dead_job(&state, job, &error).await }
+            }
         })
         .register(JobKind::Cleanup, move |job| {
             let state = state.clone();
@@ -142,6 +150,10 @@ async fn create_push(
         tx.commit().await?;
         return Ok(());
     }
+    if queue_full(&mut tx, environment).await? {
+        tracing::warn!(%project, "push ignore : trop de deploiements en file sur l'environnement");
+        return Ok(());
+    }
     sqlx::query(
         "INSERT INTO deployments (id, project_id, environment_id, trigger, commit_sha, branch, \
          job_id, created_at) VALUES ($1, $2, $3, 'push', $4, $5, $6, to_timestamp($7::float8))",
@@ -168,6 +180,8 @@ pub enum RequestError {
     NotRollbackable,
     /// Un deploiement est deja en file ou en cours (redeploiement).
     InProgress,
+    /// Deja `MAX_QUEUED` deploiements en file sur l'environnement.
+    TooManyQueued,
     Db(sqlx::Error),
 }
 
@@ -268,8 +282,8 @@ pub async fn request(
     .fetch_optional(&mut *tx)
     .await?;
     let (env, branch) = env.ok_or(RequestError::NotFound)?;
+    lock_environment(&mut tx, env).await?;
     if guard != Guard::None {
-        lock_environment(&mut tx, env).await?;
         // Refus : tout deploiement en file ou en cours. Reutilisation : un
         // deploiement en file qui resoudra la branche a son demarrage
         // (manuel ou hook), jamais un push (commit fixe) ni un rollback.
@@ -299,6 +313,9 @@ pub async fn request(
                 }
             };
         }
+    }
+    if queue_full(&mut tx, env).await? {
+        return Err(RequestError::TooManyQueued);
     }
     let (trigger, actor) = match origin {
         Origin::Manual(user) => ("manual", Some(user)),
@@ -389,6 +406,9 @@ pub async fn rollback(state: &AppState, source: Uuid, actor: Uuid) -> Result<Uui
     .await?;
     if !src.rollbackable {
         return Err(RequestError::NotRollbackable);
+    }
+    if queue_full(&mut tx, env).await? {
+        return Err(RequestError::TooManyQueued);
     }
     let id = Uuid::new_v4();
     sqlx::query(
@@ -706,14 +726,18 @@ async fn enqueue_followups(conn: &mut PgConnection, environment: Uuid) -> sqlx::
         None,
     )
     .await?;
-    jobs::enqueue_in(
+    enqueue_cleanup(conn, environment).await
+}
+
+/// Nettoyage de l'environnement, sauf s'il en attend deja un en file.
+async fn enqueue_cleanup(conn: &mut PgConnection, environment: Uuid) -> sqlx::Result<()> {
+    jobs::enqueue_unless_queued(
         conn,
         JobKind::Cleanup,
         serde_json::to_value(CleanupJob {
             environment_id: environment,
         })
-        .map_err(encode)?,
-        None,
+        .map_err(|e| sqlx::Error::Encode(Box::new(e)))?,
     )
     .await?;
     Ok(())
@@ -1086,13 +1110,26 @@ impl GitAccessError {
                 "Dépôt renommé ou transféré : recréez le projet avec le nouveau nom du dépôt."
                     .into(),
             ),
+            // Requete refusee (droits, authentification, requete invalide) :
+            // durable, le deploiement echoue avec sa cause. 403 (limite de
+            // debit secondaire), 408 et 429 restent des pannes passageres.
+            github::app::GithubError::Status(status)
+                if (400..500).contains(&status) && !matches!(status, 403 | 408 | 429) =>
+            {
+                tracing::warn!(status, "GitHub : requete refusee");
+                GitAccessError::Fail(format!("GitHub : requête refusée (statut {status})."))
+            }
             github::app::GithubError::Status(status) => {
                 tracing::warn!(status, "GitHub : statut inattendu");
-                GitAccessError::Retry(HandlerError::retry("GitHub ne repond pas comme prevu"))
+                GitAccessError::Retry(HandlerError::retry(format!(
+                    "GitHub : statut {status} inattendu"
+                )))
             }
             _ => {
                 tracing::warn!("GitHub injoignable ou reponse illisible");
-                GitAccessError::Retry(HandlerError::retry("GitHub injoignable"))
+                GitAccessError::Retry(HandlerError::retry(
+                    "GitHub : injoignable ou réponse illisible",
+                ))
             }
         }
     }
@@ -1246,6 +1283,96 @@ async fn send_build(state: &AppState, info: Info) -> Result<(), HandlerError> {
     tx.commit()
         .await
         .map_err(|e| db_error("transaction du deploiement", e))
+}
+
+/// Gestionnaire de fin des taches `deploy` mortes : le deploiement qu'elles
+/// faisaient avancer passe `failed` (avec la derniere erreur) au lieu de
+/// rester en cours sans ordre ou en file sans tache. Vise le deploiement en
+/// cours de l'environnement qui attend un ordre du plan de controle (build
+/// ou deploiement non envoye) ; sinon, s'il ne tourne rien, celui de la
+/// tache encore en file. Un deploiement que l'agent execute n'est pas
+/// touche. La fin remet l'environnement en file (deploiements suivants).
+pub async fn fail_dead_job(state: &AppState, job: Job, error: &str) {
+    let Ok(payload) = serde_json::from_value::<DeployJob>(job.payload) else {
+        return;
+    };
+    let message = if error.starts_with("GitHub : ") {
+        error.to_string()
+    } else {
+        format!("Déploiement abandonné après l'échec de sa tâche : {error}")
+    };
+    let failed =
+        async {
+            let mut tx = state.db.begin().await?;
+            let environment: Option<Uuid> = match &payload {
+                DeployJob::Push { environment_id, .. }
+                | DeployJob::Environment { environment_id } => Some(*environment_id),
+                DeployJob::Deployment { deployment_id } => {
+                    sqlx::query_scalar("SELECT environment_id FROM deployments WHERE id = $1")
+                        .bind(deployment_id)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                }
+            };
+            let Some(environment) = environment else {
+                return Ok(None);
+            };
+            lock_environment(&mut tx, environment).await?;
+            let running: Option<(Uuid, bool)> = sqlx::query_as(
+                "SELECT id, ((image_from IS NULL AND build_sent_at IS NULL) \
+                 OR ((image_from IS NOT NULL OR image_built_at IS NOT NULL) \
+                     AND deploy_sent_at IS NULL)) AS waiting \
+             FROM deployments WHERE environment_id = $1 AND status = 'running' FOR UPDATE",
+            )
+            .bind(environment)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let target = match (running, &payload) {
+                (Some((id, true)), _) => Some(id),
+                (Some(_), _) => None,
+                (None, DeployJob::Deployment { deployment_id }) => {
+                    sqlx::query_scalar(
+                        "SELECT id FROM deployments WHERE id = $1 AND status = 'queued' FOR UPDATE",
+                    )
+                    .bind(deployment_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                }
+                (None, DeployJob::Push { .. }) => sqlx::query_scalar(
+                    "SELECT id FROM deployments WHERE job_id = $1 AND status = 'queued' FOR UPDATE",
+                )
+                .bind(job.id.0)
+                .fetch_optional(&mut *tx)
+                .await?,
+                (None, DeployJob::Environment { .. }) => None,
+            };
+            let Some(id) = target else {
+                return Ok(None);
+            };
+            finish(
+                &mut tx,
+                state,
+                id,
+                environment,
+                Finish::Failed {
+                    message: message.clone(),
+                    presumed: false,
+                },
+            )
+            .await?;
+            tx.commit().await?;
+            Ok::<_, sqlx::Error>(Some(id))
+        }
+        .await;
+    match failed {
+        Ok(Some(id)) => {
+            tracing::warn!(deployment = %id, job = %job.id, "tache de deploiement morte : deploiement en echec")
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!(error = %e, job = %job.id, "tache de deploiement morte : echec non enregistre")
+        }
+    }
 }
 
 async fn fail_running(state: &AppState, id: Uuid, message: &str) -> Result<(), HandlerError> {
@@ -1673,16 +1800,7 @@ async fn override_failure(
     if presumed {
         // Retention a recalculer : le deploiement peut etre servi, ou n'est
         // plus presume et peut etre nettoye.
-        jobs::enqueue_in(
-            conn,
-            JobKind::Cleanup,
-            serde_json::to_value(CleanupJob {
-                environment_id: info.environment_id,
-            })
-            .map_err(|e| sqlx::Error::Encode(Box::new(e)))?,
-            None,
-        )
-        .await?;
+        enqueue_cleanup(conn, info.environment_id).await?;
     }
     Ok(new_status == "success")
 }
@@ -1912,16 +2030,7 @@ async fn enqueue_cleanups(state: &AppState, server: Uuid) -> sqlx::Result<()> {
     .await?;
     let mut conn = state.db.acquire().await?;
     for env in envs {
-        jobs::enqueue_in(
-            &mut conn,
-            JobKind::Cleanup,
-            serde_json::to_value(CleanupJob {
-                environment_id: env,
-            })
-            .map_err(|e| sqlx::Error::Encode(Box::new(e)))?,
-            None,
-        )
-        .await?;
+        enqueue_cleanup(&mut conn, env).await?;
     }
     Ok(())
 }

@@ -257,8 +257,10 @@ fn audit_action(target: Target, action: Action) -> &'static str {
 /// Redemarre ou arrete le deploiement servi vise, sous le verrou de son
 /// environnement (pas de bascule concurrente). La marque d'arret des
 /// services de l'environnement suit l'ordre (posee par `Stop`, effacee par
-/// `Restart`) et l'ordre est audite ; tout est annule si l'agent ne le
-/// recoit pas. Renvoie le deploiement vise.
+/// `Restart`) et l'ordre est audite. L'ordre part apres la validation de la
+/// transaction : un agent deconnecte est refuse avant (rien n'est
+/// enregistre) ; un ordre qui ne part pas apres la validation remet la
+/// marque d'arret precedente. Renvoie le deploiement vise.
 pub async fn act(
     state: &AppState,
     actor: Uuid,
@@ -291,9 +293,19 @@ pub async fn act(
     let Some((deployment, Some(server))) = serving(&mut tx, environment).await? else {
         return Err(ActionError::NothingServing);
     };
+    if !state.agents.is_connected(ServerId(server)) {
+        return Err(ActionError::AgentUnavailable);
+    }
+    // Marques actuelles, remises si l'ordre ne part pas.
+    let previous: Vec<(Uuid, Option<Uuid>)> =
+        sqlx::query_as("SELECT id, stopped_deployment FROM services WHERE environment_id = $1")
+            .bind(environment)
+            .fetch_all(&mut *tx)
+            .await?;
+    let marked = (action == Action::Stop).then_some(deployment);
     sqlx::query("UPDATE services SET stopped_deployment = $2 WHERE environment_id = $1")
         .bind(environment)
-        .bind((action == Action::Stop).then_some(deployment))
+        .bind(marked)
         .execute(&mut *tx)
         .await?;
     let service = match target {
@@ -315,12 +327,43 @@ pub async fn act(
         Action::Restart => ControlToAgent::Restart { deployment_id },
         Action::Stop => ControlToAgent::StopContainers { deployment_id },
     };
+    tx.commit().await?;
     if let Err(e) = state.agents.send(ServerId(server), msg) {
         tracing::warn!(%server, "ordre {action:?} non envoye a l'agent : {e}");
+        restore_marks(state, environment, marked, &previous).await;
         return Err(ActionError::AgentUnavailable);
     }
-    tx.commit().await?;
     Ok(deployment)
+}
+
+/// Remet les marques d'arret d'avant un ordre qui n'est pas parti, sauf
+/// celles changees entre-temps. Au mieux : une erreur est journalisee.
+async fn restore_marks(
+    state: &AppState,
+    environment: Uuid,
+    marked: Option<Uuid>,
+    previous: &[(Uuid, Option<Uuid>)],
+) {
+    let restored = async {
+        let mut tx = state.db.begin().await?;
+        lock_environment(&mut tx, environment).await?;
+        for (service, mark) in previous {
+            sqlx::query(
+                "UPDATE services SET stopped_deployment = $2 \
+                 WHERE id = $1 AND stopped_deployment IS NOT DISTINCT FROM $3",
+            )
+            .bind(service)
+            .bind(mark)
+            .bind(marked)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+    .await;
+    if let Err(e) = restored {
+        tracing::error!(error = %e, %environment, "marques d'arret non remises apres un ordre non envoye");
+    }
 }
 
 #[cfg(test)]

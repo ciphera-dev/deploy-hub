@@ -66,6 +66,11 @@ pub(super) fn request_error(context: &str, e: RequestError) -> ApiError {
             "deployment_in_progress",
             "Un déploiement est déjà en cours",
         ),
+        RequestError::TooManyQueued => ApiError::new(
+            429,
+            "too_many_queued",
+            "Trop de déploiements en file pour cet environnement (10 au plus) : attendez la fin des précédents.",
+        ),
         RequestError::Db(e) => internal(context, e),
     }
 }

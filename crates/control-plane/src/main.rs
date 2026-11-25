@@ -428,9 +428,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let direct_open = state.panel.subscribe();
     let panel = state.panel.clone();
-    // File de taches : deploiements et nettoyage des images ; les autres
-    // genres (ACME...) arrivent avec leurs taches (sans gestionnaire, une
-    // tache echoue de facon terminale).
+    // File de taches : deploiements, nettoyage des images, ACME, metriques
+    // et notifications (sans gestionnaire, une tache echoue de facon
+    // terminale). Priorite par genre (deploiements d'abord) ; ACME et
+    // notifications plafonnes a une tache en cours chacun, pour que les
+    // deploiements gardent des creneaux (voir `jobs`).
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let stop_jobs = Arc::new(stop_tx);
     let stop_jobs_on_exit = stop_jobs.clone();

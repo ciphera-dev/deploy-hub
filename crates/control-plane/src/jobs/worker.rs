@@ -17,7 +17,10 @@ use sqlx::postgres::PgListener;
 use tokio::sync::{Semaphore, watch};
 use tokio::task::{AbortHandle, JoinSet};
 
-use super::{Failure, Job, JobKind, LEASE, NOTIFY_CHANNEL, claim, complete, fail, heartbeat};
+use super::{
+    Failure, Job, JobKind, LEASE, NOTIFY_CHANNEL, claim_next, complete, fail, heartbeat,
+    reap_expired,
+};
 use crate::state::Clock;
 
 /// Echec d'un gestionnaire.
@@ -47,11 +50,16 @@ impl HandlerError {
 
 type BoxFuture = Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>;
 type Handler = Arc<dyn Fn(Job) -> BoxFuture + Send + Sync>;
+type DeadHandler =
+    Arc<dyn Fn(Job, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Gestionnaires par genre de tache. Un genre sans gestionnaire echoue de
 /// facon terminale.
 #[derive(Clone, Default)]
-pub struct Handlers(HashMap<JobKind, Handler>);
+pub struct Handlers {
+    run: HashMap<JobKind, Handler>,
+    dead: HashMap<JobKind, DeadHandler>,
+}
 
 impl Handlers {
     pub fn new() -> Self {
@@ -64,9 +72,32 @@ impl Handlers {
         F: Fn(Job) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), HandlerError>> + Send + 'static,
     {
-        self.0
+        self.run
             .insert(kind, Arc::new(move |job| Box::pin(handler(job))));
         self
+    }
+
+    /// Enregistre le gestionnaire de fin d'un genre : appele (au moins une
+    /// fois, idempotent) avec la tache et sa derniere erreur quand elle
+    /// passe `dead` (echec terminal, tentatives epuisees, bail echu a la
+    /// derniere tentative). Il ne doit pas echouer : il journalise.
+    pub fn on_dead<F, Fut>(mut self, kind: JobKind, handler: F) -> Self
+    where
+        F: Fn(Job, String) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.dead.insert(
+            kind,
+            Arc::new(move |job, error| Box::pin(handler(job, error))),
+        );
+        self
+    }
+
+    /// Appelle le gestionnaire de fin du genre de `job`, s'il en a un.
+    async fn dead(&self, job: Job, error: String) {
+        if let Some(handler) = self.dead.get(&job.kind).cloned() {
+            handler(job, error).await;
+        }
     }
 }
 
@@ -154,7 +185,22 @@ pub async fn run(
             },
             () = stopped(&mut stop) => break,
         };
-        match claim(&db, &clock, &cfg.worker_id).await {
+        // Bail echu a la derniere tentative : `dead`, gestionnaire de fin.
+        match reap_expired(&db, &clock).await {
+            Ok(dead) => {
+                for job in dead {
+                    tracing::warn!(job = %job.id, kind = %job.kind, "bail expire a la derniere tentative : tache morte");
+                    let handlers = handlers.clone();
+                    running.spawn(async move {
+                        handlers
+                            .dead(job, "bail expire a la derniere tentative".into())
+                            .await;
+                    });
+                }
+            }
+            Err(e) => tracing::warn!("releve des baux expires impossible : {e}"),
+        }
+        match claim_next(&db, &clock, &cfg.worker_id).await {
             Ok(Some(job)) => {
                 let (db, clock, handlers, worker) = (
                     db.clone(),
@@ -252,10 +298,15 @@ async fn execute(
     let id = job.id;
     let kind = job.kind;
     let attempts = job.attempts;
-    let Some(handler) = handlers.0.get(&kind).cloned() else {
+    let last_attempt = job.attempts >= job.max_attempts;
+    // Copie pour le gestionnaire de fin (la tache part au gestionnaire).
+    let dead_job = job.clone();
+    let Some(handler) = handlers.run.get(&kind).cloned() else {
         let msg = format!("aucun gestionnaire pour le genre {kind}");
         tracing::error!(job = %id, "{msg}");
-        record_fail(db, clock, id, worker, &msg, Failure::Terminal).await;
+        if record_fail(db, clock, id, worker, &msg, Failure::Terminal).await {
+            handlers.dead(dead_job, msg).await;
+        }
         return;
     };
 
@@ -293,7 +344,11 @@ async fn execute(
                 Failure::Terminal
             };
             tracing::warn!(job = %id, %kind, attempts, "tache en echec");
-            record_fail(db, clock, id, worker, &e.message, failure).await;
+            if record_fail(db, clock, id, worker, &e.message, failure).await
+                && (!e.retry || last_attempt)
+            {
+                handlers.dead(dead_job, e.message).await;
+            }
         }
         Err(join) => {
             // Cause non journalisee en clair dans la base (aucun secret).
@@ -303,7 +358,7 @@ async fn execute(
                 "le gestionnaire a ete interrompu"
             };
             tracing::error!(job = %id, %kind, "{msg}");
-            record_fail(
+            if record_fail(
                 db,
                 clock,
                 id,
@@ -311,11 +366,16 @@ async fn execute(
                 msg,
                 Failure::Retry(backoff(attempts)),
             )
-            .await;
+            .await
+                && last_attempt
+            {
+                handlers.dead(dead_job, msg.to_string()).await;
+            }
         }
     }
 }
 
+/// Enregistre l'echec ; vrai s'il l'a ete (bail encore detenu).
 async fn record_fail(
     db: &PgPool,
     clock: &Clock,
@@ -323,10 +383,16 @@ async fn record_fail(
     worker: &str,
     msg: &str,
     failure: Failure,
-) {
+) -> bool {
     match fail(db, clock, id, worker, msg, failure).await {
-        Ok(true) => {}
-        Ok(false) => tracing::warn!(job = %id, "bail perdu : echec ignore"),
-        Err(e) => tracing::error!(job = %id, "enregistrement de l'echec impossible : {e}"),
+        Ok(true) => true,
+        Ok(false) => {
+            tracing::warn!(job = %id, "bail perdu : echec ignore");
+            false
+        }
+        Err(e) => {
+            tracing::error!(job = %id, "enregistrement de l'echec impossible : {e}");
+            false
+        }
     }
 }

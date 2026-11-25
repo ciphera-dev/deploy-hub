@@ -32,6 +32,10 @@ use uuid::Uuid;
 /// Images conservees par environnement pour le rollback (spec : N = 5).
 pub const RETAINED_IMAGES: i64 = 5;
 
+/// Deploiements en file (`queued`) au plus par environnement : au-dela, une
+/// nouvelle demande est refusee (429 `too_many_queued`).
+pub const MAX_QUEUED: i64 = 10;
+
 /// Sans nouvelle de l'agent pendant ce delai, un deploiement en cours passe
 /// `failed` (Review Focus 4).
 pub const STALE_AFTER: Duration = Duration::from_secs(10 * 60);
@@ -81,6 +85,18 @@ pub(crate) async fn lock_environment(
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// Vrai si l'environnement a deja [`MAX_QUEUED`] deploiements en file (a
+/// appeler sous le verrou de l'environnement).
+pub(crate) async fn queue_full(conn: &mut PgConnection, environment: Uuid) -> sqlx::Result<bool> {
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM deployments WHERE environment_id = $1 AND status = 'queued'",
+    )
+    .bind(environment)
+    .fetch_one(conn)
+    .await?;
+    Ok(queued >= MAX_QUEUED)
 }
 
 /// Cause d'echec stockable : sans caractere de controle, tronquee.

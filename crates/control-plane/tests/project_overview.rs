@@ -619,3 +619,54 @@ async fn service_security_is_validated_stored_audited_and_sent_to_the_agent() {
     assert_eq!(r.status, 200, "{}", r.raw);
     assert_eq!(r.json()["run_as"], Value::Null);
 }
+
+/// L'ordre `Restart` ne part qu'apres la validation de la transaction : une
+/// validation refusee ne laisse aucun ordre chez l'agent.
+#[tokio::test]
+async fn restart_order_sent_after_commit() {
+    let (state, _pg) = common::state().await;
+    let (project, env, service) = git_project(&state, "web").await;
+    let dev = login(&state, "developer").await;
+    let srv = server(&state).await;
+    deployment(&state, project, env, srv, "success", 600).await;
+    let mut agent = state.agents.attach_channel(ServerId(srv));
+    // Validation refusee (contrainte differee jusqu'au COMMIT).
+    for sql in [
+        "CREATE FUNCTION refuse_commit() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN RAISE EXCEPTION 'validation refusee'; END $$",
+        "CREATE CONSTRAINT TRIGGER refuse_restart AFTER INSERT ON audit_events \
+         DEFERRABLE INITIALLY DEFERRED FOR EACH ROW \
+         WHEN (NEW.action IN ('project.restart', 'service.restart')) \
+         EXECUTE FUNCTION refuse_commit()",
+    ] {
+        sqlx::query(sql).execute(&state.db).await.unwrap();
+    }
+    for path in [
+        format!("/api/projects/{project}/restart"),
+        format!("/api/projects/{project}/services/{service}/restart"),
+    ] {
+        let r = send(&state, &dev, "POST", &path, true).await;
+        assert_eq!(r.status, 500, "{}", r.raw);
+        assert!(
+            agent.try_recv().is_err(),
+            "aucun ordre avant la validation ({path})"
+        );
+    }
+    sqlx::query("DROP TRIGGER refuse_restart ON audit_events")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let r = send(
+        &state,
+        &dev,
+        "POST",
+        &format!("/api/projects/{project}/restart"),
+        true,
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    assert!(matches!(
+        agent.try_recv(),
+        Ok(ControlToAgent::Restart { .. })
+    ));
+}

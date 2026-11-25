@@ -6,7 +6,8 @@ use shared::ids::JobId;
 use sqlx::{PgConnection, PgPool};
 
 use super::{
-    ACME_CONCURRENCY, Failure, Job, JobKind, LEASE, MAX_ERROR_CHARS, NOTIFY_CHANNEL, Result,
+    ACME_CONCURRENCY, FINISHED_RETENTION, Failure, Job, JobKind, LEASE, MAX_ERROR_CHARS,
+    NOTIFY_CHANNEL, NOTIFY_CONCURRENCY, Result,
 };
 use crate::state::Clock;
 
@@ -33,6 +34,30 @@ pub async fn enqueue_in(
     enqueue_with(conn, kind, payload, dedupe_key, Schedule::default()).await
 }
 
+/// Comme [`enqueue_in`], sauf si une tache du meme genre et de meme charge
+/// utile attend deja en file (`queued`) : renvoie alors celle-ci. Une tache
+/// en cours n'empeche pas l'ajout (elle a pu lire un etat deja depasse).
+/// Deux ajouts simultanes peuvent encore creer deux taches : sans danger,
+/// les gestionnaires sont idempotents.
+pub async fn enqueue_unless_queued(
+    conn: &mut PgConnection,
+    kind: JobKind,
+    payload: Value,
+) -> Result<JobId> {
+    let existing: Option<JobId> = sqlx::query_scalar(
+        "SELECT id FROM jobs WHERE kind = $1 AND status = 'queued' AND payload = $2::jsonb \
+         LIMIT 1",
+    )
+    .bind(kind.as_str())
+    .bind(payload.to_string())
+    .fetch_optional(&mut *conn)
+    .await?;
+    match existing {
+        Some(id) => Ok(id),
+        None => enqueue_in(conn, kind, payload, None).await,
+    }
+}
+
 /// Echeance et tentatives d'une tache (valeurs par defaut de la table si
 /// absentes : tout de suite, 5 tentatives).
 #[derive(Clone, Copy, Debug, Default)]
@@ -56,8 +81,9 @@ pub async fn enqueue_with(
     for _ in 0..5 {
         let id = JobId::new();
         let inserted: Option<JobId> = sqlx::query_scalar(
-            "INSERT INTO jobs (id, kind, payload, dedupe_key, run_at, max_attempts) \
-             VALUES ($1, $2, $3::jsonb, $4, COALESCE(to_timestamp($5::float8), now()), COALESCE($6, 5)) \
+            "INSERT INTO jobs (id, kind, payload, dedupe_key, run_at, max_attempts, priority) \
+             VALUES ($1, $2, $3::jsonb, $4, COALESCE(to_timestamp($5::float8), now()), \
+             COALESCE($6, 5), $7) \
              ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running') \
              DO NOTHING RETURNING id",
         )
@@ -67,6 +93,7 @@ pub async fn enqueue_with(
         .bind(&dedupe_key)
         .bind(schedule.run_at)
         .bind(schedule.max_attempts)
+        .bind(kind.priority())
         .fetch_optional(&mut *conn)
         .await?;
         if let Some(id) = inserted {
@@ -102,26 +129,40 @@ struct JobRow {
     max_attempts: i32,
 }
 
-/// Prend la tache la plus urgente (priorite, puis `run_at`) : en file et
-/// echue, ou en cours mais au bail echu. Les emissions ACME ont leur propre
-/// limite ([`ACME_CONCURRENCY`] en cours sur toute l'instance) : une emission
-/// attend jusqu'a 200 s et ne doit pas priver les deploiements de
-/// travailleurs. Marque la prise (bail de 5 minutes,
-/// tentative comptee) dans la meme instruction, sous `FOR UPDATE SKIP LOCKED`.
-pub async fn claim(db: &PgPool, clock: &Clock, worker_id: &str) -> Result<Option<Job>> {
-    let now = clock.unix_secs();
-    // Bail echu a la derniere tentative : plus de reprise.
-    sqlx::query(
+/// Taches dont le bail a expire a leur derniere tentative : elles passent
+/// `dead` (plus de reprise) et sont renvoyees, pour que l'appelant appelle
+/// leur gestionnaire de fin.
+pub async fn reap_expired(db: &PgPool, clock: &Clock) -> Result<Vec<Job>> {
+    let rows: Vec<JobRow> = sqlx::query_as(
         "UPDATE jobs SET status = 'dead', finished_at = to_timestamp($1::float8), \
          locked_by = NULL, lease_until = NULL, \
          last_error = 'bail expire a la derniere tentative' \
          WHERE status = 'running' AND lease_until <= to_timestamp($1::float8) \
-         AND attempts >= max_attempts",
+         AND attempts >= max_attempts \
+         RETURNING id, kind, payload::text AS payload, attempts, max_attempts",
     )
-    .bind(now)
-    .execute(db)
+    .bind(clock.unix_secs())
+    .fetch_all(db)
     .await?;
+    rows.into_iter().map(JobRow::into_job).collect()
+}
 
+/// [`reap_expired`] (sans gestionnaire de fin), puis [`claim_next`].
+pub async fn claim(db: &PgPool, clock: &Clock, worker_id: &str) -> Result<Option<Job>> {
+    reap_expired(db, clock).await?;
+    claim_next(db, clock, worker_id).await
+}
+
+/// Prend la tache la plus urgente (priorite, puis `run_at`) : en file et
+/// echue, ou en cours mais au bail echu. Les emissions ACME et les
+/// notifications ont chacune leur limite ([`ACME_CONCURRENCY`],
+/// [`NOTIFY_CONCURRENCY`] en cours sur toute l'instance) : une emission
+/// attend jusqu'a 200 s, un envoi a un serveur SMTP muet jusqu'a 2 minutes,
+/// et ils ne doivent pas priver les deploiements de travailleurs. Marque la
+/// prise (bail de 5 minutes, tentative comptee) dans la meme instruction,
+/// sous `FOR UPDATE SKIP LOCKED`.
+pub async fn claim_next(db: &PgPool, clock: &Clock, worker_id: &str) -> Result<Option<Job>> {
+    let now = clock.unix_secs();
     let row: Option<JobRow> = sqlx::query_as(
         "WITH next AS ( \
              SELECT id FROM jobs \
@@ -131,6 +172,9 @@ pub async fn claim(db: &PgPool, clock: &Clock, worker_id: &str) -> Result<Option
                AND (kind <> 'acme_issue' OR (SELECT count(*) FROM jobs r \
                     WHERE r.kind = 'acme_issue' AND r.status = 'running' \
                     AND r.lease_until > to_timestamp($1::float8)) < $4) \
+               AND (kind <> 'notify' OR (SELECT count(*) FROM jobs r \
+                    WHERE r.kind = 'notify' AND r.status = 'running' \
+                    AND r.lease_until > to_timestamp($1::float8)) < $5) \
              ORDER BY priority DESC, run_at, created_at \
              LIMIT 1 FOR UPDATE SKIP LOCKED) \
          UPDATE jobs j SET status = 'running', locked_by = $2, \
@@ -143,24 +187,42 @@ pub async fn claim(db: &PgPool, clock: &Clock, worker_id: &str) -> Result<Option
     .bind(worker_id)
     .bind(LEASE.as_secs_f64())
     .bind(ACME_CONCURRENCY)
+    .bind(NOTIFY_CONCURRENCY)
     .fetch_optional(db)
     .await?;
-    row.map(|r| {
-        let kind = r
+    row.map(JobRow::into_job).transpose()
+}
+
+impl JobRow {
+    fn into_job(self) -> Result<Job> {
+        let kind = self
             .kind
             .parse()
             .map_err(|e: String| sqlx::Error::Decode(e.into()))?;
         let payload =
-            serde_json::from_str(&r.payload).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+            serde_json::from_str(&self.payload).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
         Ok(Job {
-            id: r.id,
+            id: self.id,
             kind,
             payload,
-            attempts: r.attempts,
-            max_attempts: r.max_attempts,
+            attempts: self.attempts,
+            max_attempts: self.max_attempts,
         })
-    })
-    .transpose()
+    }
+}
+
+/// Supprime les taches terminees (`done`, `dead`) depuis plus de
+/// [`FINISHED_RETENTION`] ; renvoie leur nombre. Idempotent.
+pub async fn purge_finished(db: &PgPool, clock: &Clock) -> Result<u64> {
+    let before = clock.unix_secs() - FINISHED_RETENTION.as_secs_f64();
+    let done = sqlx::query(
+        "DELETE FROM jobs WHERE status IN ('done', 'dead') \
+         AND finished_at < to_timestamp($1::float8)",
+    )
+    .bind(before)
+    .execute(db)
+    .await?;
+    Ok(done.rows_affected())
 }
 
 /// Prolonge le bail de 5 minutes. `false` si le travailleur n'est plus le
