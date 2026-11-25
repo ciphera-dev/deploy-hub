@@ -337,13 +337,15 @@ pub trait BuildBackend: Send + Sync {
     -> impl Future<Output = Result<(), BuildError>> + Send;
     /// Lance le conteneur jetable de `railpack prepare` sur le pont
     /// `ciphera-prepare` (cree s'il manque), journaux vers `sink`, jusqu'a
-    /// sa fin ou `sandbox::PREPARE_TIMEOUT` ; le conteneur est supprime dans
-    /// tous les cas. Code non nul ou delai depasse : `BuildError::Tool`.
+    /// sa fin ou `sandbox::PREPARE_TIMEOUT` ; renvoie ses deux fichiers de
+    /// sortie lus par l'API d'archive (`sandbox::read_output_file`). Le
+    /// conteneur et son volume de sortie sont supprimes dans tous les cas.
+    /// Code non nul, delai depasse ou sortie refusee : `BuildError::Tool`.
     fn prepare(
         &self,
         container: &sandbox::PrepareContainer,
         sink: &ProgressSink,
-    ) -> impl Future<Output = Result<(), BuildError>> + Send;
+    ) -> impl Future<Output = Result<sandbox::PrepareOutput, BuildError>> + Send;
 }
 
 /// Dossier d'un build : `<builds_dir>/<deployment_id>` (0700), avec `src`

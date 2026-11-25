@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use bollard::Docker;
 use bollard::query_parameters::{
-    ListContainersOptions, RemoveContainerOptions, RemoveImageOptions, RemoveVolumeOptions,
+    ListContainersOptions, ListVolumesOptions, RemoveContainerOptions, RemoveImageOptions,
+    RemoveVolumeOptions,
 };
 use ciphera_agent::build::argv::AllowedBin;
 use ciphera_agent::build::local::LocalBackend;
@@ -536,11 +537,14 @@ async fn railpack_prepare_runs_sandboxed_on_node_app() {
     };
     result.unwrap_or_else(|e| panic!("prepare : {e}\n{}", logs.join("\n")));
 
-    // Plan ecrit par le compte du bac a sable (ni root, ni l'agent).
+    // Plan lu par l'API d'archive et ecrit par l'agent (ce processus), pas
+    // par le compte du bac a sable.
     let plan = Path::new(&workdir.plan()).join("railpack-plan.json");
     let text = std::fs::read_to_string(&plan).unwrap();
     assert!(text.contains("node"), "{text}");
-    assert_eq!(std::fs::metadata(&plan).unwrap().uid(), BUILD_UID);
+    let agent_uid = std::fs::metadata(&builds).unwrap().uid();
+    assert_eq!(std::fs::metadata(&plan).unwrap().uid(), agent_uid);
+    assert_ne!(agent_uid, BUILD_UID);
     // Conteneur jetable supprime ; pont dedie gere par Ciphera, non interne.
     let name = format!("ciphera-prepare-{deployment}");
     assert!(api.inspect_container(&name, None).await.is_err());
@@ -597,6 +601,186 @@ async fn railpack_prepare_runs_only_the_pinned_mise() {
     );
     let name = format!("ciphera-prepare-{deployment}");
     assert!(api.inspect_container(&name, None).await.is_err());
+    workdir.remove().unwrap();
+    let _ = api.remove_network(PREPARE_NETWORK).await;
+}
+
+/// `railpack::prepare` du depot `node-app` dans un dossier de build neuf de
+/// `builds` : resultat, dossier et lignes de journal.
+async fn prepare_node_app(
+    builds: &Path,
+    cfg: &PrepareConfig,
+) -> (Result<(), BuildError>, Workdir, Vec<String>) {
+    let backend = LocalBackend::connect(builds.join("absent.sock")).unwrap();
+    let deployment = DeploymentId::new();
+    let workdir = Workdir::create(builds.to_str().unwrap(), deployment).unwrap();
+    copy_dir(&fixture("node-app"), Path::new(&workdir.src()));
+    let (tx, mut rx) = mpsc::channel(100_000);
+    let sink = ProgressSink::new(deployment, tx);
+    let result = railpack::prepare(&backend, &sink, Some(cfg), &workdir, &workdir.src()).await;
+    drop(sink);
+    let mut logs = Vec::new();
+    while let Some(m) = rx.recv().await {
+        if let AgentToControl::LogLine(l) = m {
+            logs.push(l.line);
+        }
+    }
+    (result, workdir, logs)
+}
+
+/// Volumes Docker portant l'etiquette de deploiement `deployment`.
+async fn deployment_volumes(api: &Docker, deployment: DeploymentId) -> Vec<String> {
+    let filter = format!("{}={deployment}", ciphera_agent::docker::DEPLOYMENT_LABEL);
+    let options = ListVolumesOptions {
+        filters: Some(std::collections::HashMap::from([(
+            "label".to_string(),
+            vec![filter],
+        )])),
+    };
+    api.list_volumes(Some(options))
+        .await
+        .unwrap()
+        .volumes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| v.name)
+        .collect()
+}
+
+/// Entrees (chemin, uid) de `dir`, liens non suivis.
+fn tree(dir: &Path) -> Vec<(PathBuf, u32)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).unwrap() {
+            let path = entry.unwrap().path();
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            if meta.is_dir() {
+                stack.push(path.clone());
+            }
+            out.push((path, meta.uid()));
+        }
+    }
+    out
+}
+
+/// Faux railpack (script `/bin/sh` de l'image du bac a sable) : `body`
+/// recoit les arguments de production (`$4` : plan, `$6` : info).
+fn fake_railpack(tmp: &TempDir, body: &str) -> PrepareConfig {
+    let tools = tmp.subdir("fake-railpack", 0o755);
+    let script = tools.join("railpack");
+    std::fs::write(&script, format!("#!/bin/sh\nset -e\n{body}\n")).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    PrepareConfig {
+        railpack: script,
+        ..prepare_config()
+    }
+}
+
+/// Le bac a sable ne laisse rien sur l'hote : aucun montage de l'hote en
+/// ecriture, le dossier du plan ne contient que les deux fichiers, ecrits
+/// par l'agent ; conteneur et volume de sortie supprimes.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et outils de build : job agent-docker de la CI"]
+async fn prepare_leaves_no_host_dirs() {
+    use std::os::unix::fs::MetadataExt;
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    let tmp = TempDir::new();
+    let builds = tmp.subdir("builds", 0o700);
+    let agent_uid = std::fs::metadata(&builds).unwrap().uid();
+    let cfg = prepare_config();
+    let (result, workdir, logs) = prepare_node_app(&builds, &cfg).await;
+    result.unwrap_or_else(|e| panic!("prepare : {e}\n{}", logs.join("\n")));
+    let deployment = workdir.deployment();
+
+    // Dossier du build : tout appartient a l'agent ; le dossier du plan ne
+    // contient que les deux fichiers attendus, reguliers.
+    for (path, uid) in tree(Path::new(workdir.root())) {
+        assert_eq!(
+            uid,
+            agent_uid,
+            "{} cree par un autre compte",
+            path.display()
+        );
+    }
+    let plan = Path::new(&workdir.plan());
+    let mut names: Vec<String> = std::fs::read_dir(plan)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["railpack-info.json", "railpack-plan.json"]);
+    for name in &names {
+        let meta = std::fs::symlink_metadata(plan.join(name)).unwrap();
+        assert!(meta.is_file(), "{name}");
+        assert_eq!(meta.mode() & 0o777, 0o600, "{name}");
+    }
+    // Le dossier du plan reste 0700 (plus ouvert au bac a sable).
+    assert_eq!(std::fs::metadata(plan).unwrap().mode() & 0o777, 0o700);
+    // Conteneur jetable et volume de sortie supprimes.
+    let name = format!("ciphera-prepare-{deployment}");
+    assert!(api.inspect_container(&name, None).await.is_err());
+    assert!(
+        deployment_volumes(&api, deployment).await.is_empty(),
+        "volume de sortie laisse"
+    );
+    workdir.remove().unwrap();
+    let _ = api.remove_network(PREPARE_NETWORK).await;
+}
+
+/// Un plan qui est un lien symbolique est refuse : rien n'est ecrit sur
+/// l'hote, conteneur et volume supprimes.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et outils de build : job agent-docker de la CI"]
+async fn prepare_output_symlink_refused() {
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    let tmp = TempDir::new();
+    let builds = tmp.subdir("builds", 0o700);
+    let cfg = fake_railpack(&tmp, "ln -s /etc/passwd \"$4\"\necho '{}' > \"$6\"");
+    let (result, workdir, logs) = prepare_node_app(&builds, &cfg).await;
+    let err = result.expect_err("lien symbolique accepte");
+    assert!(
+        err.to_string().contains("lien refuse"),
+        "{err}\n{}",
+        logs.join("\n")
+    );
+    assert_eq!(
+        std::fs::read_dir(workdir.plan()).unwrap().count(),
+        0,
+        "rien d'ecrit dans le dossier du plan"
+    );
+    let deployment = workdir.deployment();
+    let name = format!("ciphera-prepare-{deployment}");
+    assert!(api.inspect_container(&name, None).await.is_err());
+    assert!(deployment_volumes(&api, deployment).await.is_empty());
+    workdir.remove().unwrap();
+    let _ = api.remove_network(PREPARE_NETWORK).await;
+}
+
+/// Un plan de plus de 1 Mio est refuse, sans rien ecrire sur l'hote.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et outils de build : job agent-docker de la CI"]
+async fn prepare_output_oversize_refused() {
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    let tmp = TempDir::new();
+    let builds = tmp.subdir("builds", 0o700);
+    let cfg = fake_railpack(
+        &tmp,
+        "dd if=/dev/zero of=\"$4\" bs=1024 count=1025\necho '{}' > \"$6\"",
+    );
+    let (result, workdir, logs) = prepare_node_app(&builds, &cfg).await;
+    let err = result.expect_err("plan de plus de 1 Mio accepte");
+    assert!(
+        err.to_string().contains("plus de 1 Mio"),
+        "{err}\n{}",
+        logs.join("\n")
+    );
+    assert_eq!(std::fs::read_dir(workdir.plan()).unwrap().count(), 0);
+    let deployment = workdir.deployment();
+    let name = format!("ciphera-prepare-{deployment}");
+    assert!(api.inspect_container(&name, None).await.is_err());
+    assert!(deployment_volumes(&api, deployment).await.is_empty());
     workdir.remove().unwrap();
     let _ = api.remove_network(PREPARE_NETWORK).await;
 }

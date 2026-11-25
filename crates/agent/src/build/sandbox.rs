@@ -6,8 +6,11 @@
 //!   point d'entree remplace par railpack) ;
 //! - compte `ciphera-build` (uid:gid non root), `cap_drop ALL`,
 //!   `no-new-privileges`, racine en lecture seule, `/tmp` en tmpfs ;
-//! - railpack monte en lecture seule, le depot en lecture seule, le dossier
-//!   du plan en ecriture ;
+//! - railpack et le depot montes en lecture seule ; aucun dossier de l'hote
+//!   en ecriture : la sortie va dans un volume anonyme supprime avec le
+//!   conteneur, et l'agent n'en lit que deux fichiers par l'API d'archive
+//!   de Docker (fichiers reguliers, sans lien, 1 Mio chacun au plus), qu'il
+//!   ecrit lui-meme dans le dossier du plan ;
 //! - mise epingle (`MISE_VERSION`, SHA-256 verifie par install.sh) monte en
 //!   lecture seule la ou railpack le cherche : railpack ne telecharge jamais
 //!   un mise non verifie ; s'il manque sur l'hote, le build echoue ;
@@ -36,10 +39,15 @@
 //! tmpfs `noexec`, sortie filtree). Voir `.agents/memory/decisions.md`.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bollard::models::{ContainerCreateBody, HostConfig, NetworkCreateRequest};
+use std::io::{Read, Write};
+
+use bollard::models::{
+    ContainerCreateBody, HostConfig, Mount, MountTypeEnum, MountVolumeOptions, NetworkCreateRequest,
+};
 use shared::ids::DeploymentId;
 
 use super::BuildError;
@@ -60,9 +68,25 @@ pub const RAILPACK_MISE_DIR: &str = "/tmp/railpack/mise";
 pub const PREPARE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Railpack dans le conteneur.
 pub const RAILPACK_TARGET: &str = "/opt/ciphera/railpack";
-/// Depot (lecture seule) et plan (ecriture) dans le conteneur.
+/// Depot (lecture seule) dans le conteneur.
 pub const SRC_TARGET: &str = "/src";
+/// Volume anonyme de la sortie (jamais un dossier de l'hote), supprime avec
+/// le conteneur.
 pub const PLAN_TARGET: &str = "/out";
+/// Dossier de la sortie dans ce volume, cree avant le demarrage par l'API
+/// d'archive (`output_dir_archive`) : le volume appartient a root.
+pub const OUTPUT_SUBDIR: &str = "plan";
+pub const OUTPUT_DIR: &str = "/out/plan";
+/// Mode de `OUTPUT_DIR` : ecriture et traversee pour le compte du bac a
+/// sable (« autres »), sans lecture du dossier.
+const OUTPUT_DIR_MODE: u32 = 0o703;
+/// Seuls fichiers lus dans la sortie.
+pub const PLAN_FILE: &str = "railpack-plan.json";
+pub const INFO_FILE: &str = "railpack-info.json";
+/// Taille maximale de chacun des deux fichiers.
+pub const MAX_OUTPUT_BYTES: u64 = 1 << 20;
+/// Archive d'un fichier de sortie lue au plus (fichier, en-tetes, bourrage).
+pub const MAX_OUTPUT_ARCHIVE: usize = (1 << 20) + (64 << 10);
 const PIDS_LIMIT: i64 = 512;
 const MEMORY_LIMIT: i64 = 2 << 30;
 /// Option Docker du pont : aucune communication entre ses conteneurs.
@@ -135,13 +159,12 @@ fn require_tool(path: &Path, what: &str) -> Result<(), BuildError> {
     }
 }
 
-/// Spec du conteneur de `railpack prepare` pour le depot `src` et le
-/// dossier du plan `plan` (chemins de l'hote).
+/// Spec du conteneur de `railpack prepare` pour le depot `src` (chemin de
+/// l'hote, monte en lecture seule). La sortie va dans un volume anonyme.
 pub fn prepare_container(
     cfg: &PrepareConfig,
     deployment: DeploymentId,
     src: &Path,
-    plan: &Path,
 ) -> Result<PrepareContainer, BuildError> {
     require_tool(&cfg.railpack, "railpack")?;
     require_tool(&cfg.mise, &format!("mise {MISE_VERSION}"))?;
@@ -165,8 +188,26 @@ pub fn prepare_container(
             bind_source(&cfg.mise)?
         ),
         format!("{}:{SRC_TARGET}:ro,z", bind_source(src)?),
-        format!("{}:{PLAN_TARGET}:rw,z", bind_source(plan)?),
     ];
+    // Sortie : volume anonyme (aucun dossier de l'hote ouvert en ecriture
+    // au conteneur), supprime avec lui ; reconnu par ses etiquettes.
+    let output = Mount {
+        target: Some(PLAN_TARGET.to_string()),
+        typ: Some(MountTypeEnum::VOLUME),
+        read_only: Some(false),
+        volume_options: Some(MountVolumeOptions {
+            no_copy: Some(true),
+            labels: Some(HashMap::from([
+                (MANAGED_LABEL.to_string(), "true".to_string()),
+                (DEPLOYMENT_LABEL.to_string(), deployment.to_string()),
+                (ROLE_LABEL.to_string(), PREPARE_ROLE.to_string()),
+            ])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let plan_out = format!("{OUTPUT_DIR}/{PLAN_FILE}");
+    let info_out = format!("{OUTPUT_DIR}/{INFO_FILE}");
     // `/tmp` au conteneur ; le dossier de mise de railpack (verrous, cache
     // des versions) au compte du conteneur. Le binaire de mise y est monte
     // en lecture seule par-dessus.
@@ -195,9 +236,9 @@ pub fn prepare_container(
                 "prepare",
                 SRC_TARGET,
                 "--plan-out",
-                "/out/railpack-plan.json",
+                plan_out.as_str(),
                 "--info-out",
-                "/out/railpack-info.json",
+                info_out.as_str(),
             ]
             .map(String::from)
             .to_vec(),
@@ -222,6 +263,7 @@ pub fn prepare_container(
         host_config: Some(HostConfig {
             network_mode: Some(PREPARE_NETWORK.to_string()),
             binds: Some(binds),
+            mounts: Some(vec![output]),
             tmpfs: Some(tmpfs),
             readonly_rootfs: Some(true),
             cap_drop: Some(vec!["ALL".to_string()]),
@@ -263,12 +305,114 @@ pub fn prepare_network_request() -> NetworkCreateRequest {
     }
 }
 
-/// Ouvre le depot en lecture et le dossier du plan en ecriture au compte du
-/// conteneur (« autres » : le depot est clone avec le masque 0077 de
-/// l'agent). Le dossier du build reste 0700 : rien n'est expose sur l'hote.
-/// Les liens symboliques ne sont jamais suivis.
+/// Archive (a deposer dans `PLAN_TARGET` avant le demarrage) qui cree
+/// `OUTPUT_DIR`, au compte de root, en `OUTPUT_DIR_MODE`.
+pub fn output_dir_archive() -> Vec<u8> {
+    let mut header = tar::Header::new_ustar();
+    header.set_entry_type(tar::EntryType::Directory);
+    // Nom constant, court et ASCII : `set_path` ne peut pas echouer.
+    let _ = header.set_path(format!("{OUTPUT_SUBDIR}/"));
+    header.set_mode(OUTPUT_DIR_MODE);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_size(0);
+    header.set_cksum();
+    let mut builder = tar::Builder::new(Vec::new());
+    // Ecriture en memoire : sans erreur possible.
+    let _ = builder.append(&header, std::io::empty());
+    builder.into_inner().unwrap_or_default()
+}
+
+/// Sortie de `railpack prepare` : les deux seuls fichiers lus.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrepareOutput {
+    pub plan: Vec<u8>,
+    pub info: Vec<u8>,
+}
+
+fn output_err(name: &str, message: impl fmt::Display) -> BuildError {
+    BuildError::Tool {
+        tool: "railpack",
+        message: format!("sortie {name} refusee : {message}"),
+    }
+}
+
+/// Message d'un fichier de sortie trop gros.
+pub fn output_too_big(name: &str) -> BuildError {
+    output_err(name, format!("plus de {} Mio", MAX_OUTPUT_BYTES >> 20))
+}
+
+/// Contenu du fichier `name` dans `archive` (reponse de `GET
+/// /containers/{id}/archive?path=OUTPUT_DIR/<name>`) : une seule entree,
+/// un fichier regulier (ni lien symbolique, ni lien physique, ni dossier,
+/// ni autre) nomme `name`, de `MAX_OUTPUT_BYTES` au plus. Rien n'est jamais
+/// extrait sur le disque.
+pub fn read_output_file(archive: &[u8], name: &str) -> Result<Vec<u8>, BuildError> {
+    let mut ar = tar::Archive::new(archive);
+    let mut entries = ar
+        .entries()
+        .map_err(|e| output_err(name, format!("archive illisible ({e})")))?;
+    let mut entry = entries
+        .next()
+        .ok_or_else(|| output_err(name, "absente"))?
+        .map_err(|e| output_err(name, format!("archive illisible ({e})")))?;
+    let kind = entry.header().entry_type();
+    if kind.is_symlink() || kind.is_hard_link() {
+        return Err(output_err(name, "lien refuse"));
+    }
+    if kind != tar::EntryType::Regular {
+        return Err(output_err(name, "pas un fichier regulier"));
+    }
+    let path = entry
+        .path()
+        .map_err(|e| output_err(name, format!("nom illisible ({e})")))?;
+    if path != Path::new(name) {
+        return Err(output_err(name, "nom inattendu"));
+    }
+    // Taille de l'entree (en-tete PAX compris).
+    let size = entry.size();
+    if size > MAX_OUTPUT_BYTES {
+        return Err(output_too_big(name));
+    }
+    let mut data = Vec::new();
+    (&mut entry)
+        .take(MAX_OUTPUT_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| output_err(name, format!("lecture ({e})")))?;
+    if data.len() as u64 != size {
+        return Err(output_err(name, "archive tronquee"));
+    }
+    drop(entry);
+    if entries.next().is_some() {
+        return Err(output_err(name, "entrees inattendues"));
+    }
+    Ok(data)
+}
+
+/// Ecrit la sortie dans `dir` (dossier du plan de l'agent, 0700) : deux
+/// fichiers nouveaux, 0600, au compte de l'agent.
+pub fn write_output(output: &PrepareOutput, dir: &Path) -> Result<(), BuildError> {
+    let io = |e: std::io::Error| BuildError::Workdir(e.to_string());
+    for (name, data) in [(PLAN_FILE, &output.plan), (INFO_FILE, &output.info)] {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(dir.join(name)).map_err(io)?;
+        file.write_all(data).map_err(io)?;
+    }
+    Ok(())
+}
+
+/// Ouvre le depot en lecture au compte du conteneur (« autres » : le depot
+/// est clone avec le masque 0077 de l'agent). Le dossier du build reste
+/// 0700 : rien n'est expose sur l'hote. Les liens symboliques ne sont
+/// jamais suivis.
 #[cfg(unix)]
-pub fn share_with_sandbox(src: &Path, plan: &Path) -> Result<(), BuildError> {
+pub fn share_with_sandbox(src: &Path) -> Result<(), BuildError> {
     use std::os::unix::fs::PermissionsExt;
     let io = |e: std::io::Error| BuildError::Workdir(e.to_string());
     let mut stack = vec![src.to_path_buf()];
@@ -286,11 +430,11 @@ pub fn share_with_sandbox(src: &Path, plan: &Path) -> Result<(), BuildError> {
                 .map_err(io)?;
         }
     }
-    std::fs::set_permissions(plan, std::fs::Permissions::from_mode(0o703)).map_err(io)
+    Ok(())
 }
 
 #[cfg(not(unix))]
-pub fn share_with_sandbox(_src: &Path, _plan: &Path) -> Result<(), BuildError> {
+pub fn share_with_sandbox(_src: &Path) -> Result<(), BuildError> {
     Ok(())
 }
 
@@ -323,12 +467,7 @@ mod tests {
         }
 
         fn container(&self, cfg: &PrepareConfig) -> Result<PrepareContainer, BuildError> {
-            prepare_container(
-                cfg,
-                DeploymentId::new(),
-                &self.0.join("src"),
-                &self.0.join("plan"),
-            )
+            prepare_container(cfg, DeploymentId::new(), &self.0.join("src"))
         }
     }
 
@@ -393,8 +532,166 @@ mod tests {
         );
     }
 
+    /// Aucun dossier de l'hote n'est monte en ecriture : la sortie va dans un
+    /// volume anonyme (supprime avec le conteneur), lue par l'API d'archive.
     #[test]
-    fn prepare_mounts_are_read_only_except_the_plan() {
+    fn prepare_output_is_a_disposable_volume_never_a_host_dir() {
+        let tools = Tools::new();
+        let c = tools.container(&tools.config()).unwrap();
+        let host = c.body.host_config.as_ref().unwrap();
+        let binds = host.binds.as_ref().unwrap();
+        assert!(
+            binds
+                .iter()
+                .all(|b| b.ends_with(":ro") || b.contains(":ro,")),
+            "{binds:?}"
+        );
+        assert!(
+            !binds.iter().any(|b| b.contains(&format!(":{PLAN_TARGET}"))),
+            "{binds:?}"
+        );
+        let mounts = host.mounts.as_ref().unwrap();
+        assert_eq!(mounts.len(), 1, "{mounts:?}");
+        let out = &mounts[0];
+        assert_eq!(out.target.as_deref(), Some(PLAN_TARGET));
+        assert_eq!(out.typ, Some(MountTypeEnum::VOLUME));
+        assert!(out.source.is_none(), "volume anonyme : {out:?}");
+        assert_ne!(out.read_only, Some(true));
+        let labels = out
+            .volume_options
+            .as_ref()
+            .and_then(|o| o.labels.as_ref())
+            .unwrap();
+        assert_eq!(labels[MANAGED_LABEL], "true");
+        assert_eq!(labels[ROLE_LABEL], PREPARE_ROLE);
+        assert!(labels.contains_key(DEPLOYMENT_LABEL));
+        // railpack ecrit dans le dossier prepare dans ce volume.
+        let cmd = c.body.cmd.as_ref().unwrap();
+        assert!(
+            cmd.contains(&format!("{OUTPUT_DIR}/{PLAN_FILE}")),
+            "{cmd:?}"
+        );
+        assert!(
+            cmd.contains(&format!("{OUTPUT_DIR}/{INFO_FILE}")),
+            "{cmd:?}"
+        );
+        assert!(OUTPUT_DIR.starts_with(&format!("{PLAN_TARGET}/")));
+    }
+
+    /// Archive d'entrees `(nom, type, contenu, cible de lien)`.
+    fn archive(entries: &[(&str, tar::EntryType, &[u8], Option<&str>)]) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        for (name, kind, data, link) in entries {
+            let mut h = tar::Header::new_ustar();
+            h.set_path(name).unwrap();
+            h.set_entry_type(*kind);
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            if let Some(link) = link {
+                h.set_link_name(link).unwrap();
+            }
+            h.set_cksum();
+            b.append(&h, *data).unwrap();
+        }
+        b.into_inner().unwrap()
+    }
+
+    #[test]
+    fn output_dir_archive_creates_the_plan_dir_for_the_sandbox_account() {
+        let bytes = output_dir_archive();
+        let mut ar = tar::Archive::new(bytes.as_slice());
+        let entries: Vec<_> = ar.entries().unwrap().map(Result::unwrap).collect();
+        assert_eq!(entries.len(), 1);
+        let h = entries[0].header();
+        assert_eq!(h.entry_type(), tar::EntryType::Directory);
+        assert_eq!(
+            entries[0]
+                .path()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .trim_end_matches('/'),
+            OUTPUT_SUBDIR
+        );
+        // Ecriture et traversee pour le compte du bac a sable, rien d'autre.
+        assert_eq!(h.mode().unwrap(), 0o703);
+        assert_eq!(format!("{PLAN_TARGET}/{OUTPUT_SUBDIR}"), OUTPUT_DIR);
+    }
+
+    #[test]
+    fn output_file_accepts_one_regular_file() {
+        let data = br#"{"steps":[]}"#;
+        let a = archive(&[(PLAN_FILE, tar::EntryType::Regular, data, None)]);
+        assert_eq!(read_output_file(&a, PLAN_FILE).unwrap(), data);
+        // Au plafond exactement : accepte.
+        let full = vec![b'x'; MAX_OUTPUT_BYTES as usize];
+        let a = archive(&[(INFO_FILE, tar::EntryType::Regular, &full, None)]);
+        assert_eq!(read_output_file(&a, INFO_FILE).unwrap().len(), full.len());
+        assert!(a.len() <= MAX_OUTPUT_ARCHIVE, "{}", a.len());
+    }
+
+    #[test]
+    fn output_file_refuses_links() {
+        let symlink = archive(&[(PLAN_FILE, tar::EntryType::Symlink, b"", Some("/etc/passwd"))]);
+        let hardlink = archive(&[(PLAN_FILE, tar::EntryType::Link, b"", Some("other"))]);
+        for a in [symlink, hardlink] {
+            let err = read_output_file(&a, PLAN_FILE).unwrap_err();
+            assert!(err.to_string().contains("lien"), "{err}");
+        }
+    }
+
+    #[test]
+    fn output_file_refuses_oversize() {
+        let big = vec![b'x'; MAX_OUTPUT_BYTES as usize + 1];
+        let a = archive(&[(PLAN_FILE, tar::EntryType::Regular, &big, None)]);
+        let err = read_output_file(&a, PLAN_FILE).unwrap_err();
+        assert!(err.to_string().contains("1 Mio"), "{err}");
+    }
+
+    #[test]
+    fn output_file_refuses_other_shapes() {
+        let file = |name| (name, tar::EntryType::Regular, &b"{}"[..], None);
+        let cases = [
+            archive(&[]),
+            archive(&[(PLAN_FILE, tar::EntryType::Directory, b"", None)]),
+            archive(&[(PLAN_FILE, tar::EntryType::Fifo, b"", None)]),
+            archive(&[file(INFO_FILE)]),
+            archive(&[file("sub/railpack-plan.json")]),
+            archive(&[file(PLAN_FILE), file("extra.json")]),
+            b"pas une archive".to_vec(),
+        ];
+        for a in cases {
+            assert!(read_output_file(&a, PLAN_FILE).is_err());
+        }
+    }
+
+    #[test]
+    fn output_is_written_to_new_private_files() {
+        let tools = Tools::new();
+        let dir = tools.0.join("plan");
+        std::fs::create_dir(&dir).unwrap();
+        let out = PrepareOutput {
+            plan: b"plan".to_vec(),
+            info: b"info".to_vec(),
+        };
+        write_output(&out, &dir).unwrap();
+        assert_eq!(std::fs::read(dir.join(PLAN_FILE)).unwrap(), b"plan");
+        assert_eq!(std::fs::read(dir.join(INFO_FILE)).unwrap(), b"info");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join(PLAN_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // Jamais par-dessus un fichier deja la.
+        assert!(write_output(&out, &dir).is_err());
+    }
+
+    #[test]
+    fn prepare_host_mounts_are_read_only() {
         let tools = Tools::new();
         let cfg = tools.config();
         let c = tools.container(&cfg).unwrap();
@@ -414,8 +711,7 @@ mod tests {
         );
         assert!(mount(RAILPACK_TARGET).ends_with(":ro"));
         assert!(mount(SRC_TARGET).contains(":ro"));
-        assert!(mount(PLAN_TARGET).contains(":rw"));
-        assert_eq!(binds.len(), 4, "{binds:?}");
+        assert_eq!(binds.len(), 3, "{binds:?}");
         assert!(!binds.iter().any(|b| b.contains("docker.sock")));
     }
 

@@ -2036,7 +2036,8 @@ where
                 };
                 for c in list.iter().filter(sandbox) {
                     tracing::info!("bac a sable abandonne {} supprime", c.name);
-                    if let Err(e) = self.docker.remove(&c.id).await {
+                    // Avec son volume anonyme de sortie.
+                    if let Err(e) = self.docker.remove_with_volumes(&c.id).await {
                         tracing::warn!("{} : {e}", c.name);
                     }
                 }

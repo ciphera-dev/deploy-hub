@@ -4,8 +4,9 @@
 //! le frontend BuildKit de Railpack (meme version, image epinglee par digest)
 //! le construit par `buildctl` :
 //!
-//! `railpack prepare /src --plan-out /out/railpack-plan.json
-//!  --info-out /out/railpack-info.json` (depot et plan montes)
+//! `railpack prepare /src --plan-out /out/plan/railpack-plan.json
+//!  --info-out /out/plan/railpack-info.json` (depot monte en lecture seule,
+//! sortie dans un volume jetable lue par l'API d'archive)
 //!
 //! `buildctl ... build --frontend gateway.v0 --opt source=<frontend>
 //!  --local context=<src> --local dockerfile=<plan>
@@ -39,7 +40,8 @@ pub const NO_SANDBOX: &str =
     "bac a sable de railpack indisponible (compte ciphera-build absent) : relancer install.sh";
 
 /// `railpack prepare` du dossier `src` (le depot de `workdir`, ou son
-/// dossier racine) dans son bac a sable : plan ecrit dans `workdir.plan()`.
+/// dossier racine) dans son bac a sable ; ses deux fichiers de sortie,
+/// verifies, sont ecrits par l'agent dans `workdir.plan()`.
 pub async fn prepare<B: BuildBackend>(
     backend: &B,
     sink: &ProgressSink,
@@ -50,10 +52,10 @@ pub async fn prepare<B: BuildBackend>(
     let cfg = cfg.ok_or(BuildError::Unavailable(NO_SANDBOX))?;
     let io = |e: std::io::Error| BuildError::Workdir(e.to_string());
     let src = std::path::absolute(src).map_err(io)?;
-    let plan = std::path::absolute(workdir.plan()).map_err(io)?;
-    let container = sandbox::prepare_container(cfg, workdir.deployment(), &src, &plan)?;
-    sandbox::share_with_sandbox(&src, &plan)?;
-    backend.prepare(&container, sink).await
+    let container = sandbox::prepare_container(cfg, workdir.deployment(), &src)?;
+    sandbox::share_with_sandbox(&src)?;
+    let output = backend.prepare(&container, sink).await?;
+    sandbox::write_output(&output, std::path::Path::new(&workdir.plan()))
 }
 
 /// Arguments du frontend Railpack pour `buildctl`.

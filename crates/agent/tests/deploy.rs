@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use ciphera_agent::build::argv::{AllowedBin, ValidatedArg};
 use ciphera_agent::build::compose::{ComposeFile, bundle};
-use ciphera_agent::build::sandbox::PrepareContainer;
+use ciphera_agent::build::sandbox::{PrepareContainer, PrepareOutput};
 use ciphera_agent::build::{BuildBackend, BuildConfig, BuildError, ProgressSink};
 use ciphera_agent::deploy::compose::{
     COMPOSE_LABEL, COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL, ComposePlan, ComposeRunner,
@@ -834,8 +834,8 @@ impl BuildBackend for HangingBuild {
         &self,
         _container: &PrepareContainer,
         _sink: &ProgressSink,
-    ) -> Result<(), BuildError> {
-        Ok(())
+    ) -> Result<PrepareOutput, BuildError> {
+        Ok(PrepareOutput::default())
     }
 }
 
@@ -1184,8 +1184,8 @@ impl BuildBackend for SlowPull {
         &self,
         _container: &PrepareContainer,
         _sink: &ProgressSink,
-    ) -> Result<(), BuildError> {
-        Ok(())
+    ) -> Result<PrepareOutput, BuildError> {
+        Ok(PrepareOutput::default())
     }
 }
 
@@ -1738,6 +1738,12 @@ async fn startup_sweep_removes_leftover_sandboxes_and_dirs() {
     bench.deployer.sweep().await;
 
     assert!(bench.docker.container("prep").is_none());
+    // Avec son volume anonyme de sortie.
+    assert!(
+        bench.docker.calls().contains(&"remove-v:prep".to_string()),
+        "{:?}",
+        bench.docker.calls()
+    );
     assert!(
         bench.docker.container("app").is_some(),
         "applications intactes"

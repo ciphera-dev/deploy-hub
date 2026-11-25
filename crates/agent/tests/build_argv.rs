@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use ciphera_agent::build::argv::{self, AllowedBin, ValidatedArg};
 use ciphera_agent::build::compose::ComposeFile;
-use ciphera_agent::build::sandbox::{MISE_VERSION, PrepareConfig, PrepareContainer};
+use ciphera_agent::build::sandbox::{MISE_VERSION, PrepareConfig, PrepareContainer, PrepareOutput};
 use ciphera_agent::build::{
     self, BuildBackend, BuildConfig, BuildError, ProgressSink, clone, compose_policy, dockerfile,
 };
@@ -153,9 +153,9 @@ impl BuildBackend for FakeBackend {
         &self,
         container: &PrepareContainer,
         _sink: &ProgressSink,
-    ) -> Result<(), BuildError> {
+    ) -> Result<PrepareOutput, BuildError> {
         self.prepared.lock().unwrap().push(container.clone());
-        Ok(())
+        Ok(PrepareOutput::default())
     }
 
     async fn remove_image(&self, image: &ImageRef) -> Result<(), BuildError> {
@@ -1064,9 +1064,17 @@ async fn railpack_prepare_runs_in_the_sandbox_never_on_the_host() {
     let binds = host.binds.as_ref().unwrap();
     let workdir = std::path::absolute(format!("{}/{}", dir.0, spec.deployment_id)).unwrap();
     let src = format!("{}:/src:ro", workdir.join("src").to_str().unwrap());
-    let plan = format!("{}:/out:rw", workdir.join("plan").to_str().unwrap());
     assert!(binds.iter().any(|b| b.starts_with(&src)), "{binds:?}");
-    assert!(binds.iter().any(|b| b.starts_with(&plan)), "{binds:?}");
+    // Aucun dossier de l'hote en ecriture : la sortie va dans un volume.
+    let plan = workdir.join("plan");
+    assert!(
+        !binds.iter().any(|b| b.starts_with(plan.to_str().unwrap())),
+        "{binds:?}"
+    );
+    assert!(binds.iter().all(|b| b.contains(":ro")), "{binds:?}");
+    let mounts = host.mounts.as_ref().unwrap();
+    assert_eq!(mounts[0].target.as_deref(), Some("/out"));
+    assert!(mounts[0].source.is_none(), "{mounts:?}");
     assert!(
         binds
             .iter()

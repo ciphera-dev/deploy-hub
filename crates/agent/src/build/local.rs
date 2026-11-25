@@ -12,8 +12,9 @@ use std::time::Duration;
 use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::query_parameters::{
-    CreateContainerOptions, CreateImageOptions, ImportImageOptions, LogsOptions,
-    RemoveContainerOptions, RemoveImageOptions, TagImageOptions,
+    CreateContainerOptions, CreateImageOptions, DownloadFromContainerOptions, ImportImageOptions,
+    LogsOptions, RemoveContainerOptions, RemoveImageOptions, TagImageOptions,
+    UploadToContainerOptions,
 };
 use bytes::{Bytes, BytesMut};
 use futures_util::stream::{self, Stream, StreamExt};
@@ -23,7 +24,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use shared::ids::ProjectId;
 
 use super::argv::AllowedBin;
-use super::sandbox::{self, PrepareContainer};
+use super::sandbox::{self, PrepareContainer, PrepareOutput};
 use super::{BuildBackend, BuildError, MAX_LOG_LINE, ProgressSink};
 use crate::buildkit::{BuildkitLease, ProductionBuildkit};
 use crate::docker::{LogAssembler, check_managed};
@@ -465,8 +466,10 @@ impl LocalBackend {
             Err(e) if not_found(&e) => return Ok(()),
             Err(e) => return Err(prepare_err(e.to_string())),
         }
+        // Avec son volume anonyme de sortie.
         let options = RemoveContainerOptions {
             force: true,
+            v: true,
             ..Default::default()
         };
         match self.docker.remove_container(name, Some(options)).await {
@@ -489,6 +492,56 @@ impl LocalBackend {
             Some(Err(e)) => Err(prepare_err(e.to_string())),
             None => Err(prepare_err("attente du conteneur interrompue")),
         }
+    }
+
+    /// Cree `sandbox::OUTPUT_DIR` dans le volume de sortie du conteneur
+    /// (cree, pas encore demarre) par l'API d'archive.
+    async fn create_output_dir(&self, id: &str) -> Result<(), BuildError> {
+        let options = UploadToContainerOptions {
+            path: sandbox::PLAN_TARGET.to_string(),
+            no_overwrite_dir_non_dir: Some("true".to_string()),
+            copy_uidgid: None,
+        };
+        self.docker
+            .upload_to_container(
+                id,
+                Some(options),
+                bollard::body_full(Bytes::from(sandbox::output_dir_archive())),
+            )
+            .await
+            .map_err(|e| prepare_err(format!("dossier de sortie : {e}")))
+    }
+
+    /// Fichier `name` de `sandbox::OUTPUT_DIR`, lu par l'API d'archive
+    /// (`sandbox::MAX_OUTPUT_ARCHIVE` octets au plus) puis verifie.
+    async fn read_output_file(&self, id: &str, name: &str) -> Result<Vec<u8>, BuildError> {
+        let options = DownloadFromContainerOptions {
+            path: format!("{}/{name}", sandbox::OUTPUT_DIR),
+        };
+        let mut stream = std::pin::pin!(self.docker.download_from_container(id, Some(options)));
+        let mut archive = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| {
+                if not_found(&e) {
+                    prepare_err(format!("{name} absent de la sortie"))
+                } else {
+                    prepare_err(format!("lecture de {name} : {e}"))
+                }
+            })?;
+            if archive.len() + chunk.len() > sandbox::MAX_OUTPUT_ARCHIVE {
+                return Err(sandbox::output_too_big(name));
+            }
+            archive.extend_from_slice(&chunk);
+        }
+        sandbox::read_output_file(&archive, name)
+    }
+
+    /// Les deux fichiers de sortie du conteneur termine.
+    async fn read_output(&self, id: &str) -> Result<PrepareOutput, BuildError> {
+        Ok(PrepareOutput {
+            plan: self.read_output_file(id, sandbox::PLAN_FILE).await?,
+            info: self.read_output_file(id, sandbox::INFO_FILE).await?,
+        })
     }
 
     /// Journaux du conteneur (dernieres lignes) vers le journal du build.
@@ -608,7 +661,7 @@ impl BuildBackend for LocalBackend {
         &self,
         container: &PrepareContainer,
         sink: &ProgressSink,
-    ) -> Result<(), BuildError> {
+    ) -> Result<PrepareOutput, BuildError> {
         self.ensure_prepare_network().await?;
         self.ensure_image(&container.image).await?;
         // Reste d'un build interrompu du meme deploiement.
@@ -622,16 +675,25 @@ impl BuildBackend for LocalBackend {
             .create_container(Some(options), container.body.clone())
             .await
             .map_err(|e| prepare_err(format!("creation du bac a sable : {e}")))?;
-        let outcome =
-            tokio::time::timeout(sandbox::PREPARE_TIMEOUT, self.start_and_wait(&created.id)).await;
-        self.forward_container_logs(&created.id, sink).await;
-        // Supprime dans tous les cas (tue d'abord s'il tourne encore).
-        let removed = self.remove_managed_container(&created.id).await;
-        let code = outcome.map_err(|_| prepare_err("delai depasse"))??;
-        if code != 0 {
-            return Err(prepare_err(format!("echec (code {code})")));
+        let outcome = async {
+            self.create_output_dir(&created.id).await?;
+            tokio::time::timeout(sandbox::PREPARE_TIMEOUT, self.start_and_wait(&created.id))
+                .await
+                .map_err(|_| prepare_err("delai depasse"))?
         }
-        removed
+        .await;
+        self.forward_container_logs(&created.id, sink).await;
+        let output = match outcome {
+            Ok(0) => self.read_output(&created.id).await,
+            Ok(code) => Err(prepare_err(format!("echec (code {code})"))),
+            Err(e) => Err(e),
+        };
+        // Supprime dans tous les cas avec son volume (tue d'abord s'il
+        // tourne encore).
+        let removed = self.remove_managed_container(&created.id).await;
+        let output = output?;
+        removed?;
+        Ok(output)
     }
 
     async fn remove_image(&self, image: &ImageRef) -> Result<(), BuildError> {
