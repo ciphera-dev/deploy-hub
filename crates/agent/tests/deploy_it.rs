@@ -954,6 +954,11 @@ fn compose_spec(
     bundle: &serde_json::Value,
     tries: u8,
 ) -> DeploySpec {
+    // Au-dela, l'agent refuse l'ordre des `Start` (sans rien lancer).
+    assert!(
+        (1..=Healthcheck::MAX_TRIES).contains(&tries),
+        "essais du healthcheck hors bornes : {tries}"
+    );
     let deployment = DeploymentId::new();
     bench
         .compose_projects
@@ -1232,6 +1237,21 @@ async fn failed_probe_restores_dependency_services() {
     );
 }
 
+/// Messages deja recus de `rx` : etapes et lignes du journal.
+fn collect_messages(
+    rx: &mut mpsc::Receiver<AgentToControl>,
+    stages: &mut Vec<(Stage, StageStatus)>,
+    lines: &mut Vec<String>,
+) {
+    while let Ok(m) = rx.try_recv() {
+        match m {
+            AgentToControl::DeployProgress { stage, status, .. } => stages.push((stage, status)),
+            AgentToControl::LogLine(l) => lines.push(l.line),
+            _ => {}
+        }
+    }
+}
+
 /// Annulation pendant la sonde, dependance deja mise a jour : meme
 /// restauration.
 #[tokio::test(flavor = "multi_thread")]
@@ -1241,31 +1261,44 @@ async fn cancel_restores_dependency_services() {
     let (project, web, stable, cache) = served_cache_stack(&mut bench, "cancel.example.test").await;
     let before = inspected(&cache).await;
 
+    // Le plus d'essais admis (au-dela, l'ordre est refuse des `Start`) :
+    // la sonde dure assez pour l'annuler pendant qu'elle tourne.
     let v2 = compose_spec(
         &mut bench,
         project,
         web,
         &worker_bundle(&stable, BROKEN_IMAGE, "2", false),
-        60,
+        Healthcheck::MAX_TRIES,
     );
     let (tx, mut rx) = mpsc::channel(100_000);
+    let (mut stages, mut lines) = (Vec::new(), Vec::new());
     bench.deployer.spawn_deploy(v2.clone(), tx.clone());
-    // Service expose de v2 cree : `cache` a deja ete mis a jour.
-    let exposed = format!("ciphera-d-{}", v2.deployment_id);
-    let mut started = false;
+    // Sonde de v2 commencee : `cache` a deja ete mis a jour et le service
+    // expose cree. Un deploiement conclu avant cela fait echouer le test
+    // tout de suite, avec ses etapes.
+    let mut probing = false;
     for _ in 0..240 {
-        let list = bench
-            .docker
-            .list_managed(&[(COMPOSE_PROJECT_LABEL, exposed.as_str())])
-            .await
-            .unwrap();
-        if !list.is_empty() {
-            started = true;
+        collect_messages(&mut rx, &mut stages, &mut lines);
+        if stages.iter().any(|(st, s)| s.is_terminal(*st)) {
+            panic!("v2 conclu avant l'annulation : {stages:?} {lines:?}");
+        }
+        if stages.contains(&(Stage::Healthcheck, StageStatus::Started)) {
+            probing = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    assert!(started, "service expose de v2 jamais cree");
+    assert!(probing, "sonde de v2 jamais commencee : {stages:?}");
+    let exposed = format!("ciphera-d-{}", v2.deployment_id);
+    assert!(
+        !bench
+            .docker
+            .list_managed(&[(COMPOSE_PROJECT_LABEL, exposed.as_str())])
+            .await
+            .unwrap()
+            .is_empty(),
+        "service expose de v2 cree"
+    );
     assert_ne!(
         service_container(&bench, &stable, "cache").await,
         Some(cache.clone()),
@@ -1276,14 +1309,7 @@ async fn cancel_restores_dependency_services() {
 
     assert_cache_restored(&bench, &stable, &cache, &before).await;
     drop(tx);
-    let (mut stages, mut lines) = (Vec::new(), Vec::new());
-    while let Ok(m) = rx.try_recv() {
-        match m {
-            AgentToControl::DeployProgress { stage, status, .. } => stages.push((stage, status)),
-            AgentToControl::LogLine(l) => lines.push(l.line),
-            _ => {}
-        }
-    }
+    collect_messages(&mut rx, &mut stages, &mut lines);
     assert!(
         matches!(stages.last(), Some((_, StageStatus::Cancelled))),
         "{stages:?}"
