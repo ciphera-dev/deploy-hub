@@ -10,6 +10,10 @@
 //! par l'agent), dossier et fichier au compte `--postgres-owner`
 //! (`ciphera-postgres`, sous lequel tourne le conteneur).
 //!
+//! Tous appartiennent au compte du service (`--owner`), sauf `ca/ca.key` :
+//! la cle de la CA reste a root (qui lance l'init), lue par le seul
+//! signataire root (`ciphera admin sign-requests`, `agents::signer`).
+//!
 //! Enrolement de l'agent local, dans `<agent_dir>` : la paire de cles est
 //! generee cote agent (`agent.key`), la CA ne recoit que la cle publique et
 //! signe `agent.crt` ; `ca.crt` sert a verifier le plan de controle. La ligne
@@ -218,9 +222,10 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
     let mut written: Vec<PathBuf> = Vec::new();
     let mut agent_written: Vec<PathBuf> = Vec::new();
     let mut pg_written: Vec<PathBuf> = Vec::new();
+    let mut root_written: Vec<PathBuf> = Vec::new();
     let all = files
         .iter()
-        .map(|(rel, bytes)| (dir.join(rel), *bytes, Owner::Instance))
+        .map(|(rel, bytes)| (dir.join(rel), *bytes, config_owner(rel)))
         .chain(
             agent_files
                 .iter()
@@ -234,12 +239,18 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
     for (path, bytes, owner) in all {
         if let Err(e) = write_new(&path, bytes) {
             // Meilleur effort : ne pas laisser une init a moitie faite.
-            for p in written.iter().chain(&agent_written).chain(&pg_written) {
+            for p in written
+                .iter()
+                .chain(&agent_written)
+                .chain(&pg_written)
+                .chain(&root_written)
+            {
                 let _ = fs::remove_file(p);
             }
             return Err(e);
         }
         match owner {
+            Owner::Root => root_written.push(path),
             Owner::Instance => written.push(path),
             Owner::Agent => agent_written.push(path),
             Owner::Postgres => pg_written.push(path),
@@ -277,11 +288,23 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
 }
 
 /// Compte proprietaire d'un fichier ecrit par l'init.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Owner {
+    /// Laisse a root (qui lance l'init) : cle de la CA.
+    Root,
     Instance,
     Agent,
     Postgres,
+}
+
+/// Proprietaire d'un fichier du dossier de configuration : le compte du
+/// service, sauf la cle de la CA (root, signataire separe).
+fn config_owner(rel: &str) -> Owner {
+    if rel == CA_KEY {
+        Owner::Root
+    } else {
+        Owner::Instance
+    }
 }
 
 fn random<const N: usize>() -> Result<Zeroizing<[u8; N]>, InitError> {
@@ -470,6 +493,14 @@ mod tests {
         let targets = agent_chown_targets(dir, vec![dir.join("agent.key")]);
         assert!(targets.contains(&dir.to_path_buf()));
         assert!(targets.contains(&dir.join("agent.key")));
+    }
+
+    #[test]
+    fn ca_key_stays_with_root() {
+        assert_eq!(config_owner(CA_KEY), Owner::Root);
+        for rel in ALL_FILES.iter().filter(|r| **r != CA_KEY) {
+            assert_eq!(config_owner(rel), Owner::Instance, "{rel}");
+        }
     }
 
     #[test]

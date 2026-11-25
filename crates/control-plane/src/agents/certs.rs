@@ -1,37 +1,45 @@
 //! Renouvellement des certificats emis par la CA de l'instance (`ciphera
-//! init`) :
+//! init`). Le plan de controle n'a pas la cle de la CA (`ca/ca.key`, root
+//! 0600) : il demande chaque certificat au signataire root
+//! (`agents::signer`, `ciphera admin sign-requests`) et n'accepte que la
+//! reponse a sa propre demande ([`Renewals`]) :
 //!
 //! - lien des agents (`tls/link.{crt,key}`) et acces direct du panneau
-//!   (`tls/panel.{crt,key}`), 730 jours : renouveles par le plan de controle
-//!   lui-meme aux deux tiers de leur validite, au demarrage puis toutes les
-//!   [`CHECK_EVERY`], avec rechargement a chaud ([`renew_own`]) ;
+//!   (`tls/panel.{crt,key}`), 730 jours : demandes aux deux tiers de leur
+//!   validite, au demarrage puis toutes les [`CHECK_EVERY`] ; le certificat
+//!   re-signe (meme cle) est installe puis recharge a chaud ;
 //! - certificat client de chaque agent, 365 jours : a la connexion d'un
-//!   agent dont le certificat a passe les deux tiers, un nouveau certificat
-//!   (meme cle, meme identifiant) lui est envoye sur le lien
-//!   (`ControlToAgent::RenewedCertificate`, [`renew_agent`]) et son empreinte
-//!   notee en `servers.next_cert_fingerprint` ; elle remplace l'ancienne a
-//!   la premiere connexion qui la presente ;
+//!   agent dont le certificat a passe les deux tiers, demande au signataire,
+//!   qui note la nouvelle empreinte en `servers.next_cert_fingerprint` ; le
+//!   certificat (meme cle, meme identifiant) est envoye a l'agent sur le lien
+//!   (`ControlToAgent::RenewedCertificate`) et remplace l'ancien a la
+//!   premiere connexion qui le presente ;
 //! - certificat deja expire (machine eteinte longtemps) : `ciphera admin
-//!   renew-certs` ([`renew_all`]), voir `docs/operations/certificats.md` ;
-//!   seul le certificat du serveur local enregistre, emis par la CA de
-//!   l'instance, est re-signe.
+//!   renew-certs` ([`renew_all`], root), memes fonctions de signature que le
+//!   signataire, voir `docs/operations/certificats.md` ; seul le certificat
+//!   du serveur local enregistre, emis par la CA de l'instance, est re-signe.
 //!
-//! Certificat et cle d'une paire sont remplaces ensemble ([`replace_pair`] :
-//! fichiers prepares, manifeste, renommages), et un remplacement
-//! interrompu est repris avant toute lecture ([`recover_pairs`]).
+//! Un certificat est remplace sous le verrou des paires ([`lock_pairs`]) ;
+//! une paire certificat + cle interrompue ([`replace_pair`] : fichiers
+//! prepares, manifeste, renommages) est reprise avant toute lecture
+//! ([`recover_pairs`]).
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use shared::ids::ServerId;
 use sqlx::PgPool;
 
 use super::servers;
+use super::signer::{self, CertRequest, Usage};
 use super::transport::{CA_CRT, LINK_CRT, LINK_KEY};
 
-/// Cle privee de la CA (relative au dossier de configuration).
+/// Cle privee de la CA (relative au dossier de configuration) : root 0600,
+/// lue par le seul signataire root.
 pub const CA_KEY: &str = "ca/ca.key";
 /// Certificat et cle de l'acces direct du panneau.
 pub const PANEL_CRT: &str = "tls/panel.crt";
@@ -40,6 +48,10 @@ pub const PANEL_KEY: &str = "tls/panel.key";
 pub const AGENT_CRT: &str = "agent.crt";
 /// Intervalle de verification des certificats du plan de controle.
 pub const CHECK_EVERY: Duration = Duration::from_secs(12 * 3600);
+/// Intervalle de lecture des reponses du signataire.
+pub const RESPONSE_POLL: Duration = Duration::from_secs(2);
+/// Demande sans reponse apres ce delai : reecrite (nouvel identifiant).
+pub const REQUEST_RETRY: Duration = Duration::from_secs(600);
 
 /// Certificats serveur du plan de controle : (certificat, cle).
 pub const OWN_CERTS: [(&str, &str); 2] = [(LINK_CRT, LINK_KEY), (PANEL_CRT, PANEL_KEY)];
@@ -51,11 +63,11 @@ pub fn now_unix() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// CA de l'instance (`ca/ca.crt`, `ca/ca.key`).
+/// CA de l'instance (`ca/ca.crt`, `ca/ca.key`), pour root seulement : voir
+/// [`signer::load_ca`] (cle du proprietaire du processus, 0600, jamais a
+/// travers un lien).
 pub fn load_ca(config_dir: &Path) -> io::Result<pki::Ca> {
-    let cert = fs::read_to_string(config_dir.join(CA_CRT))?;
-    let key = zeroize::Zeroizing::new(fs::read_to_string(config_dir.join(CA_KEY))?);
-    pki::Ca::load(&cert, &key).map_err(io::Error::other)
+    signer::load_ca(config_dir)
 }
 
 /// Fichier temporaire d'ecriture de `path` : `.<nom>.renew`, meme dossier.
@@ -327,10 +339,11 @@ pub fn recover_pairs(config_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Renouvelle le certificat serveur `crt` (et sa cle `key`) s'il a passe
-/// les deux tiers de sa validite, ou toujours avec `force`. Vrai si
-/// renouvele. Certificat et cle sont remplaces ensemble ([`replace_pair`]),
-/// lecture comprise sous le verrou des paires.
+/// Re-signe le certificat serveur `crt` (meme cle `key`, memes SAN) s'il a
+/// passe les deux tiers de sa validite, ou toujours avec `force`. Vrai si
+/// renouvele. Root seulement (`ciphera admin renew-certs`) : meme signature
+/// que le signataire ([`signer::sign_server`]). Lecture et ecriture sous le
+/// verrou des paires.
 pub fn renew_server(
     config_dir: &Path,
     ca: &pki::Ca,
@@ -353,56 +366,238 @@ pub fn renew_server(
     if !due && !force {
         return Ok(false);
     }
-    let mut bundle = ca.renew_server_cert(&pem).map_err(io::Error::other)?;
-    let new_key = bundle.key_pem.take().unwrap_or_default();
-    replace_pair_locked(
-        config_dir,
-        (crt, key),
-        bundle.cert_pem.as_bytes(),
-        new_key.as_bytes(),
-    )?;
+    let bundle = signer::sign_server(ca, &pem).map_err(io::Error::other)?;
+    replace_file(&config_dir.join(crt), bundle.cert_pem.as_bytes())?;
     Ok(true)
 }
 
-/// Certificats du lien et du panneau a renouveler : renouveles. Renvoie les
-/// certificats renouveles ; une erreur est journalisee et n'arrete rien.
-pub fn renew_own(config_dir: &Path, ca: &pki::Ca, now: i64) -> Vec<&'static str> {
-    let mut renewed = Vec::new();
-    for pair in OWN_CERTS {
-        match renew_server(config_dir, ca, pair, now, false) {
-            Ok(true) => {
-                tracing::info!("certificat {} renouvele", pair.0);
-                renewed.push(pair.0);
-            }
-            Ok(false) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => tracing::error!("renouvellement de {} impossible : {e}", pair.0),
-        }
-    }
-    renewed
+/// Demande en attente du signataire.
+struct Pending {
+    request: CertRequest,
+    sent: Instant,
+    /// Certificat actuel de l'agent (demandes d'agent seulement).
+    leaf: Option<Vec<u8>>,
 }
 
-/// Agent connecte avec le certificat `leaf` (empreinte `fingerprint`,
-/// l'actuelle) : s'il a passe les deux tiers de sa validite, nouveau
-/// certificat pour la meme cle, note comme suivant en base ; son PEM est a
-/// envoyer a l'agent. `None` : pas encore du (ou deja note par une autre
-/// connexion).
-pub async fn renew_agent(
-    db: &PgPool,
-    ca: &pki::Ca,
-    id: ServerId,
-    fingerprint: &str,
-    leaf: &[u8],
-    now: i64,
-) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
-    if pki::renewal_due(leaf, now) != Some(true) {
-        return Ok(None);
+/// Demandes de certificats du plan de controle au signataire root, et
+/// reponses acceptees : seulement celle qui porte l'identifiant de la
+/// demande en cours, emise par la CA, pour la meme cle (et le meme agent).
+/// Une demande par certificat a la fois ; sans reponse apres
+/// [`REQUEST_RETRY`], elle est reecrite avec un nouvel identifiant.
+pub struct Renewals {
+    config_dir: PathBuf,
+    data_dir: PathBuf,
+    pending: Mutex<HashMap<String, Pending>>,
+}
+
+impl std::fmt::Debug for Renewals {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Renewals").finish_non_exhaustive()
     }
-    let bundle = ca.renew_agent_cert(leaf)?;
-    if !servers::set_next_cert(db, id, fingerprint, &bundle.fingerprint_sha256).await? {
-        return Ok(None);
+}
+
+impl Renewals {
+    /// `config_dir` : `ca/ca.crt` et `tls/` ; `data_dir` : dossiers des
+    /// demandes et des reponses (`agents::signer`).
+    pub fn new(config_dir: &Path, data_dir: &Path) -> Self {
+        Self {
+            config_dir: config_dir.to_path_buf(),
+            data_dir: data_dir.to_path_buf(),
+            pending: Mutex::new(HashMap::new()),
+        }
     }
-    Ok(Some(bundle.cert_pem))
+
+    fn pending(&self) -> std::sync::MutexGuard<'_, HashMap<String, Pending>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Ecrit la demande si aucune n'est en attente pour ce certificat.
+    fn submit(&self, request: CertRequest, leaf: Option<Vec<u8>>) -> io::Result<bool> {
+        let name = request.name();
+        let mut pending = self.pending();
+        if pending.contains_key(&name) {
+            return Ok(false);
+        }
+        signer::write_request(&self.data_dir, &request)?;
+        pending.insert(
+            name,
+            Pending {
+                request,
+                sent: Instant::now(),
+                leaf,
+            },
+        );
+        Ok(true)
+    }
+
+    /// Agent `id` connecte avec le certificat `leaf` : demande de
+    /// renouvellement s'il a passe les deux tiers de sa validite. Vrai si
+    /// une demande a ete ecrite.
+    pub fn request_agent(&self, id: ServerId, leaf: &[u8], now: i64) -> io::Result<bool> {
+        if pki::renewal_due(leaf, now) != Some(true) {
+            return Ok(false);
+        }
+        let request = CertRequest::agent(id, leaf)
+            .ok_or_else(|| io::Error::other("certificat de l'agent illisible"))?;
+        self.submit(request, Some(leaf.to_vec()))
+    }
+
+    /// Certificats du lien et du panneau a renouveler : demandes ecrites.
+    /// Renvoie les certificats demandes ; une erreur est journalisee et
+    /// n'arrete rien.
+    pub fn request_own(&self, now: i64) -> Vec<&'static str> {
+        let mut requested = Vec::new();
+        for usage in [Usage::Link, Usage::Panel] {
+            let Some(crt) = usage.own_cert() else {
+                continue;
+            };
+            match self.request_one(usage, crt, now) {
+                Ok(true) => {
+                    tracing::info!("certificat {crt} : renouvellement demande au signataire");
+                    requested.push(crt);
+                }
+                Ok(false) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => tracing::error!("renouvellement de {crt} non demande : {e}"),
+            }
+        }
+        requested
+    }
+
+    fn request_one(&self, usage: Usage, crt: &str, now: i64) -> io::Result<bool> {
+        let pem = fs::read_to_string(self.config_dir.join(crt))?;
+        let due = pki::der_from_pem(&pem)
+            .and_then(|der| pki::renewal_due(&der, now))
+            .unwrap_or(true);
+        if !due {
+            return Ok(false);
+        }
+        let request = CertRequest::own(usage, &pem)
+            .ok_or_else(|| io::Error::other(format!("{crt} illisible")))?;
+        self.submit(request, None)
+    }
+
+    /// Reponse a la demande en attente `name`, si elle porte son
+    /// identifiant ; demande reecrite apres [`REQUEST_RETRY`] sans reponse.
+    fn answer(&self, name: &str, pending: &mut Pending) -> Option<String> {
+        match signer::read_response(&self.data_dir, name) {
+            Ok(Some((id, pem))) if id == pending.request.request_id => return Some(pem),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("reponse du signataire {name} illisible : {e}"),
+        }
+        if pending.sent.elapsed() >= REQUEST_RETRY {
+            pending.request.request_id = uuid::Uuid::new_v4();
+            pending.sent = Instant::now();
+            tracing::warn!(
+                "certificat {name} : pas de reponse du signataire (journalctl -u ciphera-certsign), demande reecrite"
+            );
+            if let Err(e) = signer::write_request(&self.data_dir, &pending.request) {
+                tracing::error!("certificat {name} : demande non reecrite : {e}");
+            }
+        }
+        None
+    }
+
+    fn ca_der(&self) -> Option<Vec<u8>> {
+        fs::read_to_string(self.config_dir.join(CA_CRT))
+            .ok()
+            .and_then(|pem| pki::der_from_pem(&pem))
+    }
+
+    /// Certificats d'agents signes : `(serveur, PEM)` a envoyer, verifies
+    /// (CA, identifiant, meme cle, pas encore a renouveler). Les demandes
+    /// d'agents absents de `connected` sont abandonnees (redemandees a leur
+    /// prochaine connexion).
+    pub fn agent_responses(&self, now: i64, connected: &[ServerId]) -> Vec<(ServerId, String)> {
+        let ca_der = self.ca_der();
+        let mut out = Vec::new();
+        let mut pending = self.pending();
+        pending.retain(|name, p| {
+            let Some(id) = p.request.server_id else {
+                return true;
+            };
+            if !connected.contains(&id) {
+                return false;
+            }
+            let Some(pem) = self.answer(name, p) else {
+                return true;
+            };
+            let leaf = p.leaf.as_deref().unwrap_or_default();
+            let ok = pki::der_from_pem(&pem).is_some_and(|der| {
+                ca_der.as_deref().is_some_and(|ca| pki::issued_by(ca, &der))
+                    && pki::agent_id_from_cert(&der) == Some(id)
+                    && pki::public_key_der(&der).is_some()
+                    && pki::public_key_der(&der) == pki::public_key_der(leaf)
+                    && pki::renewal_due(&der, now) == Some(false)
+            });
+            if ok {
+                out.push((id, pem));
+            } else {
+                tracing::error!("agent {id} : certificat du signataire refuse (CA ou cle)");
+            }
+            false
+        });
+        out
+    }
+
+    /// Certificats du lien et du panneau signes : installes (meme cle,
+    /// verifiee sous le verrou des paires). Renvoie les certificats
+    /// installes, a recharger.
+    pub fn install_own_responses(&self, now: i64) -> Vec<&'static str> {
+        let ca_der = self.ca_der();
+        let mut installed = Vec::new();
+        let mut pending = self.pending();
+        for (usage, (crt, key)) in [Usage::Link, Usage::Panel].into_iter().zip(OWN_CERTS) {
+            let name = match usage {
+                Usage::Link => "link",
+                _ => "panel",
+            };
+            let Some(p) = pending.get_mut(name) else {
+                continue;
+            };
+            let Some(pem) = self.answer(name, p) else {
+                continue;
+            };
+            pending.remove(name);
+            match self.install_own(ca_der.as_deref(), (crt, key), &pem, now) {
+                Ok(()) => {
+                    tracing::info!("certificat {crt} renouvele");
+                    installed.push(crt);
+                }
+                Err(e) => tracing::error!("certificat {crt} du signataire refuse : {e}"),
+            }
+        }
+        installed
+    }
+
+    fn install_own(
+        &self,
+        ca_der: Option<&[u8]>,
+        (crt, key): (&str, &str),
+        pem: &str,
+        now: i64,
+    ) -> io::Result<()> {
+        let der = pki::der_from_pem(pem).ok_or_else(|| io::Error::other("illisible"))?;
+        if !ca_der.is_some_and(|ca| pki::issued_by(ca, &der)) {
+            return Err(io::Error::other("non emis par la CA de l'instance"));
+        }
+        if pki::renewal_due(&der, now) != Some(false) {
+            return Err(io::Error::other("deja a renouveler"));
+        }
+        let _lock = lock_pairs(&self.config_dir, crt)?;
+        recover_pair_locked(&self.config_dir, (crt, key))?;
+        let path = self.config_dir.join(crt);
+        let current = fs::read_to_string(&path)?;
+        let same_key = pki::der_from_pem(&current)
+            .and_then(|d| pki::public_key_der(&d))
+            .is_some_and(|k| Some(k) == pki::public_key_der(&der));
+        if !same_key {
+            return Err(io::Error::other("cle differente du certificat en place"));
+        }
+        replace_file(&path, pem.as_bytes())
+    }
 }
 
 /// Resultat de `ciphera admin renew-certs`.
@@ -412,8 +607,9 @@ pub struct RenewAll {
     pub agent: Option<(ServerId, PathBuf)>,
 }
 
-/// Reprise manuelle (root) : certificats du lien et du panneau renouveles
-/// quelle que soit leur date, et certificat de l'agent local (meme cle) ;
+/// Reprise manuelle (root) : certificats du lien et du panneau re-signes
+/// (meme cle) quelle que soit leur date, et certificat de l'agent local
+/// (meme cle), avec les fonctions de signature du signataire ;
 /// la nouvelle empreinte de l'agent est notee en base avant l'ecriture du
 /// fichier, puis remplace l'ancienne a sa premiere connexion. Services a
 /// redemarrer ensuite.
@@ -427,6 +623,10 @@ pub async fn renew_all(
     config_dir: &Path,
     agent_dir: &Path,
 ) -> Result<RenewAll, Box<dyn std::error::Error>> {
+    // Installation anterieure : cle de la CA remise a root (0600) d'abord.
+    if signer::harden_ca_key(config_dir).map_err(|e| format!("{CA_KEY} : {e}"))? {
+        eprintln!("{CA_KEY} remise a root (0600)");
+    }
     let ca = load_ca(config_dir).map_err(|e| format!("CA de l'instance illisible : {e}"))?;
     recover_pairs(config_dir)
         .map_err(|e| format!("reprise d'un renouvellement interrompu : {e}"))?;
@@ -444,7 +644,7 @@ pub async fn renew_all(
     }
     let agent = match local_agent {
         Some((id, known, der)) => {
-            let bundle = ca.renew_agent_cert(&der)?;
+            let bundle = signer::sign_agent(&ca, &der, id)?;
             // Empreinte connue : la meme qu'au controle (atomique). Base
             // restauree (`known` vide) : identifiant et ligne locale.
             let noted = sqlx::query(

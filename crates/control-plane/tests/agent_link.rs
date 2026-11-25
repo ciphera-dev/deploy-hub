@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use ciphera_agent::config::{AgentConfig, Identity};
 use ciphera_agent::transport::{Agent, client_config, fixed_state};
+use control_plane::agents::certs::Renewals;
 use control_plane::agents::registry::{AgentRegistry, SendError};
-use control_plane::agents::{servers, transport};
+use control_plane::agents::{servers, signer, transport};
 use control_plane::cli::admin;
 use pki::Ca;
 use proto::{
@@ -809,8 +810,8 @@ async fn agent_enrolled_by_init_connects() {
 }
 
 /// Simulation du temps : certificat d'agent emis il y a 300 jours (65 jours
-/// restants). A la connexion, le plan de controle en envoie un nouveau
-/// (meme cle) ; l'agent le verifie, remplace `agent.crt`, se reconnecte
+/// restants). A la connexion, le plan de controle le demande au signataire
+/// root et en envoie un nouveau (meme cle) ; l'agent le verifie, remplace `agent.crt`, se reconnecte
 /// avec lui, et l'empreinte en base est remplacee. L'ancien certificat
 /// n'est plus accepte ensuite.
 #[tokio::test]
@@ -829,12 +830,37 @@ async fn expiring_agent_cert_is_renewed_over_the_link() {
     )
     .unwrap();
     let registry = AgentRegistry::new();
+    // Plan de controle sans la cle de la CA : demandes au signataire root,
+    // simule ici par une boucle sur `sign_requests` (le `.path` en vrai).
+    let config = common::TempDir::new();
+    let data = common::TempDir::new();
+    std::fs::create_dir_all(config.0.join("ca")).unwrap();
+    std::fs::write(config.0.join(transport::CA_CRT), ca.cert_pem()).unwrap();
+    let renewals = Arc::new(Renewals::new(&config.0, &data.0));
     tokio::spawn(transport::serve_with_renewal(
         endpoint.clone(),
         registry.clone(),
         db.clone(),
-        Some(ca.clone()),
+        Some(renewals),
     ));
+    let root_config = common::TempDir::new();
+    std::fs::create_dir_all(root_config.0.join("ca")).unwrap();
+    std::fs::write(root_config.0.join(transport::CA_CRT), ca.cert_pem()).unwrap();
+    let key_path = root_config.0.join(control_plane::agents::certs::CA_KEY);
+    std::fs::write(&key_path, ca.key_pem().as_bytes()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let signer_db = db.clone();
+    let signer_data = data.0.clone();
+    let signer_task = tokio::spawn(async move {
+        loop {
+            let _ = signer::sign_requests(&signer_db, &root_config.0, &signer_data).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
     let link = Link {
         addr: endpoint.local_addr().unwrap(),
         registry,
@@ -901,6 +927,7 @@ async fn expiring_agent_cert_is_renewed_over_the_link() {
     )
     .unwrap();
     running_agent.abort();
+    signer_task.abort();
     let result = hello(
         client_config(&old_identity).unwrap(),
         link.addr,

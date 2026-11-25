@@ -116,6 +116,7 @@ fn only_the_proxy_gets_ambient_capabilities() {
         "ciphera-agent.service",
         "ciphera-updater.service",
         "ciphera-egress-check.service",
+        "ciphera-certsign.service",
     ] {
         assert!(
             values(&unit(name), "AmbientCapabilities").is_empty(),
@@ -136,6 +137,8 @@ fn units_never_carry_secrets() {
         "ciphera-updater-recover.service",
         "ciphera-egress-check.service",
         "ciphera-egress-check.timer",
+        "ciphera-certsign.service",
+        "ciphera-certsign.path",
     ] {
         let text = unit(name);
         for env in values(&text, "Environment") {
@@ -187,6 +190,7 @@ fn root_units_load_no_environment_file() {
         "ciphera-updater.service",
         "ciphera-updater-recover.service",
         "ciphera-egress-check.service",
+        "ciphera-certsign.service",
     ] {
         let text = unit(name);
         assert!(values(&text, "EnvironmentFile").is_empty(), "{name}");
@@ -248,6 +252,7 @@ fn default_dependency_services_are_never_ordered_before_early_boot_units() {
         "ciphera-updater.service",
         "ciphera-updater-recover.service",
         "ciphera-egress-check.service",
+        "ciphera-certsign.service",
     ] {
         let text = unit(name);
         if values(&text, "DefaultDependencies") == vec!["no"] {
@@ -430,6 +435,74 @@ fn egress_check_is_a_hardened_root_oneshot_every_five_minutes() {
     assert_eq!(values(&timer, "OnCalendar"), vec!["*:0/5"]);
     assert_eq!(values(&timer, "Unit"), vec!["ciphera-egress-check.service"]);
     assert_eq!(values(&timer, "WantedBy"), vec!["timers.target"]);
+}
+
+/// Signataire de certificats root (agents::signer) : declenche par les
+/// demandes du plan de controle (meme dossier que le code), oneshot root
+/// durci sans fichier d'environnement, ecritures limitees aux demandes,
+/// reponses et a la cle de la CA ; lance aussi au demarrage (passage d'une
+/// installation anterieure).
+#[test]
+fn certsign_is_a_hardened_root_oneshot_triggered_by_requests() {
+    use control_plane::agents::signer;
+    let path = unit("ciphera-certsign.path");
+    assert_eq!(
+        values(&path, "PathExistsGlob"),
+        vec![format!(
+            "{}/{}/*.json",
+            shared::config::Config::DEFAULT_DATA_DIR,
+            signer::REQUESTS_DIR
+        )]
+    );
+    assert_eq!(values(&path, "Unit"), vec!["ciphera-certsign.service"]);
+    assert_eq!(values(&path, "WantedBy"), vec!["multi-user.target"]);
+
+    let svc = unit("ciphera-certsign.service");
+    for (key, want) in HARDENING {
+        assert_eq!(values(&svc, key), vec![want.to_string()], "{key}");
+    }
+    assert!(values(&svc, "User").is_empty(), "root : aucun User=");
+    assert_eq!(values(&svc, "Type"), vec!["oneshot"]);
+    assert_eq!(
+        values(&svc, "ExecStart"),
+        vec!["/usr/local/bin/ciphera admin sign-requests"]
+    );
+    for key in [
+        "PrivateDevices",
+        "ProtectKernelTunables",
+        "ProtectKernelModules",
+        "ProtectControlGroups",
+        "RestrictSUIDSGID",
+        "RestrictNamespaces",
+        "LockPersonality",
+        "MemoryDenyWriteExecute",
+    ] {
+        assert_eq!(values(&svc, key), vec!["yes".to_string()], "{key}");
+    }
+    assert_eq!(
+        values(&svc, "CapabilityBoundingSet"),
+        vec!["CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN"]
+    );
+    assert_eq!(
+        values(&svc, "ReadWritePaths"),
+        vec!["-/var/lib/ciphera", "-/etc/ciphera/ca"]
+    );
+    assert_eq!(
+        values(&svc, "RestrictAddressFamilies"),
+        vec!["AF_UNIX AF_INET AF_INET6"]
+    );
+    assert_eq!(values(&svc, "SystemCallFilter"), vec!["@system-service"]);
+    assert_eq!(values(&svc, "WantedBy"), vec!["multi-user.target"]);
+}
+
+/// Le plan de controle ne peut jamais lire la cle de la CA.
+#[test]
+fn control_plane_cannot_read_the_ca_key() {
+    let text = unit("ciphera.service");
+    assert_eq!(
+        values(&text, "InaccessiblePaths"),
+        vec!["-/etc/ciphera/ca/ca.key"]
+    );
 }
 
 #[test]

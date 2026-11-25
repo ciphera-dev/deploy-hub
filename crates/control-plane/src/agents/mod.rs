@@ -4,4 +4,5 @@
 pub mod certs;
 pub mod registry;
 pub mod servers;
+pub mod signer;
 pub mod transport;

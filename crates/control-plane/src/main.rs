@@ -76,6 +76,10 @@ enum AdminCommand {
         /// Identifiant du serveur (UUID de son agent).
         id: String,
     },
+    /// Signataire root des certificats (ciphera-certsign.service) : cle de
+    /// la CA remise a root (0600), puis demandes du service signees (meme
+    /// cle publique, serveur enregistre et non revoque) ou refusees.
+    SignRequests,
 }
 
 #[derive(Args)]
@@ -126,6 +130,9 @@ async fn main() {
         }
         Some(Command::Admin(AdminCommand::RevokeAgent { id })) => {
             std::process::exit(run_revoke_agent(&id).await)
+        }
+        Some(Command::Admin(AdminCommand::SignRequests)) => {
+            std::process::exit(run_sign_requests().await)
         }
         Some(Command::Serve) | None => {}
     }
@@ -243,6 +250,67 @@ async fn run_renew_certs(agent_dir: &std::path::Path) -> i32 {
             }
             eprintln!("a faire maintenant : systemctl restart ciphera ciphera-agent");
             0
+        }
+        Err(e) => {
+            eprintln!("erreur : {e}");
+            1
+        }
+    }
+}
+
+/// Signataire root : messages sur la sortie d'erreur (journal de
+/// ciphera-certsign.service). Sans demande, la base n'est pas ouverte.
+async fn run_sign_requests() -> i32 {
+    use control_plane::agents::signer;
+    let cfg = match control_plane::cli::env::admin_config() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("erreur : {e}");
+            return 1;
+        }
+    };
+    match signer::harden_ca_key(&cfg.config_dir) {
+        Ok(true) => eprintln!("cle de la CA remise a root (0600)"),
+        Ok(false) => {}
+        Err(e) => eprintln!("attention : cle de la CA non verifiee : {e}"),
+    }
+    match signer::has_requests(&cfg.data_dir) {
+        Ok(true) => {}
+        Ok(false) => return 0,
+        Err(e) => {
+            eprintln!("erreur : demandes illisibles : {e}");
+            return 1;
+        }
+    }
+    // La base (conteneur de l'agent) peut demarrer apres nous : attente
+    // bornee, puis demandes abandonnees (le service redemande plus tard).
+    let mut db = None;
+    for attempt in 0..6 {
+        match admin_db(&cfg).await {
+            Ok(pool) => {
+                db = Some(pool);
+                break;
+            }
+            Err(e) if attempt == 5 => eprintln!("erreur : {e}"),
+            Err(_) => tokio::time::sleep(Duration::from_secs(5)).await,
+        }
+    }
+    let Some(db) = db else {
+        match signer::discard_requests(&cfg.data_dir) {
+            Ok(n) => eprintln!("{n} demande(s) abandonnee(s) : base indisponible"),
+            Err(e) => eprintln!("erreur : demandes non supprimees : {e}"),
+        }
+        return 1;
+    };
+    match signer::sign_requests(&db, &cfg.config_dir, &cfg.data_dir).await {
+        Ok(report) => {
+            for name in &report.signed {
+                eprintln!("certificat {name} signe");
+            }
+            for (name, why) in &report.refused {
+                eprintln!("demande {name} refusee : {why}");
+            }
+            i32::from(!report.refused.is_empty())
         }
         Err(e) => {
             eprintln!("erreur : {e}");
@@ -400,22 +468,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = agents::certs::recover_pairs(&cfg.config_dir) {
         tracing::error!("reprise d'un renouvellement de certificat interrompu impossible : {e}");
     }
-    // CA de l'instance : certificats du lien et du panneau renouveles aux
+    // Certificats du lien et du panneau demandes au signataire root aux
     // deux tiers de leur validite (ici puis toutes les 12 h), certificats
-    // des agents a leur connexion (agents::certs).
-    let ca = match agents::certs::load_ca(&cfg.config_dir) {
-        Ok(ca) => {
-            agents::certs::renew_own(&cfg.config_dir, &ca, agents::certs::now_unix());
-            Some(Arc::new(ca))
-        }
-        Err(e) => {
-            tracing::warn!(
-                "CA de l'instance illisible ({e}) : certificats non renouveles automatiquement \
-                 (`ciphera admin renew-certs`)"
-            );
-            None
-        }
-    };
+    // des agents a leur connexion (agents::certs::Renewals) : le service n'a
+    // pas la cle de la CA.
+    let renewals = Arc::new(agents::certs::Renewals::new(&cfg.config_dir, &cfg.data_dir));
+    renewals.request_own(agents::certs::now_unix());
     let tls_config = tls::load(&cfg).await.map_err(|e| {
         let (crt, key) = tls::panel_paths(&cfg);
         format!(
@@ -433,15 +491,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let log_events = agents.subscribe();
     let log_lines = agents.subscribe_logs();
     let log_store_lines = agents.subscribe_logs();
-    let agent_link = start_agent_link(&cfg, &db, &agents, ca.clone()).await?;
-    if let Some(ca) = ca {
-        tokio::spawn(renew_certs_periodically(
-            cfg.clone(),
-            ca,
-            agent_link.clone(),
-            tls_config.clone(),
-        ));
-    }
+    let agent_link = start_agent_link(&cfg, &db, &agents, renewals.clone()).await?;
+    tokio::spawn(renew_certs_periodically(
+        cfg.clone(),
+        renewals,
+        agent_link.clone(),
+        tls_config.clone(),
+    ));
 
     let https_addr = SocketAddr::from(([0, 0, 0, 0], cfg.panel_port));
     let http_addr = cfg
@@ -659,17 +715,23 @@ async fn serve_direct(
     }
 }
 
-/// Toutes les 12 h : certificats du lien et du panneau renouveles s'ils ont
-/// passe les deux tiers de leur validite, puis recharges a chaud.
+/// Toutes les 12 h : certificats du lien et du panneau demandes au
+/// signataire s'ils ont passe les deux tiers de leur validite ; toutes les
+/// 2 s : certificats signes installes, puis recharges a chaud.
 async fn renew_certs_periodically(
     cfg: Arc<Config>,
-    ca: Arc<pki::Ca>,
+    renewals: Arc<agents::certs::Renewals>,
     link: Option<quinn::Endpoint>,
     panel: axum_server::tls_rustls::RustlsConfig,
 ) {
+    let mut checked = std::time::Instant::now();
     loop {
-        tokio::time::sleep(agents::certs::CHECK_EVERY).await;
-        let renewed = agents::certs::renew_own(&cfg.config_dir, &ca, agents::certs::now_unix());
+        tokio::time::sleep(agents::certs::RESPONSE_POLL).await;
+        if checked.elapsed() >= agents::certs::CHECK_EVERY {
+            checked = std::time::Instant::now();
+            renewals.request_own(agents::certs::now_unix());
+        }
+        let renewed = renewals.install_own_responses(agents::certs::now_unix());
         if renewed.contains(&agents::transport::LINK_CRT)
             && let Some(endpoint) = &link
         {
@@ -698,7 +760,7 @@ async fn start_agent_link(
     cfg: &Config,
     db: &sqlx::PgPool,
     registry: &AgentRegistry,
-    ca: Option<Arc<pki::Ca>>,
+    renewals: Arc<agents::certs::Renewals>,
 ) -> Result<Option<quinn::Endpoint>, Box<dyn std::error::Error>> {
     match agents::servers::register_local_from_dir(db, &cfg.config_dir).await? {
         Some(id) => tracing::info!("serveur local {id} enregistre"),
@@ -724,7 +786,7 @@ async fn start_agent_link(
         endpoint.clone(),
         registry.clone(),
         db.clone(),
-        ca,
+        Some(renewals),
     ));
     // Revocations posees hors du service (`ciphera admin revoke-agent`).
     tokio::spawn(agents::transport::watch_revocations(

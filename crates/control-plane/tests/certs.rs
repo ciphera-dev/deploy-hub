@@ -18,6 +18,16 @@ fn config_dir(ca: &Ca) -> common::TempDir {
     }
     std::fs::write(tmp.0.join("ca/ca.crt"), ca.cert_pem()).unwrap();
     std::fs::write(tmp.0.join("ca/ca.key"), ca.key_pem().as_bytes()).unwrap();
+    // Cle de la CA : 0600 au proprietaire du processus (signataire root).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            tmp.0.join("ca/ca.key"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
     for (crt, key) in certs::OWN_CERTS {
         let mut b = ca
             .issue_server_cert(&["203.0.113.7".into(), "localhost".into()])
@@ -28,30 +38,36 @@ fn config_dir(ca: &Ca) -> common::TempDir {
     tmp
 }
 
+/// Re-signature root (`renew-certs`) d'un certificat serveur : gardee tant
+/// qu'il n'est pas du, sinon nouveau certificat pour la meme cle et les
+/// memes SAN ; la configuration du lien se recharge.
 #[test]
-fn fresh_server_certs_are_kept_and_forced_ones_reload() {
+fn server_certs_are_resigned_for_the_same_key() {
     let ca = Ca::generate("instance").unwrap();
     let dir = config_dir(&ca);
     let loaded = certs::load_ca(&dir.0).unwrap();
+    let pair = (transport::LINK_CRT, transport::LINK_KEY);
     let before = std::fs::read_to_string(dir.0.join(transport::LINK_CRT)).unwrap();
-    assert!(certs::renew_own(&dir.0, &loaded, certs::now_unix()).is_empty());
+    let key = std::fs::read_to_string(dir.0.join(transport::LINK_KEY)).unwrap();
+    assert!(!certs::renew_server(&dir.0, &loaded, pair, certs::now_unix(), false).unwrap());
     assert_eq!(
         std::fs::read_to_string(dir.0.join(transport::LINK_CRT)).unwrap(),
         before
     );
-    // Deux ans plus tard (simulation) : renouveles.
+    // Deux ans plus tard (simulation) : re-signe.
     let later = certs::now_unix() + 700 * 86_400;
-    assert_eq!(
-        certs::renew_own(&dir.0, &loaded, later),
-        vec![transport::LINK_CRT, certs::PANEL_CRT]
-    );
+    assert!(certs::renew_server(&dir.0, &loaded, pair, later, false).unwrap());
     let after = std::fs::read_to_string(dir.0.join(transport::LINK_CRT)).unwrap();
     assert_ne!(after, before);
+    assert_eq!(
+        std::fs::read_to_string(dir.0.join(transport::LINK_KEY)).unwrap(),
+        key,
+        "meme cle"
+    );
     assert_eq!(
         pki::ips_from_cert_pem(&after),
         vec!["203.0.113.7".parse::<std::net::IpAddr>().unwrap()]
     );
-    // Certificat et cle coherents : la configuration du lien se charge.
     let tls = transport::LinkTls::load(&dir.0).unwrap();
     transport::server_config(&tls).unwrap();
 }

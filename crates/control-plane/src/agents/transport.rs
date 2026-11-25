@@ -159,15 +159,19 @@ pub async fn serve(endpoint: Endpoint, registry: AgentRegistry, db: PgPool) {
     serve_with_renewal(endpoint, registry, db, None).await;
 }
 
-/// Comme [`serve`] ; avec la CA de l'instance (`ca`), le certificat d'un
-/// agent qui a passe les deux tiers de sa validite est renouvele a sa
-/// connexion (voir `agents::certs`).
+/// Comme [`serve`] ; avec `renewals`, le certificat d'un agent qui a passe
+/// les deux tiers de sa validite est demande au signataire root a sa
+/// connexion, puis envoye a l'agent des que la reponse arrive (voir
+/// `agents::certs::Renewals`).
 pub async fn serve_with_renewal(
     endpoint: Endpoint,
     registry: AgentRegistry,
     db: PgPool,
-    ca: Option<Arc<pki::Ca>>,
+    renewals: Option<Arc<certs::Renewals>>,
 ) {
+    if let Some(renewals) = &renewals {
+        tokio::spawn(deliver_renewals(renewals.clone(), registry.clone()));
+    }
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     while let Some(incoming) = endpoint.accept().await {
         if !incoming.remote_address_validated() {
@@ -188,11 +192,31 @@ pub async fn serve_with_renewal(
         };
         let registry = registry.clone();
         let db = db.clone();
-        let ca = ca.clone();
+        let renewals = renewals.clone();
         tokio::spawn(async move {
-            handle(incoming, &registry, &db, ca.as_deref()).await;
+            handle(incoming, &registry, &db, renewals.as_deref()).await;
             drop(permit);
         });
+    }
+}
+
+/// Toutes les [`certs::RESPONSE_POLL`] : certificats d'agents signes par le
+/// signataire root envoyes aux agents connectes
+/// (`ControlToAgent::RenewedCertificate`).
+async fn deliver_renewals(renewals: Arc<certs::Renewals>, registry: AgentRegistry) {
+    let mut tick = tokio::time::interval(certs::RESPONSE_POLL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let connected = registry.connected();
+        for (id, cert_pem) in renewals.agent_responses(certs::now_unix(), &connected) {
+            match registry.send(id, ControlToAgent::RenewedCertificate { cert_pem }) {
+                Ok(()) => tracing::info!("lien agents : agent {id}, certificat renouvele envoye"),
+                Err(e) => {
+                    tracing::warn!("lien agents : certificat renouvele non envoye a {id} : {e}")
+                }
+            }
+        }
     }
 }
 
@@ -284,7 +308,12 @@ async fn authenticate(
     }
 }
 
-async fn handle(incoming: Incoming, registry: &AgentRegistry, db: &PgPool, ca: Option<&pki::Ca>) {
+async fn handle(
+    incoming: Incoming,
+    registry: &AgentRegistry,
+    db: &PgPool,
+    renewals: Option<&certs::Renewals>,
+) {
     let remote = incoming.remote_address();
     let conn = match incoming.await {
         Ok(conn) => conn,
@@ -374,25 +403,18 @@ async fn handle(incoming: Incoming, registry: &AgentRegistry, db: &PgPool, ca: O
     }
     tracing::info!("lien agents : agent {id} connecte ({remote})");
     // Certificat renouvele presente pour la premiere fois : il remplace
-    // l'ancien. Sinon, certificat a renouveler : le nouveau part en premier.
+    // l'ancien. Sinon, certificat a renouveler : demande au signataire.
     match servers::promote_next_cert(db, id, &fingerprint).await {
         Ok(true) => tracing::info!("lien agents : agent {id}, certificat renouvele en service"),
         Ok(false) => {
-            if let Some(ca) = ca {
-                match certs::renew_agent(db, ca, id, &fingerprint, &leaf, certs::now_unix()).await {
-                    Ok(Some(cert_pem)) => {
-                        tracing::info!("lien agents : agent {id}, certificat renouvele envoye");
-                        if let Err(e) =
-                            registry.send(id, ControlToAgent::RenewedCertificate { cert_pem })
-                        {
-                            tracing::warn!(
-                                "lien agents : certificat renouvele non envoye a {id} : {e}"
-                            );
-                        }
-                    }
-                    Ok(None) => {}
+            if let Some(renewals) = renewals {
+                match renewals.request_agent(id, &leaf, certs::now_unix()) {
+                    Ok(true) => tracing::info!(
+                        "lien agents : agent {id}, renouvellement du certificat demande au signataire"
+                    ),
+                    Ok(false) => {}
                     Err(e) => tracing::error!(
-                        "lien agents : renouvellement du certificat de {id} impossible : {e}"
+                        "lien agents : renouvellement du certificat de {id} non demande : {e}"
                     ),
                 }
             }
