@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { AppProviders } from "@/app/providers";
+import { applyCspNonce } from "@/lib/csp-nonce";
 import "@/styles/index.css";
 
 async function demarrer() {
@@ -10,6 +11,7 @@ async function demarrer() {
     await worker.start();
   }
 
+  applyCspNonce();
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <AppProviders />

@@ -2,6 +2,8 @@ mod common;
 
 use common::{self_signed, serve_https, state, tls_get};
 
+const QUOTE: char = 39u8 as char;
+
 fn dist_file(rel: &str) -> Vec<u8> {
     let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../web/dist")
@@ -14,6 +16,20 @@ fn dist_file(rel: &str) -> Vec<u8> {
     })
 }
 
+/// index.html tel que servi : le marqueur est remplace par le nonce de l'en-tete CSP.
+fn index_with_nonce(r: &common::Resp) -> Vec<u8> {
+    let csp = r.header("content-security-policy").unwrap();
+    let nonce = csp
+        .split("'nonce-")
+        .nth(1)
+        .and_then(|rest| rest.split(QUOTE).next())
+        .expect("nonce dans la CSP");
+    String::from_utf8(dist_file("index.html"))
+        .unwrap()
+        .replace("__CSP_NONCE__", nonce)
+        .into_bytes()
+}
+
 #[tokio::test]
 async fn spa_fallback() {
     let (state, _pg) = state().await;
@@ -22,9 +38,9 @@ async fn spa_fallback() {
     let r = tls_get(addr, &cert, "/projects/abc").await;
     assert_eq!(r.status, 200);
     assert!(r.header("content-type").unwrap().starts_with("text/html"));
-    assert_eq!(r.body, dist_file("index.html"));
+    assert_eq!(r.body, index_with_nonce(&r));
     let root = tls_get(addr, &cert, "/").await;
-    assert_eq!(root.body, dist_file("index.html"));
+    assert_eq!(root.body, index_with_nonce(&root));
 }
 
 #[tokio::test]

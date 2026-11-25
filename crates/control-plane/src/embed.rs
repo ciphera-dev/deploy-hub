@@ -2,7 +2,16 @@
 
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use rand::TryRng;
+use rand::rngs::SysRng;
 use std::borrow::Cow;
+
+use crate::http::security_headers::CspNonce;
+
+/// Marqueur de `web/index.html` remplace a chaque reponse par le nonce.
+pub const NONCE_PLACEHOLDER: &str = "__CSP_NONCE__";
 
 pub struct Asset {
     pub data: Cow<'static, [u8]>,
@@ -59,14 +68,8 @@ pub(crate) fn respond(path: &str, lookup: impl Fn(&str) -> Option<Asset>) -> Res
         return StatusCode::NOT_FOUND.into_response();
     }
     match lookup("index.html") {
-        Some(index) => (
-            [
-                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            index.data.into_owned(),
-        )
-            .into_response(),
+        Some(index) => html_with_nonce(&index.data),
+
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
             [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
@@ -74,6 +77,32 @@ pub(crate) fn respond(path: &str, lookup: impl Fn(&str) -> Option<Asset>) -> Res
         )
             .into_response(),
     }
+}
+
+/// Page HTML avec un nonce neuf (32 octets aleatoires) : il remplace le
+/// marqueur de la balise `csp-nonce` et part dans `style-src` (voir
+/// `security_headers`). Sans source d'aleas, la page est refusee.
+fn html_with_nonce(index: &[u8]) -> Response {
+    let Some(nonce) = new_nonce() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let html = String::from_utf8_lossy(index).replace(NONCE_PLACEHOLDER, &nonce);
+    let mut response = (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        html,
+    )
+        .into_response();
+    response.extensions_mut().insert(CspNonce(nonce));
+    response
+}
+
+fn new_nonce() -> Option<String> {
+    let mut bytes = [0u8; 32];
+    SysRng.try_fill_bytes(&mut bytes).ok()?;
+    Some(URL_SAFE_NO_PAD.encode(bytes))
 }
 
 fn mime_for(path: &str) -> &'static str {
@@ -106,6 +135,42 @@ mod tests {
             }),
             _ => None,
         }
+    }
+
+    fn nonce_of(r: &Response) -> String {
+        r.extensions().get::<CspNonce>().unwrap().0.clone()
+    }
+
+    async fn body_of(r: Response) -> String {
+        let bytes = axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    fn with_marker(path: &str) -> Option<Asset> {
+        (path == "index.html").then(|| Asset {
+            data: Cow::Borrowed(br#"<meta name="csp-nonce" content="__CSP_NONCE__">"#),
+        })
+    }
+
+    #[tokio::test]
+    async fn html_gets_a_fresh_nonce_each_time() {
+        let a = respond("/", with_marker);
+        let b = respond("/", with_marker);
+        let (na, nb) = (nonce_of(&a), nonce_of(&b));
+        assert_ne!(na, nb);
+        // 32 octets en base64 sans bourrage.
+        assert_eq!(na.len(), 43);
+        let body = body_of(a).await;
+        assert!(body.contains(&format!(r#"content="{na}""#)));
+        assert!(!body.contains(NONCE_PLACEHOLDER));
+    }
+
+    #[test]
+    fn assets_carry_no_nonce() {
+        let r = respond("/assets/app.js", fake);
+        assert!(r.extensions().get::<CspNonce>().is_none());
     }
 
     fn none(_: &str) -> Option<Asset> {

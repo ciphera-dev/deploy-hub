@@ -1,5 +1,15 @@
 import { expect, test } from "@playwright/test";
 
+import { expectNoCspViolation, watchCsp } from "./csp";
+
+test.beforeEach(async ({ page }) => {
+  await watchCsp(page);
+});
+
+test.afterEach(({ page }) => {
+  expectNoCspViolation(page);
+});
+
 const nav = (page: import("@playwright/test").Page) => page.getByRole("navigation", { name: "Navigation principale" });
 
 test("le shell affiche la sidebar FR et l'entree active suit l'URL", async ({ page }) => {

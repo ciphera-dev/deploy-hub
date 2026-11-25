@@ -4,6 +4,8 @@ import { request as httpsRequest } from "node:https";
 
 import { expect, test, type BrowserContext, type Locator, type Page } from "@playwright/test";
 
+import { expectNoCspViolation, watchCsp } from "./csp";
+
 /**
  * Parcours complet sur une instance reelle (job CI e2e-golden-path) :
  * setup -> connexion + enrolement TOTP -> GitHub App simulee -> nouveau projet
@@ -120,6 +122,8 @@ test("parcours complet : setup, TOTP, GitHub, déploiement, HTTPS, rollback", as
   const domain = env("CIPHERA_E2E_DOMAIN");
   const acmeRoots = readFileSync(env("CIPHERA_E2E_ACME_ROOTS"), "utf8");
   await routeGithub(context, fakeGithub);
+  // La CSP du panneau (style-src avec nonce) ne doit etre violee a aucune etape.
+  await watchCsp(page);
   const nav = page.getByRole("navigation", { name: "Navigation principale" });
 
   await test.step("assistant d'installation", async () => {
@@ -255,4 +259,6 @@ test("parcours complet : setup, TOTP, GitHub, déploiement, HTTPS, rollback", as
     await expectDeploymentSucceeded(page, 3);
     await expectServed(domain, acmeRoots, "v1");
   });
+
+  expectNoCspViolation(page);
 });
