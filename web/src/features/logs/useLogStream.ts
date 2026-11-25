@@ -1,5 +1,8 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 
+import { api } from "@/lib/api/client";
+import { unwrap } from "@/lib/api/errors";
 import { openJsonSocket, wsUrl } from "@/lib/ws";
 
 /** Message de GET /api/ws/logs (lignes déjà masquées par le serveur). */
@@ -57,6 +60,7 @@ const sourceKey = (s: LogSource) => ("deployment" in s ? `d:${s.deployment}` : `
 /** Lignes en direct des cibles données (une connexion par cible, rouverte après une coupure). */
 export function useLogStream(sources: LogSource[]) {
   const key = sources.map(sourceKey).join("|");
+  const queryClient = useQueryClient();
   // Lignes rattachées à la clé des cibles : un changement de cibles repart de zéro.
   const [store, setStore] = useState<{ key: string; lines: LogLine[] }>({ key, lines: [] });
   // Cibles dont le flux est coupé (reconnexion en cours).
@@ -87,6 +91,13 @@ export function useLogStream(sources: LogSource[]) {
           if (line.t === lastT) atLast.add(sig);
           setStore((s) => ({ key, lines: [...(s.key === key ? s.lines : []), line].slice(-MAX_LINES) }));
         },
+        // Flux injoignable ou refusé : GET /api/me ; un 401 passe par la politique d'erreur
+        // (cache vidé, redirection vers la connexion).
+        onUnreachable: () => {
+          void queryClient
+            .fetchQuery({ queryKey: ["session-probe"], queryFn: async () => unwrap(await api.GET("/api/me")), staleTime: 0, retry: false })
+            .catch(() => undefined);
+        },
         onStatus: (status) => {
           if (status === "reconnecting") resuming = true;
           setDown((d) => {
@@ -98,7 +109,7 @@ export function useLogStream(sources: LogSource[]) {
       });
     });
     return () => closers.forEach((close) => close());
-  }, [key]);
+  }, [key, queryClient]);
 
   const clear = useCallback(() => setStore({ key, lines: [] }), [key]);
   const lines = store.key === key ? store.lines : [];

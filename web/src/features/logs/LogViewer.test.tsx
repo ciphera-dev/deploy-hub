@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -66,9 +67,11 @@ afterEach(() => {
 
 const renderProject = () =>
   render(
-    <ToastProvider>
-      <LogViewer project="ciphera-web" containers={CONTAINERS} />
-    </ToastProvider>,
+    <QueryClientProvider client={new QueryClient()}>
+      <ToastProvider>
+        <LogViewer project="ciphera-web" containers={CONTAINERS} />
+      </ToastProvider>
+    </QueryClientProvider>,
   );
 
 const messages = () => screen.queryAllByTestId("log-message").map((m) => m.textContent);
@@ -159,6 +162,15 @@ it("copie des lignes affichées et d'une ligne", async () => {
   expect(await screen.findByText("Ligne copiée")).toBeInTheDocument();
 });
 
+it("copy_failure_no_copied_label : une copie refusée n'affiche pas « copiées »", async () => {
+  renderProject();
+  socketFor("svc-web").push(logLines("web", "web").slice(0, 2));
+  writeText.mockRejectedValueOnce(new Error("denied"));
+  fireEvent.click(screen.getByTitle("Copier"));
+  expect(await screen.findByText("Copie impossible")).toBeInTheDocument();
+  expect(screen.queryByText("2 lignes copiées")).not.toBeInTheDocument();
+});
+
 it("ferme les flux au démontage", () => {
   const { unmount } = renderProject();
   expect(FakeSocket.all).toHaveLength(2);
@@ -167,7 +179,7 @@ it("ferme les flux au démontage", () => {
 });
 
 it("logs de build d'un déploiement : flux du déploiement dans un bloc de code", () => {
-  render(<LogViewer deployment="dep-1" />);
+  render(<QueryClientProvider client={new QueryClient()}><LogViewer deployment="dep-1" /></QueryClientProvider>);
   expect(FakeSocket.all.map((s) => new URL(s.url).searchParams.get("deployment"))).toEqual(["dep-1"]);
   expect(screen.getByText("Aucun log")).toBeInTheDocument();
   socketFor("deployment=dep-1").push([
@@ -200,7 +212,7 @@ const opened = () => act(async () => {});
 it("flux coupé : « reconnexion… » puis flux rouvert, sans doublon des lignes renvoyées", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    render(<LogViewer deployment="dep-1" />);
+    render(<QueryClientProvider client={new QueryClient()}><LogViewer deployment="dep-1" /></QueryClientProvider>);
     await opened();
     socketFor("deployment=dep-1").push([wire(0, "étape 1"), wire(1, "étape 2")]);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -244,7 +256,7 @@ it("reconnexion : délai croissant, plafonné, et annulée au démontage", () =>
   expect([0, 1, 2, 3, 4, 5, 6].map(reconnectDelay)).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000]);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    const { unmount } = render(<LogViewer deployment="dep-1" />);
+    const { unmount } = render(<QueryClientProvider client={new QueryClient()}><LogViewer deployment="dep-1" /></QueryClientProvider>);
     socketFor("deployment=dep-1").drop();
     unmount();
     act(() => vi.advanceTimersByTime(60_000));
