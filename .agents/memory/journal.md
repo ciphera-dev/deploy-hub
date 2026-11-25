@@ -321,3 +321,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 01:08 — Session v0.1-sdd — claude-code (orchestrateur) — Task R14 : Remédiation audit — origine des liens de réinitialisation, remise à zéro du second facteur
 - fait : Origine des liens côté serveur, délai limité aux liens forgot, reset-mfa réservé aux gestionnaires avec mot de passe et CLI
 - résultat : relecture : 2 Importants corrigés, approuvée
+
+## 2026-11-25 01:12 — Session v0.1-sdd — claude-code (orchestrateur) — Task R21 : Remédiation audit — GitHub, dépôt identifié par son id, jeton restreint
+- fait : Id du dépôt retenu, pas de repli anonyme, jeton limité au dépôt et en lecture, réponses bornées
+- résultat : relecture approuvée, finitions relues

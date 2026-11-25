@@ -1049,3 +1049,10 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Comptes en attente : badge « En attente », changement de rôle et lien de réinitialisation refusés (409 `account_pending`), une invitation à la même adresse les remplace, purge 24 h après le dernier lien ; « mot de passe oublié » n'envoie rien.
 - Délai du changement d'adresse mesuré sur les demandes (une par minute, 429 `rate_limited` sinon, quelle que soit l'adresse) : la réponse est identique pour une adresse libre ou prise, et toute demande annule les liens de changement précédents.
 - Laissés : avertir l'ancienne adresse dès la demande (M3) ; ressaisir son adresse actuelle n'annule pas un changement en attente et le toast dit encore « lien envoyé » ; un changement de mot de passe pourrait aussi annuler les liens de changement en attente.
+
+## 2026-11-25 — Task R21 : GitHub, dépôt identifié par son id, jeton restreint
+- Décision R21 : chaque projet retient l'id GitHub de son dépôt (migration 0034) ; un projet lié à l'App ne retombe jamais sur un clone anonyme (échec si l'App est déconnectée) ; le client ne suit pas les redirections (301 : « Dépôt renommé ou transféré ») ; un push d'un autre `repository.id` est ignoré ; l'id est enregistré au premier build si absent (« NULL ou même id », sinon « Le dépôt a changé d'identité »).
+- Jeton d'installation restreint au seul dépôt (`repository_ids` si l'id est connu, nom sinon) avec `contents: read` ; jeton de liste limité à `metadata: read` ; cache par portée.
+- Réponses GitHub bornées : 1 Mio par défaut, 10 Mio pour les listes (longueur annoncée refusée d'emblée, lecture arrêtée au dépassement).
+- Écarts au brief acceptés : un projet antérieur est lié à l'App au premier jeton d'installation (l'App est privée) ; la création de projet ne dépend pas de GitHub (rattrapage au premier build). GitHub n'a pas d'API pour supprimer une App (D-GH-7) : seul un lien vers ses réglages est proposé.
+- Laissés : test du corps en morceaux qui passerait sans la borne, messages 404/422 à préciser quand l'id est connu, lien « réglages de l'App » vers la page publique, pas de test de l'App déconnectée.

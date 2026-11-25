@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-25 01:08
+# État courant — mis à jour le 2026-11-25 01:12
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R14 : Remédiation audit — origine des liens de réinitialisation, remise à zéro du second facteur — statut : TERMINÉ (relecture : 2 Importants corrigés, approuvée)
+Task R21 : Remédiation audit — GitHub, dépôt identifié par son id, jeton restreint — statut : TERMINÉ (relecture approuvée, finitions relues)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R21 : Remédiation audit — GitHub, dépôt identifié par son id, jeton restreint
 - Task R14 : Remédiation audit — origine des liens de réinitialisation, remise à zéro du second facteur
 - Task R15 : Remédiation audit — vérification de l'adresse e-mail
 - Task R12 : Remédiation audit — 2FA imposée aux sessions ouvertes, sécurité réservée au propriétaire
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R13 : Remédiation audit — limites du second facteur, de la ré-authentification et de la connexion
 - Task fix-ci-zombie : CI : buildkitd zombie à la désinstallation
 - Task R18 : Remédiation audit — secrets masqués dans les journaux avant toute coupe
-- Task R11 : Remédiation audit — domaine du panneau, DNS et bascule sûre
 
 ## Prochaine étape exacte
-Intégrer R21, R17, R4 ; R23 en cours
+Intégrer R14 (conflit en cours), R17, R4 ; R23 en cours
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,10 +32,9 @@ Intégrer R21, R17, R4 ; R23 en cours
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/control-plane/src/http/password_reset.rs`
-- `crates/control-plane/src/cli/admin.rs`
-- `crates/control-plane/migrations/0030_password_reset_origin.sql`
-- `web/src/features/settings/sections/Team.tsx`
+- `crates/control-plane/src/connectors/github/app.rs`
+- `crates/control-plane/src/orchestrator.rs`
+- `crates/control-plane/migrations/0034_github_repo_id.sql`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
