@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-25 19:08
+# État courant — mis à jour le 2026-11-25 19:29
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R37 : Setup, step-up, organisation, audit — statut : TERMINÉ (TERMINÉ (relecture approuvée, 1 tour))
+Task R39 : Profil release et dépendances non maintenues — statut : TERMINÉ (TERMINÉ (relecture approuvée))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R39 : Profil release et dépendances non maintenues
 - Task R37 : Setup, step-up, organisation, audit
 - Task R51 : Nom du panneau caché, HSTS des sous-domaines
 - Task R38 : Hooks de déploiement, expiration, plafonds de domaines
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R48 : Signataire de la CA séparé (root)
 - Task R35 : Variables globales : portée explicite des secrets
 - Task fix/ci-team-hooks : CI : empreintes de hooks distinctes dans le test d'équipe
-- Task R34 : Écoute HTTP du panneau : SPA, en-têtes, santé, délais
 
 ## Prochaine étape exacte
-R49 en correction ; R50 en cours ; puis R39, R40-R44, R52-R54
+R49, R50 en correction ; puis R40-R44, R52-R54
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,11 +32,10 @@ R49 en correction ; R50 en cours ; puis R39, R40-R44, R52-R54
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/control-plane/src/auth`
-- `crates/control-plane/src/http`
-- `crates/control-plane/src/cli`
-- `install`
-- `web/src`
+- `Cargo.toml`
+- `deny.toml`
+- `docs/security/dependances.md`
+- `crates/control-plane/src/domain/domains/acme.rs`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

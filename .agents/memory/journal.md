@@ -441,3 +441,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 19:08 — Session v0.1-sdd — claude-code (orchestrateur) — Task R37 : Setup, step-up, organisation, audit
 - fait : Jeton de setup 24 h en fragment, step-up mot de passe + second facteur, suppression d'organisation protégée, purge d'audit, env root
 - résultat : TERMINÉ (relecture approuvée, 1 tour)
+
+## 2026-11-25 19:29 — Session v0.1-sdd — claude-code (orchestrateur) — Task R39 : Profil release et dépendances non maintenues
+- fait : overflow-checks en release, arithmétique ACME saturante, avis acceptés et documentés
+- résultat : TERMINÉ (relecture approuvée)
