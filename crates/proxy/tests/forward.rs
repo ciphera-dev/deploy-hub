@@ -812,17 +812,15 @@ fn panel_route_is_never_served_in_clear_and_keeps_the_ip_fallback_until_confirme
         assert!(r.body.is_empty(), "{h}");
     }
 
-    // Confirme : l'hote du panneau configure (deja un nom) est renvoye vers
-    // le domaine.
+    // Confirme : l'hote du panneau configure recoit lui aussi le 404 sobre,
+    // sans `Location` ni nom (il peut se deduire de l'IP).
     table
         .apply(vec![confirmed_panel_route(host, vec![harness().upstream])])
         .unwrap();
     let r = get_at("panel.example.com", "/setup?step=2");
-    assert_eq!(r.status, 301);
-    assert_eq!(
-        r.header("location"),
-        Some("https://panel.switch.example/setup?step=2")
-    );
+    assert_eq!(r.status, 404);
+    assert_eq!(r.header("location"), None);
+    assert!(!r.body_text().contains("switch"), "{}", r.body_text());
 
     // Certificat installe : 308 vers HTTPS (defis exclus).
     let ck = rcgen::generate_simple_self_signed(vec![host.to_string()]).unwrap();
@@ -1540,4 +1538,149 @@ fn upstream_host_normalized() {
         seen.contains("host: hostnorm.forward.example\r\n"),
         "{seen}"
     );
+}
+
+/// ClientHello brut (message de poignee de main, sans en-tete
+/// d'enregistrement) : TLS 1.3 ou 1.2, groupe x25519, liste de partages de
+/// cle vide (un serveur TLS 1.3 repond alors par un HelloRetryRequest) ;
+/// `sni` : valeur brute de l'extension `server_name`, s'il y en a une.
+fn raw_client_hello(sni: Option<&[u8]>) -> Vec<u8> {
+    fn ext(out: &mut Vec<u8>, kind: u16, data: &[u8]) {
+        out.extend_from_slice(&kind.to_be_bytes());
+        out.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        out.extend_from_slice(data);
+    }
+    let mut exts = Vec::new();
+    if let Some(name) = sni {
+        let mut entry = vec![0];
+        entry.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        entry.extend_from_slice(name);
+        let mut data = (entry.len() as u16).to_be_bytes().to_vec();
+        data.extend_from_slice(&entry);
+        ext(&mut exts, 0, &data);
+    }
+    ext(&mut exts, 10, &[0, 2, 0x00, 0x1d]); // supported_groups : x25519
+    ext(&mut exts, 11, &[1, 0]); // ec_point_formats : non compresse
+    ext(&mut exts, 13, &[0, 4, 0x04, 0x03, 0x08, 0x04]); // signature_algorithms
+    ext(&mut exts, 43, &[4, 0x03, 0x04, 0x03, 0x03]); // supported_versions
+    ext(&mut exts, 51, &[0, 0]); // key_share : liste vide
+    let mut body = vec![0x03, 0x03];
+    body.extend_from_slice(&[0x42; 32]); // aleas
+    body.push(0); // identifiant de session vide
+    body.extend_from_slice(&[0, 6, 0x13, 0x01, 0xc0, 0x2b, 0xc0, 0x2f]); // suites
+    body.extend_from_slice(&[1, 0]); // compression nulle
+    body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+    body.extend_from_slice(&exts);
+    let mut msg = vec![1];
+    let n = body.len();
+    msg.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]);
+    msg.extend_from_slice(&body);
+    msg
+}
+
+/// Enregistrement TLS de poignee de main contenant `fragment`.
+fn handshake_record(fragment: &[u8]) -> Vec<u8> {
+    let mut rec = vec![0x16, 0x03, 0x01];
+    rec.extend_from_slice(&(fragment.len() as u16).to_be_bytes());
+    rec.extend_from_slice(fragment);
+    rec
+}
+
+/// Envoie `raw` au port HTTPS et lit la reponse (jusqu'a la fermeture ou
+/// 3 s sans donnees : la connexion refusee peut rester ouverte jusqu'a
+/// l'echeance de la poignee de main).
+fn raw_tls_exchange(addr: SocketAddr, raw: &[u8]) -> Vec<u8> {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    s.write_all(raw).unwrap();
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+        }
+    }
+    out
+}
+
+/// Types des enregistrements TLS recus (s'arrete a un enregistrement
+/// incomplet).
+fn record_types(mut bytes: &[u8]) -> Vec<u8> {
+    let mut types = Vec::new();
+    while bytes.len() >= 5 {
+        types.push(bytes[0]);
+        let len = usize::from(u16::from_be_bytes([bytes[3], bytes[4]]));
+        bytes = &bytes[(5 + len).min(bytes.len())..];
+    }
+    types
+}
+
+/// ClientHello ecrits a la main : une adresse IP litterale en SNI, ou un
+/// ClientHello coupe en deux enregistrements (sans nom, ou avec une IP),
+/// ne recoivent jamais d'enregistrement de poignee de main (ni ServerHello
+/// ni Certificate), seulement une alerte ou rien.
+#[test]
+fn raw_client_hello_with_ip_sni_or_fragmented_gets_no_certificate() {
+    let table = Arc::new(RouteTable::new());
+    let tls = TlsAssets::memory();
+    let (https, get_at) = panel_server(&table, &tls);
+    let host = "panel.rawhello.example";
+    table
+        .apply(vec![confirmed_panel_route(host, vec![harness().upstream])])
+        .unwrap();
+    let ck = rcgen::generate_simple_self_signed(vec![host.to_string()]).unwrap();
+    tls.certs
+        .install(host, &ck.cert.pem(), &ck.signing_key.serialize_pem())
+        .unwrap();
+    let cert_der = ck.cert.der().to_vec();
+    let no_cert = |what: &str, out: &[u8]| {
+        let types = record_types(out);
+        assert!(
+            types.iter().all(|t| *t == 0x15),
+            "{what} : enregistrements recus {types:?}"
+        );
+        assert!(
+            !out.windows(cert_der.len().min(64))
+                .any(|w| w == &cert_der[..cert_der.len().min(64)]),
+            "{what} : certificat present"
+        );
+    };
+
+    // Temoin : le meme ClientHello avec le nom du panneau recoit bien une
+    // poignee de main (le message est donc lisible par rustls).
+    let ok = raw_tls_exchange(
+        https,
+        &handshake_record(&raw_client_hello(Some(host.as_bytes()))),
+    );
+    assert_eq!(record_types(&ok).first(), Some(&0x16), "temoin : {ok:?}");
+
+    // Adresse IP litterale en SNI, en un seul enregistrement : alerte
+    // `unrecognized_name` envoyee par le proxy avant rustls.
+    for ip in [&b"203.0.113.7"[..], &b"127.0.0.1"[..], &b"2001:db8::1"[..]] {
+        let what = String::from_utf8_lossy(ip).into_owned();
+        let out = raw_tls_exchange(https, &handshake_record(&raw_client_hello(Some(ip))));
+        assert!(
+            out.starts_with(&ciphera_proxy::client_hello::UNRECOGNIZED_NAME_ALERT),
+            "{what} : {out:?}"
+        );
+        no_cert(&what, &out);
+    }
+
+    // ClientHello coupe en deux enregistrements : le proxy le laisse a
+    // rustls, dont le choix du certificat refuse aussi (aucun nom DNS).
+    for (what, sni) in [
+        ("fragmente sans SNI", None),
+        ("fragmente, IP en SNI", Some(&b"203.0.113.7"[..])),
+    ] {
+        let hello = raw_client_hello(sni);
+        let (a, b) = hello.split_at(20);
+        let mut raw = handshake_record(a);
+        raw.extend_from_slice(&handshake_record(b));
+        let out = raw_tls_exchange(https, &raw);
+        no_cert(what, &out);
+    }
+
+    // Le proxy reste disponible.
+    assert_eq!(get_at("unknown.rawhello.example", "/").status, 404);
 }

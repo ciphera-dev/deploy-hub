@@ -15,9 +15,8 @@
 //! - aucune route : un hote IP litteral (ou l'hote du panneau configure)
 //!   recoit 301 vers `https://<hote>:<port du panneau>` + chemin et requete,
 //!   corps vide, tant que le domaine du panneau n'est pas confirme. Une fois
-//!   confirme (`Route::panel_confirmed`), un hote IP recoit le 404 sobre,
-//!   sans `Location` ni nom, et l'hote du panneau configure est renvoye vers
-//!   le domaine ; tout autre hote recoit le 404 sobre.
+//!   confirme (`Route::panel_confirmed`), ces hotes recoivent le 404 sobre,
+//!   sans `Location` ni nom ; tout autre hote recoit le 404 sobre.
 //!
 //! Vers l'amont, `X-Forwarded-For`, `Forwarded`, `X-Real-IP`,
 //! `X-Forwarded-*` et les en-tetes d'IP de CDN (`True-Client-IP`,
@@ -151,9 +150,9 @@ pub struct ProxyConfig {
     pub http: Vec<String>,
     /// Adresses HTTPS (certificats ACME choisis par SNI).
     pub https: Vec<String>,
-    /// Hote du panneau (sans port) redirige vers le panneau s'il n'a pas de
-    /// route ; les hotes IP le sont tant que le domaine du panneau n'est pas
-    /// confirme.
+    /// Hote du panneau (sans port) redirige vers l'acces direct s'il n'a pas
+    /// de route, comme les hotes IP, tant que le domaine du panneau n'est pas
+    /// confirme ; ensuite, 404 sans nom.
     pub panel_host: Option<String>,
     /// Port HTTPS du panneau.
     pub panel_port: u16,
@@ -465,24 +464,18 @@ impl ProxyHttp for Forwarder {
                 }
             }
             None if self.is_panel_host(&host) => {
-                // Domaine du panneau confirme (acces direct ferme) : un hote
-                // IP recoit un 404 neutre, jamais le nom du domaine (qui
-                // balaie les adresses IP ne l'apprend pas) ; l'hote du
-                // panneau configure, deja un nom, y est renvoye. Avant la
+                // Domaine du panneau confirme (acces direct ferme) : 404
+                // neutre, jamais le nom du domaine (qui balaie les adresses IP,
+                // ou un nom qui s'en deduit, ne l'apprend pas). Avant la
                 // confirmation : l'acces direct, sous le meme hote.
-                let confirmed = table
+                if table
                     .routes()
-                    .find(|r| is_panel_route(r) && r.panel_confirmed);
-                let location = match confirmed {
-                    Some(_) if host.ip.is_some() => {
-                        respond(session, 404, None, Bytes::from_static(NOT_FOUND_BODY)).await?;
-                        return Ok(true);
-                    }
-                    Some(panel) if !panel.upstreams.is_empty() => {
-                        format!("https://{}{pq}", panel.host)
-                    }
-                    _ => format!("https://{}:{}{pq}", host.url_authority(), self.panel_port),
-                };
+                    .any(|r| is_panel_route(r) && r.panel_confirmed)
+                {
+                    respond(session, 404, None, Bytes::from_static(NOT_FOUND_BODY)).await?;
+                    return Ok(true);
+                }
+                let location = format!("https://{}:{}{pq}", host.url_authority(), self.panel_port);
                 respond(session, 301, Some(&location), Bytes::new()).await?;
                 Ok(true)
             }

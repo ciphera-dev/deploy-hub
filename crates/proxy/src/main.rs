@@ -7,7 +7,9 @@
 //! - `CIPHERA_PROXY_HTTPS` : adresses HTTPS (defaut `0.0.0.0:443,[::]:443`) ;
 //! - `CIPHERA_PROXY_CONTROL_SOCKET` : socket de pilotage hors systemd
 //!   (defaut `/run/ciphera/proxy.sock`) ;
-//! - `CIPHERA_PROXY_PANEL_HOST` : nom d'hote du panneau redirige vers lui ;
+//! - `CIPHERA_PROXY_PANEL_HOST` : nom d'hote du panneau renvoye vers l'acces
+//!   direct (comme les hotes IP) tant que le domaine du panneau n'est pas
+//!   confirme ; ensuite, 404 sans nom ;
 //! - `CIPHERA_PANEL_PORT` : port HTTPS du panneau (defaut 8443) ;
 //! - `CIPHERA_PROXY_STATE_DIR` : dossier d'etat (certificats chiffres, compte
 //!   ACME, identite age `age.key` en 0600) ; defaut `STATE_DIRECTORY` de
