@@ -81,6 +81,16 @@ impl Drop for TestDb {
 /// Avec `CIPHERA_TEST_DATABASE_URL` : base neuve sur ce serveur ; sinon
 /// PostgreSQL 17 via testcontainers.
 pub async fn database() -> (PgPool, TestDb) {
+    let (pool, guard) = bare_database().await;
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("migrations");
+    (pool, guard)
+}
+
+/// Comme `database`, sans aucune migration (tests de migration).
+pub async fn bare_database() -> (PgPool, TestDb) {
     let (url, guard) = match std::env::var("CIPHERA_TEST_DATABASE_URL") {
         Ok(admin_url) if !admin_url.is_empty() => {
             let name = format!("ciphera_test_{}", uuid::Uuid::new_v4().simple());
@@ -127,10 +137,6 @@ pub async fn database() -> (PgPool, TestDb) {
         .connect(&url)
         .await
         .expect("connexion");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("migrations");
     (pool, guard)
 }
 pub fn test_config() -> Arc<Config> {

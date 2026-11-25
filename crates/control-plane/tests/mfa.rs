@@ -207,6 +207,22 @@ async fn audit(state: &AppState) -> Vec<(String, Value)> {
         .unwrap()
 }
 
+/// Session reelle du compte : `mfa_attempts.session_id` y est lie par une cle
+/// etrangere.
+async fn real_session(db: &sqlx::PgPool, user_id: Uuid) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, token_hash, expires_at)          VALUES ($1, $2, $3, now() + interval '1 day')",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(id.as_bytes().to_vec())
+    .execute(db)
+    .await
+    .unwrap();
+    id
+}
+
 #[tokio::test]
 async fn enrolment_returns_ten_recovery_codes_once() {
     let env = env().await;
@@ -791,7 +807,7 @@ async fn busy_hashing_does_not_count_as_a_failure() {
     assert_eq!(err.status, 500);
     assert_eq!(count("login_attempts").await, 1);
 
-    let session = Uuid::new_v4();
+    let session = real_session(db, env.user_id).await;
     let Admission::Allowed(id) =
         rate_limit::admit_mfa(db, env.user_id, session, MfaFactor::Reauth, None)
             .await
@@ -1257,7 +1273,7 @@ async fn recovery_codes_are_limited_per_session_and_ip_not_by_totp_failures() {
                 .unwrap()
         }
     };
-    let s1 = Uuid::new_v4();
+    let s1 = real_session(db, env.user_id).await;
     for _ in 0..5 {
         assert!(matches!(
             admit(s1, MfaFactor::Recovery).await,
@@ -1275,7 +1291,7 @@ async fn recovery_codes_are_limited_per_session_and_ip_not_by_totp_failures() {
     // Par IP : 20 echecs au total (5 de s1 compris), puis refus meme pour une
     // session neuve.
     for _ in 0..3 {
-        let s = Uuid::new_v4();
+        let s = real_session(db, env.user_id).await;
         for _ in 0..5 {
             assert!(matches!(
                 admit(s, MfaFactor::Passkey).await,
@@ -1283,8 +1299,9 @@ async fn recovery_codes_are_limited_per_session_and_ip_not_by_totp_failures() {
             ));
         }
     }
+    let fresh = real_session(db, env.user_id).await;
     assert!(matches!(
-        admit(Uuid::new_v4(), MfaFactor::Recovery).await,
+        admit(fresh, MfaFactor::Recovery).await,
         Admission::Limited(_)
     ));
 }

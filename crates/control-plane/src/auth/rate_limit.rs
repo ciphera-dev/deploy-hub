@@ -313,7 +313,7 @@ pub async fn admit_mfa(
         return Ok(Admission::Limited(secs.clamp(1, MFA_DAY_SECS) as u64));
     }
     let id = sqlx::query_scalar(
-        "INSERT INTO mfa_attempts (at, user_id, session_id, succeeded, totp, ip)          VALUES (clock_timestamp(), $1, $2, false, $3, $4) RETURNING id",
+        "INSERT INTO mfa_attempts (at, user_id, session_id, succeeded, totp, ip)          VALUES (clock_timestamp(), $1,                  (SELECT id FROM sessions WHERE id = $2 FOR KEY SHARE), false, $3, $4)          RETURNING id",
     )
     .bind(user_id)
     .bind(session_id)
