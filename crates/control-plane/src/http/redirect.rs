@@ -1,15 +1,15 @@
 //! Ecouteur HTTP : redirige tout vers HTTPS (301, corps vide). Une fois le
 //! domaine du panneau confirme (acces 8443 ferme), seuls le domaine du
 //! panneau et les noms reserves au panneau (`Config::reserved_hosts`) sont
-//! renvoyes vers `https://<domaine du panneau>` ; tout autre hote, nom ou
-//! adresse IP, recoit un 404 sans `Location` (le domaine n'est jamais
-//! revele a qui ne le connait pas deja).
+//! renvoyes vers `https://<domaine du panneau>` ; une adresse IP (meme
+//! reservee) et tout autre nom recoivent un 404 sans `Location` (le domaine
+//! n'est jamais revele a qui ne le connait pas deja).
 
 use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use std::net::Ipv6Addr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::Arc;
 
 use super::security_headers;
@@ -48,6 +48,11 @@ async fn redirect(State(target): State<Target>, headers: HeaderMap, uri: Uri) ->
     let path = uri.path_and_query().map_or("/", |p| p.as_str());
     let authority = match target.panel.current() {
         Some(panel) if panel.confirmed => {
+            // Une adresse IP ne mene jamais au domaine, meme si elle figure
+            // parmi les noms reserves (`CIPHERA_PUBLIC_URL` sur une IP).
+            if is_ip(&host) {
+                return StatusCode::NOT_FOUND.into_response();
+            }
             let name = bare_name(&host);
             let known = name.eq_ignore_ascii_case(&panel.host)
                 || target
@@ -69,8 +74,18 @@ async fn redirect(State(target): State<Target>, headers: HeaderMap, uri: Uri) ->
     }
 }
 
+/// Hote (deja nettoye par [`clean_host`], donc sans port) qui est une
+/// adresse IP : IPv4, ou IPv6 entre crochets ou non.
+fn is_ip(host: &str) -> bool {
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    bare.parse::<IpAddr>().is_ok()
+}
+
 /// Nom d'un hote deja nettoye par [`clean_host`] (sans port), sans point
-/// final ; une adresse IPv6 garde ses crochets (jamais un nom reserve).
+/// final (les adresses IP sont ecartees avant par [`is_ip`]).
 fn bare_name(host: &str) -> String {
     host.trim_end_matches('.').to_string()
 }
@@ -115,7 +130,20 @@ fn valid_hostname(host: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::clean_host;
+    use super::{clean_host, is_ip};
+
+    #[test]
+    fn ip_hosts_are_recognized_with_or_without_brackets() {
+        for host in ["203.0.113.7", "[2001:db8::1]", "2001:db8::1", "[::1]"] {
+            assert!(is_ip(host), "{host}");
+        }
+        for host in ["panel.example.org", "203.0.113.7.sslip.io", "[x]"] {
+            assert!(!is_ip(host), "{host}");
+        }
+        // Avec un port, l'hote passe d'abord par `clean_host`.
+        assert!(is_ip(&clean_host("203.0.113.7:80").unwrap()));
+        assert!(is_ip(&clean_host("[2001:db8::1]:80").unwrap()));
+    }
 
     #[test]
     fn accepts_names_and_ip_literals_and_strips_port() {

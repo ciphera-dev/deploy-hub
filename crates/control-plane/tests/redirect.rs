@@ -41,8 +41,14 @@ async fn redirect_goes_to_the_confirmed_panel_domain_once_8443_is_closed() {
         host: "panel.example.org".into(),
         confirmed: false,
     };
-    let (addr, _h) =
-        serve_redirect_with(8443, switch.clone(), vec!["admin.example.net".into()]).await;
+    // `CIPHERA_PUBLIC_URL=https://203.0.113.7:8443` met l'IP parmi les noms
+    // reserves : apres la confirmation, elle recoit quand meme un 404.
+    let (addr, _h) = serve_redirect_with(
+        8443,
+        switch.clone(),
+        vec!["admin.example.net".into(), "203.0.113.7".into(), "2001:db8::1".into()],
+    )
+    .await;
     // Domaine pas encore confirme : 8443 reste la cible.
     switch.set(Some(panel.clone()));
     let r = plain_get(addr, "203.0.113.7", "/projects?x=1").await;
