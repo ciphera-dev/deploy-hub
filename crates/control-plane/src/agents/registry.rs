@@ -5,11 +5,15 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 
 use proto::{AgentToControl, ControlToAgent, error_code};
 use quinn::{Connection, VarInt};
 use shared::ids::ServerId;
 use tokio::sync::{broadcast, mpsc};
+
+use crate::domain::logs::cap_received;
+use crate::domain::logs::rate::LineBucket;
 
 /// Ordres en attente d'ecriture par agent ; au-dela, `send` echoue.
 pub const OUTBOX_CAPACITY: usize = 256;
@@ -60,6 +64,8 @@ struct Inner {
     link_errors: Mutex<HashMap<ServerId, String>>,
     events: broadcast::Sender<(ServerId, AgentToControl)>,
     logs: broadcast::Sender<(ServerId, AgentToControl)>,
+    /// Debit des lignes de journal par agent (applique avant la diffusion).
+    log_rates: Mutex<HashMap<ServerId, LineBucket>>,
     next_generation: AtomicU64,
 }
 
@@ -88,6 +94,7 @@ impl AgentRegistry {
                 link_errors: Mutex::new(HashMap::new()),
                 events: broadcast::channel(EVENTS_CAPACITY).0,
                 logs: broadcast::channel(LOGS_CAPACITY).0,
+                log_rates: Mutex::new(HashMap::new()),
                 next_generation: AtomicU64::new(1),
             }),
         }
@@ -216,13 +223,125 @@ impl AgentRegistry {
     }
 
     /// Diffuse un message recu de l'agent `server` aux abonnes : les lignes
-    /// de journal sur leur propre canal, le reste sur `subscribe`.
+    /// de journal sur leur propre canal, le reste sur `subscribe`. Une ligne
+    /// de journal est limitee avant d'entrer dans le canal : debit de
+    /// `AGENT_LINES_PER_SEC` lignes par seconde et par agent (les autres
+    /// sont ignorees, comptees pour `take_ignored`), ligne brute plafonnee a
+    /// `MAX_RECEIVED_LINE_BYTES` (la coupe a 16 Kio vient apres le masquage).
     pub fn publish(&self, server: ServerId, msg: AgentToControl) {
-        let channel = match msg {
-            AgentToControl::LogLine(_) => &self.inner.logs,
-            _ => &self.inner.events,
+        self.publish_at(server, msg, Instant::now());
+    }
+
+    fn publish_at(&self, server: ServerId, msg: AgentToControl, now: Instant) {
+        let msg = match msg {
+            AgentToControl::LogLine(mut line) => {
+                let admitted = self
+                    .log_rates()
+                    .entry(server)
+                    .or_insert_with(|| LineBucket::new(now))
+                    .admit(line.target, now);
+                if !admitted {
+                    return;
+                }
+                line.line = cap_received(line.line);
+                let _ = self
+                    .inner
+                    .logs
+                    .send((server, AgentToControl::LogLine(line)));
+                return;
+            }
+            msg => msg,
         };
         // Sans abonne, le message est simplement ignore.
-        let _ = channel.send((server, msg));
+        let _ = self.inner.events.send((server, msg));
+    }
+
+    fn log_rates(&self) -> MutexGuard<'_, HashMap<ServerId, LineBucket>> {
+        self.inner
+            .log_rates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Lignes de journal ignorees par le debit, par agent, depuis le dernier
+    /// appel : (agent, nombre, derniere cible touchee).
+    pub fn take_ignored(&self) -> Vec<(ServerId, u64, proto::LogTarget)> {
+        self.log_rates()
+            .iter_mut()
+            .filter_map(|(server, bucket)| {
+                bucket
+                    .take_ignored()
+                    .map(|(n, target)| (*server, n, target))
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::logs::MAX_RECEIVED_LINE_BYTES;
+    use crate::domain::logs::rate::AGENT_LINES_PER_SEC;
+    use proto::{LogLine, LogStream, LogTarget};
+    use shared::ids::DeploymentId;
+
+    fn line(target: LogTarget, text: String) -> AgentToControl {
+        AgentToControl::LogLine(LogLine {
+            target,
+            stream: LogStream::Stdout,
+            timestamp_ms: 1,
+            line: text,
+        })
+    }
+
+    #[test]
+    fn oversized_line_truncated_on_receive() {
+        let registry = AgentRegistry::new();
+        let mut logs = registry.subscribe_logs();
+        let target = LogTarget::Deployment(DeploymentId::new());
+        registry.publish(
+            ServerId(uuid::Uuid::new_v4()),
+            line(target, "é".repeat(1024 * 1024)),
+        );
+        let Ok((_, AgentToControl::LogLine(got))) = logs.try_recv() else {
+            panic!("ligne attendue");
+        };
+        assert!(got.line.len() <= MAX_RECEIVED_LINE_BYTES);
+        assert!(got.line.len() > MAX_RECEIVED_LINE_BYTES - 4);
+    }
+
+    #[test]
+    fn agent_line_rate_limited() {
+        let registry = AgentRegistry::new();
+        let mut logs = registry.subscribe_logs();
+        let target = LogTarget::Deployment(DeploymentId::new());
+        let (flood, quiet) = (
+            ServerId(uuid::Uuid::new_v4()),
+            ServerId(uuid::Uuid::new_v4()),
+        );
+        let now = Instant::now();
+        let mut from_flood = 0;
+        let mut quiet_seen = false;
+        let total = 3 * AGENT_LINES_PER_SEC as usize;
+        for n in 0..total {
+            registry.publish_at(flood, line(target, format!("l{n}")), now);
+            while let Ok((server, _)) = logs.try_recv() {
+                if server == flood {
+                    from_flood += 1;
+                }
+            }
+        }
+        // Un autre agent n'est pas touche par l'inondation.
+        registry.publish_at(quiet, line(target, "calme".into()), now);
+        while let Ok((server, _)) = logs.try_recv() {
+            quiet_seen |= server == quiet;
+        }
+        assert_eq!(from_flood, AGENT_LINES_PER_SEC as usize);
+        assert!(quiet_seen);
+        assert_eq!(
+            registry.take_ignored(),
+            vec![(flood, (total - from_flood) as u64, target)]
+        );
+        assert!(registry.take_ignored().is_empty());
     }
 }

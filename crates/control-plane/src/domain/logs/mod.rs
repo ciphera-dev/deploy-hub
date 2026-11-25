@@ -11,6 +11,7 @@
 //! relues en base le sont de nouveau (secrets ajoutes depuis).
 
 pub mod hub;
+pub mod rate;
 pub mod redact;
 pub mod store;
 

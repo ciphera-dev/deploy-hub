@@ -376,8 +376,7 @@ fn deployment_line((server, msg): (ServerId, AgentToControl)) -> Option<(Uuid, U
                 NewLine {
                     timestamp_ms: l.timestamp_ms,
                     stream: l.stream,
-                    // Plafonnee des la reception.
-                    line: super::cap_received(l.line),
+                    line: l.line,
                 },
             )),
             LogTarget::Service(_) => None,
@@ -563,21 +562,6 @@ mod held_tests {
         let some = *projects.held.keys().next().unwrap();
         projects.held_for(some).keep(vec![new_line(3)]);
         assert_eq!(projects.held.len(), MAX_HELD_DEPLOYMENTS);
-    }
-
-    #[test]
-    fn oversized_deployment_line_capped_on_receive() {
-        let server = ServerId(Uuid::new_v4());
-        let target = LogTarget::Deployment(shared::ids::DeploymentId(Uuid::new_v4()));
-        let msg = AgentToControl::LogLine(proto::LogLine {
-            target,
-            stream: LogStream::Stdout,
-            timestamp_ms: 0,
-            line: "é".repeat(super::super::MAX_RECEIVED_LINE_BYTES),
-        });
-        let (_, _, line) = deployment_line((server, msg)).unwrap();
-        assert!(line.line.len() <= super::super::MAX_RECEIVED_LINE_BYTES);
-        assert!(std::str::from_utf8(line.line.as_bytes()).is_ok());
     }
 
     #[test]

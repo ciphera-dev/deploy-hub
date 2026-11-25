@@ -65,9 +65,9 @@ pub const MAX_STREAMS_PER_USER: usize = 8;
 /// Cibles dont l'arret est retenu au plus, et duree de ce souvenir.
 pub const MAX_STOPPED: usize = 10_000;
 pub const STOPPED_TTL: Duration = Duration::from_secs(3600);
-/// Lignes acceptees par seconde et par agent (seau a jetons, rafale d'une
-/// seconde) ; au-dela, les lignes sont ignorees et comptees.
-pub const AGENT_LINES_PER_SEC: u32 = 2000;
+/// Delai du releve des lignes ignorees par le debit des agents (marqueur
+/// « N lignes ignorees » dans le flux de la cible).
+pub const IGNORED_REPORT: Duration = Duration::from_secs(1);
 /// Builds confies a un serveur, retenus au plus, et leur duree de vie.
 pub const MAX_ASSIGNED: usize = 4096;
 pub const ASSIGNED_TTL: Duration = Duration::from_secs(24 * 3600);
@@ -294,52 +294,6 @@ impl Stopped {
     }
 }
 
-/// Seau a jetons des lignes d'un agent.
-struct LineBucket {
-    tokens: f64,
-    at: Instant,
-    /// Lignes ignorees depuis la derniere acceptee, et leur derniere cible.
-    ignored: u64,
-    ignored_target: Option<LogTarget>,
-}
-
-/// Decision du seau pour une ligne.
-enum Admit {
-    No,
-    /// Acceptee ; lignes ignorees juste avant (nombre et cible a prevenir).
-    Yes(Option<(u64, LogTarget)>),
-}
-
-impl LineBucket {
-    fn new(now: Instant) -> Self {
-        Self {
-            tokens: f64::from(AGENT_LINES_PER_SEC),
-            at: now,
-            ignored: 0,
-            ignored_target: None,
-        }
-    }
-
-    fn admit(&mut self, target: LogTarget, now: Instant) -> Admit {
-        let rate = f64::from(AGENT_LINES_PER_SEC);
-        let elapsed = now.saturating_duration_since(self.at).as_secs_f64();
-        self.tokens = (self.tokens + elapsed * rate).min(rate);
-        self.at = now;
-        if self.tokens < 1.0 {
-            self.ignored += 1;
-            self.ignored_target = Some(target);
-            return Admit::No;
-        }
-        self.tokens -= 1.0;
-        let notice = match (self.ignored, self.ignored_target.take()) {
-            (n, Some(t)) if n > 0 => Some((n, t)),
-            _ => None,
-        };
-        self.ignored = 0;
-        Admit::Yes(notice)
-    }
-}
-
 struct Cached {
     at: Instant,
     redactor: Arc<Redactor>,
@@ -372,8 +326,6 @@ struct Inner {
     targets: Mutex<Targets>,
     redactors: Mutex<Redactors>,
     downloads: Arc<Semaphore>,
-    /// Debit des lignes par agent.
-    rates: Mutex<HashMap<ServerId, LineBucket>>,
 }
 
 #[derive(Clone)]
@@ -396,7 +348,6 @@ impl LogHub {
                 targets: Mutex::new(Targets::default()),
                 redactors: Mutex::new(Redactors::default()),
                 downloads: Arc::new(Semaphore::new(MAX_DOWNLOADS)),
-                rates: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -790,25 +741,15 @@ impl LogHub {
         }
     }
 
-    /// Seau a jetons de l'agent : `false` si la ligne est ignoree. Une ligne
-    /// acceptee apres des lignes ignorees previent la derniere cible touchee.
-    fn admit_line(&self, server: ServerId, target: LogTarget) -> bool {
-        let decision = self
-            .inner
-            .rates
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(server)
-            .or_insert_with(|| LineBucket::new(Instant::now()))
-            .admit(target, Instant::now());
-        match decision {
-            Admit::No => false,
-            Admit::Yes(None) => true,
-            Admit::Yes(Some((n, ignored_target))) => {
-                if let Some(entry) = self.targets().entries.get_mut(&ignored_target) {
-                    entry.emit(LogEvent::notice(&format!("{n} lignes ignorées")));
-                }
-                true
+    /// Lignes ignorees par le debit d'un agent (releve du registre) : un
+    /// marqueur dans la cible touchee, seulement si cet agent en est l'origine.
+    pub fn report_ignored(&self) {
+        for (server, n, target) in self.inner.agents.take_ignored() {
+            let mut targets = self.targets();
+            if targets.accepts(target, server) == Some(true)
+                && let Some(entry) = targets.entries.get_mut(&target)
+            {
+                entry.emit(LogEvent::notice(&format!("{n} lignes ignorées")));
             }
         }
     }
@@ -819,21 +760,6 @@ impl LogHub {
     pub async fn dispatch(&self, server: ServerId, msg: &AgentToControl) {
         match msg {
             AgentToControl::LogLine(line) => {
-                // Debit par agent : au-dela, la ligne est ignoree (comptee).
-                if !self.admit_line(server, line.target) {
-                    return;
-                }
-                // Ligne brute plafonnee des la reception.
-                let capped;
-                let line = if line.line.len() > super::MAX_RECEIVED_LINE_BYTES {
-                    capped = proto::LogLine {
-                        line: super::cap_received(line.line.clone()),
-                        ..line.clone()
-                    };
-                    &capped
-                } else {
-                    line
-                };
                 let seen = {
                     let targets = self.targets();
                     match targets.accepts(line.target, server) {
@@ -969,8 +895,14 @@ pub async fn run(
     mut logs: broadcast::Receiver<(ServerId, AgentToControl)>,
     mut stop: watch::Receiver<bool>,
 ) {
+    let mut report = tokio::time::interval(IGNORED_REPORT);
+    report.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let event = tokio::select! {
+            _ = report.tick() => {
+                hub.report_ignored();
+                continue;
+            }
             changed = stop.changed() => {
                 if changed.is_err() || *stop.borrow() {
                     break;
@@ -1273,25 +1205,6 @@ mod held_tests {
         );
     }
 
-    #[tokio::test]
-    async fn oversized_line_truncated_on_receive() {
-        let hub = quiet_hub();
-        let project = Uuid::new_v4();
-        seed(&hub, project, Redactor::new(Vec::new()));
-        let server = ServerId(Uuid::new_v4());
-        let (target, mut src) = source(project);
-        src.origin = Some(server);
-        let mut sub = hub.subscribe(src, 0);
-        hub.dispatch(server, &msg(target, &"é".repeat(200 * 1024)))
-            .await;
-        let got = tokio::time::timeout(Duration::from_secs(5), sub.next())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(got.message.len() <= super::super::MAX_LINE_BYTES);
-        assert!(!got.message.is_empty());
-    }
-
     #[test]
     fn stopped_set_bounded() {
         let target = || LogTarget::Deployment(shared::ids::DeploymentId(Uuid::new_v4()));
@@ -1323,50 +1236,33 @@ mod held_tests {
         );
     }
 
-    #[test]
-    fn line_bucket_limits_then_reports_ignored_lines() {
-        let target = LogTarget::Deployment(shared::ids::DeploymentId(Uuid::new_v4()));
-        let t0 = Instant::now();
-        let mut bucket = LineBucket::new(t0);
-        for _ in 0..AGENT_LINES_PER_SEC {
-            assert!(matches!(bucket.admit(target, t0), Admit::Yes(None)));
-        }
-        for _ in 0..7 {
-            assert!(matches!(bucket.admit(target, t0), Admit::No));
-        }
-        match bucket.admit(target, t0 + Duration::from_secs(1)) {
-            Admit::Yes(Some((7, t))) => assert_eq!(t, target),
-            _ => panic!("7 lignes ignorees attendues"),
-        }
-        assert!(matches!(
-            bucket.admit(target, t0 + Duration::from_secs(1)),
-            Admit::Yes(None)
-        ));
-    }
-
+    /// Flot au-dela du debit d'un agent : le marqueur arrive dans la cible dont
+    /// il est l'origine (meme sans nouvelle ligne), jamais dans celle d'un autre
+    /// serveur.
     #[tokio::test]
-    async fn agent_line_rate_limited() {
-        let hub = quiet_hub();
+    async fn ignored_lines_reported_only_to_the_origin_target() {
+        let agents = AgentRegistry::new();
+        let hub = LogHub::new(agents.clone(), Arc::new(super::super::redact::NoSecrets));
+        let (flood, other) = (ServerId(Uuid::new_v4()), ServerId(Uuid::new_v4()));
         let project = Uuid::new_v4();
-        seed(&hub, project, Redactor::new(Vec::new()));
-        let server = ServerId(Uuid::new_v4());
-        let (target, mut src) = source(project);
-        src.origin = Some(server);
-        let _sub = hub.subscribe(src, 0);
-        for _ in 0..AGENT_LINES_PER_SEC + 500 {
-            hub.dispatch(server, &msg(target, "x")).await;
+        let (own, mut own_src) = source(project);
+        own_src.origin = Some(flood);
+        let (foreign, mut foreign_src) = source(project);
+        foreign_src.origin = Some(other);
+        let mut own_sub = hub.subscribe(own_src, 0);
+        let mut foreign_sub = hub.subscribe(foreign_src, 0);
+        for target in [foreign, own] {
+            for n in 0..3 * super::super::rate::AGENT_LINES_PER_SEC {
+                agents.publish(flood, msg(target, &format!("l{n}")));
+            }
         }
-        let ignored = hub
-            .inner
-            .rates
-            .lock()
-            .unwrap()
-            .get(&server)
-            .map_or(0, |b| b.ignored);
-        assert!(ignored > 0, "aucune ligne ignoree");
-        // Un autre agent garde son propre debit.
-        let other = ServerId(Uuid::new_v4());
-        assert!(hub.admit_line(other, target));
+        hub.report_ignored();
+        let got = wait(&mut own_sub).await.unwrap();
+        assert!(got.message.ends_with(" lignes ignorées"), "{}", got.message);
+        assert!(wait(&mut foreign_sub).await.is_none());
+        // Releve vide : rien de plus.
+        hub.report_ignored();
+        assert!(wait(&mut own_sub).await.is_none());
     }
 
     async fn wait(sub: &mut Subscription) -> Option<LogEvent> {
