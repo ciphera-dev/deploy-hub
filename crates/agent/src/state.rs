@@ -17,7 +17,7 @@ use shared::ids::{DeploymentId, ProjectId, ServiceId};
 
 use crate::docker::ContainerId;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Tables de la version 1 (Task 19).
 const SCHEMA_V1: &str = "
@@ -90,6 +90,19 @@ CREATE TABLE IF NOT EXISTS compose_serving (
     stable        TEXT NOT NULL,
     service       TEXT NOT NULL,
     PRIMARY KEY (deployment_id, stable, service)
+);
+";
+
+/// Version 7 : services Compose deja en place mis a jour par un deploiement
+/// pas encore servi. Noms seuls : leur configuration d'avant (restauree en
+/// cas d'echec) reste en memoire, jamais ecrite ; si l'agent s'arrete avant
+/// l'issue, le demarrage suivant met le deploiement en echec.
+const MIGRATE_V7: &str = "
+CREATE TABLE IF NOT EXISTS compose_updated (
+    deployment_id TEXT NOT NULL,
+    stable        TEXT NOT NULL,
+    service       TEXT NOT NULL,
+    PRIMARY KEY (deployment_id, service)
 );
 ";
 
@@ -189,6 +202,9 @@ impl StateDb {
         }
         if version < 6 {
             tx.execute_batch(MIGRATE_V6)?;
+        }
+        if version < 7 {
+            tx.execute_batch(MIGRATE_V7)?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
@@ -424,9 +440,17 @@ impl StateDb {
                 "DELETE FROM compose_created WHERE deployment_id = ?1",
                 params![key],
             )?;
+            tx.execute(
+                "DELETE FROM compose_updated WHERE deployment_id = ?1",
+                params![key],
+            )?;
             for service in services {
                 tx.execute(
                     "DELETE FROM compose_created WHERE stable = ?1 AND service = ?2",
+                    params![stable, service],
+                )?;
+                tx.execute(
+                    "DELETE FROM compose_updated WHERE stable = ?1 AND service = ?2",
                     params![stable, service],
                 )?;
                 tx.execute(
@@ -554,6 +578,68 @@ impl StateDb {
             )?,
             None => self.conn().execute(
                 "DELETE FROM compose_created WHERE deployment_id = ?1",
+                params![id.to_string()],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// Service Compose deja en place `service` (projet Compose stable
+    /// `stable`) mis a jour par le deploiement `id`, pas encore servi.
+    pub fn put_compose_updated(
+        &self,
+        id: DeploymentId,
+        stable: &str,
+        service: &str,
+    ) -> Result<(), StateError> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO compose_updated (deployment_id, stable, service)
+             VALUES (?1, ?2, ?3)",
+            params![id.to_string(), stable, service],
+        )?;
+        Ok(())
+    }
+
+    /// Services Compose mis a jour gardes : deploiement, projet Compose
+    /// stable, service.
+    pub fn compose_updated(&self) -> Result<Vec<(DeploymentId, String, String)>, StateError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT deployment_id, stable, service FROM compose_updated
+             ORDER BY deployment_id, service",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, stable, service) = row?;
+            let id = id
+                .parse::<DeploymentId>()
+                .map_err(|_| StateError::Corrupt("identifiant de deploiement"))?;
+            out.push((id, stable, service));
+        }
+        Ok(out)
+    }
+
+    /// Oublie le service Compose mis a jour `service` du deploiement `id`,
+    /// ou tous ceux du deploiement si `service` est `None`.
+    pub fn remove_compose_updated(
+        &self,
+        id: DeploymentId,
+        service: Option<&str>,
+    ) -> Result<(), StateError> {
+        match service {
+            Some(s) => self.conn().execute(
+                "DELETE FROM compose_updated WHERE deployment_id = ?1 AND service = ?2",
+                params![id.to_string(), s],
+            )?,
+            None => self.conn().execute(
+                "DELETE FROM compose_updated WHERE deployment_id = ?1",
                 params![id.to_string()],
             )?,
         };

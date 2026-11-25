@@ -8,10 +8,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use bollard::models::ContainerCreateBody;
 use ciphera_agent::docker::{
-    COMPOSE_PROJECT_KEY, ContainerId, ContainerLog, ContainerSpec, DockerError, DockerOps, Health,
-    MANAGED_LABEL, ManagedContainer, PROJECT_LABEL, compose_project_prefix, is_project_volume,
-    network_project,
+    COMPOSE_PROJECT_KEY, ContainerId, ContainerLog, ContainerSnapshot, ContainerSpec, DockerError,
+    DockerOps, Health, MANAGED_LABEL, ManagedContainer, PROJECT_LABEL, compose_project_prefix,
+    is_project_volume, network_project,
 };
 use futures_util::stream::{self, BoxStream, StreamExt};
 use proto::NodeMetrics;
@@ -68,6 +69,8 @@ pub struct FakeDocker {
     pub images: Mutex<Vec<String>>,
     /// `remove_deployment_images` echoue (erreur d'API) tant que vrai.
     pub fail_rmi: AtomicBool,
+    /// `recreate` echoue (erreur d'API) tant que vrai.
+    pub fail_recreate: AtomicBool,
 }
 
 impl FakeDocker {
@@ -428,6 +431,64 @@ impl DockerOps for FakeDocker {
         out.sort_unstable();
         out.dedup();
         Ok(out)
+    }
+
+    /// Nom, image, etiquettes et etat du conteneur (l'env n'est pas simule).
+    async fn snapshot(&self, id: &ContainerId) -> Result<Option<ContainerSnapshot>, DockerError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("snapshot:{}", id.0));
+        Ok(self
+            .containers
+            .lock()
+            .unwrap()
+            .get(&id.0)
+            .map(|c| ContainerSnapshot {
+                id: id.clone(),
+                name: c.name.clone(),
+                image: c.image.clone(),
+                running: c.running,
+                body: ContainerCreateBody {
+                    image: Some(c.image.clone()),
+                    labels: Some(c.labels.clone()),
+                    ..Default::default()
+                },
+                networks: Vec::new(),
+            }))
+    }
+
+    /// Nouveau conteneur `restored-<nom>-<n>` (un autre du meme nom est
+    /// supprime) ; le conteneur relu existe encore : rien n'est recree.
+    async fn recreate(&self, snap: &ContainerSnapshot) -> Result<ContainerId, DockerError> {
+        let n = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(format!("recreate:{}", snap.name));
+            calls.len()
+        };
+        if self.fail_recreate.load(Ordering::SeqCst) {
+            return Err(DockerError::Api(format!(
+                "recreation de {} refusee",
+                snap.name
+            )));
+        }
+        let mut containers = self.containers.lock().unwrap();
+        if containers.contains_key(&snap.id.0) {
+            return Ok(snap.id.clone());
+        }
+        containers.retain(|_, c| c.name != snap.name);
+        let id = format!("restored-{}-{n}", snap.name);
+        containers.insert(
+            id.clone(),
+            FakeContainer {
+                name: snap.name.clone(),
+                image: snap.image.clone(),
+                labels: snap.body.labels.clone().unwrap_or_default(),
+                ip: None,
+                running: snap.running,
+            },
+        );
+        Ok(ContainerId(id))
     }
 }
 

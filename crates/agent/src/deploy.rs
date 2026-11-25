@@ -24,11 +24,23 @@
 //! 2. `Healthcheck` sonde le service expose ;
 //! 3. sonde reussie : `Switch` met a jour les autres services, puis bascule.
 //!
+//! Avant de relancer un service deja en place, l'agent relit par `inspect`
+//! la configuration de creation de ses conteneurs (`ContainerSnapshot`),
+//! gardee en memoire seulement (elle porte l'env : jamais ecrite).
+//!
 //! Sonde en echec, autre echec ou annulation avant la bascule : les
-//! services nouveaux lances par ce deploiement sont retires, et le journal
-//! du deploiement nomme les services deja en place qu'il a mis a jour (ils
-//! ne sont pas restaures). Les services sans lien avec le service expose ne
-//! sont jamais touches avant la reussite de la sonde.
+//! services nouveaux lances par ce deploiement sont retires, et les
+//! services deja en place qu'il a relances sont restaures (nouveaux
+//! conteneurs supprimes, anciens recrees a l'identique puis demarres dans
+//! l'ordre de `depends_on`, journal « services dependants restaures ») :
+//! l'ensemble servi reste intact. Docker refuse : la restauration reste a
+//! faire (reprise par l'appel suivant, `RemoveDeployment` sans accuse
+//! jusque-la). Les services sans lien avec le service expose ne sont
+//! jamais touches avant la reussite de la sonde.
+//! Les services deja en place relances sont notes (noms seuls) dans l'etat
+//! local jusqu'a l'issue : si l'agent s'arrete avant, leur configuration
+//! d'avant est perdue et le demarrage suivant met le deploiement en echec
+//! (`NOT_RESTORED`) sans le relancer.
 //! Les services nouveaux sont aussi notes dans l'etat local jusqu'a la
 //! bascule : si l'agent s'arrete avant l'issue, le demarrage suivant les
 //! retire (`sweep`). Un retrait qui echoue garde la note (reprise). La
@@ -98,8 +110,8 @@ use self::probe::{HttpProbe, valid_healthcheck};
 use crate::build::argv::ValidatedArg;
 use crate::build::{self, BuildBackend, BuildConfig, BuildError, ProgressSink};
 use crate::docker::{
-    ContainerId, ContainerSpec, DEPLOYMENT_LABEL, DockerError, DockerOps, PREPARE_ROLE, ROLE_LABEL,
-    image_deployment, network_project, project_network,
+    ContainerId, ContainerSnapshot, ContainerSpec, DEPLOYMENT_LABEL, DockerError, DockerOps,
+    PREPARE_ROLE, ROLE_LABEL, image_deployment, network_project, project_network,
 };
 use crate::ops::{Busy, Cancel, OpKind, Operations, Ticket};
 use crate::routes::{RouteError, RouteSink, Router};
@@ -113,6 +125,12 @@ pub const BUILD_WAIT: Duration = Duration::from_secs(60);
 pub const NETWORK_SWEEP_EVERY: Duration = Duration::from_secs(3600);
 /// Message d'un ordre recu pour un projet supprime.
 const PROJECT_REMOVED: &str = "projet supprime de ce serveur : ordre refuse";
+/// Journal d'un deploiement Compose en echec ou annule : les services deja
+/// en place qu'il avait relances sont revenus a leur etat servi.
+pub const RESTORED: &str = "services dépendants restaurés";
+/// Issue d'un deploiement Compose interrompu par un arret de l'agent apres
+/// la mise a jour de services deja en place (configuration d'avant perdue).
+pub const NOT_RESTORED: &str = "services dépendants non restaurés : redéployez la version servie";
 /// Dossiers transitoires des deploiements Compose (fichier donne a
 /// `docker compose`), sous le StateDirectory 0700 de l'agent.
 pub const DEFAULT_DEPLOYS_DIR: &str = "/var/lib/ciphera-agent/deploys";
@@ -201,8 +219,16 @@ struct ComposeRun {
     later: Vec<ValidatedArg>,
     /// Services nouveaux lances par ce deploiement.
     created: Vec<String>,
-    /// Services deja en place relances par ce deploiement.
-    updated: Vec<String>,
+    /// Services deja en place relances par ce deploiement, dans l'ordre de
+    /// `depends_on`.
+    updated: Vec<Updated>,
+}
+
+/// Service deja en place relance par un deploiement Compose, et ses
+/// conteneurs tels qu'ils etaient avant (memoire seulement).
+struct Updated {
+    service: String,
+    before: Vec<ContainerSnapshot>,
 }
 
 /// Supprime un dossier s'il existe (sans suivre un lien symbolique).
@@ -833,6 +859,7 @@ where
             for (other, run) in self.compose_runs().iter_mut() {
                 if *other != id && run.stable.as_str() == stable {
                     run.created.retain(|s| !services.contains(s));
+                    run.updated.retain(|u| !services.contains(&u.service));
                 }
             }
         }
@@ -909,9 +936,11 @@ where
 
     /// `docker compose up` d'un service non expose du deploiement Compose
     /// `id`, note avant le lancement (une annulation pendant `up` le
-    /// retrouve) : mis a jour s'il etait `existing`, sinon nouveau. Un
-    /// service nouveau est aussi garde dans l'etat local : apres un arret de
-    /// l'agent avant l'issue, le demarrage le retire
+    /// retrouve) : mis a jour s'il etait `existing` (configuration de ses
+    /// conteneurs relue avant, pour la restauration), sinon nouveau. Le
+    /// service est aussi note dans l'etat local : apres un arret de l'agent
+    /// avant l'issue, le demarrage retire un service nouveau, et met en
+    /// echec un deploiement qui avait mis a jour un service deja en place
     /// ([`Deployer::sweep_interrupted_compose`]).
     async fn up_tracked(
         &self,
@@ -933,28 +962,125 @@ where
                 run.dir.clone(),
             )
         };
-        if !existing {
-            self.db
-                .put_compose_created(id, project, stable.as_str(), service.as_str())?;
-        }
-        {
-            let mut runs = self.compose_runs();
-            if let Some(run) = runs.get_mut(&id) {
-                let name = service.as_str().to_string();
-                let list = if existing {
-                    &mut run.updated
-                } else {
-                    &mut run.created
-                };
-                if !list.contains(&name) {
-                    list.push(name);
+        let name = service.as_str().to_string();
+        if existing {
+            let known = self
+                .compose_runs()
+                .get(&id)
+                .is_some_and(|r| r.updated.iter().any(|u| u.service == name));
+            if !known {
+                // Relue avant tout changement ; un echec de Docker ici
+                // arrete le deploiement avant que le service soit touche.
+                let before = self
+                    .snapshot_service(project, stable.as_str(), &name)
+                    .await?;
+                if let Some(run) = self.compose_runs().get_mut(&id) {
+                    run.updated.push(Updated {
+                        service: name.clone(),
+                        before,
+                    });
                 }
+                self.db.put_compose_updated(id, stable.as_str(), &name)?;
+            }
+        } else {
+            self.db
+                .put_compose_created(id, project, stable.as_str(), &name)?;
+            if let Some(run) = self.compose_runs().get_mut(&id)
+                && !run.created.contains(&name)
+            {
+                run.created.push(name);
             }
         }
         self.compose
             .up(&stable, &file, service, &dir, env, sink)
             .await
             .map_err(DeployError::Compose)
+    }
+
+    /// Configuration de creation des conteneurs du service non expose
+    /// `service` du projet Compose stable `stable` (memoire seulement).
+    async fn snapshot_service(
+        &self,
+        project: ProjectId,
+        stable: &str,
+        service: &str,
+    ) -> Result<Vec<ContainerSnapshot>, DeployError> {
+        let mut out = Vec::new();
+        for c in self
+            .compose_service_containers(stable, project, Some(service))
+            .await?
+        {
+            if let Some(snap) = self.docker.snapshot(&c.id).await? {
+                out.push(snap);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Remet le service `u` du projet Compose stable `stable` tel qu'il
+    /// etait avant le deploiement `id` : conteneurs inconnus d'avant
+    /// supprimes, conteneurs d'avant disparus recrees a l'identique (et
+    /// demarres s'ils tournaient), conteneurs d'avant restes en place
+    /// ramenes a leur etat (en marche ou arrete). `false` si Docker a
+    /// echoue : ce qui reste a faire est garde dans `u`.
+    async fn restore_service(
+        &self,
+        id: DeploymentId,
+        project: ProjectId,
+        stable: &str,
+        u: &mut Updated,
+    ) -> bool {
+        let current = match self
+            .compose_service_containers(stable, project, Some(&u.service))
+            .await
+        {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!(
+                    "deploiement {id} : service Compose {} illisible : {e}",
+                    u.service
+                );
+                return false;
+            }
+        };
+        let mut complete = true;
+        for c in &current {
+            if u.before.iter().any(|b| b.id == c.id) {
+                continue;
+            }
+            if let Err(e) = self.docker.remove(&c.id).await {
+                tracing::warn!(
+                    "service Compose {} : suppression de {} : {e}",
+                    u.service,
+                    c.name
+                );
+                complete = false;
+            }
+        }
+        if !complete {
+            return false;
+        }
+        for snap in &mut u.before {
+            let kept = current.iter().find(|c| c.id == snap.id);
+            let done = match kept {
+                Some(c) if snap.running && c.stopped => self.docker.restart(&c.id).await,
+                Some(c) if !snap.running && !c.stopped => self.docker.stop(&c.id).await,
+                Some(_) => Ok(()),
+                None => self.docker.recreate(snap).await.map(|new| {
+                    // Recree : une reprise ne le recree pas une seconde fois.
+                    snap.id = new;
+                }),
+            };
+            if let Err(e) = done {
+                tracing::warn!(
+                    "service Compose {} : restauration de {} : {e}",
+                    u.service,
+                    snap.name
+                );
+                complete = false;
+            }
+        }
+        complete
     }
 
     /// Apres la sonde : mise a jour des services non exposes que `Start`
@@ -977,9 +1103,10 @@ where
 
     /// Deploiement Compose `id` en echec ou annule avant la bascule : les
     /// services nouveaux qu'il a lances sont retires ; ceux deja en place
-    /// qu'il a relances sont nommes dans son journal (`sink`), non
-    /// restaures. `false` si un retrait a echoue : les services non retires
-    /// restent notes (memoire et etat local), un appel suivant reprend.
+    /// qu'il a relances sont restaures dans l'ordre de `depends_on`
+    /// (`restore_service`) et nommes dans son journal (`sink`). `false` si
+    /// Docker a echoue : ce qui reste a faire reste note (memoire et etat
+    /// local), un appel suivant reprend.
     async fn undo_compose(&self, id: DeploymentId, sink: Option<&ProgressSink>) -> bool {
         let Some(mut run) = self.compose_runs().remove(&id) else {
             return true;
@@ -993,21 +1120,47 @@ where
                 left.push(service.clone());
             }
         }
-        if !run.updated.is_empty() {
+        let mut restored = Vec::new();
+        let mut pending = Vec::new();
+        for mut u in std::mem::take(&mut run.updated) {
+            if self
+                .restore_service(id, run.project, run.stable.as_str(), &mut u)
+                .await
+            {
+                if let Err(e) = self.db.remove_compose_updated(id, Some(&u.service)) {
+                    tracing::warn!("deploiement {id} : service Compose {} : {e}", u.service);
+                }
+                restored.push(u.service);
+            } else {
+                pending.push(u);
+            }
+        }
+        if !restored.is_empty() {
+            let message = format!("{RESTORED} : {}", restored.join(", "));
+            tracing::info!("deploiement {id} : {message}");
+            if let Some(sink) = sink {
+                sink.log(LogStream::Stdout, &message).await;
+            }
+        }
+        if !pending.is_empty() {
+            let names: Vec<&str> = pending.iter().map(|u| u.service.as_str()).collect();
             let message = format!(
-                "services Compose deja en place mis a jour par ce deploiement, non restaures : {}",
-                run.updated.join(", ")
+                "services dependants pas encore restaures (Docker), nouvel essai : {}",
+                names.join(", ")
             );
             tracing::warn!("deploiement {id} : {message}");
             if let Some(sink) = sink {
                 sink.log(LogStream::Stderr, &message).await;
             }
         }
-        if left.is_empty() {
+        if left.is_empty() && pending.is_empty() {
+            if let Err(e) = self.db.remove_compose_updated(id, None) {
+                tracing::warn!("deploiement {id} : services Compose mis a jour : {e}");
+            }
             return true;
         }
         run.created = left;
-        run.updated.clear();
+        run.updated = pending;
         run.later.clear();
         self.compose_runs().insert(id, run);
         false
@@ -1101,8 +1254,13 @@ where
     /// lances par un deploiement que l'arret de l'agent a interrompu avant
     /// son issue, retires (en marche ou non). Ceux d'un deploiement servi
     /// lui appartiennent : seulement oublies. Sur un echec de Docker, la
-    /// note reste (reprise au prochain demarrage).
+    /// note reste (reprise au prochain demarrage). Un tel deploiement qui
+    /// avait mis a jour un service deja en place ne peut plus le restaurer
+    /// (configuration perdue avec la memoire) : il est mis en echec
+    /// (`NOT_RESTORED`), un ordre rejoue rapporte cette issue sans rien
+    /// relancer.
     async fn sweep_interrupted_compose(&self) {
+        self.fail_interrupted_updates();
         let entries = match self.db.compose_created() {
             Ok(e) => e,
             Err(e) => {
@@ -1122,6 +1280,39 @@ where
             }
             if self.drop_created(id, project, &stable, &service).await {
                 tracing::info!("service Compose {service} du deploiement interrompu {id} traite");
+            }
+        }
+    }
+
+    /// Notes « service mis a jour » sans suivi en memoire (deploiement
+    /// interrompu par un arret de l'agent) : deploiement mis en echec
+    /// (`NOT_RESTORED`) s'il n'est pas servi, puis notes oubliees.
+    fn fail_interrupted_updates(&self) {
+        let entries = match self.db.compose_updated() {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::error!("services Compose mis a jour illisibles : {e}");
+                return;
+            }
+        };
+        let mut ids: Vec<DeploymentId> = entries.into_iter().map(|e| e.0).collect();
+        ids.dedup();
+        for id in ids {
+            if self.ops.is_running(id) || self.compose_runs().contains_key(&id) {
+                continue;
+            }
+            if !self.is_serving(id) {
+                tracing::error!("deploiement {id} interrompu : {NOT_RESTORED}");
+                let failed = StageStatus::Failed {
+                    message: NOT_RESTORED.into(),
+                };
+                if let Err(e) = self.db.put_outcome(id, Stage::Start, &failed) {
+                    tracing::error!("deploiement {id} : issue non enregistree : {e}");
+                    continue;
+                }
+            }
+            if let Err(e) = self.db.remove_compose_updated(id, None) {
+                tracing::warn!("deploiement {id} : services Compose mis a jour : {e}");
             }
         }
     }
@@ -1264,7 +1455,12 @@ where
             complete = false;
         }
         if complete {
-            if let Err(e) = self.db.remove_deployment(id).and(self.db.remove_bundle(id)) {
+            if let Err(e) = self
+                .db
+                .remove_deployment(id)
+                .and(self.db.remove_bundle(id))
+                .and(self.db.remove_compose_updated(id, None))
+            {
                 tracing::error!("deploiement {id} : etat local : {e}");
                 complete = false;
             }
@@ -1507,6 +1703,7 @@ where
             }
             self.db.remove_deployment(id)?;
             let _ = self.db.remove_bundle(id);
+            let _ = self.db.remove_compose_updated(id, None);
         }
         if serving && let Err(e) = self.router.refresh(self.docker.as_ref(), &self.db).await {
             tracing::warn!("{e}");

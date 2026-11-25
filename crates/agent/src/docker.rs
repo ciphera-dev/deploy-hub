@@ -23,8 +23,9 @@ use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, ContainerStateStatusEnum, EndpointSettings,
-    HealthStatusEnum, HostConfig, HostConfigLogConfig, Mount, MountTypeEnum, NetworkCreateRequest,
-    NetworkingConfig, RestartPolicy as DockerRestart, RestartPolicyNameEnum,
+    HealthStatusEnum, HostConfig, HostConfigLogConfig, Mount, MountPointTypeEnum, MountTypeEnum,
+    NetworkConnectRequest, NetworkCreateRequest, NetworkingConfig, RestartPolicy as DockerRestart,
+    RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     CreateContainerOptions, CreateImageOptions, ListContainersOptions, ListImagesOptions,
@@ -153,6 +154,172 @@ pub struct ManagedContainer {
     /// Arrete pour de bon (`created`, `exited`, `dead`). Faux pour un
     /// conteneur en marche, en pause, en redemarrage ou d'etat inconnu.
     pub stopped: bool,
+}
+
+/// Configuration de creation d'un conteneur gere, relue par `inspect`
+/// (`DockerOps::snapshot`) pour le recreer a l'identique
+/// (`DockerOps::recreate`) : image, env, cmd, entrypoint, etiquettes,
+/// reseaux et alias, limites, utilisateur, montages. Gardee en memoire
+/// seulement, jamais ecrite (elle porte l'env) ; `Debug` n'en montre ni
+/// l'env ni la configuration.
+#[derive(Clone)]
+pub struct ContainerSnapshot {
+    /// Conteneur relu.
+    pub id: ContainerId,
+    /// Nom sans le `/` de tete, repris tel quel.
+    pub name: String,
+    /// Identifiant de l'image (`sha256:...`) du conteneur relu.
+    pub image: String,
+    /// En marche au moment de la lecture (redemarre apres recreation).
+    pub running: bool,
+    /// Corps de creation : configuration, `HostConfig`, reseau principal.
+    pub body: ContainerCreateBody,
+    /// Autres reseaux (relies apres la creation), avec leurs alias.
+    pub networks: Vec<(String, EndpointSettings)>,
+}
+
+impl fmt::Debug for ContainerSnapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContainerSnapshot")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("image", &self.image)
+            .field("running", &self.running)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Reglages d'un point d'acces reseau a redonner a la creation : alias
+/// (sans l'identifiant court de l'ancien conteneur), adresses demandees,
+/// liens, options ; jamais l'adresse, la passerelle ni l'adresse MAC
+/// attribuees par Docker.
+fn endpoint_for_create(e: &EndpointSettings, short_id: &str) -> EndpointSettings {
+    EndpointSettings {
+        ipam_config: e.ipam_config.clone(),
+        links: e.links.clone(),
+        aliases: e.aliases.as_ref().map(|a| {
+            a.iter()
+                .filter(|x| x.as_str() != short_id)
+                .cloned()
+                .collect()
+        }),
+        driver_opts: e.driver_opts.clone(),
+        gw_priority: e.gw_priority,
+        ..Default::default()
+    }
+}
+
+/// Destination d'un montage `Binds` (`source:destination[:options]`).
+fn bind_destination(bind: &str) -> Option<&str> {
+    bind.split(':').nth(1)
+}
+
+/// `ContainerSnapshot` d'un conteneur gere relu par `inspect` (`NotManaged`
+/// sinon). Les volumes anonymes (`VOLUME` de l'image) sont remontes par leur
+/// nom : le conteneur recree retrouve leurs donnees. Le nom d'hote attribue
+/// par Docker (identifiant court) n'est pas repris.
+pub fn snapshot_of(info: ContainerInspectResponse) -> Result<ContainerSnapshot, DockerError> {
+    let id = info
+        .id
+        .clone()
+        .filter(|i| !i.is_empty())
+        .ok_or_else(|| DockerError::Api("conteneur sans identifiant".into()))?;
+    let name = info
+        .name
+        .as_deref()
+        .map(|n| n.trim_start_matches('/').to_string())
+        .filter(|n| valid_name(n))
+        .ok_or_else(|| DockerError::Api(format!("conteneur {id} : nom illisible")))?;
+    check_managed(&name, info.config.as_ref().and_then(|c| c.labels.as_ref()))?;
+    let short = id.get(..12).unwrap_or(&id).to_string();
+    let config = info.config.unwrap_or_default();
+    let mut host = info.host_config.unwrap_or_default();
+    // Volumes anonymes : par leur nom, sauf une destination deja montee.
+    let mut taken: HashSet<String> = host
+        .mounts
+        .iter()
+        .flatten()
+        .filter_map(|m| m.target.clone())
+        .collect();
+    taken.extend(
+        host.binds
+            .iter()
+            .flatten()
+            .filter_map(|b| bind_destination(b).map(str::to_string)),
+    );
+    for m in info.mounts.iter().flatten() {
+        if m.typ != Some(MountPointTypeEnum::VOLUME) {
+            continue;
+        }
+        let (Some(volume), Some(dest)) = (m.name.as_ref(), m.destination.as_ref()) else {
+            continue;
+        };
+        if taken.insert(dest.clone()) {
+            host.mounts.get_or_insert_with(Vec::new).push(Mount {
+                target: Some(dest.clone()),
+                source: Some(volume.clone()),
+                typ: Some(MountTypeEnum::VOLUME),
+                read_only: m.rw.map(|rw| !rw),
+                ..Default::default()
+            });
+        }
+    }
+    let mut endpoints: Vec<(String, EndpointSettings)> = info
+        .network_settings
+        .and_then(|n| n.networks)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(net, e)| {
+            let e = endpoint_for_create(&e, &short);
+            (net, e)
+        })
+        .collect();
+    // Reseau principal (`NetworkMode`) a la creation, les autres ensuite.
+    endpoints.sort_by(|a, b| a.0.cmp(&b.0));
+    if let Some(i) = endpoints
+        .iter()
+        .position(|(net, _)| Some(net.as_str()) == host.network_mode.as_deref())
+    {
+        let main = endpoints.remove(i);
+        endpoints.insert(0, main);
+    }
+    let first = (!endpoints.is_empty()).then(|| endpoints.remove(0));
+    let hostname = config.hostname.filter(|h| *h != short);
+    let body = ContainerCreateBody {
+        hostname,
+        domainname: config.domainname,
+        user: config.user,
+        exposed_ports: config.exposed_ports,
+        tty: config.tty,
+        open_stdin: config.open_stdin,
+        stdin_once: config.stdin_once,
+        env: config.env,
+        cmd: config.cmd,
+        healthcheck: config.healthcheck,
+        args_escaped: config.args_escaped,
+        image: config.image,
+        volumes: config.volumes,
+        working_dir: config.working_dir,
+        entrypoint: config.entrypoint,
+        network_disabled: config.network_disabled,
+        labels: config.labels,
+        stop_signal: config.stop_signal,
+        stop_timeout: config.stop_timeout,
+        shell: config.shell,
+        host_config: Some(host),
+        networking_config: first.map(|(net, e)| NetworkingConfig {
+            endpoints_config: Some(HashMap::from([(net, e)])),
+        }),
+        ..Default::default()
+    };
+    Ok(ContainerSnapshot {
+        id: ContainerId(id),
+        name,
+        image: info.image.unwrap_or_default(),
+        running: info.state.and_then(|s| s.running).unwrap_or(false),
+        body,
+        networks: endpoints,
+    })
 }
 
 /// Etiquette d'image d'un deploiement : `ciphera/<projet>-<env>:<id>`,
@@ -975,6 +1142,20 @@ pub trait DockerOps: Send + Sync + 'static {
     fn image_deployments(
         &self,
     ) -> impl Future<Output = Result<Vec<DeploymentId>, DockerError>> + Send;
+    /// Configuration de creation du conteneur gere `id` (`snapshot_of`,
+    /// `NotManaged` sinon) ; `None` s'il n'existe plus.
+    fn snapshot(
+        &self,
+        id: &ContainerId,
+    ) -> impl Future<Output = Result<Option<ContainerSnapshot>, DockerError>> + Send;
+    /// Recree le conteneur `snap` a l'identique, sous son nom, et le demarre
+    /// s'il tournait ; renvoie son identifiant. Le conteneur relu existe
+    /// encore : rien n'est recree. Un autre conteneur gere du meme nom est
+    /// supprime d'abord ; non gere : `NotManaged`, laisse tel quel.
+    fn recreate(
+        &self,
+        snap: &ContainerSnapshot,
+    ) -> impl Future<Output = Result<ContainerId, DockerError>> + Send;
 }
 
 /// Adresse sur l'unique reseau de projet parmi `networks` (nom -> adresse).
@@ -1448,6 +1629,66 @@ impl DockerOps for BollardDocker {
 
     async fn remove(&self, id: &ContainerId) -> Result<(), DockerError> {
         self.remove_impl(id).await
+    }
+
+    async fn snapshot(&self, id: &ContainerId) -> Result<Option<ContainerSnapshot>, DockerError> {
+        check_name(&id.0)?;
+        self.inspect_managed(&id.0)
+            .await?
+            .map(snapshot_of)
+            .transpose()
+    }
+
+    async fn recreate(&self, snap: &ContainerSnapshot) -> Result<ContainerId, DockerError> {
+        check_name(&snap.name)?;
+        if let Some(existing) = self.inspect_managed(&snap.name).await? {
+            let id = existing.id.unwrap_or_else(|| snap.name.clone());
+            if id == snap.id.0 {
+                // Jamais remplace : rien a recreer.
+                return Ok(snap.id.clone());
+            }
+            self.force_remove(&id).await?;
+        }
+        let mut body = snap.body.clone();
+        // La reference d'origine si elle designe toujours la meme image,
+        // sinon l'image elle-meme (par son identifiant).
+        let same_ref = match body.image.as_deref() {
+            Some(r) if valid_image(r) => match self.docker.inspect_image(r).await {
+                Ok(img) => img.id.as_deref() == Some(snap.image.as_str()),
+                Err(e) if is_status(&e, 404) => false,
+                Err(e) => return Err(api(e)),
+            },
+            _ => false,
+        };
+        if !same_ref {
+            body.image = Some(snap.image.clone());
+        }
+        let options = CreateContainerOptions {
+            name: Some(snap.name.clone()),
+            ..Default::default()
+        };
+        let created = self
+            .docker
+            .create_container(Some(options), body)
+            .await
+            .map_err(api)?;
+        for (net, endpoint) in &snap.networks {
+            let request = NetworkConnectRequest {
+                container: created.id.clone(),
+                endpoint_config: Some(endpoint.clone()),
+            };
+            self.docker
+                .connect_network(net, request)
+                .await
+                .map_err(api)?;
+        }
+        if snap.running {
+            self.docker
+                .start_container(&created.id, None)
+                .await
+                .map_err(api)?;
+        }
+        Ok(ContainerId(created.id))
     }
 
     async fn remove_with_volumes(&self, id: &ContainerId) -> Result<(), DockerError> {
@@ -2276,5 +2517,100 @@ mod tests {
         assert_eq!(a.fingerprint(), b.fingerprint());
         b.image = "x:2".into();
         assert_ne!(a.fingerprint(), b.fingerprint());
+    }
+
+    /// Reponse d'`inspect` d'un service Compose (forme de l'API Docker).
+    fn compose_inspect() -> ContainerInspectResponse {
+        serde_json::from_value(serde_json::json!({
+            "Id": "0123456789abcdef0123",
+            "Name": "/shop-production-cache-1",
+            "Image": "sha256:aaaa",
+            "State": {"Running": true},
+            "Config": {
+                "Hostname": "0123456789ab",
+                "Image": "redis:7-alpine",
+                "Env": ["CACHE_VERSION=1", "PATH=/usr/bin"],
+                "Cmd": ["redis-server"],
+                "User": "999",
+                "Labels": {
+                    "dev.ciphera.managed": "true",
+                    "com.docker.compose.project": "shop-production",
+                    "com.docker.compose.service": "cache"
+                }
+            },
+            "HostConfig": {
+                "NetworkMode": "ciphera-p-x",
+                "Memory": 268435456,
+                "Mounts": [{"Type": "volume", "Source": "shop-production_data", "Target": "/data"}]
+            },
+            "Mounts": [
+                {"Type": "volume", "Name": "shop-production_data", "Destination": "/data", "RW": true},
+                {"Type": "volume", "Name": "3f2a", "Destination": "/cache", "RW": true}
+            ],
+            "NetworkSettings": {"Networks": {
+                "other": {"Aliases": ["x"], "IPAddress": "10.0.0.3"},
+                "ciphera-p-x": {
+                    "Aliases": ["cache", "cache.internal", "0123456789ab"],
+                    "IPAddress": "172.18.0.4",
+                    "MacAddress": "02:42:ac:12:00:04"
+                }
+            }}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn snapshot_keeps_creation_config_without_runtime_values() {
+        let snap = snapshot_of(compose_inspect()).unwrap();
+        assert_eq!(snap.id.0, "0123456789abcdef0123");
+        assert_eq!(snap.name, "shop-production-cache-1");
+        assert_eq!(snap.image, "sha256:aaaa");
+        assert!(snap.running);
+        let body = &snap.body;
+        assert_eq!(body.hostname, None, "nom d'hote attribue par Docker");
+        assert_eq!(body.image.as_deref(), Some("redis:7-alpine"));
+        assert_eq!(
+            body.env.as_deref(),
+            Some(&["CACHE_VERSION=1".to_string(), "PATH=/usr/bin".to_string()][..])
+        );
+        assert_eq!(body.user.as_deref(), Some("999"));
+        assert_eq!(
+            body.labels
+                .as_ref()
+                .unwrap()
+                .get("com.docker.compose.service"),
+            Some(&"cache".to_string())
+        );
+        let host = body.host_config.as_ref().unwrap();
+        assert_eq!(host.memory, Some(268_435_456));
+        let mounts = host.mounts.as_ref().unwrap();
+        assert_eq!(mounts.len(), 2, "{mounts:?}");
+        assert_eq!(mounts[1].source.as_deref(), Some("3f2a"), "volume anonyme");
+        assert_eq!(mounts[1].target.as_deref(), Some("/cache"));
+        let endpoints = body
+            .networking_config
+            .as_ref()
+            .unwrap()
+            .endpoints_config
+            .as_ref()
+            .unwrap();
+        let main = endpoints.get("ciphera-p-x").expect("reseau principal");
+        assert_eq!(
+            main.aliases.as_deref(),
+            Some(&["cache".to_string(), "cache.internal".to_string()][..])
+        );
+        assert_eq!(main.ip_address, None);
+        assert_eq!(main.mac_address, None);
+        assert_eq!(snap.networks.len(), 1);
+        assert_eq!(snap.networks[0].0, "other");
+        let shown = format!("{snap:?}");
+        assert!(!shown.contains("CACHE_VERSION"), "{shown}");
+    }
+
+    #[test]
+    fn snapshot_refuses_unmanaged_container() {
+        let mut info = compose_inspect();
+        info.config.as_mut().unwrap().labels = Some(HashMap::new());
+        assert!(matches!(snapshot_of(info), Err(DockerError::NotManaged(_))));
     }
 }

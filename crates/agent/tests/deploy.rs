@@ -124,6 +124,10 @@ struct FakeCompose {
     raw: Mutex<Vec<String>>,
     /// Variables donnees au processus, par appel.
     envs: Mutex<Vec<Vec<(String, String)>>>,
+    /// Vrai : comme Compose quand la configuration change, `up` d'un service
+    /// non expose qui a deja un conteneur le remplace par un nouveau
+    /// (`cid-<nom>-r<n>`), image du fichier ; faux : meme identifiant.
+    recreate: AtomicBool,
 }
 
 struct Compose(Arc<FakeCompose>);
@@ -180,12 +184,31 @@ impl FakeCompose {
             .collect();
         let n = self.ups.lock().unwrap().len() + 100;
         let name = format!("{}-{}-1", project.as_str(), service.as_str());
-        self.docker.add_container(
-            &format!("cid-{name}"),
-            &name,
-            &pairs,
-            Some(&format!("172.18.1.{n}")),
-        );
+        let mut id = format!("cid-{name}");
+        let recreate =
+            self.recreate.load(Ordering::SeqCst) && !project.as_str().starts_with("ciphera-d-");
+        if recreate {
+            let mut containers = self.docker.containers.lock().unwrap();
+            if containers.values().any(|c| c.name == name) {
+                containers.retain(|_, c| c.name != name);
+                id = format!("cid-{name}-r{n}");
+            }
+        }
+        self.docker
+            .add_container(&id, &name, &pairs, Some(&format!("172.18.1.{n}")));
+        if recreate {
+            let image = doc["services"][service.as_str()]["image"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            self.docker
+                .containers
+                .lock()
+                .unwrap()
+                .get_mut(&id)
+                .unwrap()
+                .image = image;
+        }
         self.ups
             .lock()
             .unwrap()
@@ -222,6 +245,7 @@ impl Bench {
             file: Mutex::new(None),
             raw: Mutex::new(Vec::new()),
             envs: Mutex::new(Vec::new()),
+            recreate: AtomicBool::new(false),
         });
         let routes = Routes::default();
         let dir = format!("target/deploy-tests/{}", DeploymentId::new());
@@ -3294,7 +3318,7 @@ async fn compose_failed_probe_leaves_unrelated_services_unchanged() {
     let logs = log_lines(&messages);
     assert!(
         logs.iter()
-            .any(|l| l.contains("mis a jour") && l.contains("api") && l.contains("cache")),
+            .any(|l| l.contains(RESTORED) && l.contains("api") && l.contains("cache")),
         "{logs:?}"
     );
 }
@@ -3335,6 +3359,10 @@ async fn compose_other_services_are_updated_after_the_probe() {
     // Mise a jour de `worker` entre la sonde et la bascule.
     let st = stages(&messages);
     assert_eq!(st.last(), Some(&(Stage::Switch, StageStatus::Succeeded)));
+    assert!(
+        bench.db.compose_updated().unwrap().is_empty(),
+        "notes oubliees par la bascule"
+    );
 }
 
 /// Annulation pendant la sonde d'un deploiement Compose : les services
@@ -3403,7 +3431,7 @@ async fn compose_cancel_during_probe_removes_new_services() {
     let logs = log_lines(&messages);
     assert!(
         logs.iter()
-            .any(|l| l.contains("mis a jour") && l.contains("api")),
+            .any(|l| l.contains(RESTORED) && l.contains("api")),
         "{logs:?}"
     );
 }
@@ -3574,6 +3602,241 @@ async fn compose_new_services_of_an_interrupted_deploy_removed_at_startup() {
         );
     }
     assert!(bench.db.compose_created().unwrap().is_empty());
+}
+
+/// Ligne de journal des services dependants restaures.
+const RESTORED: &str = "services dépendants restaurés";
+/// Issue d'un deploiement dont les services dependants n'ont pas pu etre
+/// restaures (agent redemarre en cours de deploiement).
+const NOT_RESTORED: &str = "services dépendants non restaurés : redéployez la version servie";
+
+/// Conteneurs nommes `name` : identifiant et conteneur.
+fn named(bench: &Bench, name: &str) -> Vec<(String, common::FakeContainer)> {
+    bench
+        .docker
+        .containers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, c)| c.name == name)
+        .map(|(id, c)| (id.clone(), c.clone()))
+        .collect()
+}
+
+/// Ensemble `worker_bundle(false)` dont la dependance `api` change d'image.
+fn bundle_with_new_api() -> Value {
+    let mut bundle = worker_bundle(false);
+    bundle["services"]["api"]["image"] = json!("ciphera/shop-production/api:y");
+    bundle
+}
+
+/// Projet Compose servi, Compose recreant chaque service relance ; renvoie
+/// l'ensemble suivant (`api` change d'image).
+async fn recreating_stack(bench: &Bench, project: ProjectId, web: ServiceId) -> Value {
+    bench.compose.recreate.store(true, Ordering::SeqCst);
+    served_worker_stack(bench, project, web).await;
+    bundle_with_new_api()
+}
+
+/// Conteneurs servis des dependances du service expose (`api`, `cache`).
+fn dependencies_before(bench: &Bench) -> Vec<(String, common::FakeContainer)> {
+    let mut out = named(bench, "shop-production-api-1");
+    out.extend(named(bench, "shop-production-cache-1"));
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].1.image, "ciphera/shop-production/api:x");
+    out
+}
+
+/// Chaque service de `before` a de nouveau un seul conteneur, recree
+/// (jamais celui du deploiement en echec), avec la meme image, les memes
+/// etiquettes, en marche.
+fn assert_restored(bench: &Bench, before: &[(String, common::FakeContainer)]) {
+    for (old_id, old) in before {
+        let now = named(bench, &old.name);
+        assert_eq!(now.len(), 1, "{}: {now:?}", old.name);
+        let (id, c) = &now[0];
+        assert!(id.starts_with("restored-"), "{} : {id}", old.name);
+        assert_ne!(id, old_id);
+        assert_eq!(c.image, old.image, "{}", old.name);
+        assert_eq!(c.labels, old.labels, "{}", old.name);
+        assert!(c.running, "{}", old.name);
+    }
+}
+
+/// Sonde en echec : les dependances du service expose, deja en place et
+/// mises a jour avant la sonde, sont recreees telles qu'elles etaient ;
+/// `worker` n'est pas touche ; le journal le dit.
+#[tokio::test(start_paused = true)]
+async fn compose_failed_probe_restores_updated_dependency_services() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    let bundle = recreating_stack(&bench, project, web).await;
+    let before = dependencies_before(&bench);
+    let worker = named(&bench, "shop-production-worker-1");
+
+    *bench.probe.fail_first.lock().unwrap() = 1000;
+    let second = compose_spec_with(&bench, project, web, &bundle);
+    let (result, messages) = bench.deploy(&second).await;
+    assert!(result.is_err());
+
+    assert_restored(&bench, &before);
+    assert_eq!(named(&bench, "shop-production-worker-1")[0].0, worker[0].0);
+    let logs = log_lines(&messages);
+    assert!(
+        logs.iter()
+            .any(|l| l.contains(RESTORED) && l.contains("api") && l.contains("cache")),
+        "{logs:?}"
+    );
+    assert!(bench.db.compose_updated().unwrap().is_empty());
+}
+
+/// Annulation pendant la sonde : memes services restaures.
+#[tokio::test(start_paused = true)]
+async fn compose_cancel_restores_updated_dependency_services() {
+    let bench = Bench::new();
+    bench.compose.recreate.store(true, Ordering::SeqCst);
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.com", Some(web))])
+        .await
+        .unwrap();
+    for n in 100..105 {
+        bench.probe.answer(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let first = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    bench.deploy(&first).await.0.unwrap();
+    for n in 105..120 {
+        bench
+            .probe
+            .hang
+            .lock()
+            .unwrap()
+            .insert(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let before = dependencies_before(&bench);
+    let tries = bench.probe.tries.lock().unwrap().len();
+    let mut second = compose_spec_with(&bench, project, web, &bundle_with_new_api());
+    second.healthcheck.interval_secs = 1;
+    let (tx, mut rx) = mpsc::channel(1024);
+    bench.deployer.spawn_deploy(second.clone(), tx.clone());
+    wait_until("sonde en cours", || {
+        bench.probe.tries.lock().unwrap().len() > tries
+    })
+    .await;
+    assert_eq!(
+        named(&bench, "shop-production-api-1")[0].1.image,
+        "ciphera/shop-production/api:y"
+    );
+
+    bench.deployer.stop(second.deployment_id, &tx).await;
+
+    assert_restored(&bench, &before);
+    let messages = drain(&mut rx).await;
+    assert_eq!(
+        stages(&messages).last(),
+        Some(&(Stage::Start, StageStatus::Cancelled))
+    );
+    let logs = log_lines(&messages);
+    assert!(logs.iter().any(|l| l.contains(RESTORED)), "{logs:?}");
+    assert!(bench.db.compose_updated().unwrap().is_empty());
+}
+
+/// Docker refuse la recreation : la restauration reste a faire (note
+/// gardee) ; `RemoveDeployment` la reprend et ne s'accuse qu'une fois faite.
+#[tokio::test(start_paused = true)]
+async fn compose_restore_refused_by_docker_is_retried_before_acking() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    let bundle = recreating_stack(&bench, project, web).await;
+    let before = dependencies_before(&bench);
+
+    *bench.probe.fail_first.lock().unwrap() = 1000;
+    bench.docker.fail_recreate.store(true, Ordering::SeqCst);
+    let second = compose_spec_with(&bench, project, web, &bundle);
+    assert!(bench.deploy(&second).await.0.is_err());
+    assert_eq!(
+        bench.db.compose_updated().unwrap().len(),
+        2,
+        "notes gardees"
+    );
+    assert!(
+        !bench.deployer.remove(second.deployment_id).await,
+        "pas d'accuse"
+    );
+
+    bench.docker.fail_recreate.store(false, Ordering::SeqCst);
+    assert!(bench.deployer.remove(second.deployment_id).await);
+    assert_restored(&bench, &before);
+    assert!(bench.db.compose_updated().unwrap().is_empty());
+}
+
+/// Agent arrete pendant la sonde, dependances deja mises a jour : leur
+/// configuration d'avant est perdue ; au demarrage suivant, le deploiement
+/// est mis en echec avec le message prevu (rejoue tel quel), sans jamais
+/// etre relance.
+#[tokio::test(start_paused = true)]
+async fn compose_interrupted_deploy_with_updated_services_fails_at_startup() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.com", Some(web))])
+        .await
+        .unwrap();
+    for n in 100..105 {
+        bench.probe.answer(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let first = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    bench.deploy(&first).await.0.unwrap();
+    for n in 105..120 {
+        bench
+            .probe
+            .hang
+            .lock()
+            .unwrap()
+            .insert(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let tries = bench.probe.tries.lock().unwrap().len();
+    let mut second = compose_spec_with(&bench, project, web, &worker_bundle(false));
+    second.healthcheck.interval_secs = 1;
+    let (tx, _rx) = mpsc::channel(1024);
+    bench.deployer.spawn_deploy(second.clone(), tx);
+    wait_until("sonde en cours", || {
+        bench.probe.tries.lock().unwrap().len() > tries
+    })
+    .await;
+    assert_eq!(bench.db.compose_updated().unwrap().len(), 2);
+
+    let restarted = bench.restarted();
+    restarted.sweep().await;
+
+    let outcome = bench.db.outcome(second.deployment_id).unwrap().unwrap();
+    assert_eq!(outcome.stage, Stage::Start);
+    assert_eq!(
+        outcome.status,
+        StageStatus::Failed {
+            message: NOT_RESTORED.into()
+        }
+    );
+    assert!(bench.db.compose_updated().unwrap().is_empty());
+
+    let ups = bench.compose.ups.lock().unwrap().len();
+    let (tx, mut rx) = mpsc::channel(1024);
+    let sink = ProgressSink::new(second.deployment_id, tx);
+    restarted.run(&second, &sink).await.unwrap();
+    drop(sink);
+    let messages = drain(&mut rx).await;
+    assert_eq!(
+        stages(&messages),
+        vec![(
+            Stage::Start,
+            StageStatus::Failed {
+                message: NOT_RESTORED.into()
+            }
+        )]
+    );
+    assert_eq!(bench.compose.ups.lock().unwrap().len(), ups, "rien relance");
 }
 
 /// Balayage : reseau de projet vide d'un projet inconnu supprime ; ceux d'un

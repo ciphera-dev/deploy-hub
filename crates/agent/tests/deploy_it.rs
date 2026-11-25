@@ -63,7 +63,7 @@ struct Bench {
     dir: PathBuf,
     db: StateDb,
     routes: Routes,
-    deployer: RealDeployer,
+    deployer: Arc<RealDeployer>,
     docker: Arc<BollardDocker>,
     containers: Vec<String>,
     networks: Vec<String>,
@@ -86,14 +86,14 @@ impl Bench {
             panel_upstream: None,
         };
         let backend = LocalBackend::connect(dir.join("absent.sock")).unwrap();
-        let deployer = Deployer::new(
+        let deployer = Arc::new(Deployer::new(
             docker.clone(),
             db.clone(),
             routes.clone(),
             TcpProbe::default(),
             CliCompose(Arc::new(backend)),
             cfg,
-        );
+        ));
         Self {
             dir,
             db,
@@ -1071,26 +1071,68 @@ async fn failed_probe_leaves_unrelated_services_unchanged() {
     assert_eq!(bench.routes.upstreams("worker.example.test"), served);
 }
 
-/// Sonde en echec apres la mise a jour d'une dependance du service expose
-/// (`cache`, configuration changee) : le journal du deploiement le dit.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "Docker reel et docker compose : job agent-docker de la CI"]
-async fn dependency_updated_before_probe_is_logged() {
+/// Configuration d'un conteneur relue par `inspect` : image, env,
+/// etiquettes, en marche.
+struct Inspected {
+    image: String,
+    env: Vec<String>,
+    labels: std::collections::HashMap<String, String>,
+    running: bool,
+}
+
+async fn inspected(id: &str) -> Inspected {
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    let info = api
+        .inspect_container(
+            id,
+            None::<bollard::query_parameters::InspectContainerOptions>,
+        )
+        .await
+        .unwrap();
+    let config = info.config.unwrap_or_default();
+    Inspected {
+        image: info.image.unwrap_or_default(),
+        env: config.env.unwrap_or_default(),
+        labels: config.labels.unwrap_or_default(),
+        running: info.state.and_then(|s| s.running).unwrap_or(false),
+    }
+}
+
+/// Conteneurs du service non expose `service` du projet Compose `stable`.
+async fn service_containers(bench: &Bench, stable: &str, service: &str) -> Vec<String> {
+    bench
+        .docker
+        .list_managed(&[
+            (COMPOSE_PROJECT_LABEL, stable),
+            (COMPOSE_SERVICE_LABEL, service),
+        ])
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.id.0)
+        .collect()
+}
+
+/// Projet Compose servi (v1, `CACHE_VERSION=1`) ; renvoie le projet, le
+/// service expose, le projet Compose stable et le conteneur de `cache`.
+async fn served_cache_stack(
+    bench: &mut Bench,
+    host: &str,
+) -> (ProjectId, ServiceId, String, String) {
     for image in [APP_IMAGE, BROKEN_IMAGE, CACHE_IMAGE] {
         pull(image).await;
     }
-    let mut bench = Bench::new();
     let (project, web) = (ProjectId::new(), ServiceId::new());
     let stable = format!("it{}-production", &DeploymentId::new().to_string()[..8]);
     bench.networks.push(docker::project_network(project));
     bench.compose_projects.push(stable.clone());
     bench
         .deployer
-        .apply_routes(vec![route("dep.example.test", web)])
+        .apply_routes(vec![route(host, web)])
         .await
         .unwrap();
     let v1 = compose_spec(
-        &mut bench,
+        bench,
         project,
         web,
         &worker_bundle(&stable, APP_IMAGE, "1", false),
@@ -1098,9 +1140,47 @@ async fn dependency_updated_before_probe_is_logged() {
     );
     let (result, stages) = bench.deploy(&v1).await;
     result.unwrap_or_else(|e| panic!("v1 : {e} ({stages:?})"));
-    let cache = service_container(&bench, &stable, "cache")
+    let cache = service_container(bench, &stable, "cache")
         .await
         .expect("cache demarre");
+    (project, web, stable, cache)
+}
+
+/// `cache` a de nouveau un seul conteneur, recree (pas celui d'avant ni
+/// celui du deploiement en echec), avec la meme image, le meme env et les
+/// memes etiquettes, en marche ; renvoie son identifiant.
+async fn assert_cache_restored(
+    bench: &Bench,
+    stable: &str,
+    old: &str,
+    before: &Inspected,
+) -> String {
+    let now = service_containers(bench, stable, "cache").await;
+    assert_eq!(now.len(), 1, "{now:?}");
+    let now = now.into_iter().next().unwrap();
+    assert_ne!(now, old, "dependance relancee puis recreee");
+    let after = inspected(&now).await;
+    assert_eq!(after.image, before.image);
+    assert_eq!(after.env, before.env);
+    assert!(
+        after.env.iter().any(|v| v == "CACHE_VERSION=1"),
+        "{:?}",
+        after.env
+    );
+    assert_eq!(after.labels, before.labels);
+    assert!(after.running, "conteneur restaure demarre");
+    now
+}
+
+/// Sonde en echec apres la mise a jour d'une dependance du service expose
+/// (`cache`, variable changee) : `cache` est recree tel qu'il etait servi
+/// (meme image, meme env vus par `inspect`) et demarre ; le journal le dit.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et docker compose : job agent-docker de la CI"]
+async fn failed_probe_restores_dependency_services() {
+    let mut bench = Bench::new();
+    let (project, web, stable, cache) = served_cache_stack(&mut bench, "dep.example.test").await;
+    let before = inspected(&cache).await;
 
     let v2 = compose_spec(
         &mut bench,
@@ -1111,15 +1191,129 @@ async fn dependency_updated_before_probe_is_logged() {
     );
     let (result, stages, lines) = bench.deploy_logged(&v2).await;
     assert!(result.is_err(), "{stages:?}");
-    // Dependance relancee avant la sonde : nouvelle configuration.
+    assert_cache_restored(&bench, &stable, &cache, &before).await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("services dépendants restaurés")
+                && l.contains("cache")
+                && !l.contains("worker")),
+        "{lines:?}"
+    );
+}
+
+/// Annulation pendant la sonde, dependance deja mise a jour : meme
+/// restauration.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et docker compose : job agent-docker de la CI"]
+async fn cancel_restores_dependency_services() {
+    let mut bench = Bench::new();
+    let (project, web, stable, cache) = served_cache_stack(&mut bench, "cancel.example.test").await;
+    let before = inspected(&cache).await;
+
+    let v2 = compose_spec(
+        &mut bench,
+        project,
+        web,
+        &worker_bundle(&stable, BROKEN_IMAGE, "2", false),
+        60,
+    );
+    let (tx, mut rx) = mpsc::channel(100_000);
+    bench.deployer.spawn_deploy(v2.clone(), tx.clone());
+    // Service expose de v2 cree : `cache` a deja ete mis a jour.
+    let exposed = format!("ciphera-d-{}", v2.deployment_id);
+    let mut started = false;
+    for _ in 0..240 {
+        let list = bench
+            .docker
+            .list_managed(&[(COMPOSE_PROJECT_LABEL, exposed.as_str())])
+            .await
+            .unwrap();
+        if !list.is_empty() {
+            started = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(started, "service expose de v2 jamais cree");
     assert_ne!(
         service_container(&bench, &stable, "cache").await,
-        Some(cache)
+        Some(cache.clone()),
+        "dependance mise a jour avant la sonde"
+    );
+
+    bench.deployer.stop(v2.deployment_id, &tx).await;
+
+    assert_cache_restored(&bench, &stable, &cache, &before).await;
+    drop(tx);
+    let (mut stages, mut lines) = (Vec::new(), Vec::new());
+    while let Ok(m) = rx.try_recv() {
+        match m {
+            AgentToControl::DeployProgress { stage, status, .. } => stages.push((stage, status)),
+            AgentToControl::LogLine(l) => lines.push(l.line),
+            _ => {}
+        }
+    }
+    assert!(
+        matches!(stages.last(), Some((_, StageStatus::Cancelled))),
+        "{stages:?}"
     );
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("mis a jour") && l.contains("cache") && !l.contains("worker")),
+            .any(|l| l.contains("services dépendants restaurés") && l.contains("cache")),
         "{lines:?}"
+    );
+}
+
+/// Conteneur restaure : memes etiquettes de Compose, `docker compose ps`
+/// le reconnait comme le service `cache` du projet stable.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et docker compose : job agent-docker de la CI"]
+async fn restored_container_keeps_compose_labels() {
+    let mut bench = Bench::new();
+    let (project, web, stable, cache) = served_cache_stack(&mut bench, "labels.example.test").await;
+    let before = inspected(&cache).await;
+
+    let v2 = compose_spec(
+        &mut bench,
+        project,
+        web,
+        &worker_bundle(&stable, BROKEN_IMAGE, "2", false),
+        3,
+    );
+    let (result, stages) = bench.deploy(&v2).await;
+    assert!(result.is_err(), "{stages:?}");
+    let restored = assert_cache_restored(&bench, &stable, &cache, &before).await;
+
+    let out = std::process::Command::new("docker")
+        .current_dir(&bench.dir)
+        .args([
+            "compose",
+            "-p",
+            stable.as_str(),
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--format",
+            "{{.Service}} {{.ID}}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.lines().any(|l| {
+            let mut parts = l.split_whitespace();
+            parts.next() == Some("cache")
+                && parts
+                    .next()
+                    .is_some_and(|id| restored.starts_with(id) || id.starts_with(&restored))
+        }),
+        "{text}"
     );
 }
