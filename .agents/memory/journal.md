@@ -349,3 +349,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 04:18 — Session v0.1-sdd — claude-code (orchestrateur) — Task R55 : Remédiation audit — restauration des services Compose dépendants
 - fait : Configuration relue en mémoire, recréation à l'identique en échec ou annulation, issue explicite si incomplète, verrou et garde par projet
 - résultat : TERMINÉ (relecture : 2 Importants corrigés, approuvée)
+
+## 2026-11-25 04:29 — Session v0.1-sdd — claude-code (orchestrateur) — Task R25 : Remédiation audit — file de tâches bornée, déploiements jamais orphelins
+- fait : Notifications plafonnées, priorités, plafond de 10 en file, échecs GitHub et tâches mortes terminés, purge, déduplication, ordres après COMMIT
+- résultat : TERMINÉ (relecture : 1 Important corrigé, approuvée)

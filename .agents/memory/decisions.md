@@ -1098,3 +1098,12 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Une restauration incomplète figure toujours dans l'issue (« services dépendants non restaurés : redéployez la version servie (…) »), y compris après un redémarrage de l'agent : écriture forcée de l'issue réservée à ces chemins, notes effacées seulement après.
 - Verrou par projet Compose stable autour des mises à jour, de la bascule et de chaque service restauré ; la restauration saute un service repris par un autre déploiement (en cours ou servi) et l'écrit au journal.
 - Laissés : la restauration n'attend pas `service_healthy` (écrit en §7.5) ; une issue « non restaurés » reste même après une reprise réussie ; une restauration est abandonnée (pas reportée) si un autre déploiement du même projet est en cours.
+
+## 2026-11-25 — Task R25 : file de tâches bornée, déploiements jamais orphelins
+- Décision R25 : `notify` plafonné à 1 tâche en cours ; priorités deploy/build 100, acme_issue 50, cleanup 10, notify 0 ; envoi des notifications arrêté au premier échec de connexion SMTP et borné à 120 s (une erreur sans code SMTP 4xx/5xx est `MailError::connection` — à garder dans toute réécriture de `Mailer::send`, test `unreachable_server_is_a_connection_error`).
+- Au plus 10 déploiements `queued` par environnement → 429 `too_many_queued` (`request()` prend toujours le verrou d'environnement).
+- Erreur GitHub durable → déploiement `Failed` « GitHub : … » ; 403 traité comme passager (limite secondaire de GitHub) ; tâche `dead` (y compris bail expiré au dernier essai, `reap_expired`) → déploiement `Failed` via `on_dead` (au plus une fois).
+- Purge horaire (tâche de maintenance existante, avant le cumul des métriques) des tâches `done`/`dead` de plus de 7 jours ; nettoyage dédupliqué par environnement par contrôle d'existence, la tâche trouvée réservée `FOR UPDATE SKIP LOCKED` jusqu'au COMMIT de l'appelant.
+- Ordres Restart/Stop envoyés après le COMMIT ; si l'envoi échoue, l'événement d'audit est retiré avec la remise des marques d'arrêt.
+- Pas de migration (index de déduplication et `priority` déjà présents).
+- Laissés : petite fenêtre où une action concurrente réussie peut perdre sa marque d'arrêt (documentée sur `restore_marks`).
