@@ -1071,3 +1071,10 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Suppression d'une organisation : volumes purgés (choix accepté), dit explicitement sur l'écran Danger et dans la confirmation.
 - Balayage horaire des réseaux de projet vides.
 - Laissés : course étroite du balayage des réseaux (un déploiement échoue, un nouvel essai réussit), M-5.
+
+## 2026-11-25 — Task R22 : nettoyage des déploiements confirmé par l'agent
+- Décision R22 : `cleaned_at` n'est posé qu'à l'accusé `DeploymentRemoved` du serveur du déploiement ; chaque passe de nettoyage renvoie `RemoveDeployment` jusque-là (l'agent tolère les doublons) ; le rapprochement (`State`) renvoie aussi l'ordre pour un déploiement inconnu ou déjà nettoyé.
+- Migration 0042 `removal_requested_at` (écart au brief accepté) : un déploiement en cours de retrait n'est plus candidat au retour arrière.
+- Agent : l'état local est gardé si Docker échoue ; accusé seulement quand tout est retiré ou absent.
+- Balayage des restes (démarrage puis toutes les heures) : seulement les conteneurs ARRÊTÉS absents de l'état local (ceux qui tournent sont laissés au plan de contrôle) ; garde « état neuf » (état vide alors que des conteneurs étiquetés existent : aucun balayage, journal d'erreur) ; image retirée seulement si plus aucun conteneur ne l'utilise et si son déploiement n'a pas d'issue de moins de 30 jours ; images reconnues par leur tag ; projets en cours de retrait (R23) laissés à `remove_project` ; aucun volume touché.
+- Laissés : M-1 (retour arrière Compose), M-2 (conforme au brief), M-3 (renvois à chaque `State` pendant 30 jours), M-5 (test d'image sur le Docker partagé de la CI).

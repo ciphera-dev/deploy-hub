@@ -333,3 +333,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 02:28 — Session v0.1-sdd — claude-code (orchestrateur) — Task R23 : Remédiation audit — retrait complet d'un projet supprimé sur ses serveurs
 - fait : Retrait par serveur jusqu'à l'accusé, purge des volumes, BuildKit du projet retiré, état gardé si Docker échoue
 - résultat : TERMINÉ (relecture : 1 Important corrigé, approuvée)
+
+## 2026-11-25 02:48 — Session v0.1-sdd — claude-code (orchestrateur) — Task R22 : Remédiation audit — nettoyage des déploiements confirmé par l'agent
+- fait : Accusé de l'agent avant cleaned_at, renvois, rapprochement, balayage prudent des restes
+- résultat : TERMINÉ (relecture : 1 Important corrigé, approuvée)
