@@ -393,3 +393,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 10:16 — Session v0.1-sdd — claude-code (orchestrateur) — Task R32 : Proxy : socket de pilotage, certificats expirés
 - fait : SO_PEERCRED root/ciphera-agent, délai par message, certificats expirés ni chargés ni servis
 - résultat : TERMINÉ (relecture approuvée, 1 tour)
+
+## 2026-11-25 10:17 — Session v0.1-sdd — claude-code (orchestrateur) — Task R33 : Panneau web : journaux, CSP des styles, copie, 401, jetons d'URL
+- fait : Pas de reconnexion sur 1008, sonde /api/me, nonce CSP par réponse, Copié seulement si réussi, 401 distingués, jetons retirés par le routeur
+- résultat : TERMINÉ (relecture approuvée, 1 tour)

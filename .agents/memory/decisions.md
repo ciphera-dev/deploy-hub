@@ -1160,3 +1160,12 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Décision R32 : socket de pilotage réservé par SO_PEERCRED à root et au compte ciphera-agent (uid lu dans /etc/passwd ; compte absent → root seul) ; le premier octet d'un message est attendu sans délai, le reste de la trame doit arriver en 10 s (connexion au repos conservée).
 - ACME : un certificat expiré n'est ni chargé ni servi ; le compteur des retraits est purgé.
 - Laissés : pas d'avertissement par hôte quand un certificat expire en cours de route (M3) ; saut de ligne dans une chaîne de format d'acme.rs.
+
+## 2026-11-25 — Task R33 : panneau web, journaux, CSP des styles, copie, 401, jetons d'URL
+- Décision R33 : flux WebSocket sans reconnexion sur 1008 (indicateur « Flux fermé ») ; après 3 échecs sans ouverture, sonde `GET /api/me` hors cache : 401 → politique de session expirée, réseau ou 5xx → reconnexion avec attente comme avant.
+- CSP : nonce de 32 octets par réponse HTML dans `style-src 'self' 'nonce-…'`, balise `<meta name="csp-nonce">` lue au démarrage pour `setNonce` ; index.html (aussi `GET /index.html`) en `no-store` ; jamais `'unsafe-inline'`.
+- Dépendance directe `get-nonce` 1.0.1 (dernière version, déjà présente via Radix, `npm audit` : 0 vulnérabilité).
+- 401 : seul `invalid_credentials` donne « mot de passe incorrect » (connexion, changement de mot de passe) ; tout autre 401 mène à la session expirée (l'API renvoie `unauthenticated`, pas `session_expired`).
+- Jetons d'URL : retirés par le routeur (navigation `replace` vers /reset, /invite, /verify-email sans jeton), jeton gardé en mémoire ; anciens liens des e-mails valables ; page sans jeton : « Lien expiré ou déjà utilisé ».
+- « Copié » seulement après une copie réussie (CopyButton ou `copyText`).
+- Laissés : jeton gardé en mémoire après usage ; test de vérification d'e-mail peu strict sur le titre ; vue des journaux d'un déploiement sans état fermé ; étape Playwright de l'invité liée à l'URL publique de l'instance.
