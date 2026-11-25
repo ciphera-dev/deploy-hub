@@ -27,7 +27,7 @@ use super::argv::AllowedBin;
 use super::sandbox::{self, PrepareContainer, PrepareOutput};
 use super::{BuildBackend, BuildError, MAX_LOG_LINE, ProgressSink};
 use crate::buildkit::{BuildkitLease, ProductionBuildkit};
-use crate::docker::{LogAssembler, check_managed};
+use crate::docker::{assemble_logs, check_managed};
 
 /// Lignes de journal de `railpack prepare` transmises au plus (les
 /// dernieres).
@@ -548,7 +548,10 @@ impl LocalBackend {
     }
 
     /// Journaux du conteneur (dernieres lignes) vers le journal du build.
-    async fn forward_container_logs(&self, id: &str, sink: &ProgressSink) {
+    /// `exited` : conteneur sorti (son attente a abouti) ; sinon (delai
+    /// depasse, attente en echec) il peut ecrire encore et la ligne en
+    /// attente est ecartee (`docker::assemble_logs`).
+    async fn forward_container_logs(&self, id: &str, exited: bool, sink: &ProgressSink) {
         let options = LogsOptions {
             stdout: true,
             stderr: true,
@@ -557,24 +560,13 @@ impl LocalBackend {
             tail: PREPARE_LOG_TAIL.to_string(),
             ..Default::default()
         };
-        let mut logs = self.docker.logs(id, Some(options));
         // Les messages partiels de Docker (16 Kio) sont rassembles avant
         // l'envoi : le plan de controle masque la ligne entiere.
-        let mut assembler = LogAssembler::default();
-        while let Some(Ok(out)) = logs.next().await {
-            use bollard::container::LogOutput;
-            let (stream, message) = match out {
-                LogOutput::StdErr { message } => (LogStream::Stderr, message),
-                LogOutput::StdOut { message } | LogOutput::Console { message } => {
-                    (LogStream::Stdout, message)
-                }
-                LogOutput::StdIn { .. } => continue,
-            };
-            for line in assembler.push(stream, &message) {
-                sink.log(line.stream, &line.line).await;
-            }
-        }
-        for line in assembler.finish() {
+        let mut lines = assemble_logs(
+            self.docker.logs(id, Some(options)),
+            std::future::ready(exited),
+        );
+        while let Some(line) = lines.next().await {
             sink.log(line.stream, &line.line).await;
         }
     }
@@ -687,7 +679,9 @@ impl BuildBackend for LocalBackend {
                 .map_err(|_| prepare_err("delai depasse"))?
         }
         .await;
-        self.forward_container_logs(&created.id, sink).await;
+        // `Ok` : l'attente a abouti, le conteneur est sorti.
+        self.forward_container_logs(&created.id, outcome.is_ok(), sink)
+            .await;
         let output = match outcome {
             Ok(0) => tokio::time::timeout(ARCHIVE_TIMEOUT, self.read_output(&created.id))
                 .await

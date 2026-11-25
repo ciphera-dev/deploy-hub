@@ -1123,7 +1123,9 @@ pub trait DockerOps: Send + Sync + 'static {
         id: &ContainerId,
     ) -> impl Future<Output = Result<bool, DockerError>> + Send;
     /// Journaux du conteneur (les `tail` dernieres lignes, puis la suite si
-    /// `follow`). Le flux s'arrete a la premiere erreur.
+    /// `follow`). Le flux s'arrete a la premiere erreur ; une ligne encore
+    /// incomplete (erreur, conteneur en marche) n'est jamais envoyee
+    /// (`assemble_logs`).
     fn logs(
         &self,
         id: &ContainerId,
@@ -1668,34 +1670,24 @@ impl DockerOps for BollardDocker {
             tail: tail.to_string(),
             ..Default::default()
         };
-        let assembler = Arc::new(Mutex::new(LogAssembler::default()));
-        let tail = assembler.clone();
-        self.docker
-            .logs(&id.0, Some(options))
-            .take_while(|r| std::future::ready(r.is_ok()))
-            .filter_map(|r| std::future::ready(r.ok()))
-            .flat_map(move |out| {
-                use bollard::container::LogOutput;
-                let (stream, bytes) = match out {
-                    LogOutput::StdErr { message } => (LogStream::Stderr, message),
-                    LogOutput::StdOut { message } | LogOutput::Console { message } => {
-                        (LogStream::Stdout, message)
-                    }
-                    LogOutput::StdIn { .. } => return stream::iter(Vec::new()),
-                };
-                let mut guard = assembler
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                stream::iter(guard.push(stream, &bytes))
-            })
-            .chain(
-                stream::once(async move {
-                    let mut guard = tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                    stream::iter(guard.finish())
-                })
-                .flatten(),
-            )
-            .boxed()
+        // La ligne en attente a la fin du flux n'est complete que si le
+        // conteneur est sorti : en suivi, a la fin du flux ; sans suivi,
+        // deja avant la lecture (meme execution avant et apres).
+        let before = if follow {
+            None
+        } else {
+            Some(exit_mark(&self.docker, &id.0).await)
+        };
+        let docker = self.docker.clone();
+        let name = id.0.clone();
+        let exited = async move {
+            let after = exit_mark(&docker, &name).await;
+            match before {
+                None => after.is_some(),
+                Some(before) => before.is_some() && before == after,
+            }
+        };
+        assemble_logs(self.docker.logs(&id.0, Some(options)), exited)
     }
 
     async fn stats(&self) -> Result<NodeMetrics, DockerError> {
@@ -2173,10 +2165,12 @@ pub const MAX_ASSEMBLED_LINE: usize = 64 * 1024;
 /// concatenation, sinon il couperait un secret en deux. Un etat par flux
 /// (sortie standard et erreur).
 ///
-/// Une ligne sans `\n` est retenue jusqu'au `\n` ou a la fin du flux, sans
-/// vidage sur delai : echec ferme, car un vidage coupe pourrait separer un
-/// secret en deux morceaux jamais masques (une barre de progression sans
-/// retour a la ligne n'apparait donc qu'a la fin).
+/// Une ligne sans `\n` est retenue jusqu'au `\n` ou a la fin propre du flux
+/// d'un conteneur sorti (`finish`), sans vidage sur delai ; apres une erreur
+/// ou sur un conteneur encore en marche, elle est ecartee (`discard`) : echec
+/// ferme, car un vidage coupe pourrait separer un secret en deux morceaux
+/// jamais masques (une barre de progression sans retour a la ligne
+/// n'apparait donc qu'a la fin).
 #[derive(Default)]
 pub struct LogAssembler {
     pending: [Vec<u8>; 2],
@@ -2220,7 +2214,8 @@ impl LogAssembler {
         out
     }
 
-    /// Fin du flux : lignes sans retour a la ligne final.
+    /// Fin propre du flux d'un conteneur sorti : la ligne sans retour a la
+    /// ligne final est complete et part. Dans tout autre cas, `discard`.
     pub fn finish(&mut self) -> Vec<ContainerLog> {
         let mut out = Vec::new();
         for (i, stream) in [LogStream::Stdout, LogStream::Stderr]
@@ -2232,6 +2227,116 @@ impl LogAssembler {
             out.extend(split_log_chunk(stream, &line));
         }
         out
+    }
+
+    /// Fin du flux sans garantie que la ligne en attente soit complete
+    /// (erreur, conteneur encore en marche) : elle est ecartee, coupee sur
+    /// une frontiere de trame, elle pourrait laisser voir le debut d'un
+    /// secret jamais masque. `INCOMPLETE_LINE`, sans aucune donnee, la
+    /// remplace.
+    pub fn discard(&mut self) -> Vec<ContainerLog> {
+        let mut out = Vec::new();
+        for (i, stream) in [LogStream::Stdout, LogStream::Stderr]
+            .into_iter()
+            .enumerate()
+        {
+            let line = std::mem::take(&mut self.pending[i]);
+            self.over[i] = false;
+            if !line.is_empty() {
+                out.push(ContainerLog {
+                    stream,
+                    timestamp_ms: now_ms(),
+                    line: INCOMPLETE_LINE.to_string(),
+                });
+            }
+        }
+        out
+    }
+
+    /// Ajoute une sortie de `docker logs` ; renvoie les lignes terminees.
+    fn push_output(&mut self, out: bollard::container::LogOutput) -> Vec<ContainerLog> {
+        use bollard::container::LogOutput;
+        match out {
+            LogOutput::StdErr { message } => self.push(LogStream::Stderr, &message),
+            LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                self.push(LogStream::Stdout, &message)
+            }
+            LogOutput::StdIn { .. } => Vec::new(),
+        }
+    }
+}
+
+/// Remplace une ligne en attente ecartee (`LogAssembler::discard`).
+pub const INCOMPLETE_LINE: &str = "[ligne incomplète ignorée]";
+
+/// Lignes rassemblees du flux `docker logs` `frames`, arrete a la premiere
+/// erreur. Sur une fin propre, `exited` dit si le conteneur etait sorti
+/// (journal complet) : la ligne en attente part alors (`finish`). Apres une
+/// erreur, ou conteneur encore en marche, elle est ecartee (`discard`) :
+/// echec ferme.
+pub fn assemble_logs<S, E, F>(frames: S, exited: F) -> BoxStream<'static, ContainerLog>
+where
+    S: futures_util::Stream<Item = Result<bollard::container::LogOutput, E>> + Send + 'static,
+    E: Send + 'static,
+    F: Future<Output = bool> + Send + 'static,
+{
+    struct State<S, F> {
+        frames: Option<std::pin::Pin<Box<S>>>,
+        exited: Option<std::pin::Pin<Box<F>>>,
+        assembler: LogAssembler,
+        ready: std::collections::VecDeque<ContainerLog>,
+    }
+    let state = State {
+        frames: Some(Box::pin(frames)),
+        exited: Some(Box::pin(exited)),
+        assembler: LogAssembler::default(),
+        ready: Default::default(),
+    };
+    stream::unfold(state, |mut st| async move {
+        loop {
+            if let Some(line) = st.ready.pop_front() {
+                return Some((line, st));
+            }
+            let frames = st.frames.as_mut()?;
+            match frames.next().await {
+                Some(Ok(out)) => {
+                    let lines = st.assembler.push_output(out);
+                    st.ready.extend(lines);
+                }
+                Some(Err(_)) => {
+                    st.frames = None;
+                    let lines = st.assembler.discard();
+                    st.ready.extend(lines);
+                }
+                None => {
+                    st.frames = None;
+                    let complete = match st.exited.take() {
+                        Some(exited) => exited.await,
+                        None => false,
+                    };
+                    let lines = if complete {
+                        st.assembler.finish()
+                    } else {
+                        st.assembler.discard()
+                    };
+                    st.ready.extend(lines);
+                }
+            }
+        }
+    })
+    .boxed()
+}
+
+/// Execution terminee du conteneur (`exited` ou `dead`) : son debut et sa
+/// fin ; `None` s'il tourne, redemarre, est en pause ou reste illisible.
+async fn exit_mark(docker: &Docker, name: &str) -> Option<(String, String)> {
+    let state = docker.inspect_container(name, None).await.ok()?.state?;
+    match state.status {
+        Some(ContainerStateStatusEnum::EXITED | ContainerStateStatusEnum::DEAD) => Some((
+            state.started_at.unwrap_or_default(),
+            state.finished_at.unwrap_or_default(),
+        )),
+        _ => None,
     }
 }
 
@@ -2545,6 +2650,87 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Ligne de 36 Ko, secret a cheval sur l'octet 16 384, en trames
+    /// partielles horodatees de 16 Kio (la derniere finit par `\n`).
+    fn straddling_frames(secret: &str) -> (String, Vec<bytes::Bytes>) {
+        let line = format!("{}{secret}{}", "a".repeat(16_384 - 20), "b".repeat(20_000));
+        let chunks: Vec<&[u8]> = line.as_bytes().chunks(16_384).collect();
+        let frames = chunks
+            .iter()
+            .enumerate()
+            .map(|(n, chunk)| {
+                let mut frame = format!("2026-11-21T10:20:3{n}.123456789Z ").into_bytes();
+                frame.extend_from_slice(chunk);
+                if n + 1 == chunks.len() {
+                    frame.push(b'\n');
+                }
+                bytes::Bytes::from(frame)
+            })
+            .collect();
+        (line, frames)
+    }
+
+    fn stdout(message: bytes::Bytes) -> Result<bollard::container::LogOutput, &'static str> {
+        Ok(bollard::container::LogOutput::StdOut { message })
+    }
+
+    /// Une ligne laisse voir un fragment du secret (4 caracteres ou plus).
+    fn leaks(lines: &[ContainerLog], secret: &str) -> bool {
+        lines
+            .iter()
+            .any(|l| (0..=secret.len() - 4).any(|i| l.line.contains(&secret[i..i + 4])))
+    }
+
+    #[tokio::test]
+    async fn partial_line_before_a_stream_error_is_never_sent() {
+        let secret = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+        let (_, frames) = straddling_frames(secret);
+        // Premiere trame (debut du secret), puis erreur ; la suite ne doit
+        // pas etre lue.
+        let items = vec![
+            stdout(b"2026-11-21T10:20:29Z avant\n".as_slice().into()),
+            stdout(frames[0].clone()),
+            Err("coupure"),
+            stdout(frames[1].clone()),
+            stdout(frames[2].clone()),
+        ];
+        let lines: Vec<_> = assemble_logs(stream::iter(items), async { true })
+            .collect()
+            .await;
+        assert!(!leaks(&lines, secret), "debut du secret envoye");
+        let shown: Vec<_> = lines.iter().map(|l| l.line.as_str()).collect();
+        assert_eq!(shown, ["avant", INCOMPLETE_LINE]);
+    }
+
+    #[tokio::test]
+    async fn partial_line_of_a_running_container_is_never_sent() {
+        let secret = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+        let (_, frames) = straddling_frames(secret);
+        // Lecture sans suivi pendant l'ecriture : fin propre du flux apres
+        // deux trames, conteneur encore en marche.
+        let items = vec![stdout(frames[0].clone()), stdout(frames[1].clone())];
+        let lines: Vec<_> = assemble_logs(stream::iter(items), async { false })
+            .collect()
+            .await;
+        assert!(!leaks(&lines, secret), "ligne partielle envoyee");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].line, INCOMPLETE_LINE);
+    }
+
+    #[tokio::test]
+    async fn exited_container_lines_are_all_sent_on_a_clean_end() {
+        let secret = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd";
+        let (line, frames) = straddling_frames(secret);
+        let mut items: Vec<_> = frames.into_iter().map(stdout).collect();
+        // Derniere ligne sans `\n` : complete, le conteneur est sorti.
+        items.push(stdout(b"2026-11-21T10:20:40Z fin".as_slice().into()));
+        let lines: Vec<_> = assemble_logs(stream::iter(items), async { true })
+            .collect()
+            .await;
+        let shown: Vec<_> = lines.iter().map(|l| l.line.as_str()).collect();
+        assert_eq!(shown, [line.as_str(), "fin"]);
     }
 
     #[test]
