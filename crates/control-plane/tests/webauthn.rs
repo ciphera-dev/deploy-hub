@@ -761,19 +761,15 @@ fn elsewhere(r: Result<String, String>, url: &str) {
 
 #[tokio::test]
 async fn rp_id_uses_public_origin() {
-    // CIPHERA_PUBLIC_URL fixe le RP ID ; seuls cet hote et ses sous-domaines
-    // peuvent s'en servir.
+    // CIPHERA_PUBLIC_URL fixe le RP ID ; seule son origine exacte (schema,
+    // hote, port), celle que webauthn-rs verifie, peut s'en servir.
     let env = env_with(&[
         ("CIPHERA_PUBLIC_URL", "https://Panel.Example.com:8443"),
         ("CIPHERA_PANEL_ALIASES", "admin.example.org"),
     ])
     .await;
     let s = &env.state;
-    for host in [
-        "panel.example.com:8443",
-        "PANEL.example.com.",
-        "eu.panel.example.com",
-    ] {
+    for host in ["panel.example.com:8443", "PANEL.Example.COM:8443"] {
         assert_eq!(
             login_rp_id(s, host).await.as_deref(),
             Ok("panel.example.com"),
@@ -785,14 +781,20 @@ async fn rp_id_uses_public_origin() {
             "{host}"
         );
     }
-    // IP, localhost, alias, nom voisin, domaine parent : refus net, avec
-    // l'adresse publique.
+    // IP, localhost, alias, nom voisin, domaine parent, sous-domaine, autre
+    // port ou port par defaut, point final : refus net, avec l'adresse
+    // publique.
     for host in [
         "203.0.113.7:8443",
         "localhost:8443",
         "admin.example.org:8443",
-        "evilpanel.example.com",
-        "example.com",
+        "evilpanel.example.com:8443",
+        "example.com:8443",
+        "eu.panel.example.com:8443",
+        "eu.panel.example.com",
+        "panel.example.com",
+        "panel.example.com:9443",
+        "panel.example.com.:8443",
     ] {
         elsewhere(login_rp_id(s, host).await, "https://panel.example.com:8443");
         assert_eq!(
@@ -861,6 +863,131 @@ async fn rp_id_uses_public_origin() {
             .await
             .as_deref(),
         Ok("rp.example.com")
+    );
+}
+
+/// Second facteur par passkey sous l'hote `host`, le navigateur etant sur
+/// `from` : statut de la verification.
+async fn second_factor_at(
+    state: &AppState,
+    auth: &mut SoftPasskey,
+    pending: &str,
+    host: &str,
+    from: &str,
+) -> Reply {
+    let r = send_at(
+        state,
+        Some(host),
+        "POST",
+        "/api/auth/webauthn/assert/options",
+        Some(pending),
+        None,
+        Some(json!({ "mode": "second_factor" })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let ceremony = r.json()["ceremony_id"].as_str().unwrap().to_string();
+    let cred = sign(auth, r.json()["options"].clone(), from);
+    send_at(
+        state,
+        Some(host),
+        "POST",
+        "/api/auth/webauthn/assert/verify",
+        Some(pending),
+        None,
+        Some(json!({ "ceremony_id": ceremony, "credential": cred })),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn public_origin_ceremonies_only_at_the_exact_origin() {
+    const PUBLIC: &str = "https://panel.example.com:8443";
+    let env = env_with(&[("CIPHERA_PUBLIC_URL", PUBLIC)]).await;
+    let s = &env.state;
+    let (token, csrf, _) = login(s).await;
+    let mut auth = authenticator();
+    // Enregistrement puis second facteur complets a l'origine exacte.
+    let reg = register_at(
+        s,
+        &mut auth,
+        &token,
+        &csrf,
+        Some("panel.example.com:8443"),
+        PUBLIC,
+    )
+    .await;
+    let (pending, _, mfa) = login(s).await;
+    assert!(mfa);
+    let r = second_factor_at(s, &mut auth, &pending, "panel.example.com:8443", PUBLIC).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+
+    // Sous-domaine, autre port, port par defaut : refus des les options
+    // (aucune ceremonie vouee a l'echec), enregistrement compris.
+    let (pending, _, _) = login(s).await;
+    for host in [
+        "eu.panel.example.com:8443",
+        "panel.example.com:9443",
+        "panel.example.com",
+    ] {
+        let r = send_at(
+            s,
+            Some(host),
+            "POST",
+            "/api/auth/webauthn/assert/options",
+            Some(&pending),
+            None,
+            Some(json!({ "mode": "second_factor" })),
+        )
+        .await;
+        assert_eq!(r.status, 409, "{host} : {}", r.raw);
+        assert_eq!(r.code(), "webauthn_unavailable", "{host}");
+        assert!(r.raw.contains(PUBLIC), "{host} : {}", r.raw);
+        let r = send_at(
+            s,
+            Some(host),
+            "POST",
+            "/api/me/webauthn/register/options",
+            Some(&reg.token),
+            Some(&reg.csrf),
+            Some(json!({ "current_password": PASSWORD })),
+        )
+        .await;
+        assert_eq!(r.status, 409, "{host} : {}", r.raw);
+        assert_eq!(r.code(), "webauthn_unavailable", "{host}");
+    }
+
+    // Bascule R11 : domaine du panneau en attente, servi par le proxy sur
+    // 443. Tant qu'il n'est pas confirme, l'origine publique reste :8443.
+    let panel = Panel {
+        id: Uuid::new_v4(),
+        host: "panel.example.com".into(),
+        confirmed: false,
+    };
+    s.panel.set(Some(panel.clone()));
+    elsewhere(login_rp_id(s, "panel.example.com").await, PUBLIC);
+    assert_eq!(
+        login_rp_id(s, "panel.example.com:8443").await.as_deref(),
+        Ok("panel.example.com")
+    );
+    // Confirme : l'origine devient https://panel.example.com ; meme RP ID,
+    // la passkey enregistree sur :8443 sert toujours.
+    s.panel.set(Some(Panel {
+        confirmed: true,
+        ..panel
+    }));
+    let r = second_factor_at(
+        s,
+        &mut auth,
+        &pending,
+        "panel.example.com",
+        "https://panel.example.com",
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    elsewhere(
+        login_rp_id(s, "panel.example.com:8443").await,
+        "https://panel.example.com",
     );
 }
 

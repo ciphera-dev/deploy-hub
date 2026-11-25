@@ -38,7 +38,6 @@ use super::mfa::{invalid_request, not_pending, pending_session, rate_limited, wi
 use crate::auth::webauthn::{self as store, Kind, Rp};
 use crate::auth::{CurrentUser, csrf, factors, internal, password, rate_limit, recovery, session};
 use crate::http::client_ip::ClientIp;
-use crate::http::panel_host;
 use crate::state::AppState;
 
 /// Corps JSON maximal (reponse d'attestation d'un authentificateur comprise).
@@ -100,8 +99,9 @@ pub enum RpFor {
 /// Relying party pour cette requete : variables WebAuthn (choix explicite de
 /// l'operateur, sans controle de l'hote), sinon origine publique (domaine du
 /// panneau confirme ou `CIPHERA_PUBLIC_URL`), sinon hote de la requete. Le
-/// RP ID public n'est servi qu'a un hote egal a lui ou a l'un de ses
-/// sous-domaines ; ailleurs (IP, `localhost`, alias), [`RpFor::Elsewhere`].
+/// RP public n'est servi qu'a sa propre origine (schema, hote, port), seule
+/// acceptee par webauthn-rs ; ailleurs (IP, `localhost`, alias,
+/// sous-domaine, autre port), [`RpFor::Elsewhere`].
 pub fn rp_for(state: &AppState, headers: &HeaderMap, uri: &Uri) -> RpFor {
     let cfg = &state.cfg;
     let public = state.panel.public_url(cfg);
@@ -118,12 +118,35 @@ pub fn rp_for(state: &AppState, headers: &HeaderMap, uri: &Uri) -> RpFor {
     if !from_public {
         return RpFor::Here(rp);
     }
-    let name = panel_host::request_host_name(headers, uri);
-    if name.is_some_and(|n| store::host_within(&rp.id, &n)) {
+    let public_origin = rp.origin.origin().ascii_serialization();
+    if request_origin(headers, uri).is_some_and(|o| o == public_origin) {
         RpFor::Here(rp)
     } else {
-        RpFor::Elsewhere(rp.origin.origin().ascii_serialization())
+        RpFor::Elsewhere(public_origin)
     }
+}
+
+/// Origine de la page qui envoie la requete, telle que le navigateur la
+/// presente a WebAuthn : schema (HTTPS ; `X-Forwarded-Proto` pose par le
+/// proxy sur l'ecoute locale), hote et port de `Host`, le port par defaut du
+/// schema s'il est absent (443 derriere le proxy ; l'acces direct porte
+/// `:8443`). webauthn-rs exige cette origine exacte : ni sous-domaine, ni
+/// autre port.
+fn request_origin(headers: &HeaderMap, uri: &Uri) -> Option<String> {
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .filter(|p| matches!(*p, "http" | "https"))
+        .unwrap_or("https");
+    let host = store::request_host(headers, uri).filter(|h| {
+        !h.is_empty()
+            && h.len() <= 260
+            && h.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b))
+    })?;
+    webauthn_rs::prelude::Url::parse(&format!("{scheme}://{host}"))
+        .ok()
+        .map(|u| u.origin().ascii_serialization())
 }
 
 /// Passkeys refusees depuis cet hote : l'adresse publique est donnee.

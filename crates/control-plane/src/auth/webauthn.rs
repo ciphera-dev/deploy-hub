@@ -107,15 +107,6 @@ pub fn relying_party(cfg: &Config, public_origin: Option<&str>, host: Option<&st
     Some(Rp { id, origin })
 }
 
-/// `name` (hote normalise de la requete) est-il le RP ID ou l'un de ses
-/// sous-domaines ? Seuls ces hotes peuvent s'en servir dans un navigateur.
-pub fn host_within(rp_id: &str, name: &str) -> bool {
-    name == rp_id
-        || name
-            .strip_suffix(rp_id)
-            .is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1)
-}
-
 /// Instance webauthn-rs pour cette relying party.
 pub fn webauthn(rp: &Rp) -> Result<Webauthn, WebauthnError> {
     WebauthnBuilder::new(&rp.id, &rp.origin)?
@@ -562,22 +553,6 @@ mod tests {
             ),
             None
         );
-    }
-
-    #[test]
-    fn host_within_accepts_the_rp_id_and_its_subdomains_only() {
-        assert!(host_within("panel.example.com", "panel.example.com"));
-        assert!(host_within("panel.example.com", "eu.panel.example.com"));
-        for name in [
-            "evilpanel.example.com",
-            "example.com",
-            ".panel.example.com",
-            "203.0.113.7",
-            "localhost",
-            "panel.example.com.evil.test",
-        ] {
-            assert!(!host_within("panel.example.com", name), "{name}");
-        }
     }
 
     #[test]

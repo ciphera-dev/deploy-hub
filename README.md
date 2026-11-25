@@ -43,7 +43,7 @@ CIPHERA_PANEL_ALIASES=admin.exemple.com,ops.exemple.com
 
 Les noms reconnus sur le port 8443 sont l'hôte de `CIPHERA_PUBLIC_URL`, `CIPHERA_WEBAUTHN_RP_ID`, ces alias et le domaine du panneau confirmé. Tout autre nom reçoit `421 Misdirected Request`. Un nom internationalisé se déclare sous sa forme ASCII (punycode `xn--…`). Un nom réservé au panneau ne peut pas devenir le domaine d'un projet, et un domaine de projet ne peut pas être créé ni vérifié sous le nom par lequel on joint le panneau.
 
-Les passkeys sont liées à l'origine publique du panneau (domaine confirmé, sinon `CIPHERA_PUBLIC_URL`). Si ce domaine change, les passkeys enregistrées sous l'ancien ne fonctionnent plus : il faut les enregistrer à nouveau. Elles ne servent qu'à cette adresse et à ses sous-domaines : par l'adresse IP, par `localhost` ou par un alias, le panneau ne les propose pas et indique l'adresse publique ; on s'y connecte alors par mot de passe puis code TOTP ou code de secours. Pour un autre choix, fixez `CIPHERA_WEBAUTHN_RP_ID` et `CIPHERA_WEBAUTHN_RP_ORIGIN`.
+Les passkeys sont liées à l'origine publique du panneau (domaine confirmé, sinon `CIPHERA_PUBLIC_URL`). Si ce domaine change, les passkeys enregistrées sous l'ancien ne fonctionnent plus : il faut les enregistrer à nouveau. Elles ne servent qu'à cette adresse exacte (même hôte, même port) : par l'adresse IP, par `localhost`, par un alias, par un sous-domaine ou par un autre port, le panneau ne les propose pas et indique l'adresse publique ; on s'y connecte alors par mot de passe puis code TOTP ou code de secours. Pour un autre choix, fixez `CIPHERA_WEBAUTHN_RP_ID` et `CIPHERA_WEBAUTHN_RP_ORIGIN`.
 
 ## Stack
 
