@@ -360,7 +360,11 @@ async fn removed_member_hooks_deleted() {
     .execute(&state.db)
     .await
     .unwrap();
-    for (name, by) in [("a", dev), ("b", dev), ("c", owner_id)] {
+    for (i, (name, by)) in [("a", dev), ("b", dev), ("c", owner_id)]
+        .into_iter()
+        .enumerate()
+    {
+        // token_hash est UNIQUE (migration 0037) : une empreinte distincte par hook.
         sqlx::query(
             "INSERT INTO deploy_hooks (id, project_id, name, token_hash, created_by) \
              VALUES ($1, $2, $3, $4, $5)",
@@ -368,7 +372,7 @@ async fn removed_member_hooks_deleted() {
         .bind(Uuid::new_v4())
         .bind(project)
         .bind(name)
-        .bind(vec![7u8; 32])
+        .bind(vec![i as u8 + 7; 32])
         .bind(by)
         .execute(&state.db)
         .await
