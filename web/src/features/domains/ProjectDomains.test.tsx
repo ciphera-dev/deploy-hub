@@ -68,6 +68,9 @@ it("liste : principal, redirection, domaine généré en HTTP, DNS incorrect exp
   const generated = screen.getByTestId("domain-ciphera-web.203.0.113.10.sslip.io");
   expect(within(generated).getByText("Généré")).toBeInTheDocument();
   expect(within(generated).getByText("HTTP (domaine généré)")).toBeInTheDocument();
+  // Badge d'avertissement : le domaine généré n'a pas de certificat ; les autres n'en ont pas.
+  expect(within(generated).getByText("HTTP, non chiffré")).toBeInTheDocument();
+  expect(within(app).queryByText("HTTP, non chiffré")).not.toBeInTheDocument();
   const api = screen.getByTestId("domain-api.ciphera.dev");
   expect(within(api).getByText("DNS incorrect")).toBeInTheDocument();
   fireEvent.click(within(api).getByText("api.ciphera.dev"));

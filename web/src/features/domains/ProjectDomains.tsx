@@ -7,6 +7,7 @@ import { fetchMe, ME_QUERY_KEY, MFA_PENDING } from "@/features/auth/api";
 import type { Project } from "@/features/projects/api";
 
 import { createDomain, daysLeft, deleteDomain, dnsRecords, domainsQueryKey, fetchDomains, formatDay, isApex, makePrimary, renewDomain, setGeneratedDomain, setRedirect, updateDomain, verifyDomain, type Domain, type ProjectDomains as Domains } from "./api";
+import { HttpOnlyBadge } from "./HttpOnlyBadge";
 
 // Port de prototypes/dashboard/ProjectDomains.jsx (structure, libellés, tokens).
 // Écarts imposés par le backend v0.1 :
@@ -134,6 +135,7 @@ function DomainRow({ d, nodeIp, nodeIp6, open, onToggle, act, busy, canWrite }: 
               </span>
               {d.primary && <Badge>Principal</Badge>}
               {d.generated && <Badge>Généré</Badge>}
+              {d.generated && <HttpOnlyBadge />}
             </div>
             <span style={{ ...lbl, fontSize: 11 }}>
               {d.redirect ? (

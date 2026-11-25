@@ -1865,3 +1865,95 @@ async fn certificate_failures_queue_one_notification_per_failing_chain() {
         ]
     );
 }
+
+#[tokio::test]
+async fn domain_cap_per_project() {
+    let env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let p = project(&env.state, &dev, "cap").await;
+    for i in 0..20 {
+        add_ok(&env.state, &dev, p, &format!("d{i}.cap.example")).await;
+    }
+    // Le 21e est refuse ; un domaine avec `www` compte pour deux.
+    let r = add(
+        &env.state,
+        &dev,
+        p,
+        json!({ "host": "d20.cap.example", "internal_port": 3000 }),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    assert!(r.raw.contains("20"), "{}", r.raw);
+    // Le domaine genere ne compte pas dans le plafond : il est deja la.
+    let l = list(&env.state, &dev, p).await;
+    assert_eq!(l["domains"].as_array().unwrap().len(), 21, "{l}");
+    // Un autre projet n'est pas touche.
+    let q = project(&env.state, &dev, "other").await;
+    add_ok(&env.state, &dev, q, "one.other.example").await;
+}
+
+#[tokio::test]
+async fn www_option_counts_for_two_against_the_cap() {
+    let env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let p = project(&env.state, &dev, "capw").await;
+    for i in 0..19 {
+        add_ok(&env.state, &dev, p, &format!("d{i}.capw.example")).await;
+    }
+    let r = add(
+        &env.state,
+        &dev,
+        p,
+        json!({ "host": "last.capw.example", "internal_port": 3000, "www": true }),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM domains WHERE NOT generated")
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 19);
+}
+
+#[tokio::test]
+async fn domain_cap_per_instance() {
+    let env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    // 100 domaines repartis sur 5 projets, inseres directement.
+    for n in 0..5 {
+        let p = project(&env.state, &dev, &format!("inst{n}")).await;
+        let (environment, service): (Uuid, Uuid) = sqlx::query_as(
+            "SELECT e.id, s.id FROM environments e JOIN services s ON s.environment_id = e.id \
+             WHERE e.project_id = $1 AND e.name = 'production' LIMIT 1",
+        )
+        .bind(p)
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap();
+        for i in 0..20 {
+            sqlx::query(
+                "INSERT INTO domains (id, project_id, environment_id, service_id, host, path_prefix, \
+                 generated, is_primary, redirect, dns_status) \
+                 VALUES ($1, $2, $3, $4, $5, '/', false, false, false, 'pending')",
+            )
+            .bind(Uuid::new_v4())
+            .bind(p)
+            .bind(environment)
+            .bind(service)
+            .bind(format!("h{i}.inst{n}.example"))
+            .execute(&env.state.db)
+            .await
+            .unwrap();
+        }
+    }
+    let p = project(&env.state, &dev, "inst-last").await;
+    let r = add(
+        &env.state,
+        &dev,
+        p,
+        json!({ "host": "one-more.example", "internal_port": 3000 }),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    assert!(r.raw.contains("100"), "{}", r.raw);
+}

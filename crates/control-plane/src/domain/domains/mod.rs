@@ -455,6 +455,37 @@ async fn has_primary(conn: &mut PgConnection, environment: Uuid) -> sqlx::Result
     .await
 }
 
+/// Domaines ajoutes par l'utilisateur au plus par projet (hors domaine genere).
+pub const MAX_PER_PROJECT: i64 = 20;
+/// Domaines ajoutes par l'utilisateur au plus sur l'instance.
+pub const MAX_PER_INSTANCE: i64 = 100;
+
+/// Refuse l'ajout de `adding` hotes au-dela des plafonds. Un verrou de
+/// transaction serialise les ajouts : deux requetes simultanees ne depassent
+/// pas le plafond de l'instance.
+async fn check_quota(conn: &mut PgConnection, project: Uuid, adding: i64) -> Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('ciphera.domain_quota'))")
+        .execute(&mut *conn)
+        .await?;
+    let (in_project, in_instance): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE project_id = $1), count(*)          FROM domains WHERE NOT generated",
+    )
+    .bind(project)
+    .fetch_one(conn)
+    .await?;
+    if in_project + adding > MAX_PER_PROJECT {
+        return Err(DomainError::Invalid(format!(
+            "{MAX_PER_PROJECT} domaines au plus par projet : supprimez-en un avant d'en ajouter."
+        )));
+    }
+    if in_instance + adding > MAX_PER_INSTANCE {
+        return Err(DomainError::Invalid(format!(
+            "{MAX_PER_INSTANCE} domaines au plus sur l'instance."
+        )));
+    }
+    Ok(())
+}
+
 /// Ajoute un domaine (DNS a verifier). Le premier domaine servant un
 /// service devient principal ; `www` ajoute `www.<hote>` en redirection.
 /// `current_host` : nom par lequel la requete joint le panneau, refuse
@@ -497,6 +528,7 @@ pub async fn create(
     if hosts.iter().any(|h| refused(cfg, current_host, h)) || panel_host(conn, &hosts).await? {
         return Err(DomainError::Reserved);
     }
+    check_quota(conn, project, hosts.len() as i64).await?;
     let environment = production(conn, project).await?;
     let (service, current_port) = service(conn, environment, input.service_id.as_deref()).await?;
     if !input.redirect {
