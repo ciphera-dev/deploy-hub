@@ -117,6 +117,7 @@ mod unix {
             panel_port,
             threads,
             limits: ConnLimits::default(),
+            io: Default::default(),
         })
     }
 

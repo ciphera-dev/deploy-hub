@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ciphera_proxy::conn_limit::ConnLimits;
-use ciphera_proxy::forward::{ProxyConfig, TlsAssets};
+use ciphera_proxy::forward::{IoTimeouts, ProxyConfig, TlsAssets};
 use ciphera_proxy::routes::RouteTable;
 use pingora::server::{RunArgs, ShutdownSignal, ShutdownSignalWatch};
 use proto::{Route, TlsMode};
@@ -78,6 +78,15 @@ fn start_server(
     tls: &TlsAssets,
     limits: ConnLimits,
 ) -> (SocketAddr, SocketAddr) {
+    start_server_with(table, tls, limits, IoTimeouts::default())
+}
+
+fn start_server_with(
+    table: Arc<RouteTable>,
+    tls: &TlsAssets,
+    limits: ConnLimits,
+    io: IoTimeouts,
+) -> (SocketAddr, SocketAddr) {
     let http: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
     let https: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
     let cfg = ProxyConfig {
@@ -87,6 +96,7 @@ fn start_server(
         panel_port: 8443,
         threads: 2,
         limits,
+        io,
     };
     let server = ciphera_proxy::build_server(&cfg, table, tls, None, None).unwrap();
     thread::spawn(move || {
@@ -107,7 +117,7 @@ fn harness() -> &'static Harness {
     static H: OnceLock<Harness> = OnceLock::new();
     H.get_or_init(|| {
         let upstream = start_upstream();
-        let table = Arc::new(RouteTable::new());
+        let table = Arc::new(RouteTable::with_loopback_upstreams());
         let tls = TlsAssets::memory();
         let (http, https) = start_server(table.clone(), &tls, ConnLimits::default());
         Harness {
@@ -1036,4 +1046,225 @@ fn per_ip_cap_64() {
     thread::sleep(Duration::from_millis(200));
     assert_eq!(try_status(http), None, "65e connexion refusee");
     drop(held);
+}
+
+/// Amont qui renvoie un gros corps (64 Mio) sans jamais s'arreter avant.
+fn start_big_upstream() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            thread::spawn(move || {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match conn.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => return,
+                    }
+                }
+                let total = 64 * 1024 * 1024;
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+                );
+                if conn.write_all(reply.as_bytes()).is_err() {
+                    return;
+                }
+                let chunk = vec![b'x'; 64 * 1024];
+                for _ in 0..(total / chunk.len()) {
+                    if conn.write_all(&chunk).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// Amont qui lit tout le corps annonce avant de repondre `got it`.
+fn start_body_upstream() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            thread::spawn(move || {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match conn.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => return,
+                    }
+                }
+                let text = String::from_utf8_lossy(&head).to_lowercase();
+                let len: usize = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0u8; len];
+                if conn.read_exact(&mut body).is_err() {
+                    return;
+                }
+                let _ = conn.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\ngot it",
+                );
+            });
+        }
+    });
+    addr
+}
+
+/// Serveur de test dont une route `host` pointe vers `upstream`.
+fn server_for(host: &str, upstream: SocketAddr, io: IoTimeouts) -> SocketAddr {
+    let table = Arc::new(RouteTable::with_loopback_upstreams());
+    table
+        .apply(vec![Route {
+            upstreams: vec![upstream],
+            ..upstream_route(host)
+        }])
+        .unwrap();
+    start_server_with(table, &TlsAssets::memory(), ConnLimits::default(), io).0
+}
+
+/// Un client qui ne lit pas la reponse : le proxy coupe apres le delai
+/// d'ecriture au lieu de garder la connexion indefiniment.
+#[test]
+fn client_not_reading_response_cut_after_write_timeout() {
+    let io = IoTimeouts {
+        write: Duration::from_secs(1),
+        ..IoTimeouts::default()
+    };
+    let http = server_for("big.forward.example", start_big_upstream(), io);
+    let mut s = TcpStream::connect(http).unwrap();
+    s.write_all(b"GET / HTTP/1.1\r\nHost: big.forward.example\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    // Aucune lecture : les tampons se remplissent, puis le delai coupe.
+    thread::sleep(Duration::from_secs(5));
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut got = 0usize;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got += n,
+        }
+    }
+    assert!(
+        got < 48 * 1024 * 1024,
+        "connexion coupee avant la fin du corps, {got} octets recus"
+    );
+}
+
+/// Un corps de requete qui goutte reste borne par la duree totale.
+#[test]
+fn slow_body_cut_after_total_deadline() {
+    let io = IoTimeouts {
+        request_body_total: Duration::from_secs(2),
+        min_body_rate: 0,
+        ..IoTimeouts::default()
+    };
+    let http = server_for("drip.forward.example", start_body_upstream(), io);
+    let mut s = TcpStream::connect(http).unwrap();
+    s.write_all(
+        b"POST / HTTP/1.1\r\nHost: drip.forward.example\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+    )
+    .unwrap();
+    let start = std::time::Instant::now();
+    for _ in 0..40 {
+        if s.write_all(b"x").is_err() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    let (out, _) = read_until_closed(&mut s, Duration::from_secs(5));
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        start.elapsed() < Duration::from_secs(8),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(!text.starts_with("HTTP/1.1 200"), "{text}");
+}
+
+/// Un corps sous 1 Kio/s est coupe une fois le delai de grace passe.
+#[test]
+fn slow_body_below_minimum_rate_is_cut() {
+    let io = IoTimeouts {
+        min_body_rate: 1024,
+        body_rate_grace: Duration::from_secs(1),
+        ..IoTimeouts::default()
+    };
+    let http = server_for("rate.forward.example", start_body_upstream(), io);
+    let mut s = TcpStream::connect(http).unwrap();
+    s.write_all(
+        b"POST / HTTP/1.1\r\nHost: rate.forward.example\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+    )
+    .unwrap();
+    for _ in 0..12 {
+        if s.write_all(b"x").is_err() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    let (out, _) = read_until_closed(&mut s, Duration::from_secs(5));
+    let text = String::from_utf8_lossy(&out);
+    assert!(!text.starts_with("HTTP/1.1 200"), "{text}");
+}
+
+#[test]
+fn identity_headers_stripped() {
+    add_routes(vec![upstream_route("ident.forward.example")]);
+    let names = [
+        "X-Forwarded-For",
+        "Forwarded",
+        "X-Real-IP",
+        "X-Forwarded-Proto",
+        "X-Forwarded-Host",
+        "X-Forwarded-Port",
+        "X-Client-IP",
+        "True-Client-IP",
+        "CF-Connecting-IP",
+        "Fastly-Client-IP",
+        "X-Cluster-Client-IP",
+    ];
+    let mut extra = String::new();
+    for n in names {
+        extra.push_str(&format!("{n}: 198.51.100.9\r\n"));
+        extra.push_str(&format!("{}: 198.51.100.8\r\n", n.replace('-', "_")));
+    }
+    extra.push_str("X-Kept: yes\r\n");
+    let r = get("ident.forward.example", "/", &extra);
+    assert_eq!(r.status, 200, "{}", r.body_text());
+    let seen = r.body_text().to_lowercase();
+    assert!(!seen.contains("198.51.100."), "{seen}");
+    assert!(seen.contains("x-kept: yes\r\n"), "{seen}");
+    assert!(seen.contains("x-forwarded-for: 127.0.0.1\r\n"), "{seen}");
+    assert_eq!(seen.matches("x-forwarded-for").count(), 1, "{seen}");
+}
+
+#[test]
+fn upstream_host_normalized() {
+    add_routes(vec![upstream_route("hostnorm.forward.example")]);
+    let port = harness().http.port();
+    // Majuscules, point final et port quelconque : minuscules, sans point,
+    // port remplace par celui de l'ecoute (non standard ici).
+    let r = get("HostNorm.Forward.Example.:9", "/", "");
+    assert_eq!(r.status, 200, "{}", r.body_text());
+    let seen = r.body_text().to_lowercase();
+    assert!(
+        seen.contains(&format!("host: hostnorm.forward.example:{port}\r\n")),
+        "{seen}"
+    );
+    assert_eq!(seen.matches("host:").count(), 1, "{seen}");
+    // Sans port : aucun port ajoute.
+    let r = get("HostNorm.Forward.Example.", "/", "");
+    let seen = r.body_text().to_lowercase();
+    assert!(
+        seen.contains("host: hostnorm.forward.example\r\n"),
+        "{seen}"
+    );
 }

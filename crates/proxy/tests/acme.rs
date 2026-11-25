@@ -109,6 +109,7 @@ fn issues_cert_via_pebble_http01() {
         panel_port: 8443,
         threads: 2,
         limits: ConnLimits::default(),
+        io: Default::default(),
     };
     let socket_dir = tempfile::tempdir().unwrap();
     let socket = socket_dir.path().join("proxy.sock");

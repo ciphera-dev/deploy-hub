@@ -16,9 +16,14 @@
 //!   recoit 301 vers `https://<hote>:<port du panneau>` + chemin et requete,
 //!   corps vide (panneau avant domaine) ; tout autre hote recoit un 404 sobre.
 //!
-//! Vers l'amont, `X-Forwarded-For`, `Forwarded`, `X-Real-IP` et
-//! `X-Forwarded-*` du client sont retires ; le proxy pose son propre
-//! `X-Forwarded-For` (IP du socket client) et `X-Forwarded-Proto`. Les
+//! Vers l'amont, `X-Forwarded-For`, `Forwarded`, `X-Real-IP`,
+//! `X-Forwarded-*` et les en-tetes d'IP de CDN (`True-Client-IP`,
+//! `CF-Connecting-IP`, `X-Client-IP`, `Fastly-Client-IP`,
+//! `X-Cluster-Client-IP`) du client sont retires, avec leurs variantes a
+//! tiret bas ; le proxy pose son propre `X-Forwarded-For` (IP du socket
+//! client) et `X-Forwarded-Proto`. `Host` est normalise (minuscules, sans
+//! point final, port de l'ecoute si le client en a donne un et qu'il n'est
+//! pas standard). Les
 //! en-tetes de saut (`Connection` et ceux qu'il nomme, `Keep-Alive`, `TE`,
 //! `Proxy-Authorization`...) sont retires par la politique de requete amont
 //! de Pingora, fixee a `standard` (seul le passage a WebSocket est transmis).
@@ -55,7 +60,7 @@ use proto::TlsMode;
 use crate::access_log::log_path;
 use crate::acme::{CHALLENGE_PREFIX, CertResolver, CertStore, Challenges};
 use crate::conn_limit::{Capped, ConnLimiter, ConnLimits, HandshakeDeadline, Kind, LimitFilter};
-use crate::routes::{RequestHost, RouteTable, parse_host, path_is_normal};
+use crate::routes::{RequestHost, RouteTable, is_panel_route, parse_host, path_is_normal};
 
 /// Taille cumulee maximale de la ligne de requete et des en-tetes.
 pub const MAX_REQUEST_HEADER_BYTES: usize = 32 * 1024;
@@ -74,11 +79,21 @@ pub const UPSTREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// dans `early_request_filter` et repose dans `logging` a la fin de chaque
 /// requete d'une connexion persistante).
 pub const DOWNSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Delai maximal d'une ecriture vers le client.
+pub const DOWNSTREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Duree totale maximale d'une requete jusqu'a la fin de son corps.
+pub const REQUEST_BODY_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+/// Debit moyen minimal du corps de la requete (1 Kio/s).
+pub const MIN_BODY_RATE: u64 = 1024;
+/// Delai avant lequel le debit minimal n'est pas verifie.
+pub const BODY_RATE_GRACE: Duration = Duration::from_secs(30);
 /// Requetes servies par une connexion client avant sa fermeture.
 pub const KEEPALIVE_REQUEST_LIMIT: u32 = 1000;
 
-/// En-tetes poses par le proxy, toujours retires de la requete du client.
-const CLIENT_FORWARDING_HEADERS: [&str; 7] = [
+/// En-tetes d'identite du client, toujours retires de la requete (le proxy
+/// pose les siens) ; chacun l'est aussi sous sa forme a tiret bas
+/// (`x_forwarded_for`), que certains amonts lisent comme le meme en-tete.
+const CLIENT_FORWARDING_HEADERS: [&str; 11] = [
     "x-forwarded-for",
     "forwarded",
     "x-real-ip",
@@ -86,7 +101,36 @@ const CLIENT_FORWARDING_HEADERS: [&str; 7] = [
     "x-forwarded-host",
     "x-forwarded-port",
     "x-client-ip",
+    "true-client-ip",
+    "cf-connecting-ip",
+    "fastly-client-ip",
+    "x-cluster-client-ip",
 ];
+
+/// Delai d'ecriture vers le client, duree totale du corps de la requete et
+/// debit minimal de ce corps.
+#[derive(Clone, Copy, Debug)]
+pub struct IoTimeouts {
+    /// Delai maximal d'une ecriture vers le client (client qui ne lit pas).
+    pub write: Duration,
+    /// Duree totale maximale de la requete avant la fin de son corps.
+    pub request_body_total: Duration,
+    /// Debit minimal moyen du corps, en octets par seconde (0 : aucun),
+    /// verifie une fois `body_rate_grace` ecoule.
+    pub min_body_rate: u64,
+    pub body_rate_grace: Duration,
+}
+
+impl Default for IoTimeouts {
+    fn default() -> Self {
+        Self {
+            write: DOWNSTREAM_WRITE_TIMEOUT,
+            request_body_total: REQUEST_BODY_TOTAL_TIMEOUT,
+            min_body_rate: MIN_BODY_RATE,
+            body_rate_grace: BODY_RATE_GRACE,
+        }
+    }
+}
 
 const NOT_FOUND_BODY: &[u8] = b"Not Found\n";
 
@@ -105,6 +149,8 @@ pub struct ProxyConfig {
     pub threads: usize,
     /// Plafonds de connexions et delai du premier octet.
     pub limits: ConnLimits,
+    /// Delais d'ecriture et de corps de requete.
+    pub io: IoTimeouts,
 }
 
 /// Certificats et defis ACME partages par les services HTTP et HTTPS.
@@ -134,6 +180,7 @@ pub struct Forwarder {
     secure: bool,
     /// Echeances de lecture des en-tetes (effacees et reposees ici).
     limiter: Option<Arc<ConnLimiter>>,
+    io: IoTimeouts,
 }
 
 /// SNI de la poignee de main, garde dans l'extension du resume TLS.
@@ -166,7 +213,13 @@ fn sni_matches(session: &Session, host: &str) -> bool {
 pub struct RequestCtx {
     start: Instant,
     host: Option<String>,
+    /// `Host` a transmettre a l'amont (sans port : celui de l'ecoute est
+    /// ajoute a l'envoi).
+    upstream_host: Option<String>,
+    /// Le client a-t-il donne un port dans `Host` ?
+    host_has_port: bool,
     upstream: Option<SocketAddr>,
+    body_bytes: u64,
 }
 
 impl Forwarder {
@@ -184,6 +237,7 @@ impl Forwarder {
             tls,
             secure,
             limiter: None,
+            io: IoTimeouts::default(),
         }
     }
 
@@ -232,13 +286,6 @@ fn request_host(req: &RequestHeader) -> Option<RequestHost> {
         (None, None) => return None,
     };
     parse_host(raw).ok()
-}
-
-/// Route du domaine du panneau : ni service ni redirection (convention du
-/// plan de controle, que l'agent applique aussi : son seul amont admis est
-/// l'ecoute locale du panneau).
-fn is_panel_route(route: &proto::Route) -> bool {
-    route.service.is_none() && route.redirect_to.is_none()
 }
 
 fn header_bytes(req: &RequestHeader) -> usize {
@@ -294,7 +341,10 @@ impl ProxyHttp for Forwarder {
         RequestCtx {
             start: Instant::now(),
             host: None,
+            upstream_host: None,
+            host_has_port: false,
             upstream: None,
+            body_bytes: 0,
         }
     }
 
@@ -309,6 +359,27 @@ impl ProxyHttp for Forwarder {
             limiter.headers_read(stream.id());
         }
         session.set_read_timeout(Some(DOWNSTREAM_READ_TIMEOUT));
+        session.set_write_timeout(Some(self.io.write));
+        Ok(())
+    }
+
+    async fn request_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<Bytes>,
+        _end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        // Appele a chaque morceau recu : un client qui goutte reste borne par
+        // la duree totale et par le debit moyen minimal.
+        ctx.body_bytes += body.as_ref().map_or(0, |b| b.len() as u64);
+        let elapsed = ctx.start.elapsed();
+        let too_slow = elapsed > self.io.body_rate_grace
+            && self.io.min_body_rate > 0
+            && ctx.body_bytes < elapsed.as_secs().saturating_mul(self.io.min_body_rate);
+        if elapsed > self.io.request_body_total || too_slow {
+            return Error::e_explain(ErrorType::HTTPStatus(408), "corps de requete trop lent");
+        }
         Ok(())
     }
 
@@ -323,6 +394,8 @@ impl ProxyHttp for Forwarder {
             return Ok(true);
         };
         ctx.host = Some(host.name.clone());
+        ctx.upstream_host = Some(host.url_authority());
+        ctx.host_has_port = host.port.is_some();
         if !path_is_normal(req.uri.path()) {
             respond(session, 400, None, Bytes::new()).await?;
             return Ok(true);
@@ -420,10 +493,25 @@ impl ProxyHttp for Forwarder {
         &self,
         session: &mut Session,
         upstream_request: &mut RequestHeader,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
         for name in CLIENT_FORWARDING_HEADERS {
             upstream_request.remove_header(name);
+            let alt = name.replace('-', "_");
+            upstream_request.remove_header(alt.as_str());
+        }
+        if let Some(host) = &ctx.upstream_host {
+            let local_port = session
+                .server_addr()
+                .and_then(|a| a.as_inet())
+                .map(|a| a.port());
+            let value = match local_port {
+                Some(port) if ctx.host_has_port && !matches!(port, 80 | 443) => {
+                    format!("{host}:{port}")
+                }
+                _ => host.clone(),
+            };
+            upstream_request.insert_header(http::header::HOST, value)?;
         }
         let client = session
             .client_addr()
@@ -522,6 +610,7 @@ fn capped_service(
         kind == Kind::Tls,
     );
     forwarder.limiter = Some(limiter.clone());
+    forwarder.io = cfg.io;
     let mut proxy = http_proxy(conf, forwarder);
     let mut options = HttpServerOptions::default();
     options.keepalive_request_limit = Some(KEEPALIVE_REQUEST_LIMIT);
