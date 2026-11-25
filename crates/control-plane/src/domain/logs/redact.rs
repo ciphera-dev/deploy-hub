@@ -140,27 +140,29 @@ fn percent(value: &str, upper: bool) -> Zeroizing<String> {
     out
 }
 
-/// Formes base64 de `value`, seule ou au milieu d'un texte encode plus
-/// long (precedee de 1 ou 2 octets) : dans ce dernier cas, seuls les
-/// caracteres qui ne dependent que de la valeur sont gardes (ni ceux du
-/// debut, qui dependent des octets precedents, ni le dernier s'il depend
-/// des suivants). Le remplissage `=` ne porte aucune information.
+/// Formes base64 de `value` dans un texte encode, aux trois alignements
+/// possibles (precedee de 0, 1 ou 2 octets) : seuls les caracteres qui ne
+/// dependent que de la valeur sont gardes (ni ceux du debut, qui dependent
+/// des octets precedents, ni le dernier quand il depend des octets
+/// suivants). A l'alignement 0, la forme complete de la valeur seule est
+/// gardee aussi. Le remplissage `=` ne porte aucune information.
 fn base64_forms(value: &[u8], out: &mut Vec<Zeroizing<String>>) {
     for engine in [&STANDARD_NO_PAD, &URL_SAFE_NO_PAD] {
         for shift in 0..3usize {
             let mut framed = Zeroizing::new(vec![0u8; shift]);
             framed.extend_from_slice(value);
             let encoded = Zeroizing::new(engine.encode(framed.as_slice()));
-            let form = if shift == 0 {
-                encoded.as_str()
-            } else {
-                // 2 caracteres touches par 1 octet de tete, 3 par 2.
-                let skip = shift + 1;
-                let cut = usize::from(framed.len() % 3 != 0);
-                let end = encoded.len().saturating_sub(cut);
-                encoded.get(skip..end).unwrap_or("")
-            };
-            out.push(Zeroizing::new(form.to_string()));
+            if shift == 0 {
+                // Valeur seule (ou en fin de texte encode).
+                out.push(Zeroizing::new(encoded.to_string()));
+            }
+            // 2 caracteres touches par 1 octet de tete, 3 par 2.
+            let skip = if shift == 0 { 0 } else { shift + 1 };
+            let cut = usize::from(framed.len() % 3 != 0);
+            let end = encoded.len().saturating_sub(cut);
+            out.push(Zeroizing::new(
+                encoded.get(skip..end).unwrap_or("").to_string(),
+            ));
         }
     }
 }
@@ -324,11 +326,13 @@ impl Redactor {
         self.redact(super::strip_escapes(&message))
     }
 
-    /// Ligne masquee. Les octets nuls sont retires d'abord, au meme endroit
+    /// Ligne masquee, sans nettoyage des sequences ANSI : privee, les
+    /// chemins de journaux passent par `redact_line` (ou `redact_message`).
+    /// Les octets nuls sont retires d'abord, au meme endroit
     /// pour le direct, l'enregistrement et le telechargement : un octet nul
     /// glisse dans une valeur ne la soustrait pas au masquage. La coupe a la
     /// longueur maximale vient toujours apres.
-    pub fn redact(&self, line: String) -> String {
+    fn redact(&self, line: String) -> String {
         let mut line = line;
         if line.contains('\0') {
             line.retain(|c| c != '\0');
@@ -532,6 +536,38 @@ mod tests {
             let (head, tail) = rest.split_once(MASK).expect(&out);
             assert!(head.len() <= user.len() + 2, "{out}");
             assert!(tail.trim_end_matches('=').len() <= 1, "{out}");
+        }
+        // Valeur suivie d'autres octets (alignement 0), pour des longueurs
+        // de reste 0, 1 et 2 modulo 3 : `echo "$SECRET" | base64`, et
+        // l'en-tete Basic avec le secret comme nom d'utilisateur.
+        for secret in [
+            "s3cr3t-value>>?~+/",
+            "s3cr3t-value>>?~+/!",
+            "s3cr3t-value>>?~+/!!",
+        ] {
+            let r = redactor(&[secret]);
+            for (encoded, header) in [
+                (
+                    STANDARD.encode(format!(
+                        "{secret}
+"
+                    )),
+                    "",
+                ),
+                (
+                    STANDARD.encode(format!("{secret}:")),
+                    "Authorization: Basic ",
+                ),
+                (URL_SAFE.encode(format!("{secret}:x")), ""),
+            ] {
+                let out = r.redact_line(&format!("{header}{encoded}"));
+                let rest = out.strip_prefix(header).expect(&out);
+                let (head, tail) = rest.split_once(MASK).expect(&out);
+                assert!(head.is_empty(), "{out}");
+                // Au plus le caractere partage avec l'octet suivant, puis
+                // ceux des 1 ou 2 octets qui suivent la valeur.
+                assert!(tail.trim_end_matches('=').len() <= 4, "{secret} : {out}");
+            }
         }
         // Encodage pourcent (majuscules et minuscules).
         let secret = "p@ss w0rd/é!";

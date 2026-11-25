@@ -1526,3 +1526,86 @@ async fn short_secret_warning() {
     assert_eq!(r.status, 201, "{}", r.raw);
     assert_eq!(r.json()["warnings"], json!(["too_short_to_redact"]));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_writes_cannot_exceed_caps() {
+    use control_plane::domain::variables::{self as vars, Wanted};
+    let (state, _pg) = common::state().await;
+    let project = image_project(&state, "web").await;
+    let dev = login(&state, "developer").await;
+    // 998 lignes + la valeur entiere : 999 fragments.
+    let r = put_var(
+        &state,
+        &dev,
+        project,
+        json!({ "key": "BIG_KEY", "value": multi_line_secret(998, "ligne"), "secret": true }),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let staging = Uuid::new_v4();
+    sqlx::query("INSERT INTO environments (id, project_id, name) VALUES ($1, $2, 'staging')")
+        .bind(staging)
+        .bind(project)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let actor: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE role = 'developer' LIMIT 1")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+
+    // Ecriture A (staging) : le 1 000e fragment, verifiee, pas encore validee.
+    let mut tx = state.db.begin().await.unwrap();
+    vars::lock_environment(&mut tx, staging).await.unwrap();
+    let written = vars::put(
+        &mut tx,
+        &state.secrets,
+        staging,
+        "EXTRA_A",
+        None,
+        Wanted {
+            value: Some("secret-de-staging"),
+            secret: true,
+        },
+        actor,
+        state.clock.unix_secs(),
+    )
+    .await
+    .unwrap();
+    assert!(written.changed);
+    vars::check_caps(
+        &mut tx,
+        &state.secrets,
+        project,
+        &[(staging, "staging".into())],
+    )
+    .await
+    .unwrap();
+
+    // Ecriture B (production, autre environnement) : attend la fin de A.
+    let (state_b, dev_b) = (state.clone(), dev.clone());
+    let b = tokio::spawn(async move {
+        put_var(
+            &state_b,
+            &dev_b,
+            project,
+            json!({ "key": "EXTRA_B", "value": "secret-de-production", "secret": true }),
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!b.is_finished(), "la verification de B n'a pas attendu A");
+    tx.commit().await.unwrap();
+    // B voit A validee : 1 001 fragments, refusee.
+    let r = b.await.unwrap();
+    assert_eq!(r.status, 422, "{}", r.raw);
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM project_variables v JOIN environments e ON e.id = v.environment_id \
+         WHERE e.project_id = $1 AND v.secret",
+    )
+    .bind(project)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(count, 2);
+}

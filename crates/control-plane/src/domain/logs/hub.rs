@@ -21,8 +21,11 @@
 //!
 //! Masquage hors du verrou des cibles : une ligne est masquee avant de
 //! prendre le verrou (diffusion), les lignes retenues sont sorties sous le
-//! verrou, masquees sans lui, puis diffusees (liberation). Une longue ligne
-//! d'un projet ne retarde donc pas les autres flux. Ordre garde : tant que
+//! verrou, masquees sans lui, puis diffusees (liberation). Le verrou n'attend
+//! donc jamais un masquage (abonnements, departs, liberations des autres
+//! projets). Les messages des agents restent traites en serie par `run` :
+//! la ligne suivante attend le masquage de la precedente, lineaire et borne
+//! (64 Kio par ligne). Ordre garde : tant que
 //! des lignes retenues d'une cible attendent ou sont en cours de liberation,
 //! les nouvelles lignes de cette cible sont retenues derriere elles.
 //!
@@ -286,12 +289,15 @@ impl LogHub {
     }
 
     /// Masquage des valeurs secretes actuelles du projet (relues, au plus
-    /// `LOAD_TIMEOUT`).
+    /// `LOAD_TIMEOUT`). L'automate (jusqu'a quelques dizaines de Mio) est
+    /// construit hors des threads de l'executeur.
     pub async fn redactor(&self, project: Uuid) -> Result<Redactor, SecretsUnavailable> {
         let values = tokio::time::timeout(LOAD_TIMEOUT, self.inner.secrets.values(project))
             .await
             .map_err(|_| SecretsUnavailable)??;
-        Ok(Redactor::new(values))
+        tokio::task::spawn_blocking(move || Redactor::new(values))
+            .await
+            .map_err(|_| SecretsUnavailable)
     }
 
     /// Masquage du projet pour les lignes en direct : garde au plus
@@ -799,6 +805,14 @@ mod held_tests {
 
     /// Une ligne d'un projet en cours de masquage ne retarde pas celles d'un
     /// autre projet : le masquage se fait hors du verrou des cibles.
+    ///
+    /// `run` appelle `dispatch` en serie : en production, la ligne suivante
+    /// de la file attend la fin du masquage de la precedente (lineaire,
+    /// quelques dizaines de µs pour 16 Kio). Ce test appelle `dispatch` en
+    /// parallele pour isoler le verrou partage : abonnements, departs,
+    /// liberations des lignes retenues (taches a part) et compteurs ne
+    /// doivent jamais attendre un masquage. Il ne pretend pas que la file
+    /// des agents soit traitee en parallele.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn masking_one_project_does_not_delay_another() {
         use std::sync::atomic::{AtomicBool, Ordering};

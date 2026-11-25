@@ -1204,12 +1204,24 @@ async fn env_bytes(
 /// chaque environnement de `environments` (identifiant, nom) reste envoyable
 /// (`MAX_ENV_BYTES`), et les secrets du projet, globales comprises, restent
 /// masquables (`MAX_ENV_BYTES` octets, `MAX_FRAGMENTS` fragments).
+///
+/// Verrou consultatif du projet (jusqu'a la fin de la transaction) avant
+/// les lectures : deux ecritures du meme projet (environnements differents,
+/// ou variable du projet et globale) se verifient l'une apres l'autre, la
+/// seconde voyant la premiere validee. Plusieurs projets : dans l'ordre de
+/// leurs identifiants (`check_scope_caps`).
 pub async fn check_caps(
     conn: &mut PgConnection,
     secrets: &SecretBox,
     project: Uuid,
     environments: &[(Uuid, String)],
 ) -> Result<(), VarError> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('ciphera-var-caps:' || $1::text, 0))",
+    )
+    .bind(project)
+    .execute(&mut *conn)
+    .await?;
     for (environment, name) in environments {
         if env_bytes(conn, secrets, project, *environment, name).await? > MAX_ENV_BYTES {
             return Err(invalid(
@@ -1240,7 +1252,10 @@ pub async fn check_scope_caps(
     scope: Scope,
     environments: &[String],
 ) -> Result<(), VarError> {
-    for project in scope.projects(&mut *conn).await? {
+    let mut projects = scope.projects(&mut *conn).await?;
+    // Verrous des projets toujours pris dans le meme ordre.
+    projects.sort();
+    for project in projects {
         let envs: Vec<(Uuid, String)> = sqlx::query_as(
             "SELECT id, name FROM environments WHERE project_id = $1 AND name = ANY ($2)",
         )
