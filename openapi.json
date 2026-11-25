@@ -1647,7 +1647,7 @@
         "tags": [
           "system"
         ],
-        "summary": "Sonde de sante (sans authentification).",
+        "summary": "Sonde de sante (sans authentification ; la version est reservee au pair local ou a une session).",
         "operationId": "health",
         "responses": {
           "200": {
@@ -6935,8 +6935,7 @@
         "type": "object",
         "description": "Reponse de `GET /api/health`.",
         "required": [
-          "status",
-          "version"
+          "status"
         ],
         "properties": {
           "status": {
@@ -6944,8 +6943,11 @@
             "description": "`\"ok\"` quand le panneau repond et joint sa base ;\n`\"database_unavailable\"` (503) sinon."
           },
           "version": {
-            "type": "string",
-            "description": "Version de Ciphera."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Version de Ciphera : seulement pour un pair local de l'acces direct\nou une session ouverte."
           }
         }
       },

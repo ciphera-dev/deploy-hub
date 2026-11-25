@@ -2169,8 +2169,11 @@ export interface components {
              *     `"database_unavailable"` (503) sinon.
              */
             status: string;
-            /** @description Version de Ciphera. */
-            version: string;
+            /**
+             * @description Version de Ciphera : seulement pour un pair local de l'acces direct
+             *     ou une session ouverte.
+             */
+            version?: string | null;
         };
         /** @description Reponse de `POST /v1/hooks/deploy/{hookId}`. */
         HookTriggered: {
