@@ -192,3 +192,9 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 - Cause : R34 a ajouté `form-action 'self'` ; le flux manifeste de l'App GitHub soumet un formulaire POST vers `https://github.com/settings/apps/new`.
 - Résolu : `form-action 'self' https://github.com` (aucun joker, aucun autre hôte), épinglé par tests/headers.rs. Seul formulaire externe du panneau : web/src/features/connectors/api.ts.
 - Leçon : vérifier le résultat CI de chaque commit de main, pas seulement le dernier (une exécution annulée ne prouve rien).
+
+## 2026-11-25 — CI rouge (test) après R51 : poignée de main réinitialisée avant le ClientHello
+- Symptôme : `conn_limit::tests::a_reset_connection_is_still_watched_and_evictable` panique (ReadError ECONNRESET, « debut de la poignee de main TLS ») : depuis R51, `HandshakeDeadline::process` lit le ClientHello avant rustls et renvoie une erreur sur une connexion réinitialisée.
+- Défaut réel trouvé : sur erreur de `process`, Pingora se contente de lâcher le flux ; la place TLS restait comptée jusqu'à 11 s (et le descripteur dupliqué jusqu'à 10 s) pour toute poignée de main échouée avant rustls (client parti, ClientHello illisible, ClientHello sans nom refusé).
+- Résolu : `ConnLimiter::handshake_failed(id, serial)` rend la place aussitôt (une seule fois, garde par numéro de surveillance) ; test renommé `a_reset_connection_gives_its_place_back` + test de double libération. Décision R31/R51 précisée : une poignée de main qui échoue avant rustls rend sa place tout de suite ; un échec à l'intérieur de rustls reste compté 11 s au plus (Pingora n'offre pas de crochet).
+- Laissés : imprécision de file (une place d'une autre connexion en attente peut être rendue si plus d'1 s sépare `admit` et `process`, comme `enter`) ; pas de test « ClientHello valide ne rend rien » ni « sans SNI rend la place ».
