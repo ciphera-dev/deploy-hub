@@ -13,6 +13,7 @@ use ciphera_agent::config::{AgentConfig, Identity};
 use ciphera_agent::transport::{Agent, client_config, fixed_state};
 use control_plane::agents::registry::{AgentRegistry, SendError};
 use control_plane::agents::{servers, transport};
+use control_plane::cli::admin;
 use pki::Ca;
 use proto::{
     ALPN, AgentState, AgentToControl, ControlToAgent, DeploymentOutcome, ImageRef, NodeMetrics,
@@ -619,6 +620,112 @@ async fn revocation_between_check_and_attach_is_caught() {
         Err(_) => panic!("agent revoque toujours connecte"),
     }
     assert!(!link.registry.is_connected(id));
+}
+
+/// Agent connecte puis revoque (`ciphera admin revoke-agent`) : le service
+/// le deconnecte (`disconnect_revoked`) et sa poignee de main suivante est
+/// refusee.
+#[tokio::test]
+async fn revoked_agent_handshake_refused() {
+    let (db, _guard) = common::database().await;
+    let ca = Ca::generate("instance").unwrap();
+    let link = start(&db, &ca);
+    let id = ServerId::new();
+    let (identity, cert_pem) = identity(&ca, &ca, id);
+    servers::register_local(&db, &cert_pem).await.unwrap();
+    let client = client_config(&identity).unwrap();
+    // Point de sortie garde vivant : la connexion reste ouverte.
+    let endpoint = ciphera_agent::transport::client_endpoint(link.addr).unwrap();
+    let conn = tokio::time::timeout(
+        WAIT,
+        endpoint
+            .connect_with(client.clone(), link.addr, "localhost")
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    codec::write_frame(&mut send, &hello_of(id)).await.unwrap();
+    let reply = tokio::time::timeout(WAIT, codec::read_frame::<_, ControlToAgent>(&mut recv))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(reply, Some(ControlToAgent::Hello { .. })));
+    wait_until("agent inscrit", || link.registry.is_connected(id)).await;
+
+    assert_eq!(
+        admin::revoke_agent(&db, id).await.unwrap(),
+        admin::AgentRevoke::Revoked
+    );
+    assert_eq!(
+        transport::disconnect_revoked(&db, &link.registry)
+            .await
+            .unwrap(),
+        vec![id]
+    );
+    assert!(!link.registry.is_connected(id));
+    tokio::time::timeout(WAIT, conn.closed())
+        .await
+        .expect("connexion fermee par le plan de controle");
+
+    let again = hello(client, link.addr, hello_of(id)).await;
+    assert_app_closed(again, error_code::UNAUTHORIZED);
+    assert!(!link.registry.is_connected(id));
+    assert!(
+        transport::disconnect_revoked(&db, &link.registry)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// `ciphera admin revoke-agent <id>` : pose `revoked_at` une seule fois,
+/// audite, refuse un identifiant inconnu.
+#[tokio::test]
+async fn admin_revoke_agent_cli() {
+    let (db, _guard) = common::database().await;
+    let ca = Ca::generate("instance").unwrap();
+    let id = ServerId::new();
+    let (_, cert_pem) = identity(&ca, &ca, id);
+    servers::register_local(&db, &cert_pem).await.unwrap();
+
+    assert_eq!(
+        admin::revoke_agent(&db, id).await.unwrap(),
+        admin::AgentRevoke::Revoked
+    );
+    let first: Option<String> =
+        sqlx::query_scalar("SELECT revoked_at::text FROM servers WHERE id = $1")
+            .bind(id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(first.is_some());
+    assert_eq!(
+        admin::revoke_agent(&db, id).await.unwrap(),
+        admin::AgentRevoke::AlreadyRevoked
+    );
+    let second: Option<String> =
+        sqlx::query_scalar("SELECT revoked_at::text FROM servers WHERE id = $1")
+            .bind(id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(first, second, "date de revocation conservee");
+    let fingerprint = pki::fingerprint_sha256(&pki::der_from_pem(&cert_pem).unwrap());
+    assert!(!servers::is_authorized(&db, id, &fingerprint).await.unwrap());
+
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events          WHERE action = 'server.revoke.cli' AND detail->>'server_id' = $1",
+    )
+    .bind(id.to_string())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+
+    let err = admin::revoke_agent(&db, ServerId::new()).await.unwrap_err();
+    assert!(err.to_string().contains("aucun serveur"), "{err}");
 }
 
 #[tokio::test]

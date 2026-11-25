@@ -8,7 +8,9 @@
 //!    registre : une revocation qui tombe entre le premier controle et
 //!    l'inscription est vue ici (voir `AgentRegistry::disconnect`).
 //!
-//! Sinon la connexion est fermee avec un code de `proto::error_code`.
+//! Sinon la connexion est fermee avec un code de `proto::error_code`. Un
+//! agent deja connecte dont le serveur est revoque ensuite est deconnecte
+//! en quelques secondes ([`watch_revocations`]).
 //!
 //! Livraison : `State` est un instantane complet de l'agent, renvoye a
 //! chaque connexion (idempotent) ; `DeployProgress` et `LogLine` sont livres
@@ -138,14 +140,21 @@ const IDLE_TIMEOUT_MS: u32 = 30_000;
 /// Connexions simultanees (poignees de main comprises) ; au-dela, refus.
 pub const MAX_CONNECTIONS: usize = 64;
 
+/// Intervalle de verification des agents connectes revoques (voir
+/// [`watch_revocations`]).
+pub const REVOCATION_CHECK_EVERY: Duration = Duration::from_secs(5);
+
 /// Socket UDP d'ecoute du lien.
 pub fn bind(addr: SocketAddr, config: quinn::ServerConfig) -> std::io::Result<Endpoint> {
     Endpoint::server(config, addr)
 }
 
-/// Accepte les agents jusqu'a la fermeture de `endpoint`. Au-dela de
-/// `MAX_CONNECTIONS` connexions en cours, les nouvelles sont refusees avant
-/// la poignee de main.
+/// Accepte les agents jusqu'a la fermeture de `endpoint`. Une adresse non
+/// encore validee recoit d'abord un paquet Retry (validation d'adresse
+/// QUIC, jeton derive de la cle aleatoire tiree en memoire par
+/// `quinn::ServerConfig::with_crypto` au demarrage) : aucune place n'est
+/// prise pour elle. Au-dela de `MAX_CONNECTIONS` connexions en cours, les
+/// nouvelles sont refusees avant la poignee de main.
 pub async fn serve(endpoint: Endpoint, registry: AgentRegistry, db: PgPool) {
     serve_with_renewal(endpoint, registry, db, None).await;
 }
@@ -161,6 +170,14 @@ pub async fn serve_with_renewal(
 ) {
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     while let Some(incoming) = endpoint.accept().await {
+        if !incoming.remote_address_validated() {
+            // Le client repond avec le jeton recu ; une adresse usurpee ne
+            // le recoit jamais.
+            if let Err(e) = incoming.retry() {
+                e.into_incoming().ignore();
+            }
+            continue;
+        }
         let Ok(permit) = slots.clone().try_acquire_owned() else {
             tracing::warn!(
                 "lien agents : {} refuse, {MAX_CONNECTIONS} connexions en cours",
@@ -176,6 +193,47 @@ pub async fn serve_with_renewal(
             handle(incoming, &registry, &db, ca.as_deref()).await;
             drop(permit);
         });
+    }
+}
+
+/// Ferme la connexion des agents connectes dont le serveur est revoque
+/// (`servers.revoked_at` pose, par exemple par `ciphera admin
+/// revoke-agent`, depuis un autre processus). Renvoie les serveurs
+/// deconnectes.
+pub async fn disconnect_revoked(
+    db: &PgPool,
+    registry: &AgentRegistry,
+) -> Result<Vec<ServerId>, sqlx::Error> {
+    let connected = registry.connected();
+    if connected.is_empty() {
+        return Ok(Vec::new());
+    }
+    let revoked: Vec<ServerId> =
+        sqlx::query_scalar("SELECT id FROM servers WHERE revoked_at IS NOT NULL")
+            .fetch_all(db)
+            .await?;
+    let mut closed = Vec::new();
+    for id in connected {
+        if revoked.contains(&id) {
+            registry.disconnect(id);
+            tracing::warn!("lien agents : agent {id} revoque, deconnecte");
+            closed.push(id);
+        }
+    }
+    Ok(closed)
+}
+
+/// Toutes les [`REVOCATION_CHECK_EVERY`] : [`disconnect_revoked`]. Une
+/// revocation posee hors du service est appliquee en quelques secondes ;
+/// la reconnexion est refusee a la poignee de main ([`authenticate`]).
+pub async fn watch_revocations(db: PgPool, registry: AgentRegistry) {
+    let mut tick = tokio::time::interval(REVOCATION_CHECK_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        if let Err(e) = disconnect_revoked(&db, &registry).await {
+            tracing::warn!("lien agents : revocations non relues : {e}");
+        }
     }
 }
 

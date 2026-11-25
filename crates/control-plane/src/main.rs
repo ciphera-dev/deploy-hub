@@ -70,6 +70,12 @@ enum AdminCommand {
         #[arg(long, env = "CIPHERA_AGENT_DIR", default_value = "/etc/ciphera-agent")]
         agent_dir: PathBuf,
     },
+    /// Revoque un serveur (definitif) : son agent est deconnecte par le
+    /// service en quelques secondes et ne peut plus se reconnecter.
+    RevokeAgent {
+        /// Identifiant du serveur (UUID de son agent).
+        id: String,
+    },
 }
 
 #[derive(Args)]
@@ -117,6 +123,9 @@ async fn main() {
         }
         Some(Command::Admin(AdminCommand::RenewCerts { agent_dir })) => {
             std::process::exit(run_renew_certs(&agent_dir).await)
+        }
+        Some(Command::Admin(AdminCommand::RevokeAgent { id })) => {
+            std::process::exit(run_revoke_agent(&id).await)
         }
         Some(Command::Serve) | None => {}
     }
@@ -328,6 +337,36 @@ async fn run_clear_ip_allowlist() -> i32 {
     }
 }
 
+/// Revoque un serveur ; message sur la sortie d'erreur.
+async fn run_revoke_agent(id: &str) -> i32 {
+    let result = async {
+        let id: shared::ids::ServerId = id
+            .trim()
+            .parse()
+            .map_err(|_| format!("identifiant de serveur invalide : {id}"))?;
+        let cfg = control_plane::cli::env::admin_config()?;
+        let db = admin_db(&cfg).await?;
+        Ok::<_, Box<dyn std::error::Error>>((id, admin::revoke_agent(&db, id).await?))
+    }
+    .await;
+    match result {
+        Ok((id, admin::AgentRevoke::Revoked)) => {
+            eprintln!(
+                "serveur {id} revoque : son agent sera deconnecte d'ici quelques secondes et ne pourra plus se reconnecter"
+            );
+            0
+        }
+        Ok((id, admin::AgentRevoke::AlreadyRevoked)) => {
+            eprintln!("serveur {id} deja revoque");
+            0
+        }
+        Err(e) => {
+            eprintln!("erreur : {e}");
+            1
+        }
+    }
+}
+
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let env_ip = std::env::var_os("CIPHERA_PUBLIC_IP").is_some_and(|v| !v.is_empty());
     let (cfg, ip_source) = tls::with_panel_ip(Config::from_env()?, env_ip);
@@ -356,6 +395,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Secrets chiffres avant la liaison a leur ligne : rechiffres une fois.
     control_plane::domain::variables::rebind_all(&db, &secrets).await?;
 
+    // Remplacement d'une paire certificat + cle interrompu (coupure pendant
+    // un renouvellement) : termine ou annule avant toute lecture.
+    if let Err(e) = agents::certs::recover_pairs(&cfg.config_dir) {
+        tracing::error!("reprise d'un renouvellement de certificat interrompu impossible : {e}");
+    }
     // CA de l'instance : certificats du lien et du panneau renouveles aux
     // deux tiers de leur validite (ici puis toutes les 12 h), certificats
     // des agents a leur connexion (agents::certs).
@@ -680,6 +724,11 @@ async fn start_agent_link(
         registry.clone(),
         db.clone(),
         ca,
+    ));
+    // Revocations posees hors du service (`ciphera admin revoke-agent`).
+    tokio::spawn(agents::transport::watch_revocations(
+        db.clone(),
+        registry.clone(),
     ));
     tracing::info!("lien agents (QUIC + mTLS) sur {addr}");
     Ok(Some(endpoint))

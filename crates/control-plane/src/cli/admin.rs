@@ -17,11 +17,17 @@
 //! `ciphera admin clear-ip-allowlist` : vide la liste d'IP autorisees quand
 //! l'adresse de l'administrateur a change. Le service la relit en quelques
 //! secondes, sans redemarrage.
+//!
+//! `ciphera admin revoke-agent <id>` : revoque un serveur (`revoked_at`,
+//! definitif). Le service ferme sa connexion en quelques secondes
+//! (`agents::transport::watch_revocations`, qui appelle
+//! `AgentRegistry::disconnect`) et refuse ses poignees de main suivantes.
 
 use std::fmt;
 
 use serde_json::json;
 use shared::config::Config;
+use shared::ids::ServerId;
 use sqlx::PgPool;
 
 use crate::connectors::github::{self, app::GithubClient};
@@ -266,4 +272,46 @@ pub async fn clear_ip_allowlist(db: &PgPool) -> Result<u64, AdminError> {
     }
     tx.commit().await.map_err(database)?;
     Ok(entries)
+}
+
+/// Issue de `revoke-agent`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AgentRevoke {
+    /// `revoked_at` pose maintenant.
+    Revoked,
+    /// Deja revoque : date d'origine conservee.
+    AlreadyRevoked,
+}
+
+/// Revoque le serveur `id` (auditee) : `revoked_at` pose s'il ne l'etait
+/// pas. Le service en cours le deconnecte en quelques secondes et refuse
+/// ses reconnexions (`agents::transport`).
+pub async fn revoke_agent(db: &PgPool, id: ServerId) -> Result<AgentRevoke, AdminError> {
+    let mut tx = db.begin().await.map_err(database)?;
+    let revoked: Option<bool> =
+        sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM servers WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database)?;
+    match revoked {
+        None => return Err(AdminError(format!("aucun serveur {id}"))),
+        Some(true) => return Ok(AgentRevoke::AlreadyRevoked),
+        Some(false) => {}
+    }
+    sqlx::query("UPDATE servers SET revoked_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(database)?;
+    sqlx::query(
+        "INSERT INTO audit_events (id, actor_id, action, target, detail)          VALUES ($1, NULL, 'server.revoke.cli', 'server', $2)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(json!({ "server_id": id }))
+    .execute(&mut *tx)
+    .await
+    .map_err(database)?;
+    tx.commit().await.map_err(database)?;
+    Ok(AgentRevoke::Revoked)
 }
