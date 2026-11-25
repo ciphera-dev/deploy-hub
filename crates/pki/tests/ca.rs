@@ -269,3 +269,51 @@ fn renewal_is_due_after_two_thirds_of_the_validity() {
     assert_eq!(pki::renewal_due(&der, to + day), Some(true), "expire");
     assert_eq!(pki::renewal_due(b"pas un certificat", now), None);
 }
+
+/// Certificats feuilles (agent et serveur) : extension BasicConstraints
+/// presente, CA:false, critique.
+#[test]
+fn leaf_has_ca_false() {
+    let ca = Ca::generate("Ciphera test CA").unwrap();
+    let agent_key = KeyPair::generate().unwrap();
+    let agent = ca
+        .issue_agent_cert(ServerId::new(), &agent_key.subject_public_key_info())
+        .unwrap();
+    let server = ca.issue_server_cert(&["localhost".into()]).unwrap();
+    for pem in [&agent.cert_pem, &server.cert_pem] {
+        let der = parse_pem(pem);
+        let (_, cert) = X509Certificate::from_der(&der).unwrap();
+        let bc = cert
+            .basic_constraints()
+            .unwrap()
+            .expect("BasicConstraints explicite");
+        assert!(!bc.value.ca, "CA:false");
+        assert!(bc.critical, "extension critique");
+    }
+}
+
+/// `issued_by` : signature de la CA verifiee (dates ignorees : un
+/// certificat expire reste reconnu), autre CA ou DER illisible refuses.
+#[test]
+fn issued_by_checks_the_ca_signature() {
+    let ca = Ca::generate("CA A").unwrap();
+    let other = Ca::generate("CA A").unwrap();
+    let key = KeyPair::generate().unwrap();
+    let id = ServerId::new();
+    let now = 1_900_000_000;
+    let expired = ca
+        .issue_agent_cert_between(
+            id,
+            &key.subject_public_key_info(),
+            now - 400 * 86_400,
+            now - 35 * 86_400,
+        )
+        .unwrap();
+    let der = parse_pem(&expired.cert_pem);
+    let ca_der = parse_pem(ca.cert_pem());
+    assert!(pki::issued_by(&ca_der, &der));
+    // Meme nom de CA, autre cle : refuse.
+    assert!(!pki::issued_by(&parse_pem(other.cert_pem()), &der));
+    assert!(!pki::issued_by(b"pas une CA", &der));
+    assert!(!pki::issued_by(&ca_der, b"pas un certificat"));
+}

@@ -251,6 +251,7 @@ impl Ca {
     pub fn issue_server_cert(&self, sans: &[String]) -> Result<CertBundle> {
         let mut params = CertificateParams::new(sans.to_vec())?;
         params.distinguished_name = common_name(sans.first().map_or("ciphera", String::as_str));
+        params.is_ca = IsCa::ExplicitNoCa;
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         validity(&mut params, SERVER_VALIDITY_DAYS);
@@ -309,6 +310,7 @@ impl Ca {
         params.subject_alt_names = vec![SanType::URI(
             Ia5String::try_from(format!("{AGENT_SAN_PREFIX}{id}")).map_err(Error::from)?,
         )];
+        params.is_ca = IsCa::ExplicitNoCa;
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
         params.not_before = not_before;
@@ -321,6 +323,23 @@ impl Ca {
             fingerprint_sha256: fingerprint_sha256(cert.der()),
         })
     }
+}
+
+/// Le certificat DER `der` est-il emis par la CA de certificat DER
+/// `ca_der` : emetteur egal au sujet de la CA et signature verifiee par sa
+/// cle publique. Les dates ne sont pas controlees (un certificat expire
+/// reste reconnu, pour son renouvellement).
+pub fn issued_by(ca_der: &[u8], der: &[u8]) -> bool {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+    let (Ok((_, ca)), Ok((rest, cert))) = (
+        X509Certificate::from_der(ca_der),
+        X509Certificate::from_der(der),
+    ) else {
+        return false;
+    };
+    rest.is_empty()
+        && cert.issuer() == ca.subject()
+        && cert.verify_signature(Some(ca.public_key())).is_ok()
 }
 
 /// SubjectPublicKeyInfo DER d'un certificat DER.
