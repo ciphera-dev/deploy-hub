@@ -377,3 +377,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 07:52 — Session v0.1-sdd — claude-code (orchestrateur) — Task R29 : Hôtes du panneau, X-Forwarded-For, RP ID des passkeys
 - fait : 421 aux hôtes inconnus sur 8443, X-Forwarded-For seulement via le proxy local, noms réservés refusés aux domaines, passkeys à l'origine publique exacte
 - résultat : TERMINÉ (relecture approuvée, 2 tours)
+
+## 2026-11-25 09:07 — Session v0.1-sdd — claude-code (orchestrateur) — Task R31 : Proxy : délais d'écriture et de corps, en-têtes, cibles
+- fait : Délai d'écriture 30 s, corps 300 s et 1 Kio/s, WebSocket exempté, amonts locaux refusés sur IP canonique, en-têtes d'identité retirés, Host normalisé
+- résultat : TERMINÉ (relecture approuvée, 1 tour ; forward.rs compilé pour la première fois en CI)
