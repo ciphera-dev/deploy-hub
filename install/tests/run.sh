@@ -433,6 +433,8 @@ run_distro() {
 		in_ctr 'test "$(systemctl is-active ciphera-egress-check.timer)" = active'
 	check "(a) cle de la CA root:root 0600" \
 		in_ctr 'test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca.key)" = 600:root:root'
+	check "(a) dossier de la CA root:ciphera 0750, certificat root:ciphera 0640" \
+		in_ctr 'test "$(stat -c %a:%U:%G /etc/ciphera/ca)" = 750:root:ciphera && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca.crt)" = 640:root:ciphera'
 	check "(a) signataire : ciphera-certsign.path actif" \
 		in_ctr 'test "$(systemctl is-active ciphera-certsign.path)" = active'
 	check "(a) signataire : ciphera-certsign.service passe a l'installation" \

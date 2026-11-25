@@ -231,6 +231,10 @@ async fn run_reset_mfa(email: &str) -> i32 {
 
 /// Renouvelle les certificats de l'instance ; message sur la sortie d'erreur.
 async fn run_renew_certs(agent_dir: &std::path::Path) -> i32 {
+    if !running_as_root() {
+        eprintln!("erreur : ciphera admin renew-certs se lance en root");
+        return 1;
+    }
     let result = async {
         let cfg = control_plane::cli::env::admin_config()?;
         let db = admin_db(&cfg).await?;
@@ -262,6 +266,12 @@ async fn run_renew_certs(agent_dir: &std::path::Path) -> i32 {
 /// ciphera-certsign.service). Sans demande, la base n'est pas ouverte.
 async fn run_sign_requests() -> i32 {
     use control_plane::agents::signer;
+    if !running_as_root() {
+        eprintln!(
+            "erreur : ciphera admin sign-requests se lance en root (ciphera-certsign.service)"
+        );
+        return 1;
+    }
     let cfg = match control_plane::cli::env::admin_config() {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -269,10 +279,18 @@ async fn run_sign_requests() -> i32 {
             return 1;
         }
     };
-    match signer::harden_ca_key(&cfg.config_dir) {
-        Ok(true) => eprintln!("cle de la CA remise a root (0600)"),
+    // Echec : la cle de la CA n'est pas protegee (ou plus lisible par le
+    // signataire) ; seul cas, avec une CA ou des dossiers inutilisables, ou
+    // la commande echoue (une demande refusee n'est pas une panne).
+    match signer::harden_ca(&cfg.config_dir) {
+        Ok(true) => {
+            eprintln!("dossier de la CA remis a root (cle 0600, certificat 0640, dossier 0750)")
+        }
         Ok(false) => {}
-        Err(e) => eprintln!("attention : cle de la CA non verifiee : {e}"),
+        Err(e) => {
+            eprintln!("erreur : dossier de la CA non protege : {e}");
+            return 1;
+        }
     }
     match signer::has_requests(&cfg.data_dir) {
         Ok(true) => {}
@@ -291,31 +309,60 @@ async fn run_sign_requests() -> i32 {
                 db = Some(pool);
                 break;
             }
-            Err(e) if attempt == 5 => eprintln!("erreur : {e}"),
+            Err(e) if attempt == 5 => eprintln!("attention : base indisponible : {e}"),
             Err(_) => tokio::time::sleep(Duration::from_secs(5)).await,
         }
     }
     let Some(db) = db else {
-        match signer::discard_requests(&cfg.data_dir) {
-            Ok(n) => eprintln!("{n} demande(s) abandonnee(s) : base indisponible"),
-            Err(e) => eprintln!("erreur : demandes non supprimees : {e}"),
-        }
-        return 1;
+        return match signer::discard_requests(&cfg.data_dir) {
+            Ok((n, report)) => {
+                print_set_aside(&report);
+                eprintln!(
+                    "{n} demande(s) abandonnee(s) : base indisponible, le service redemandera"
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("erreur : demandes non supprimees : {e}");
+                1
+            }
+        };
     };
     match signer::sign_requests(&db, &cfg.config_dir, &cfg.data_dir).await {
         Ok(report) => {
+            print_set_aside(&report);
             for name in &report.signed {
                 eprintln!("certificat {name} signe");
             }
             for (name, why) in &report.refused {
                 eprintln!("demande {name} refusee : {why}");
             }
-            i32::from(!report.refused.is_empty())
+            0
         }
         Err(e) => {
             eprintln!("erreur : {e}");
             1
         }
+    }
+}
+
+/// Entrees du dossier des demandes impossibles a supprimer (une fois
+/// chacune : elles ne sont plus dans le dossier).
+fn print_set_aside(report: &control_plane::agents::signer::SignReport) {
+    for (name, outcome) in &report.set_aside {
+        eprintln!("attention : entree {name:?} du dossier des demandes : {outcome}");
+    }
+}
+
+/// Processus root (UID effectif 0) ; toujours vrai hors Unix (tests).
+fn running_as_root() -> bool {
+    #[cfg(unix)]
+    {
+        rustix::process::geteuid().is_root()
+    }
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 

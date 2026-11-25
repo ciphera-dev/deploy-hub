@@ -294,14 +294,31 @@ async fn control_plane_never_opens_ca_key() {
             .any(|l| l == "InaccessiblePaths=-/etc/ciphera/ca/ca.key"),
         "ciphera.service doit masquer ca.key"
     );
-    // Chemins : ni le service ni le lien ne chargent la CA.
-    for src in ["src/main.rs", "src/agents/transport.rs"] {
-        let text =
-            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(src)).unwrap();
+    // Chemins : seuls le signataire, l'init (root) et `renew-certs` (root,
+    // agents::certs hors de `Renewals`) nomment la cle de la CA.
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut checked = 0;
+    for (path, text) in rust_sources(&src) {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let scope = match rel.as_str() {
+            "agents/signer.rs" | "init.rs" => continue,
+            "agents/certs.rs" => {
+                let start = text.find("impl Renewals {").expect("impl Renewals");
+                let len = text[start..].find("\n}\n").expect("fin de impl Renewals");
+                text[start..start + len].to_string()
+            }
+            _ => text,
+        };
         for forbidden in ["load_ca", "CA_KEY", "ca.key"] {
-            assert!(!text.contains(forbidden), "{src} contient {forbidden}");
+            assert!(!scope.contains(forbidden), "{rel} contient {forbidden}");
         }
+        checked += 1;
     }
+    assert!(checked > 20, "sources parcourues : {checked}");
 
     // Execution : renouvellement du lien et du panneau sans la cle.
     let (db, _guard) = common::database().await;
@@ -345,6 +362,89 @@ async fn control_plane_never_opens_ca_key() {
     assert!(renewals.install_own_responses(certs::now_unix()).is_empty());
 }
 
+/// Fichiers `.rs` sous `dir`, recursivement : (chemin, contenu).
+fn rust_sources(dir: &Path) -> Vec<(std::path::PathBuf, String)> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            out.extend(rust_sources(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let text = std::fs::read_to_string(&path).unwrap();
+            out.push((path, text));
+        }
+    }
+    out
+}
+
+/// Entrees que le signataire ne peut pas supprimer (dossier non vide nomme
+/// `*.json`) : mises de cote dans `cert-rejected/`, le motif du `.path` ne
+/// correspond plus, une seule fois dans le rapport ; les vraies demandes du
+/// meme passage sont traitees.
+#[tokio::test]
+async fn signer_sets_aside_what_it_cannot_remove() {
+    let (db, _guard) = common::database().await;
+    let ca = Ca::generate("instance").unwrap();
+    let dir = config_dir(&ca);
+    with_ca_key(&dir.0, &ca);
+    let data = common::TempDir::new();
+    let renewals = Renewals::new(&dir.0, &data.0);
+    let later = certs::now_unix() + 700 * 86_400;
+    assert_eq!(renewals.request_own(later).len(), 2);
+    let stuck = data
+        .0
+        .join(signer::REQUESTS_DIR)
+        .join(format!("{}.json", ServerId::new()));
+    std::fs::create_dir(&stuck).unwrap();
+    std::fs::write(stuck.join("x"), "x").unwrap();
+
+    let report = signer::sign_requests(&db, &dir.0, &data.0).await.unwrap();
+    assert_eq!(report.signed.len(), 2, "{:?}", report.refused);
+    assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
+    assert_eq!(report.set_aside.len(), 1, "{:?}", report.set_aside);
+    assert!(!stuck.exists());
+    assert!(
+        !signer::has_requests(&data.0).unwrap(),
+        "plus rien pour le .path"
+    );
+    let rejected: Vec<_> = std::fs::read_dir(data.0.join(signer::REJECTED_DIR))
+        .unwrap()
+        .collect();
+    assert_eq!(rejected.len(), 1);
+    // Passage suivant : rien a refaire ni a journaliser.
+    let again = signer::sign_requests(&db, &dir.0, &data.0).await.unwrap();
+    assert!(again.signed.is_empty() && again.refused.is_empty() && again.set_aside.is_empty());
+}
+
+/// Nom non UTF-8 en `.json` : jamais converti (la suppression du nom
+/// converti ne toucherait rien) ; mis de cote, le `.path` ne boucle pas.
+#[cfg(unix)]
+#[tokio::test]
+async fn signer_sets_aside_non_utf8_names() {
+    use std::os::unix::ffi::OsStrExt;
+    let (db, _guard) = common::database().await;
+    let ca = Ca::generate("instance").unwrap();
+    let dir = config_dir(&ca);
+    with_ca_key(&dir.0, &ca);
+    let data = common::TempDir::new();
+    let requests = data.0.join(signer::REQUESTS_DIR);
+    std::fs::create_dir_all(&requests).unwrap();
+    let odd = requests.join(std::ffi::OsStr::from_bytes(b"\xff\xfe.json"));
+    std::fs::write(&odd, "{}").unwrap();
+    assert!(signer::has_requests(&data.0).unwrap());
+
+    let report = signer::sign_requests(&db, &dir.0, &data.0).await.unwrap();
+    assert_eq!(report.set_aside.len(), 1, "{:?}", report);
+    assert!(!odd.exists());
+    assert!(!signer::has_requests(&data.0).unwrap());
+    assert_eq!(
+        std::fs::read_dir(data.0.join(signer::REJECTED_DIR))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
 /// Reponse d'une autre demande (course : ancienne reponse restee sur
 /// disque) : ignoree, le certificat n'est pas installe.
 #[tokio::test]
@@ -374,27 +474,34 @@ async fn response_to_another_request_is_ignored() {
     );
 }
 
-/// Cle de la CA d'une installation anterieure (compte du service, 0640) :
-/// remise au proprietaire du signataire en 0600 ; un lien est refuse.
+/// Dossier de la CA d'une installation anterieure (compte du service) :
+/// cle remise au proprietaire du signataire en 0600, certificat en 0640
+/// (groupe conserve : le service le lit), dossier en 0750 (le service ne
+/// peut plus y remplacer ni supprimer de fichier) ; un lien est refuse.
 #[cfg(unix)]
 #[test]
-fn ca_key_is_hardened_in_place() {
+fn ca_is_hardened_in_place() {
     use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
     let ca = Ca::generate("instance").unwrap();
     let dir = config_dir(&ca);
     let path = dir.0.join(certs::CA_KEY);
+    let crt = dir.0.join("ca/ca.crt");
     std::fs::write(&path, ca.key_pem().as_bytes()).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-    assert!(signer::harden_ca_key(&dir.0).unwrap());
-    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600);
-    assert!(!signer::harden_ca_key(&dir.0).unwrap(), "deja fait");
+    std::fs::set_permissions(&crt, std::fs::Permissions::from_mode(0o666)).unwrap();
+    std::fs::set_permissions(dir.0.join("ca"), std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(signer::harden_ca(&dir.0).unwrap());
+    assert_eq!(mode(&path), 0o600);
+    assert_eq!(mode(&crt), 0o640);
+    assert_eq!(mode(&dir.0.join("ca")), 0o750);
+    assert!(!signer::harden_ca(&dir.0).unwrap(), "deja fait");
     certs::load_ca(&dir.0).unwrap();
 
     std::fs::remove_file(&path).unwrap();
     let elsewhere = common::TempDir::new();
     std::fs::write(elsewhere.0.join("k"), "x").unwrap();
     std::os::unix::fs::symlink(elsewhere.0.join("k"), &path).unwrap();
-    assert!(signer::harden_ca_key(&dir.0).is_err());
+    assert!(signer::harden_ca(&dir.0).is_err());
     assert!(certs::load_ca(&dir.0).is_err());
 }

@@ -52,6 +52,8 @@ pub const CHECK_EVERY: Duration = Duration::from_secs(12 * 3600);
 pub const RESPONSE_POLL: Duration = Duration::from_secs(2);
 /// Demande sans reponse apres ce delai : reecrite (nouvel identifiant).
 pub const REQUEST_RETRY: Duration = Duration::from_secs(600);
+/// Delai maximal entre deux demandes sans reponse pour un meme certificat.
+pub const REQUEST_RETRY_MAX: Duration = Duration::from_secs(12 * 3600);
 
 /// Certificats serveur du plan de controle : (certificat, cle).
 pub const OWN_CERTS: [(&str, &str); 2] = [(LINK_CRT, LINK_KEY), (PANEL_CRT, PANEL_KEY)];
@@ -375,6 +377,10 @@ pub fn renew_server(
 struct Pending {
     request: CertRequest,
     sent: Instant,
+    /// Delai avant de reecrire la demande sans reponse : [`REQUEST_RETRY`],
+    /// double a chaque fois jusqu'a [`REQUEST_RETRY_MAX`] (une demande
+    /// toujours refusee ne sature ni le journal ni le signataire).
+    retry: Duration,
     /// Certificat actuel de l'agent (demandes d'agent seulement).
     leaf: Option<Vec<u8>>,
 }
@@ -426,6 +432,7 @@ impl Renewals {
             Pending {
                 request,
                 sent: Instant::now(),
+                retry: REQUEST_RETRY,
                 leaf,
             },
         );
@@ -480,16 +487,18 @@ impl Renewals {
     }
 
     /// Reponse a la demande en attente `name`, si elle porte son
-    /// identifiant ; demande reecrite apres [`REQUEST_RETRY`] sans reponse.
+    /// identifiant ; demande reecrite sans reponse apres [`REQUEST_RETRY`],
+    /// puis apres un delai double a chaque fois (au plus [`REQUEST_RETRY_MAX`]).
     fn answer(&self, name: &str, pending: &mut Pending) -> Option<String> {
         match signer::read_response(&self.data_dir, name) {
             Ok(Some((id, pem))) if id == pending.request.request_id => return Some(pem),
             Ok(_) => {}
             Err(e) => tracing::warn!("reponse du signataire {name} illisible : {e}"),
         }
-        if pending.sent.elapsed() >= REQUEST_RETRY {
+        if pending.sent.elapsed() >= pending.retry {
             pending.request.request_id = uuid::Uuid::new_v4();
             pending.sent = Instant::now();
+            pending.retry = (pending.retry * 2).min(REQUEST_RETRY_MAX);
             tracing::warn!(
                 "certificat {name} : pas de reponse du signataire (journalctl -u ciphera-certsign), demande reecrite"
             );
@@ -623,9 +632,9 @@ pub async fn renew_all(
     config_dir: &Path,
     agent_dir: &Path,
 ) -> Result<RenewAll, Box<dyn std::error::Error>> {
-    // Installation anterieure : cle de la CA remise a root (0600) d'abord.
-    if signer::harden_ca_key(config_dir).map_err(|e| format!("{CA_KEY} : {e}"))? {
-        eprintln!("{CA_KEY} remise a root (0600)");
+    // Installation anterieure : dossier et cle de la CA remis a root d'abord.
+    if signer::harden_ca(config_dir).map_err(|e| format!("ca/ : {e}"))? {
+        eprintln!("ca/ remis a root (cle 0600, certificat 0640, dossier 0750)");
     }
     let ca = load_ca(config_dir).map_err(|e| format!("CA de l'instance illisible : {e}"))?;
     recover_pairs(config_dir)

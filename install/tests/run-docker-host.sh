@@ -601,6 +601,10 @@ check "(a) agent connecte au plan de controle" \
 # illisible par le compte du service.
 check "(a) cle de la CA root:root 0600" sh -c 'test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca.key)" = 600:root:root'
 check "(a) cle de la CA illisible par le compte ciphera" sh -c '! runuser -u ciphera -- cat /etc/ciphera/ca/ca.key >/dev/null 2>&1'
+check "(a) dossier de la CA root:ciphera 0750, certificat root:ciphera 0640" \
+	sh -c 'test "$(stat -c %a:%U:%G /etc/ciphera/ca)" = 750:root:ciphera && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca.crt)" = 640:root:ciphera'
+check "(a) certificat de la CA lisible, dossier de la CA non modifiable par ciphera" \
+	sh -c 'runuser -u ciphera -- cat /etc/ciphera/ca/ca.crt >/dev/null && ! runuser -u ciphera -- touch /etc/ciphera/ca/.essai 2>/dev/null'
 check "(a) ciphera-certsign.path actif" sh -c 'test "$(systemctl is-active ciphera-certsign.path)" = active'
 check "(a) ciphera-certsign.service passe a l'installation" \
 	sh -c 'test "$(systemctl show -p Result --value ciphera-certsign.service)" = success'
@@ -644,7 +648,9 @@ if short_link; then
 	check "(a) renouvellement du lien : journal du signataire" \
 		wait_for 30 'journalctl -u ciphera-certsign --no-pager | grep -q "certificat link signe"'
 	check "(a) panneau joignable apres le renouvellement du lien" panel_up
-	check "(a) agent reconnecte apres le renouvellement du lien" \
+	# Reconnexion due au redemarrage du service (le rechargement a chaud
+	# ne vaut que pour les connexions suivantes).
+	check "(a) agent reconnecte apres le redemarrage du service" \
 		wait_for 60 'test "$(journalctl -u ciphera --no-pager | grep -c "lien agents : agent .* connecte (")" -ge 2'
 else
 	check "(a) certificat du lien a validite courte pose" false

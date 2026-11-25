@@ -10,9 +10,12 @@
 //! par l'agent), dossier et fichier au compte `--postgres-owner`
 //! (`ciphera-postgres`, sous lequel tourne le conteneur).
 //!
-//! Tous appartiennent au compte du service (`--owner`), sauf `ca/ca.key` :
-//! la cle de la CA reste a root (qui lance l'init), lue par le seul
-//! signataire root (`ciphera admin sign-requests`, `agents::signer`).
+//! Tous appartiennent au compte du service (`--owner`), sauf le dossier de
+//! la CA : `ca/ca.key` reste a root (qui lance l'init), lue par le seul
+//! signataire root (`ciphera admin sign-requests`, `agents::signer`) ;
+//! `ca/` (0750) et `ca/ca.crt` (0640) restent a root, groupe du service :
+//! le service lit le certificat mais ne peut ni remplacer ni supprimer la
+//! cle ou le certificat.
 //!
 //! Enrolement de l'agent local, dans `<agent_dir>` : la paire de cles est
 //! generee cote agent (`agent.key`), la CA ne recoit que la cle publique et
@@ -63,7 +66,8 @@ const ALL_FILES: [&str; 10] = [
     LOCAL_AGENT_CRT,
     SETUP_TOKEN,
 ];
-const SUBDIRS: [&str; 3] = ["ca", "tls", "agents"];
+const CA_DIR: &str = "ca";
+const SUBDIRS: [&str; 3] = [CA_DIR, "tls", "agents"];
 
 /// Fichiers de l'agent local, relatifs a `agent_dir` (lus par `ciphera-agent`).
 const AGENT_KEY: &str = "agent.key";
@@ -223,6 +227,7 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
     let mut agent_written: Vec<PathBuf> = Vec::new();
     let mut pg_written: Vec<PathBuf> = Vec::new();
     let mut root_written: Vec<PathBuf> = Vec::new();
+    let mut shared_written: Vec<PathBuf> = Vec::new();
     let all = files
         .iter()
         .map(|(rel, bytes)| (dir.join(rel), *bytes, config_owner(rel)))
@@ -244,6 +249,7 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
                 .chain(&agent_written)
                 .chain(&pg_written)
                 .chain(&root_written)
+                .chain(&shared_written)
             {
                 let _ = fs::remove_file(p);
             }
@@ -251,6 +257,7 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
         }
         match owner {
             Owner::Root => root_written.push(path),
+            Owner::RootShared => shared_written.push(path),
             Owner::Instance => written.push(path),
             Owner::Agent => agent_written.push(path),
             Owner::Postgres => pg_written.push(path),
@@ -262,6 +269,8 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
     if let Some(owner) = &opts.owner {
         let targets = chown_targets(dir, config_dir_created, written);
         if let Some(w) = chown_all(&targets, owner) {
+            warnings.push(w);
+        } else if let Some(w) = share_with_group(&shared_targets(dir), owner) {
             warnings.push(w);
         }
     }
@@ -292,19 +301,27 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
 enum Owner {
     /// Laisse a root (qui lance l'init) : cle de la CA.
     Root,
+    /// A root, lisible par le groupe du service : certificat de la CA.
+    RootShared,
     Instance,
     Agent,
     Postgres,
 }
 
 /// Proprietaire d'un fichier du dossier de configuration : le compte du
-/// service, sauf la cle de la CA (root, signataire separe).
+/// service, sauf le dossier de la CA (root, signataire separe).
 fn config_owner(rel: &str) -> Owner {
-    if rel == CA_KEY {
-        Owner::Root
-    } else {
-        Owner::Instance
+    match rel {
+        CA_KEY => Owner::Root,
+        CA_CRT => Owner::RootShared,
+        _ => Owner::Instance,
     }
+}
+
+/// Dossier de la CA et son certificat : a root, groupe du service, avec ces
+/// droits (le service lit le certificat, rien d'autre).
+pub fn shared_targets(dir: &Path) -> [(PathBuf, u32); 2] {
+    [(dir.join(CA_DIR), 0o750), (dir.join(CA_CRT), 0o640)]
 }
 
 fn random<const N: usize>() -> Result<Zeroizing<[u8; N]>, InitError> {
@@ -315,12 +332,18 @@ fn random<const N: usize>() -> Result<Zeroizing<[u8; N]>, InitError> {
     Ok(buf)
 }
 
-/// Cibles du changement de proprietaire : fichiers ecrits, `ca/`, `tls/`, et
-/// `config_dir` seulement si l'init l'a cree (sinon il appartient a
-/// l'installeur ; le compte de service doit pouvoir le traverser).
+/// Cibles du changement de proprietaire : fichiers ecrits, sous-dossiers
+/// sauf `ca/` (root, voir [`shared_targets`]), et `config_dir` seulement si
+/// l'init l'a cree (sinon il appartient a l'installeur ; le compte de
+/// service doit pouvoir le traverser).
 pub fn chown_targets(dir: &Path, config_dir_created: bool, written: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut targets = written;
-    targets.extend(SUBDIRS.iter().map(|s| dir.join(s)));
+    targets.extend(
+        SUBDIRS
+            .iter()
+            .filter(|s| **s != CA_DIR)
+            .map(|s| dir.join(s)),
+    );
     if config_dir_created {
         targets.push(dir.to_path_buf());
     }
@@ -450,6 +473,27 @@ fn chown_all(paths: &[PathBuf], owner: &str) -> Option<String> {
     None
 }
 
+/// Groupe du compte `owner` et droits `mode` sur chaque chemin, proprietaire
+/// inchange (root).
+#[cfg(unix)]
+fn share_with_group(paths: &[(PathBuf, u32)], owner: &str) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let (_, gid) = lookup_user(owner)?;
+    for (p, mode) in paths {
+        let done = std::os::unix::fs::chown(p, None, Some(gid))
+            .and_then(|()| fs::set_permissions(p, fs::Permissions::from_mode(*mode)));
+        if done.is_err() {
+            return Some(format!("groupe ou droits non appliques a {}", p.display()));
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn share_with_group(_paths: &[(PathBuf, u32)], _owner: &str) -> Option<String> {
+    None
+}
+
 #[cfg(not(unix))]
 fn chown_all(_paths: &[PathBuf], owner: &str) -> Option<String> {
     Some(format!(
@@ -496,11 +540,19 @@ mod tests {
     }
 
     #[test]
-    fn ca_key_stays_with_root() {
+    fn ca_stays_with_root() {
         assert_eq!(config_owner(CA_KEY), Owner::Root);
-        for rel in ALL_FILES.iter().filter(|r| **r != CA_KEY) {
+        assert_eq!(config_owner(CA_CRT), Owner::RootShared);
+        for rel in ALL_FILES.iter().filter(|r| **r != CA_KEY && **r != CA_CRT) {
             assert_eq!(config_owner(rel), Owner::Instance, "{rel}");
         }
+        let dir = Path::new("/etc/ciphera");
+        let targets = chown_targets(dir, true, vec![]);
+        assert!(!targets.contains(&dir.join("ca")), "ca/ reste a root");
+        assert_eq!(
+            shared_targets(dir),
+            [(dir.join("ca"), 0o750), (dir.join("ca/ca.crt"), 0o640)]
+        );
     }
 
     #[test]
@@ -509,7 +561,7 @@ mod tests {
         let files = vec![dir.join("age.key")];
         let created = chown_targets(dir, true, files.clone());
         assert!(created.contains(&dir.to_path_buf()));
-        assert!(created.contains(&dir.join("ca")) && created.contains(&dir.join("tls")));
+        assert!(created.contains(&dir.join("tls")) && created.contains(&dir.join("agents")));
         assert!(created.contains(&dir.join("age.key")));
         let existing = chown_targets(dir, false, files);
         assert!(!existing.contains(&dir.to_path_buf()));

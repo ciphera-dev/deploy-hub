@@ -914,6 +914,19 @@ init_instance() {
 		die "ciphera init a echoue"
 }
 
+# Cle de la CA absente, ou a root sans droit pour le groupe ni les autres.
+ca_key_protected() {
+	ca_key_file=$CONFIG_DIR/ca/ca.key
+	[ -e "$ca_key_file" ] || [ -L "$ca_key_file" ] || return 0
+	if [ -L "$ca_key_file" ] || [ ! -f "$ca_key_file" ]; then
+		return 1
+	fi
+	case $(stat -c %u:%a "$ca_key_file") in
+	0:600 | 0:400) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
 # Le socket de pilotage du proxy d'abord (l'agent s'y connecte), puis
 # l'agent : il lance PostgreSQL (conteneur), que le plan de controle attend.
 # Sans Docker, l'agent est active mais sa condition (/var/run/docker.sock)
@@ -946,8 +959,17 @@ start_services() {
 		die "activation de ciphera-certsign.path impossible (journalctl -u ciphera-certsign.path)"
 	systemctl enable ciphera-certsign.service ||
 		die "activation de ciphera-certsign.service impossible"
-	systemctl start ciphera-certsign.service ||
-		die "signataire des certificats en echec (journalctl -u ciphera-certsign)"
+	if ! systemctl start ciphera-certsign.service; then
+		# Une demande refusee ne fait pas echouer le signataire : il reste une
+		# CA illisible ou un dossier de la CA non protege. Le service demarre
+		# quand meme (il ne lit jamais la cle) ; seule une cle encore
+		# accessible au compte du service arrete l'installation.
+		if ca_key_protected; then
+			warn "signataire des certificats en echec : renouvellements suspendus jusqu'a correction (journalctl -u ciphera-certsign, puis systemctl start ciphera-certsign)"
+		else
+			die "cle de la CA ($CONFIG_DIR/ca/ca.key) pas en root 0600 et signataire en echec : voir journalctl -u ciphera-certsign (lien symbolique, plusieurs liens durs ?), corriger puis relancer install.sh"
+		fi
+	fi
 	# Reparation : `enable --now` ne relance pas un service deja actif ; les
 	# trois services repartent ensemble sur les fichiers reinstalles.
 	if [ "$repair" = yes ]; then

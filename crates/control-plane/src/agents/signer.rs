@@ -21,10 +21,17 @@
 //!    serveur : 730 jours, serveur). Toute autre forme est refusee, un lien
 //!    symbolique n'est jamais suivi (`O_NOFOLLOW` sur des descripteurs de
 //!    dossier ouverts sans suivre de lien).
+//!
+//!    Face a un service compromis, la barriere est « meme cle publique,
+//!    certificat emis par la CA, meme identifiant » : les controles en base
+//!    (serveur enregistre, non revoque) ne sont qu'une coherence, la base
+//!    appartenant au service.
 //! 4. La reponse `<data_dir>/cert-responses/<nom>.crt` (dossier root, groupe
 //!    du service, 0750 ; fichier 0640) porte l'identifiant de la demande en
 //!    premiere ligne, puis le certificat PEM ([`read_response`]) ; la demande
-//!    est supprimee, signee ou non (jamais de boucle du `.path`).
+//!    est supprimee, signee ou non (jamais de boucle du `.path`) ; ce qui ne
+//!    peut pas l'etre (nom non UTF-8, dossier non vide) est deplace dans
+//!    `<data_dir>/cert-rejected/` (root 0700).
 //! 5. Le plan de controle n'accepte que la reponse a sa propre demande
 //!    (identifiant), la verifie (CA, meme cle) puis l'envoie a l'agent
 //!    (`RenewedCertificate`) ou installe le certificat du lien ou du panneau
@@ -33,7 +40,8 @@
 //! `ciphera admin renew-certs` passe par les memes fonctions de signature
 //! ([`sign_agent`], [`sign_server`]).
 
-use std::fmt;
+use std::ffi::{OsStr, OsString};
+use std::fmt::{self, Write as _};
 use std::io;
 use std::path::Path;
 
@@ -49,6 +57,9 @@ use super::transport::{CA_CRT, LINK_CRT};
 pub const REQUESTS_DIR: &str = "cert-requests";
 /// Dossier des reponses, dans le dossier de donnees du service.
 pub const RESPONSES_DIR: &str = "cert-responses";
+/// Entrees des demandes impossibles a supprimer, mises de cote (root 0700),
+/// dans le dossier de donnees du service.
+pub const REJECTED_DIR: &str = "cert-rejected";
 /// Taille maximale d'une demande ou d'une reponse.
 pub const MAX_FILE_BYTES: u64 = 16 * 1024;
 /// Demandes traitees au plus par passage (le `.path` relance s'il en reste).
@@ -302,17 +313,23 @@ fn file_name(rel: &str) -> &str {
     rel.rsplit('/').next().unwrap_or(rel)
 }
 
-/// Passage d'une installation anterieure (cle de la CA au compte du
-/// service) : `ca/ca.key` remise au proprietaire du processus (root), 0600.
-/// Jamais a travers un lien ; refusee si elle a plusieurs liens durs. Vrai
-/// si quelque chose a change. Sans dossier ou sans cle : rien a faire.
-pub fn harden_ca_key(config_dir: &Path) -> io::Result<bool> {
+/// Passage d'une installation anterieure (dossier de la CA au compte du
+/// service) : `ca/` au proprietaire du processus (root), groupe conserve
+/// (celui du service), 0750 ; `ca/ca.crt` idem en 0640 (le service le lit) ;
+/// `ca/ca.key` au proprietaire et au groupe du processus, 0600. Le service ne
+/// peut alors ni lire la cle ni remplacer ou supprimer la cle ou le
+/// certificat. Jamais a travers un lien ; fichier a plusieurs liens durs
+/// refuse. Vrai si quelque chose a change. Sans dossier : rien a faire.
+pub fn harden_ca(config_dir: &Path) -> io::Result<bool> {
     let ca = match fsio::Dir::open(&config_dir.join("ca")) {
         Ok(d) => d,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),
     };
-    ca.harden(file_name(CA_KEY))
+    let mut changed = ca.harden(file_name(CA_KEY), 0o600, true)?;
+    changed |= ca.harden(file_name(CA_CRT), 0o640, false)?;
+    changed |= ca.harden_self(0o750)?;
+    Ok(changed)
 }
 
 /// Dossier de donnees ; `None` s'il n'existe pas encore (service jamais
@@ -325,29 +342,41 @@ fn open_data(data_dir: &Path) -> io::Result<Option<fsio::Dir>> {
     }
 }
 
-/// Une demande attend-elle (`*.json` du dossier des demandes) ?
+/// Une demande attend-elle (`*.json` du dossier des demandes, nom
+/// inutilisable compris : il sera mis de cote) ?
 pub fn has_requests(data_dir: &Path) -> io::Result<bool> {
     let Some(data) = open_data(data_dir)? else {
         return Ok(false);
     };
     match data.open_sub(REQUESTS_DIR)? {
-        Some(dir) => Ok(!request_names(&dir)?.is_empty()),
+        Some(dir) => {
+            let (names, unusable) = scan(&dir)?;
+            Ok(!names.is_empty() || !unusable.is_empty())
+        }
         None => Ok(false),
     }
 }
 
-/// Noms (sans `.json`) des demandes : `*.json`, fichiers caches (fichiers
-/// temporaires du plan de controle) exclus.
-fn request_names(dir: &fsio::Dir) -> io::Result<Vec<String>> {
-    let mut names: Vec<String> = dir
-        .names()?
-        .into_iter()
-        .filter(|n| !n.starts_with('.'))
-        .filter_map(|n| n.strip_suffix(".json").map(str::to_string))
-        .collect();
+/// Entrees qui correspondent au `PathExistsGlob` du `.path` (`*.json`,
+/// fichiers caches exclus : temporaires du plan de controle) : noms UTF-8
+/// (sans `.json`, au plus [`MAX_REQUESTS_PER_RUN`]) et noms non UTF-8, a
+/// mettre de cote.
+fn scan(dir: &fsio::Dir) -> io::Result<(Vec<String>, Vec<OsString>)> {
+    let mut names = Vec::new();
+    let mut unusable = Vec::new();
+    for entry in dir.entries()? {
+        let lossy = entry.to_string_lossy();
+        if lossy.starts_with('.') || !lossy.ends_with(".json") {
+            continue;
+        }
+        match entry.to_str().and_then(|n| n.strip_suffix(".json")) {
+            Some(name) => names.push(name.to_string()),
+            None => unusable.push(entry),
+        }
+    }
     names.sort();
     names.truncate(MAX_REQUESTS_PER_RUN);
-    Ok(names)
+    Ok((names, unusable))
 }
 
 /// Resultat d'un passage du signataire.
@@ -357,6 +386,9 @@ pub struct SignReport {
     pub signed: Vec<String>,
     /// Demandes refusees : nom et raison.
     pub refused: Vec<(String, String)>,
+    /// Entrees impossibles a supprimer (nom non UTF-8, dossier non vide...)
+    /// : nom lisible et ce qui en a ete fait.
+    pub set_aside: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -370,71 +402,119 @@ impl fmt::Display for SignError {
 
 impl std::error::Error for SignError {}
 
+/// Retire l'entree `name` du dossier des demandes : supprimee, sinon mise
+/// de cote. Le `.path` ne doit jamais la retrouver (il relancerait sans
+/// fin le signataire, jusqu'aux limites de demarrage de systemd).
+fn clear(data: &fsio::Dir, requests: &fsio::Dir, name: &OsStr, report: &mut SignReport) {
+    if requests.remove(name).is_ok() {
+        return;
+    }
+    let shown = name.to_string_lossy().into_owned();
+    let outcome = set_aside(data, requests, name);
+    report.set_aside.push((shown, outcome));
+}
+
+/// Deplace `name` dans `<data_dir>/cert-rejected/` (root 0700, nom
+/// aleatoire) ; a defaut, le renomme en fichier cache dans le dossier des
+/// demandes (hors du motif du `.path`).
+fn set_aside(data: &fsio::Dir, requests: &fsio::Dir, name: &OsStr) -> String {
+    let new = Uuid::new_v4().to_string();
+    let moved = data
+        .ensure_sub(REJECTED_DIR, 0o700)
+        .and_then(|rejected| requests.move_to(name, &rejected, &new));
+    match moved {
+        Ok(()) => format!("mise de cote dans {REJECTED_DIR}/{new}"),
+        Err(e) => {
+            let hidden = format!(".rejected-{new}");
+            match requests.move_to(name, requests, &hidden) {
+                Ok(()) => format!("renommee {hidden} ({REJECTED_DIR} : {e})"),
+                Err(e2) => format!("impossible a retirer : {e} ; {e2}"),
+            }
+        }
+    }
+}
+
 /// Supprime toutes les demandes sans les traiter (CA ou base
 /// indisponible) : le `.path` ne boucle pas, le plan de controle redemande
-/// plus tard.
-pub fn discard_requests(data_dir: &Path) -> io::Result<usize> {
+/// plus tard. Renvoie le nombre de demandes et ce qui a du etre mis de cote.
+pub fn discard_requests(data_dir: &Path) -> io::Result<(usize, SignReport)> {
+    let mut report = SignReport::default();
     let Some(data) = open_data(data_dir)? else {
-        return Ok(0);
+        return Ok((0, report));
     };
     let Some(dir) = data.open_sub(REQUESTS_DIR)? else {
-        return Ok(0);
+        return Ok((0, report));
     };
-    let names = request_names(&dir)?;
+    let (names, unusable) = scan(&dir)?;
     for name in &names {
-        dir.remove(&format!("{name}.json"))?;
+        clear(
+            &data,
+            &dir,
+            OsStr::new(&format!("{name}.json")),
+            &mut report,
+        );
     }
-    Ok(names.len())
+    for name in &unusable {
+        clear(&data, &dir, name, &mut report);
+    }
+    Ok((names.len(), report))
 }
 
 /// `ciphera admin sign-requests` : traite les demandes en attente (voir le
-/// module). Chaque demande est supprimee apres son traitement, signee ou
-/// refusee. Erreur (demandes supprimees aussi) si la CA est illisible ou si
-/// un dossier est un lien symbolique ou n'appartient pas au signataire.
+/// module). Chaque demande est retiree apres son traitement, signee ou
+/// refusee (supprimee, ou mise de cote si elle ne peut pas l'etre). Erreur
+/// (demandes retirees aussi) si la CA est illisible ou si un dossier est un
+/// lien symbolique ou n'appartient pas au signataire.
 pub async fn sign_requests(
     db: &PgPool,
     config_dir: &Path,
     data_dir: &Path,
 ) -> Result<SignReport, SignError> {
+    let mut report = SignReport::default();
     let Some(data) = open_data(data_dir).map_err(|e| fatal("dossier de donnees", e))? else {
-        return Ok(SignReport::default());
+        return Ok(report);
     };
     let Some(requests) = data
         .open_sub(REQUESTS_DIR)
         .map_err(|e| fatal("dossier des demandes", e))?
     else {
-        return Ok(SignReport::default());
+        return Ok(report);
     };
-    let names = request_names(&requests).map_err(|e| fatal("dossier des demandes", e))?;
-    if names.is_empty() {
-        return Ok(SignReport::default());
+    let (names, unusable) = scan(&requests).map_err(|e| fatal("dossier des demandes", e))?;
+    for name in &unusable {
+        clear(&data, &requests, name, &mut report);
     }
-    let discard = |requests: &fsio::Dir| {
+    if names.is_empty() {
+        return Ok(report);
+    }
+    let discard = |report: &mut SignReport| {
         for name in &names {
-            let _ = requests.remove(&format!("{name}.json"));
+            clear(
+                &data,
+                &requests,
+                OsStr::new(&format!("{name}.json")),
+                report,
+            );
         }
     };
     let ca = match load_ca(config_dir) {
         Ok(ca) => ca,
         Err(e) => {
-            discard(&requests);
-            return Err(fatal("CA de l'instance illisible", e));
+            discard(&mut report);
+            return Err(fatal_after(&report, "CA de l'instance illisible", e));
         }
     };
-    let responses = match data.ensure_sub(RESPONSES_DIR) {
+    let responses = match data.ensure_sub(RESPONSES_DIR, 0o750) {
         Ok(d) => d,
         Err(e) => {
-            discard(&requests);
-            return Err(fatal("dossier des reponses", e));
+            discard(&mut report);
+            return Err(fatal_after(&report, "dossier des reponses", e));
         }
     };
-    let mut report = SignReport::default();
     for name in names {
         let file = format!("{name}.json");
         let outcome = sign_one(db, &ca, config_dir, &requests, &responses, &name, &file).await;
-        if let Err(e) = requests.remove(&file) {
-            tracing::warn!("demande {file} non supprimee : {e}");
-        }
+        clear(&data, &requests, OsStr::new(&file), &mut report);
         match outcome {
             Ok(()) => report.signed.push(name),
             Err(why) => report.refused.push((name, why)),
@@ -445,6 +525,16 @@ pub async fn sign_requests(
 
 fn fatal(what: &str, e: impl fmt::Display) -> SignError {
     SignError(format!("{what} : {e}"))
+}
+
+/// Erreur fatale, avec ce qui a deja du etre mis de cote (journalise une
+/// seule fois, par l'appelant).
+fn fatal_after(report: &SignReport, what: &str, e: impl fmt::Display) -> SignError {
+    let mut message = format!("{what} : {e}");
+    for (name, outcome) in &report.set_aside {
+        let _ = write!(message, " ; entree {name} : {outcome}");
+    }
+    SignError(message)
 }
 
 async fn sign_one(
@@ -553,9 +643,11 @@ fn sign_own_request(
 /// des liens.
 #[cfg(unix)]
 mod fsio {
+    use std::ffi::{OsStr, OsString};
     use std::fs::File;
     use std::io::{self, Read, Write};
     use std::os::fd::{AsFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
     use std::path::Path;
 
@@ -590,12 +682,12 @@ mod fsio {
         }
 
         /// Sous-dossier `name` du proprietaire du processus, cree au besoin
-        /// (0750, groupe de ce dossier : celui du service).
-        pub fn ensure_sub(&self, name: &str) -> io::Result<Dir> {
+        /// (`mode`, groupe de ce dossier : celui du service).
+        pub fn ensure_sub(&self, name: &str, mode: u32) -> io::Result<Dir> {
             let dir = match self.open_sub(name)? {
                 Some(d) => d,
                 None => {
-                    match rustix::fs::mkdirat(&self.fd, name, Mode::from_raw_mode(0o750)) {
+                    match rustix::fs::mkdirat(&self.fd, name, Mode::from_raw_mode(mode)) {
                         Ok(()) | Err(rustix::io::Errno::EXIST) => {}
                         Err(e) => return Err(e.into()),
                     }
@@ -612,20 +704,44 @@ mod fsio {
             let gid = rustix::fs::fstat(&self.fd)?.st_gid;
             let file = File::from(dir.fd.try_clone()?);
             std::os::unix::fs::fchown(&file, None, Some(gid))?;
-            rustix::fs::fchmod(&dir.fd, Mode::from_raw_mode(0o750))?;
+            rustix::fs::fchmod(&dir.fd, Mode::from_raw_mode(mode))?;
             Ok(dir)
         }
 
-        pub fn names(&self) -> io::Result<Vec<String>> {
+        /// Noms des entrees, octets compris (un nom non UTF-8 reste
+        /// manipulable : jamais de conversion avec perte).
+        pub fn entries(&self) -> io::Result<Vec<OsString>> {
             let mut out = Vec::new();
             for entry in rustix::fs::Dir::read_from(&self.fd)? {
                 let entry = entry?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name != "." && name != ".." {
-                    out.push(name);
+                let name = entry.file_name().to_bytes();
+                if name != b"." && name != b".." {
+                    out.push(OsStr::from_bytes(name).to_os_string());
                 }
             }
             Ok(out)
+        }
+
+        /// Ce dossier au proprietaire du processus (groupe conserve), `mode`.
+        pub fn harden_self(&self, mode: u32) -> io::Result<bool> {
+            let st = rustix::fs::fstat(&self.fd)?;
+            let mut changed = false;
+            if st.st_uid != euid() {
+                let file = File::from(self.fd.try_clone()?);
+                std::os::unix::fs::fchown(&file, Some(euid()), None)?;
+                changed = true;
+            }
+            if st.st_mode & 0o7777 != mode {
+                rustix::fs::fchmod(&self.fd, Mode::from_raw_mode(mode))?;
+                changed = true;
+            }
+            Ok(changed)
+        }
+
+        /// Deplace l'entree `name` dans `to` sous le nom `new` (un lien est
+        /// deplace lui-meme, jamais suivi).
+        pub fn move_to(&self, name: &OsStr, to: &Dir, new: &str) -> io::Result<()> {
+            rustix::fs::renameat(&self.fd, name, &to.fd, new).map_err(Into::into)
         }
 
         fn open_file(&self, name: &str, max: u64) -> io::Result<(File, rustix::fs::Stat)> {
@@ -664,7 +780,9 @@ mod fsio {
             read_bounded(file, max)
         }
 
-        pub fn harden(&self, name: &str) -> io::Result<bool> {
+        /// Fichier `name` au proprietaire du processus, `mode` ; groupe du
+        /// processus si `own_group`, sinon conserve.
+        pub fn harden(&self, name: &str, mode: u32, own_group: bool) -> io::Result<bool> {
             let (file, st) = match self.open_file(name, super::MAX_CA_BYTES) {
                 Ok(f) => f,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -675,19 +793,21 @@ mod fsio {
             }
             let meta = file.metadata()?;
             let mut changed = false;
-            let (uid, gid) = (euid(), rustix::process::getegid().as_raw());
-            if meta.uid() != uid || meta.gid() != gid {
-                std::os::unix::fs::fchown(&file, Some(uid), Some(gid))?;
+            let uid = euid();
+            let gid = own_group.then(|| rustix::process::getegid().as_raw());
+            if meta.uid() != uid || gid.is_some_and(|g| g != meta.gid()) {
+                std::os::unix::fs::fchown(&file, Some(uid), gid)?;
                 changed = true;
             }
-            if meta.mode() & 0o777 != 0o600 {
-                rustix::fs::fchmod(file.as_fd(), Mode::from_raw_mode(0o600))?;
+            if meta.mode() & 0o7777 != mode {
+                rustix::fs::fchmod(file.as_fd(), Mode::from_raw_mode(mode))?;
                 changed = true;
             }
             Ok(changed)
         }
 
-        pub fn remove(&self, name: &str) -> io::Result<()> {
+        pub fn remove<N: AsRef<OsStr> + ?Sized>(&self, name: &N) -> io::Result<()> {
+            let name = name.as_ref();
             match rustix::fs::unlinkat(&self.fd, name, AtFlags::empty()) {
                 Ok(()) | Err(rustix::io::Errno::NOENT) => Ok(()),
                 Err(rustix::io::Errno::ISDIR) | Err(rustix::io::Errno::PERM) => {
@@ -701,7 +821,7 @@ mod fsio {
         /// 0640, groupe de ce dossier, donnees sur disque, renommage.
         pub fn write_atomic(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
             let tmp = format!(".{name}.tmp");
-            self.remove(&tmp)?;
+            self.remove(tmp.as_str())?;
             let flags =
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
             let fd = rustix::fs::openat(&self.fd, tmp.as_str(), flags, Mode::from_raw_mode(0o640))?;
@@ -717,7 +837,7 @@ mod fsio {
                     rustix::fs::renameat(&self.fd, tmp.as_str(), &self.fd, name).map_err(Into::into)
                 });
             if written.is_err() {
-                let _ = self.remove(&tmp);
+                let _ = self.remove(tmp.as_str());
             }
             written
         }
@@ -735,6 +855,7 @@ mod fsio {
 
 #[cfg(not(unix))]
 mod fsio {
+    use std::ffi::{OsStr, OsString};
     use std::io::{self, Read};
     use std::path::{Path, PathBuf};
 
@@ -768,7 +889,7 @@ mod fsio {
             }
         }
 
-        pub fn ensure_sub(&self, name: &str) -> io::Result<Dir> {
+        pub fn ensure_sub(&self, name: &str, _mode: u32) -> io::Result<Dir> {
             let path = self.path.join(name);
             if std::fs::symlink_metadata(&path).is_err() {
                 std::fs::create_dir(&path)?;
@@ -776,12 +897,20 @@ mod fsio {
             Dir::open(&path)
         }
 
-        pub fn names(&self) -> io::Result<Vec<String>> {
+        pub fn entries(&self) -> io::Result<Vec<OsString>> {
             let mut out = Vec::new();
             for entry in std::fs::read_dir(&self.path)? {
-                out.push(entry?.file_name().to_string_lossy().into_owned());
+                out.push(entry?.file_name());
             }
             Ok(out)
+        }
+
+        pub fn harden_self(&self, _mode: u32) -> io::Result<bool> {
+            Ok(false)
+        }
+
+        pub fn move_to(&self, name: &OsStr, to: &Dir, new: &str) -> io::Result<()> {
+            std::fs::rename(self.path.join(name), to.path.join(new))
         }
 
         pub fn read_file(&self, name: &str, max: u64) -> io::Result<Vec<u8>> {
@@ -807,7 +936,7 @@ mod fsio {
             self.read_file(name, max)
         }
 
-        pub fn harden(&self, name: &str) -> io::Result<bool> {
+        pub fn harden(&self, name: &str, _mode: u32, _own_group: bool) -> io::Result<bool> {
             match refuse_link(&self.path.join(name)) {
                 Ok(_) => Ok(false),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -815,8 +944,8 @@ mod fsio {
             }
         }
 
-        pub fn remove(&self, name: &str) -> io::Result<()> {
-            let path = self.path.join(name);
+        pub fn remove<N: AsRef<OsStr> + ?Sized>(&self, name: &N) -> io::Result<()> {
+            let path = self.path.join(name.as_ref());
             let result = match std::fs::symlink_metadata(&path) {
                 Ok(m) if m.is_dir() => std::fs::remove_dir(&path),
                 Ok(_) => std::fs::remove_file(&path),
