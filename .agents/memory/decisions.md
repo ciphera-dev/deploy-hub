@@ -1114,3 +1114,11 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Ensemble Compose : une image interne n'est acceptée que comme image construite du service, avec l'étiquette du déploiement qui a construit l'ensemble (`image_from` au retour arrière), et `pull_policy: never`.
 - `pull_if_missing` : jamais pour `ciphera.invalid/*` ; délai de 10 min ; plafond de 10 Gio sur le plus grand des octets reçus ou annoncés par couche ; arithmétique vérifiée.
 - Laissés : les images tierces tirées par `docker compose up` n'ont ni délai ni plafond ; pas de test sur Docker réel prouvant l'absence de requête au registre pour une image interne.
+
+## 2026-11-25 — Task R27 : bac à sable de railpack prepare, askpass, .env de Compose
+- Décision R27 : le bac à sable de `railpack prepare` n'a plus aucun dossier de l'hôte monté en écriture ; sortie dans un volume anonyme étiqueté (managed, role=prepare), `/out/plan` créé par `PUT /archive`, les deux fichiers relus par `GET /archive` en mémoire (entrée unique, fichier régulier, nom exact, sans lien, 1 Mio au plus ; envoi et lecture bornés à 30 s) puis écrits par l'agent (0600, dossier 0700).
+- Le volume est retiré avec le conteneur (annulation, échec, nettoyage, retrait) et par le balayage au démarrage, seulement s'il n'est monté par aucun conteneur.
+- Dépendance `tar 0.4.46` pour l'agent (déjà dans Cargo.lock via la CLI ; vérification des CVE par cargo-deny et cargo-audit en CI).
+- Askpass : répond seulement aux invites exactes `https://github.com` (utilisateur) et `https://x-access-token@github.com` (jeton) ; sinon rien et code 1.
+- `docker compose config` avec `--env-file /dev/null`, environnement sans `COMPOSE_*`, nom de projet explicite : le `.env` du dépôt n'est plus lu (les `${VAR}` d'un fichier Compose n'en prennent plus la valeur).
+- Laissés : taille du volume de sortie non bornée pendant `prepare` (comme l'ancien dossier) ; un fichier Compose qui étiquette un volume `dev.ciphera.*` peut le faire balayer (données du seul locataire) ; budget de 120 s d'un test qui court aussi pendant le tirage de l'image.

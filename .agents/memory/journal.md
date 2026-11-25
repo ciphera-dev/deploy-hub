@@ -357,3 +357,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 05:28 — Session v0.1-sdd — claude-code (orchestrateur) — Task R26 : Remédiation audit — images internes sous un registre non résoluble
 - fait : ciphera.invalid/, références internes et par identifiant refusées, image Compose liée à son build, tirages bornés
 - résultat : TERMINÉ (relecture : 1 Important corrigé, approuvée)
+
+## 2026-11-25 05:32 — Session v0.1-sdd — claude-code (orchestrateur) — Task R27 : Remédiation audit — bac à sable de railpack prepare, askpass, .env de Compose
+- fait : Sortie de prepare par l'API d'archive sans dossier de l'hôte, askpass strict, compose config sans .env ni COMPOSE_*
+- résultat : TERMINÉ (relecture : 2 Importants corrigés, approuvée)
