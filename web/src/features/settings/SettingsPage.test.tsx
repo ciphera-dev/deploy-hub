@@ -299,10 +299,29 @@ it("domaine du panel enregistrable : option HSTS des sous-domaines désactivée 
   expect(toggle).toHaveAttribute("aria-checked", "false");
   expect(toggle).not.toBeDisabled();
   expect(screen.getByText(/impose HTTPS pendant un an à tous les sous-domaines de example\.org/)).toBeInTheDocument();
+  // Activer passe par une confirmation ; « Annuler » n'envoie rien.
   fireEvent.click(toggle);
+  let dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("Inclure les sous-domaines de example.org ?")).toBeInTheDocument();
+  expect(within(dialog).getByText(/tous les sous-domaines de example\.org/)).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Annuler" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(requests).toHaveLength(0);
+  expect(screen.getByRole("switch", { name: "Inclure les sous-domaines (HSTS)" })).toHaveAttribute("aria-checked", "false");
+
+  fireEvent.click(screen.getByRole("switch", { name: "Inclure les sous-domaines (HSTS)" }));
+  dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Inclure les sous-domaines" }));
   expect(await screen.findByText("Sous-domaines inclus dans HSTS")).toBeInTheDocument();
   expect(requests[0]).toMatchObject({ method: "PUT", path: "/api/settings/panel-domain/hsts", body: { include_subdomains: true }, csrf: "csrf-1" });
+  expect(screen.queryByRole("dialog")).toBeNull();
   await waitFor(() => expect(screen.getByRole("switch", { name: "Inclure les sous-domaines (HSTS)" })).toHaveAttribute("aria-checked", "true"));
+
+  // Desactiver ne demande pas de confirmation (retour au cas le plus sur).
+  fireEvent.click(screen.getByRole("switch", { name: "Inclure les sous-domaines (HSTS)" }));
+  expect(await screen.findByText("Sous-domaines retirés de HSTS")).toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(requests[1]).toMatchObject({ method: "PUT", path: "/api/settings/panel-domain/hsts", body: { include_subdomains: false } });
 });
 
 it("domaine du panel sous son domaine enregistrable : sous-domaines couverts d'office, option inactive", async () => {

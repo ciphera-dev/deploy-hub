@@ -121,8 +121,9 @@ function ConfirmBlock({ domain, onDone }: { domain: string; onDone: (p: PanelDom
 function HstsRow({ current, onSaved }: { current: PanelDomain; onSaved: (p: PanelDomain) => void }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [confirming, setConfirming] = useState(false);
   const domain = current.domain ?? "";
-  const toggle = async (on: boolean) => {
+  const save = async (on: boolean) => {
     if (busy) return;
     setBusy(true);
     const r = await setPanelDomainHsts(on);
@@ -132,7 +133,18 @@ function HstsRow({ current, onSaved }: { current: PanelDomain; onSaved: (p: Pane
       return;
     }
     setErr("");
+    setConfirming(false);
     onSaved(r.data);
+  };
+  // Activer engage tous les sous-domaines pour un an : confirmation d'abord.
+  // Desactiver revient au cas le plus sur et part directement.
+  const toggle = (on: boolean) => {
+    if (on) {
+      setErr("");
+      setConfirming(true);
+      return;
+    }
+    void save(false);
   };
   if (!current.apex) {
     return (
@@ -144,12 +156,34 @@ function HstsRow({ current, onSaved }: { current: PanelDomain; onSaved: (p: Pane
   return (
     <>
       <Row t="Inclure les sous-domaines (HSTS)" d={`${domain} est la racine de son domaine : HSTS ne couvre ses sous-domaines que si vous l'activez.`}>
-        <Switch ariaLabel="Inclure les sous-domaines (HSTS)" checked={current.hsts_include_subdomains} disabled={busy} onChange={(v) => void toggle(v)} />
+        <Switch ariaLabel="Inclure les sous-domaines (HSTS)" checked={current.hsts_include_subdomains} disabled={busy} onChange={toggle} />
       </Row>
       <Note icon="TriangleExclamationPoint" color="var(--amber-500)">
         Activée, cette option impose HTTPS pendant un an à tous les sous-domaines de {domain}, y compris ceux servis ailleurs que sur ce serveur : ne l'activez que si chacun répond en HTTPS. Aucun préchargement (preload) n'est demandé aux navigateurs.
       </Note>
-      {err && <FormError>{err}</FormError>}
+      {err && !confirming && <FormError>{err}</FormError>}
+      {confirming && (
+        <Modal
+          title={`Inclure les sous-domaines de ${domain} ?`}
+          description="Les navigateurs retiennent cette règle pendant un an, même si vous la désactivez ensuite."
+          onClose={() => setConfirming(false)}
+          width={480}
+          footer={
+            <>
+              <Button onClick={() => setConfirming(false)}>Annuler</Button>
+              <Button variant="inverse" icon={busy ? "Loader" : "Lock"} disabled={busy} onClick={() => void save(true)}>
+                Inclure les sous-domaines
+              </Button>
+            </>
+          }
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, font: "400 13px/1.5 var(--font-sans)", color: "var(--text-body)" }}>
+            <span>Un navigateur qui ouvre le panneau imposera ensuite HTTPS à tous les sous-domaines de {domain}, y compris ceux servis ailleurs que sur ce serveur. Un sous-domaine qui ne répond qu'en HTTP deviendra inaccessible pour ces visiteurs.</span>
+            <span>Vérifiez d'abord que chaque sous-domaine répond en HTTPS avec un certificat valide.</span>
+            {err && <FormError>{err}</FormError>}
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
