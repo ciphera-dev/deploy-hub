@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 const QUOTE: char = 39u8 as char;
 const CSP_START: &str = "default-src 'self'; img-src 'self' data:; style-src 'self'";
-const CSP_END: &str = "; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
+const CSP_END: &str = "; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://github.com; object-src 'none'";
 
 /// Nonce de `style-src` d'une page HTML (la politique entiere est verifiee).
 fn style_nonce(r: &Resp) -> String {
@@ -98,12 +98,26 @@ async fn csp_has_base_uri_form_action_object_src() {
     for path in ["/api/health", "/", "/api/nope"] {
         let r = tls_get(addr, &cert, path).await;
         let csp = r.header("content-security-policy").unwrap();
-        for directive in ["base-uri 'none'", "form-action 'self'", "object-src 'none'"] {
+        for directive in [
+            "base-uri 'none'",
+            "form-action 'self' https://github.com;",
+            "object-src 'none'",
+        ] {
             assert!(
                 csp.contains(directive),
                 "{path} : {directive} absent de {csp}"
             );
         }
+        let form_action = csp
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("form-action"))
+            .unwrap();
+        assert_eq!(form_action, "form-action 'self' https://github.com");
+        assert!(
+            !form_action.contains('*'),
+            "{path} : joker dans {form_action}"
+        );
     }
 }
 

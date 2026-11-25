@@ -19,7 +19,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use crate::domain::domains::panel::{PanelSwitch, Registrable, registrable};
 use crate::http::panel_host::request_host_name;
 
-pub const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
+pub const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://github.com; object-src 'none'";
 pub const HSTS: &str = "max-age=31536000";
 /// HSTS etendu aux sous-domaines de l'hote (jamais `preload`).
 pub const HSTS_SUBDOMAINS: &str = "max-age=31536000; includeSubDomains";
