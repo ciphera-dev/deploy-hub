@@ -421,3 +421,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 12:06 — Session v0.1-sdd — claude-code (orchestrateur) — Task R35 : Variables globales : portée explicite des secrets
 - fait : Secret + tous les projets interdit, migration 0036 à valeurs conservées, Appliquer à ce projet
 - résultat : TERMINÉ (relecture approuvée, 1 tour)
+
+## 2026-11-25 12:58 — Session v0.1-sdd — claude-code (orchestrateur) — Task R48 : Signataire de la CA séparé (root)
+- fait : Signataire root séparé, dossier ca/ protégé, demandes mises de côté, docs
+- résultat : TERMINÉ (relecture approuvée, 3 tours)
