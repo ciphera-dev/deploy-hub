@@ -28,7 +28,7 @@ mod server {
     use pingora::services::background::background_service;
 
     use crate::acme::AcmeIssuer;
-    use crate::control::ControlService;
+    use crate::control::{ControlAccess, ControlService};
     use crate::forward::{ProxyConfig, TlsAssets, proxy_services};
     use crate::routes::RouteTable;
 
@@ -44,6 +44,7 @@ mod server {
         tls: &TlsAssets,
         control: Option<UnixListener>,
         issuer: Option<Arc<AcmeIssuer>>,
+        access: ControlAccess,
     ) -> Result<Server, String> {
         let mut conf = ServerConf {
             threads: cfg.threads.max(1),
@@ -61,7 +62,7 @@ mod server {
         if let Some(listener) = control {
             server.add_service(background_service(
                 "pilotage",
-                ControlService::new(listener, table, issuer),
+                ControlService::new(listener, table, issuer, access),
             ));
         }
         Ok(server)

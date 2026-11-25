@@ -187,6 +187,14 @@ mod unix {
             cfg.panel_port
         );
         let table = Arc::new(RouteTable::new());
-        ciphera_proxy::build_server(&cfg, table, &tls, Some(listener), Some(issuer))?.run_forever()
+        ciphera_proxy::build_server(
+            &cfg,
+            table,
+            &tls,
+            Some(listener),
+            Some(issuer),
+            control::ControlAccess::production(),
+        )?
+        .run_forever()
     }
 }

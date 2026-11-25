@@ -457,7 +457,7 @@ mod control_socket {
     use std::time::Duration;
 
     use ciphera_proxy::acme::{self, AcmeConfig, AcmeIssuer, CertStore, Challenges};
-    use ciphera_proxy::control;
+    use ciphera_proxy::control::{self, ControlAccess};
     use proto::codec;
     use proto::{CertificateOutcome, ControlToAgent, ProxyReply};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -466,7 +466,18 @@ mod control_socket {
 
     use super::*;
 
+    /// Uid du processus de test : le seul pair que `start` accepte.
+    fn own_uid() -> u32 {
+        rustix::process::getuid().as_raw()
+    }
+
     async fn start() -> (tempfile::TempDir, std::path::PathBuf, Arc<RouteTable>) {
+        start_with_access(ControlAccess::new([own_uid()])).await
+    }
+
+    async fn start_with_access(
+        access: ControlAccess,
+    ) -> (tempfile::TempDir, std::path::PathBuf, Arc<RouteTable>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("proxy.sock");
         let listener = control::bind(&path).unwrap();
@@ -475,7 +486,7 @@ mod control_socket {
         let t = table.clone();
         tokio::spawn(async move {
             let _keep = _tx;
-            control::serve(listener, t, None, rx).await;
+            control::serve(listener, t, None, access, rx).await;
         });
         (dir, path, table)
     }
@@ -579,6 +590,71 @@ mod control_socket {
         assert_eq!(table.snapshot().len(), 2);
     }
 
+    /// Un pair dont l'uid n'est ni root ni celui de l'agent est coupe sans
+    /// reponse, et la table ne change pas ; le bon uid est servi.
+    #[tokio::test]
+    async fn control_socket_rejects_other_uid() {
+        let other = own_uid().wrapping_add(1).max(1);
+        let (_dir, path, table) = start_with_access(ControlAccess::new([other])).await;
+        if own_uid() == 0 {
+            // Root est toujours accepte : rien a refuser depuis ce compte.
+            still_serving(&path).await;
+            return;
+        }
+        let routes = vec![route("h.example.com", "/", "10.0.0.1:80")];
+        let mut s = UnixStream::connect(&path).await.unwrap();
+        let _ = codec::write_frame(&mut s, &ControlToAgent::ApplyRoutes(routes)).await;
+        let reply = read_to_close(&mut s).await;
+        assert!(reply.is_empty(), "aucune reponse attendue : {reply:?}");
+        assert!(table.snapshot().is_empty());
+
+        let (_dir, path, _table) = start().await;
+        still_serving(&path).await;
+    }
+
+    /// Un message commence mais jamais fini est coupe au delai de lecture ;
+    /// une connexion au repos entre deux messages reste ouverte.
+    #[tokio::test]
+    async fn control_read_timeout() {
+        let access = ControlAccess::new([own_uid()]).with_read_timeout(Duration::from_millis(300));
+        let (_dir, path, _table) = start_with_access(access).await;
+
+        let mut slow = UnixStream::connect(&path).await.unwrap();
+        slow.write_all(&[0, 0]).await.unwrap();
+        let reply = read_to_close(&mut slow).await;
+        assert!(reply.is_empty(), "coupe sans reponse : {reply:?}");
+
+        let mut idle = UnixStream::connect(&path).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        codec::write_frame(&mut idle, &ControlToAgent::ApplyRoutes(Vec::new()))
+            .await
+            .unwrap();
+        let reply: ProxyReply =
+            tokio::time::timeout(Duration::from_secs(5), codec::read_frame(&mut idle))
+                .await
+                .expect("reponse du proxy")
+                .unwrap()
+                .unwrap();
+        assert_eq!(reply, ProxyReply::Applied { routes: 0 });
+    }
+
+    #[test]
+    fn agent_uid_is_read_from_passwd() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash
+ciphera-agent-x:x:7:7::/:/bin/false
+ciphera-agent:x:991:989::/var/lib/ciphera:/usr/sbin/nologin
+";
+        assert_eq!(control::uid_of(passwd, "ciphera-agent"), Some(991));
+        assert_eq!(control::uid_of(passwd, "absent"), None);
+        assert_eq!(
+            control::uid_of("ciphera-agent:x:oops", "ciphera-agent"),
+            None
+        );
+        assert!(ControlAccess::new([991]).allows(0));
+        assert!(ControlAccess::new([991]).allows(991));
+        assert!(!ControlAccess::new([991]).allows(992));
+    }
+
     #[tokio::test]
     async fn stale_socket_file_is_replaced_but_not_other_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -621,7 +697,14 @@ mod control_socket {
         let t = table.clone();
         tokio::spawn(async move {
             let _keep = tx;
-            control::serve(listener, t, Some(issuer), rx).await;
+            control::serve(
+                listener,
+                t,
+                Some(issuer),
+                ControlAccess::new([own_uid()]),
+                rx,
+            )
+            .await;
         });
         (dir, path, table, store)
     }

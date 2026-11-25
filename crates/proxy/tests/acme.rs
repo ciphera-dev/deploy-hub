@@ -115,8 +115,15 @@ fn issues_cert_via_pebble_http01() {
     let socket = socket_dir.path().join("proxy.sock");
     let listener = control::bind(&socket).unwrap();
     let table = Arc::new(RouteTable::new());
-    let server =
-        ciphera_proxy::build_server(&cfg, table, &tls, Some(listener), Some(issuer)).unwrap();
+    let server = ciphera_proxy::build_server(
+        &cfg,
+        table,
+        &tls,
+        Some(listener),
+        Some(issuer),
+        control::ControlAccess::new([rustix::process::getuid().as_raw()]),
+    )
+    .unwrap();
     thread::spawn(move || {
         server.run(RunArgs {
             shutdown_signal: Box::new(Never),

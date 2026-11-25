@@ -16,6 +16,13 @@
 //! la table ne change pas. La connexion de l'agent peut rester ouverte entre
 //! deux tables. Une emission ACME occupe sa connexion jusqu'a son issue :
 //! l'agent l'envoie sur une connexion a part.
+//!
+//! Acces : le groupe du socket n'est qu'une premiere barriere. A chaque
+//! connexion, l'uid du pair (`SO_PEERCRED`) doit etre celui de root ou du
+//! compte `ciphera-agent` ; sinon la connexion est fermee sans reponse. Une
+//! fois le premier octet d'un message arrive, le message entier doit l'etre
+//! dans les 10 s (`READ_TIMEOUT`) : sinon la connexion est fermee. Une
+//! connexion au repos entre deux messages n'est pas concernee.
 
 use std::io;
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -45,8 +52,66 @@ pub const MAX_CONNECTIONS: usize = 4;
 pub const ROUTE_WAIT: Duration = Duration::from_secs(5);
 const ROUTE_POLL: Duration = Duration::from_millis(100);
 const SOCKET_MODE: u32 = 0o660;
+/// Delai pour lire un message de pilotage une fois son premier octet recu.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Compte de l'agent, seul (avec root) a piloter le proxy.
+pub const AGENT_USER: &str = "ciphera-agent";
 /// Premier descripteur transmis par systemd (`SD_LISTEN_FDS_START`).
 const SD_LISTEN_FDS_START: i32 = 3;
+
+/// Qui peut piloter le proxy, et avec quel delai de lecture.
+#[derive(Clone, Debug)]
+pub struct ControlAccess {
+    uids: Vec<u32>,
+    read_timeout: Duration,
+}
+
+impl ControlAccess {
+    /// Root et les uid donnes ; `READ_TIMEOUT` par message.
+    pub fn new(uids: impl IntoIterator<Item = u32>) -> Self {
+        let mut uids: Vec<u32> = uids.into_iter().collect();
+        uids.push(0);
+        uids.sort_unstable();
+        uids.dedup();
+        Self {
+            uids,
+            read_timeout: READ_TIMEOUT,
+        }
+    }
+
+    /// Root et le compte `ciphera-agent` (lu dans `/etc/passwd`). Sans ce
+    /// compte, seul root est accepte (avertissement).
+    pub fn production() -> Self {
+        let agent = std::fs::read_to_string("/etc/passwd")
+            .ok()
+            .and_then(|passwd| uid_of(&passwd, AGENT_USER));
+        if agent.is_none() {
+            tracing::warn!("compte {AGENT_USER} introuvable : seul root peut piloter le proxy");
+        }
+        Self::new(agent)
+    }
+
+    /// Delai de lecture par message (tests).
+    pub fn with_read_timeout(mut self, read_timeout: Duration) -> Self {
+        self.read_timeout = read_timeout;
+        self
+    }
+
+    pub fn allows(&self, uid: u32) -> bool {
+        self.uids.contains(&uid)
+    }
+}
+
+/// Uid du compte `name` dans un contenu de `/etc/passwd`.
+pub fn uid_of(passwd: &str, name: &str) -> Option<u32> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        if fields.next()? != name {
+            return None;
+        }
+        fields.nth(1)?.parse().ok()
+    })
+}
 
 /// Cree le socket `path` (mode 0660). Un ancien socket au meme chemin est
 /// remplace ; tout autre fichier est laisse intact (erreur).
@@ -102,6 +167,7 @@ pub async fn serve(
     listener: StdUnixListener,
     table: Arc<RouteTable>,
     issuer: Option<Arc<AcmeIssuer>>,
+    access: ControlAccess,
     mut shutdown: ShutdownWatch,
 ) {
     let listener = match listener
@@ -135,10 +201,25 @@ pub async fn serve(
                     tracing::warn!("socket de pilotage : trop de connexions, refusee");
                     continue;
                 };
+                match stream.peer_cred() {
+                    Ok(cred) if access.allows(cred.uid()) => {}
+                    Ok(cred) => {
+                        tracing::warn!(
+                            uid = cred.uid(),
+                            "socket de pilotage : pair refuse (uid non autorise)"
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!("socket de pilotage : uid du pair illisible : {e}");
+                        continue;
+                    }
+                }
                 let table = table.clone();
                 let issuer = issuer.clone();
+                let read_timeout = access.read_timeout;
                 tokio::spawn(async move {
-                    handle(stream, &table, issuer.as_deref()).await;
+                    handle(stream, &table, issuer.as_deref(), read_timeout).await;
                     drop(slot);
                 });
             }
@@ -146,9 +227,36 @@ pub async fn serve(
     }
 }
 
-async fn handle(mut stream: UnixStream, table: &RouteTable, issuer: Option<&AcmeIssuer>) {
+/// Lit le message suivant : attend sans limite qu'il commence (connexion au
+/// repos), puis `read_timeout` pour le recevoir en entier. `None` : delai
+/// depasse (connexion a fermer sans reponse).
+async fn next_message(
+    stream: &mut UnixStream,
+    read_timeout: Duration,
+) -> Option<codec::Result<Option<ControlToAgent>>> {
+    if stream.readable().await.is_err() {
+        return Some(Ok(None));
+    }
+    match tokio::time::timeout(read_timeout, codec::read_frame(stream)).await {
+        Ok(result) => Some(result),
+        Err(_) => {
+            tracing::warn!("socket de pilotage : message trop lent, connexion fermee");
+            None
+        }
+    }
+}
+
+async fn handle(
+    mut stream: UnixStream,
+    table: &RouteTable,
+    issuer: Option<&AcmeIssuer>,
+    read_timeout: Duration,
+) {
     loop {
-        let reply = match codec::read_frame::<_, ControlToAgent>(&mut stream).await {
+        let Some(message) = next_message(&mut stream, read_timeout).await else {
+            return;
+        };
+        let reply = match message {
             Ok(None) => return,
             Ok(Some(ControlToAgent::ApplyRoutes(routes))) => match table.apply(routes) {
                 Ok(n) => {
@@ -170,13 +278,20 @@ async fn handle(mut stream: UnixStream, table: &RouteTable, issuer: Option<&Acme
                 ProxyReply::Certificate(issue(table, issuer, &host).await)
             }
             Ok(Some(ControlToAgent::CheckCertificate { host })) => {
-                ProxyReply::Certificate(match issuer.and_then(|i| i.store().get(&host)) {
-                    Some(held) => CertificateOutcome::Issued {
-                        not_after: held.not_after,
-                        issuer: held.issuer.clone(),
+                // Un certificat expire compte pour absent : le plan de
+                // controle en demande un nouveau.
+                ProxyReply::Certificate(
+                    match issuer
+                        .filter(|i| i.store().has(&host))
+                        .and_then(|i| i.store().get(&host))
+                    {
+                        Some(held) => CertificateOutcome::Issued {
+                            not_after: held.not_after,
+                            issuer: held.issuer.clone(),
+                        },
+                        None => CertificateOutcome::Missing,
                     },
-                    None => CertificateOutcome::Missing,
-                })
+                )
             }
             Ok(Some(ControlToAgent::RemoveCertificate { host })) => {
                 // Aussi sans certificat installe : une emission en cours
@@ -257,6 +372,7 @@ pub struct ControlService {
     listener: Mutex<Option<StdUnixListener>>,
     table: Arc<RouteTable>,
     issuer: Option<Arc<AcmeIssuer>>,
+    access: ControlAccess,
 }
 
 impl ControlService {
@@ -264,11 +380,13 @@ impl ControlService {
         listener: StdUnixListener,
         table: Arc<RouteTable>,
         issuer: Option<Arc<AcmeIssuer>>,
+        access: ControlAccess,
     ) -> Self {
         Self {
             listener: Mutex::new(Some(listener)),
             table,
             issuer,
+            access,
         }
     }
 }
@@ -285,7 +403,14 @@ impl BackgroundService for ControlService {
         };
         match listener {
             Some(listener) => {
-                serve(listener, self.table.clone(), self.issuer.clone(), shutdown).await
+                serve(
+                    listener,
+                    self.table.clone(),
+                    self.issuer.clone(),
+                    self.access.clone(),
+                    shutdown,
+                )
+                .await
             }
             None => tracing::error!(
                 "socket de pilotage : aucun socket a servir (service demarre deux fois ?), la table de routes ne sera plus mise a jour"

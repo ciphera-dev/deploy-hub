@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ciphera_proxy::conn_limit::ConnLimits;
+use ciphera_proxy::control::ControlAccess;
 use ciphera_proxy::forward::{IoTimeouts, ProxyConfig, TlsAssets};
 use ciphera_proxy::routes::RouteTable;
 use pingora::server::{RunArgs, ShutdownSignal, ShutdownSignalWatch};
@@ -98,7 +99,8 @@ fn start_server_with(
         limits,
         io,
     };
-    let server = ciphera_proxy::build_server(&cfg, table, tls, None, None).unwrap();
+    let server =
+        ciphera_proxy::build_server(&cfg, table, tls, None, None, ControlAccess::new([])).unwrap();
     thread::spawn(move || {
         server.run(RunArgs {
             shutdown_signal: Box::new(Never),
