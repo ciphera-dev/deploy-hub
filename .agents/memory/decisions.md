@@ -1063,3 +1063,11 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Import `.env` : guillemets, `export`, commentaires, CRLF ; BOM et valeurs multilignes entre guillemets refusés proprement ; erreurs sans la valeur.
 - Plafonds de secrets vérifiés à chaque écriture sous verrou consultatif par projet (globales : verrous pris dans l'ordre trié) ; `warnings` seulement dans les réponses d'écriture.
 - Laissés : coût de `check_scope_caps` pour une globale, mémoire du cache des masqueurs non bornée entre projets, `+` et `/` non encodés non reconnus en pourcent, test de temps non strict, boucle `run` du hub en série.
+
+## 2026-11-25 — Task R23 : retrait complet d'un projet supprimé sur ses serveurs
+- Décision R23 : la suppression d'un projet inscrit un retrait par serveur (`project_removals`, migration 0035, avec `server_id` pour que l'accusé d'un serveur n'efface pas le retrait dû par un autre) ; l'ordre `RemoveProject` est renvoyé à chaque reconnexion jusqu'à l'accusé.
+- Agent : build en cours annulé puis `BuildkitManager::remove_project` ; conteneurs (avec leurs volumes anonymes si purge), volumes nommés du projet reconnus par leur nom `cp-<uuid>-<8 hex>_<clé>` (imposé par la politique Compose ; les étiquettes sont modifiables), puis réseau ; l'état local n'est retiré qu'après succès, sinon pas d'accusé.
+- Les volumes sans nom sont nommés d'après le projet stable (ils ne changent plus à chaque déploiement).
+- Suppression d'une organisation : volumes purgés (choix accepté), dit explicitement sur l'écran Danger et dans la confirmation.
+- Balayage horaire des réseaux de projet vides.
+- Laissés : course étroite du balayage des réseaux (un déploiement échoue, un nouvel essai réussit), M-5.

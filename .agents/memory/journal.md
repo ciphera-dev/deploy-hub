@@ -329,3 +329,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 01:14 — Session v0.1-sdd — claude-code (orchestrateur) — Task R17 : Remédiation audit — variables, import .env, masquage multi-motifs
 - fait : Automate aho-corasick linéaire hors verrou, formes encodées et nettoyées masquées, import .env, plafonds sous verrou par projet
 - résultat : relecture : 1 Important corrigé, approuvée
+
+## 2026-11-25 02:28 — Session v0.1-sdd — claude-code (orchestrateur) — Task R23 : Remédiation audit — retrait complet d'un projet supprimé sur ses serveurs
+- fait : Retrait par serveur jusqu'à l'accusé, purge des volumes, BuildKit du projet retiré, état gardé si Docker échoue
+- résultat : TERMINÉ (relecture : 1 Important corrigé, approuvée)
