@@ -1,5 +1,5 @@
 use axum::Router;
-use axum::http::Uri;
+use axum::http::{Method, StatusCode, Uri, header};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -56,7 +56,7 @@ pub fn build_router(state: AppState) -> Router {
     security_headers::apply(router)
 }
 
-async fn fallback(uri: Uri) -> Response {
+async fn fallback(method: Method, uri: Uri) -> Response {
     let path = uri.path();
     if path == "/api" || path.starts_with("/api/") {
         return ApiError::new(404, "not_found", "Ressource introuvable").into_response();
@@ -65,6 +65,14 @@ async fn fallback(uri: Uri) -> Response {
     // noeud seulement ; jamais la page de l'interface a leur place.
     if path == "/.well-known" || path.starts_with("/.well-known/") {
         return axum::http::StatusCode::NOT_FOUND.into_response();
+    }
+    // Le repli sur l'interface ne vaut que pour la lecture d'une page.
+    if method != Method::GET && method != Method::HEAD {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(header::ALLOW, "GET, HEAD")],
+        )
+            .into_response();
     }
     embed::serve(path)
 }

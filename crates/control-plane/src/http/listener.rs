@@ -9,13 +9,16 @@
 //!   comprise dans le delai propre de rustls) ;
 //! - un delai de lecture des en-tetes de chaque requete HTTP/1, qui ferme
 //!   aussi une connexion keep-alive restee inactive ;
+//! - un delai total de lecture du corps de chaque requete ;
+//! - pour HTTP/2, une sonde (PING) apres une minute d'inactivite, la
+//!   connexion etant fermee si le client ne repond pas dans la minute ;
 //! - un plafond global de connexions et un plafond par adresse IP (IPv6 :
 //!   par /64), refusees des l'acceptation (fermeture immediate).
 //!
 //! `ciphera.service` releve `LimitNOFILE` pour que ces plafonds tiennent.
 
 use std::collections::HashMap;
-use std::future::{Ready, ready};
+use std::future::{Future, Ready, ready};
 use std::io;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
@@ -23,11 +26,18 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use axum::Router;
+use axum::body::{Body, Bytes};
+use axum::extract::Request;
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use axum_server::Server;
 use axum_server::accept::Accept;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
+use http_body::{Body as HttpBody, Frame, SizeHint};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+use tokio::time::Sleep;
 
 /// Bornes d'un ecouteur.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +47,11 @@ pub struct Hardening {
     /// Delai de lecture des en-tetes d'une requete (et d'inactivite entre
     /// deux requetes d'une connexion keep-alive).
     pub header_read: Duration,
+    /// Delai total de lecture du corps d'une requete (voir
+    /// [`with_body_deadline`]).
+    pub body_read: Duration,
+    /// Inactivite HTTP/2 toleree avant la sonde, puis delai de sa reponse.
+    pub h2_idle: Duration,
     /// Connexions ouvertes au plus sur l'ecouteur.
     pub max_connections: usize,
     /// Connexions ouvertes au plus par adresse IP (IPv6 : par /64).
@@ -48,6 +63,8 @@ impl Hardening {
     pub const PUBLIC: Self = Self {
         first_request: Duration::from_secs(10),
         header_read: Duration::from_secs(20),
+        body_read: Duration::from_secs(30),
+        h2_idle: Duration::from_secs(60),
         max_connections: 4096,
         max_per_ip: 128,
     };
@@ -56,6 +73,8 @@ impl Hardening {
     pub const LOCAL: Self = Self {
         first_request: Duration::from_secs(10),
         header_read: Duration::from_secs(20),
+        body_read: Duration::from_secs(30),
+        h2_idle: Duration::from_secs(60),
         max_connections: 4096,
         max_per_ip: 4096,
     };
@@ -216,11 +235,64 @@ impl<S> Accept<TcpStream, S> for LimitAcceptor {
 }
 
 fn harden<Acc>(mut server: Server<SocketAddr, Acc>, h: Hardening) -> Server<SocketAddr, Acc> {
-    server
-        .http_builder()
-        .http1()
-        .header_read_timeout(Some(h.header_read));
+    let builder = server.http_builder();
+    builder.http1().header_read_timeout(Some(h.header_read));
+    // HTTP/2 : un client muet repond a la sonde ou est coupe ; sans cela,
+    // une connexion h2 sans flux resterait ouverte indefiniment.
+    builder
+        .http2()
+        .keep_alive_interval(Some(h.h2_idle))
+        .keep_alive_timeout(h.h2_idle);
     server.first_request_timeout(h.first_request)
+}
+
+/// Corps de requete dont la lecture totale est bornee : un client qui le
+/// distille octet par octet (chaque lecture arrivant a temps) est coupe.
+struct Deadline {
+    inner: Body,
+    sleep: Pin<Box<Sleep>>,
+}
+
+impl HttpBody for Deadline {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
+        if self.sleep.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Some(Err(axum::Error::new(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "delai de lecture du corps depasse",
+            )))));
+        }
+        Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+async fn deadline(limit: Duration, request: Request, next: Next) -> Response {
+    let (parts, body) = request.into_parts();
+    let body = Body::new(Deadline {
+        inner: body,
+        sleep: Box::pin(tokio::time::sleep(limit)),
+    });
+    next.run(Request::from_parts(parts, body)).await
+}
+
+/// Borne a `limit` la lecture totale du corps de chaque requete du routeur.
+pub fn with_body_deadline(router: Router, limit: Duration) -> Router {
+    router.layer(middleware::from_fn(move |request, next| {
+        deadline(limit, request, next)
+    }))
 }
 
 /// Ecouteur HTTP borne (ecoute locale du proxy).

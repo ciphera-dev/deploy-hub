@@ -8,7 +8,7 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-pub const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'";
+pub const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
 pub const HSTS: &str = "max-age=31536000";
 
 /// Nonce d'une page HTML (extension de la reponse) : il rejoint `style-src`

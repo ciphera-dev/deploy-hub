@@ -1074,6 +1074,7 @@ dependencies = [
  "clap",
  "futures-util",
  "hmac 0.13.0",
+ "http-body",
  "image",
  "jiff 1.0.2",
  "lettre",

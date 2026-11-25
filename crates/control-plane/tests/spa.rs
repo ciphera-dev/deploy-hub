@@ -1,6 +1,6 @@
 mod common;
 
-use common::{self_signed, serve_https, state, tls_get};
+use common::{self_signed, serve_https, state, tls_get, tls_request};
 
 const QUOTE: char = 39u8 as char;
 
@@ -67,4 +67,30 @@ async fn static_assets_have_correct_content_type() {
     assert!(css.header("content-type").unwrap().starts_with("text/css"));
     let svg = tls_get(addr, &cert, "/favicon.svg").await;
     assert_eq!(svg.header("content-type"), Some("image/svg+xml"));
+}
+
+#[tokio::test]
+async fn post_unknown_path_not_spa() {
+    let (state, _pg) = state().await;
+    let cert = self_signed();
+    let (addr, _h) = serve_https(state, &cert).await;
+    for method in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+        for path in ["/projects/abc", "/"] {
+            let r = tls_request(addr, &cert, method, path).await;
+            assert!(
+                r.status == 404 || r.status == 405,
+                "{method} {path} : {}",
+                r.status
+            );
+            assert!(
+                !r.header("content-type")
+                    .is_some_and(|c| c.starts_with("text/html")),
+                "{method} {path} : page HTML renvoyee"
+            );
+        }
+    }
+    // HEAD reste servi comme GET, sans corps.
+    let head = tls_request(addr, &cert, "HEAD", "/projects/abc").await;
+    assert_eq!(head.status, 200);
+    assert!(head.body.is_empty());
 }

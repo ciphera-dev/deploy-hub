@@ -305,7 +305,13 @@ fn parse(raw: &[u8]) -> Resp {
 }
 
 fn request(path: &str, host: &str) -> String {
-    format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")
+    request_with("GET", path, host)
+}
+
+fn request_with(method: &str, path: &str, host: &str) -> String {
+    format!(
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
 }
 
 /// GET en clair (ecouteur de redirection), avec l'en-tete Host fourni.
@@ -319,6 +325,11 @@ pub async fn plain_get(addr: SocketAddr, host: &str, path: &str) -> Resp {
 
 /// GET HTTPS reel, en ne faisant confiance qu'au certificat de test.
 pub async fn tls_get(addr: SocketAddr, cert: &Cert, path: &str) -> Resp {
+    tls_request(addr, cert, "GET", path).await
+}
+
+/// Requete HTTPS reelle, avec la methode donnee.
+pub async fn tls_request(addr: SocketAddr, cert: &Cert, method: &str, path: &str) -> Resp {
     let mut roots = rustls::RootCertStore::empty();
     roots.add(cert.cert_der.clone()).unwrap();
     let client = rustls::ClientConfig::builder()
@@ -330,7 +341,7 @@ pub async fn tls_get(addr: SocketAddr, cert: &Cert, path: &str) -> Resp {
         .connect(ServerName::try_from("localhost").unwrap(), tcp)
         .await
         .expect("poignee de main TLS");
-    tls.write_all(request(path, "localhost").as_bytes())
+    tls.write_all(request_with(method, path, "localhost").as_bytes())
         .await
         .unwrap();
     let mut raw = Vec::new();

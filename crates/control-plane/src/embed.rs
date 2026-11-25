@@ -117,6 +117,11 @@ fn mime_for(path: &str) -> &'static str {
         "css" => "text/css; charset=utf-8",
         "svg" => "image/svg+xml",
         "png" => "image/png",
+        "webp" => "image/webp",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "avif" => "image/avif",
+        "wasm" => "application/wasm",
         "ico" => "image/x-icon",
         "json" | "map" => "application/json",
         "woff2" => "font/woff2",
@@ -224,5 +229,19 @@ mod tests {
             respond("/projects", none).status(),
             StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    #[test]
+    fn mime_webp() {
+        for (name, mime) in [
+            ("a.webp", "image/webp"),
+            ("a.jpg", "image/jpeg"),
+            ("a.jpeg", "image/jpeg"),
+            ("a.gif", "image/gif"),
+            ("a.avif", "image/avif"),
+            ("a.wasm", "application/wasm"),
+        ] {
+            assert_eq!(mime_for(&format!("assets/{name}")), mime, "{name}");
+        }
     }
 }

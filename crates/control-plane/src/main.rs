@@ -525,7 +525,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         state.clone(),
         stop_rx.clone(),
     ));
-    let router = app::build_router(state);
+    // Lecture du corps bornee dans le temps (http::listener), sur les deux ecoutes.
+    let router =
+        listener::with_body_deadline(app::build_router(state), Hardening::PUBLIC.body_read);
 
     // Hachage factice des connexions a un e-mail inconnu, calcule d'avance.
     tokio::task::spawn_blocking(control_plane::http::auth::warm_up).await?;

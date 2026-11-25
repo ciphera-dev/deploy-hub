@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, header};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum_server::Handle;
 use control_plane::domain::domains::panel::{Panel, PanelSwitch};
 use control_plane::http::listener::{self, ConnLimits, Hardening};
@@ -21,6 +21,8 @@ use tower::ServiceExt;
 const FAST: Hardening = Hardening {
     first_request: Duration::from_millis(400),
     header_read: Duration::from_millis(400),
+    body_read: Duration::from_millis(500),
+    h2_idle: Duration::from_millis(300),
     max_connections: 4,
     max_per_ip: 2,
 };
@@ -28,7 +30,11 @@ const FAST: Hardening = Hardening {
 async fn serve(h: Hardening) -> (SocketAddr, ConnLimits) {
     let limits = ConnLimits::new(h.max_connections, h.max_per_ip);
     let handle: Handle<SocketAddr> = Handle::new();
-    let app = Router::new().route("/", get(|| async { "ok" }));
+    let app = Router::new().route("/", get(|| async { "ok" })).route(
+        "/",
+        post(|body: axum::body::Bytes| async move { format!("lu {}", body.len()) }),
+    );
+    let app = listener::with_body_deadline(app, h.body_read);
     let server = listener::plain("127.0.0.1:0".parse().unwrap(), h, limits.clone())
         .handle(handle.clone())
         .serve(app.into_make_service_with_connect_info::<SocketAddr>());
@@ -128,12 +134,71 @@ async fn normal_requests_are_served() {
     }
 }
 
+/// Corps goutte a goutte : chaque lecture arrive a temps, le total non.
+#[tokio::test]
+async fn body_read_timeout() {
+    let (addr, _) = serve(Hardening {
+        header_read: Duration::from_secs(30),
+        ..FAST
+    })
+    .await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\n\r\n")
+        .await
+        .unwrap();
+    let start = Instant::now();
+    for _ in 0..20 {
+        if s.write_all(b"a").await.is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut out = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(3), s.read_to_end(&mut out)).await;
+    assert!(
+        !out.starts_with(b"HTTP/1.1 200"),
+        "corps lent accepte : {}",
+        String::from_utf8_lossy(&out)
+    );
+    assert!(start.elapsed() < Duration::from_secs(5));
+    // Un corps qui arrive vite passe.
+    let mut ok = TcpStream::connect(addr).await.unwrap();
+    ok.write_all(
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
+    )
+    .await
+    .unwrap();
+    let mut out = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(3), ok.read_to_end(&mut out)).await;
+    assert!(out.starts_with(b"HTTP/1.1 200"));
+}
+
+/// HTTP/2 sans aucun flux : le serveur sonde la connexion (PING) et la ferme
+/// si le client ne repond pas.
+#[tokio::test]
+async fn h2_idle_timeout() {
+    let (addr, limits) = serve(FAST).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    // Preface HTTP/2 puis SETTINGS vide ; le client ne repond ensuite a rien.
+    s.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .await
+        .unwrap();
+    s.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await.unwrap();
+    assert!(closed_within(&mut s, Duration::from_secs(5)).await);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(limits.open(), 0);
+}
+
 #[test]
 fn public_and_local_bounds() {
     let p = Hardening::PUBLIC;
     assert!(p.first_request <= Duration::from_secs(10));
     assert!(p.header_read <= Duration::from_secs(30));
     assert!(p.max_per_ip < p.max_connections);
+    for h in [p, Hardening::LOCAL] {
+        assert_eq!(h.body_read, Duration::from_secs(30));
+        assert_eq!(h.h2_idle, Duration::from_secs(60));
+    }
     // Le plafond tient sous LimitNOFILE de ciphera.service (65536).
     assert!(p.max_connections + Hardening::LOCAL.max_connections < 65536 / 2);
 }
