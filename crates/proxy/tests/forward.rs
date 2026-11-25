@@ -1668,7 +1668,9 @@ fn raw_client_hello_with_ip_sni_or_fragmented_gets_no_certificate() {
     }
 
     // ClientHello coupe en deux enregistrements : le proxy le laisse a
-    // rustls, dont le choix du certificat refuse aussi (aucun nom DNS).
+    // rustls, dont le choix du certificat refuse aussi (aucun nom DNS). La
+    // reponse est soit vide (fermeture sans alerte), soit une seule alerte :
+    // jamais d'enregistrement de poignee de main.
     for (what, sni) in [
         ("fragmente sans SNI", None),
         ("fragmente, IP en SNI", Some(&b"203.0.113.7"[..])),
@@ -1678,6 +1680,11 @@ fn raw_client_hello_with_ip_sni_or_fragmented_gets_no_certificate() {
         let mut raw = handshake_record(a);
         raw.extend_from_slice(&handshake_record(b));
         let out = raw_tls_exchange(https, &raw);
+        let types = record_types(&out);
+        assert!(
+            out.is_empty() || types == [0x15],
+            "{what} : enregistrements recus {types:?}"
+        );
         no_cert(what, &out);
     }
 
