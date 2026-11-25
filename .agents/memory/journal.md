@@ -361,3 +361,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 05:32 — Session v0.1-sdd — claude-code (orchestrateur) — Task R27 : Remédiation audit — bac à sable de railpack prepare, askpass, .env de Compose
 - fait : Sortie de prepare par l'API d'archive sans dossier de l'hôte, askpass strict, compose config sans .env ni COMPOSE_*
 - résultat : TERMINÉ (relecture : 2 Importants corrigés, approuvée)
+
+## 2026-11-25 05:44 — Session v0.1-sdd — claude-code (orchestrateur) — Task fix/R55-ci : CI : test d'annulation Compose de R55
+- fait : Nombre d'essais de sonde admis, attente de l'étape signalée par l'agent
+- résultat : TERMINÉ (relecture approuvée)

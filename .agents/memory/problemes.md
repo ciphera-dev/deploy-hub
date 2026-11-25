@@ -159,3 +159,10 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 - Cause : un buildkitd encore en marche (rootlesskit en PID 1) était supprimé de force par SIGKILL ; Docker abandonnait parfois. Même défaut dans `BuildkitManager::remove_locked`, dont l'erreur n'était que journalisée.
 - Correctif : arrêt propre avant suppression (agent et uninstall.sh), init Docker en PID 1 pour buildkitd, essais bornés de suppression ; uninstall.sh sort en 1 et `--purge` ne supprime rien si des conteneurs restent ; install.sh avertit si docker-init manque (les builds échoueraient).
 - Reste : si le démon Docker est arrêté, uninstall.sh sort en 0 et `--purge` supprime quand même les répertoires (préexistant).
+
+## 2026-11-25 — CI rouge (agent-docker) après R55 : test d'annulation Compose
+- Symptôme : `cancel_restores_dependency_services` (deploy_it.rs, Docker réel) attendait un service exposé jamais créé.
+- Cause : le test demandait 60 essais de sonde alors que l'agent en admet 30 (`Healthcheck::MAX_TRIES`) ; `Start` refusait l'ordre avant tout lancement.
+- Correction : le test utilise `MAX_TRIES`, attend l'étape (Healthcheck, Started) signalée par l'agent et échoue aussitôt (étapes et journal affichés) si le déploiement se termine avant l'annulation ; `compose_spec` refuse un nombre d'essais hors bornes.
+- Leçon : les fichiers de tests réservés à unix ne sont jamais compilés ni lancés sous Windows ; la CI agent-docker est leur premier passage réel.
+- Statut : Résolu.
