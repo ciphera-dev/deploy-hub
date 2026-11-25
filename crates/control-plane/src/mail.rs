@@ -198,6 +198,8 @@ pub struct Mailer {
     credentials: Option<Credentials>,
     from: Mailbox,
     dns: Arc<dyn DnsResolver>,
+    /// Tests seulement : laisse joindre une adresse locale.
+    allow_private: bool,
 }
 
 impl fmt::Debug for Mailer {
@@ -247,14 +249,15 @@ impl Mailer {
             credentials,
             from: Mailbox::new(name, address),
             dns,
+            allow_private: false,
         })
     }
 
-    /// Adresse a laquelle se connecter : le nom est resolu, aucune adresse
-    /// ne doit etre privee, la premiere est retenue. Un refus vient des
+    /// Adresses auxquelles se connecter : le nom est resolu, aucune adresse
+    /// ne doit etre privee (une seule suffit a refuser). Un refus vient des
     /// reglages du serveur (il toucherait tous les destinataires) : erreur de
     /// connexion, le lot s'arrete au premier.
-    async fn checked_address(&self) -> Result<IpAddr, MailError> {
+    async fn checked_addresses(&self) -> Result<Vec<IpAddr>, MailError> {
         let found = self
             .dns
             .resolve(&self.host)
@@ -263,10 +266,17 @@ impl Mailer {
         if found.is_empty() {
             return Err(MailError::connection("nom non resolu"));
         }
-        if found.iter().any(|ip| is_private_ip(*ip)) {
+        if !self.allow_private && found.iter().any(|ip| is_private_ip(*ip)) {
             return Err(MailError::connection("adresse locale ou privee refusee"));
         }
-        Ok(found[0])
+        Ok(found)
+    }
+
+    /// Tests : autorise une adresse locale (serveur de test sur la boucle locale).
+    #[cfg(test)]
+    fn allowing_private(mut self) -> Self {
+        self.allow_private = true;
+        self
     }
 
     /// Envoie le message (resolution verifiee, connexion, chiffrement,
@@ -283,25 +293,29 @@ impl Mailer {
             .header(ContentType::TEXT_PLAIN)
             .body(mail.text)
             .map_err(|e| MailError::new("message invalide", e))?;
-        let address = self.checked_address().await?;
-        let mut builder =
-            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(address.to_string())
-                .port(self.port)
-                .timeout(Some(SMTP_TIMEOUT))
-                .tls(self.tls.clone());
-        if let Some(credentials) = &self.credentials {
-            builder = builder.credentials(credentials.clone());
-        }
-        builder.build().send(message).await.map_err(|e| {
-            // Code SMTP 4xx ou 5xx : refus du serveur ; sinon il n'a pas ete
-            // joint ou utilise.
-            if e.is_transient() || e.is_permanent() {
-                MailError::new("envoi SMTP refuse", e)
-            } else {
-                MailError::connection(e)
+        // Les adresses verifiees sont essayees tour a tour (nom a plusieurs
+        // adresses dont une seule repond) ; au plus 3, pour tenir dans le delai
+        // de la tache. Un refus du serveur (4xx/5xx) arrete aussitot : il
+        // repondrait de meme ailleurs.
+        let mut last = MailError::connection("aucune adresse");
+        for address in self.checked_addresses().await?.into_iter().take(3) {
+            let mut builder =
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(address.to_string())
+                    .port(self.port)
+                    .timeout(Some(SMTP_TIMEOUT))
+                    .tls(self.tls.clone());
+            if let Some(credentials) = &self.credentials {
+                builder = builder.credentials(credentials.clone());
             }
-        })?;
-        Ok(())
+            match builder.build().send(message.clone()).await {
+                Ok(_) => return Ok(()),
+                Err(e) if e.is_transient() || e.is_permanent() => {
+                    return Err(MailError::new("envoi SMTP refuse", e));
+                }
+                Err(e) => last = MailError::connection(e),
+            }
+        }
+        Err(last)
     }
 }
 
@@ -704,20 +718,66 @@ mod tests {
             s.host = "127.0.0.1".into();
             s.port = port;
             s.tls = tls;
+            // Garde d'adresse levee (tests seulement) : c'est bien le transport
+            // lettre qui echoue, pas le refus d'adresse locale.
             let mailer =
                 Mailer::from_settings(&s, Arc::new(Fixed(Ok(vec!["127.0.0.1".parse().unwrap()]))))
-                    .unwrap();
-            let err = mailer
-                .send(OutgoingMail {
-                    to: "nora@example.com".into(),
-                    subject: "Test".into(),
-                    text: "Corps".into(),
-                })
-                .await
-                .unwrap_err();
+                    .unwrap()
+                    .allowing_private();
+            let err = mailer.send(mail()).await.unwrap_err();
             assert!(err.is_connection(), "{tls:?} : {err}");
+            assert!(
+                !err.to_string().contains("adresse locale"),
+                "{tls:?} : erreur du transport attendue : {err}"
+            );
         }
         assert!(!MailError::other("envoi SMTP refuse").is_connection());
+    }
+
+    /// Sans la levee de test, 127.0.0.1 est refuse avant toute connexion,
+    /// en erreur de connexion.
+    #[tokio::test]
+    async fn loopback_is_refused_as_a_connection_error() {
+        let mut s = settings();
+        s.host = "127.0.0.1".into();
+        let mailer =
+            Mailer::from_settings(&s, Arc::new(Fixed(Ok(vec!["127.0.0.1".parse().unwrap()]))))
+                .unwrap();
+        let err = mailer.send(mail()).await.unwrap_err();
+        assert!(err.is_connection(), "{err}");
+        assert!(err.to_string().contains("adresse locale"), "{err}");
+    }
+
+    /// Un nom a plusieurs adresses : la premiere injoignable n'empeche pas la suivante.
+    #[tokio::test]
+    async fn next_address_is_tried_when_the_first_is_unreachable() {
+        let server = std::net::TcpListener::bind("127.0.0.2:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        // 127.0.0.1 ferme sur ce port : seul 127.0.0.2 ecoute (puis ferme).
+        std::thread::spawn(move || {
+            if let Ok((mut c, _)) = server.accept() {
+                use std::io::Write;
+                let _ = c.write_all(
+                    b"554 refuse
+",
+                );
+            }
+        });
+        let mut s = settings();
+        s.port = port;
+        let mailer = Mailer::from_settings(
+            &s,
+            Arc::new(Fixed(Ok(vec![
+                "127.0.0.1".parse().unwrap(),
+                "127.0.0.2".parse().unwrap(),
+            ]))),
+        )
+        .unwrap()
+        .allowing_private();
+        let err = mailer.send(mail()).await.unwrap_err();
+        // La seconde adresse a ete jointe (reponse SMTP tronquee), alors que la
+        // premiere refusait la connexion.
+        assert!(err.to_string().contains("response"), "{err}");
     }
 
     #[test]
