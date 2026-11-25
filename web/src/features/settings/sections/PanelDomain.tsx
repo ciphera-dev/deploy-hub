@@ -4,7 +4,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { Button, Icon, type IconName, Modal, Switch, useToast } from "@/design-system";
 import { FormError } from "@/features/auth/ui";
 
-import { confirmPanelDomain, fetchPanelDomain, PANEL_DOMAIN_QUERY_KEY, recheckPanelDomain, removePanelDomain, setPanelDomain, type PanelDomain } from "../api";
+import { confirmPanelDomain, fetchPanelDomain, PANEL_DOMAIN_QUERY_KEY, recheckPanelDomain, removePanelDomain, setPanelDomain, setPanelDomainHsts, type PanelDomain } from "../api";
 import { Card, Input, Note, Pill, Row, SECTION_FORM_ID, SectionState, Soon } from "../ui";
 
 /** Cartes d'acces de SettingsV2 : domaine public (v0.1) ou acces prive Tailscale (v0.2). */
@@ -94,7 +94,7 @@ function ConfirmBlock({ domain, onDone }: { domain: string; onDone: (p: PanelDom
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "0 20px 18px" }}>
-      <span style={{ font: "400 12px/1.45 var(--font-sans)", color: "var(--text-muted)" }}>Vous êtes sur le nouveau domaine. Confirmer ferme l'accès direct (port 8443).</span>
+      <span style={{ font: "400 12px/1.45 var(--font-sans)", color: "var(--text-muted)" }}>Vous êtes sur le nouveau domaine. Confirmer ferme l'accès direct (port 8443) : l'adresse IP du serveur ne mènera plus au panneau, seul ce domaine y donnera accès.</span>
       {setupUrl && (
         <div role="alert" style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 12px", borderRadius: 10, background: "var(--surface-raised)", font: "400 12px/1.45 var(--font-sans)", color: "var(--text-body)" }}>
           <span>{setupUrl}</span>
@@ -111,6 +111,46 @@ function ConfirmBlock({ domain, onDone }: { domain: string; onDone: (p: PanelDom
         </Button>
       </div>
     </div>
+  );
+}
+
+/**
+ * HSTS des sous-domaines : couverts d'office sous un domaine enregistrable (panel.exemple.com) ;
+ * pour un domaine enregistrable lui-meme (exemple.com), option du proprietaire desactivee par defaut. Jamais de preload.
+ */
+function HstsRow({ current, onSaved }: { current: PanelDomain; onSaved: (p: PanelDomain) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const domain = current.domain ?? "";
+  const toggle = async (on: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    const r = await setPanelDomainHsts(on);
+    setBusy(false);
+    if (!r.ok) {
+      setErr(r.message);
+      return;
+    }
+    setErr("");
+    onSaved(r.data);
+  };
+  if (!current.apex) {
+    return (
+      <Row t="Inclure les sous-domaines (HSTS)" d={`Les sous-domaines de ${domain} sont couverts automatiquement : le panneau n'est pas à la racine de son domaine.`}>
+        <Switch ariaLabel="Inclure les sous-domaines (HSTS)" checked disabled />
+      </Row>
+    );
+  }
+  return (
+    <>
+      <Row t="Inclure les sous-domaines (HSTS)" d={`${domain} est la racine de son domaine : HSTS ne couvre ses sous-domaines que si vous l'activez.`}>
+        <Switch ariaLabel="Inclure les sous-domaines (HSTS)" checked={current.hsts_include_subdomains} disabled={busy} onChange={(v) => void toggle(v)} />
+      </Row>
+      <Note icon="TriangleExclamationPoint" color="var(--amber-500)">
+        Activée, cette option impose HTTPS pendant un an à tous les sous-domaines de {domain}, y compris ceux servis ailleurs que sur ce serveur : ne l'activez que si chacun répond en HTTPS. Aucun préchargement (preload) n'est demandé aux navigateurs.
+      </Note>
+      {err && <FormError>{err}</FormError>}
+    </>
   );
 }
 
@@ -218,9 +258,10 @@ function PanelDomainForm({ current }: { current: PanelDomain }) {
           <Row t="Certificat HTTPS automatique" d="Émis et renouvelé via Let's Encrypt.">
             <Switch ariaLabel="Certificat HTTPS automatique" checked disabled />
           </Row>
+          {current.domain && <HstsRow current={current} onSaved={(p) => { update(p); flash(p.hsts_include_subdomains ? "Sous-domaines inclus dans HSTS" : "Sous-domaines retirés de HSTS"); }} />}
           {!locked && <PasskeyWarning />}
           {current.status === "awaiting_confirmation" && current.domain && <ConfirmBlock domain={current.domain} onDone={(p) => { update(p); flash("Domaine confirmé : accès direct fermé"); }} />}
-          {current.status === "active" && <Note icon="CircleCheck" color="var(--green-500)">Le panneau est servi en HTTPS sur {current.domain} ; l'accès direct (port 8443) est fermé.</Note>}
+          {current.status === "active" && <Note icon="CircleCheck" color="var(--green-500)">Le panneau est servi en HTTPS sur {current.domain} ; l'accès direct (port 8443) est fermé et l'adresse IP du serveur ne mène plus au panneau.</Note>}
           {current.status === "active" && current.error && (
             <Note icon="CircleX" color="var(--red-500)">
               <span role="alert">Dernière vérification en échec : {current.error} Une nouvelle tentative est planifiée automatiquement.</span>
@@ -247,7 +288,7 @@ function PanelDomainForm({ current }: { current: PanelDomain }) {
           onDone={() => {
             setRemoving(false);
             setDomain("");
-            update({ domain: null, status: "none", error: null });
+            update({ ...current, domain: null, status: "none", error: null, apex: false });
             flash("Domaine du panneau retiré");
           }}
         />

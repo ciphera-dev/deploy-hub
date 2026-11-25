@@ -135,6 +135,11 @@ export function recheckPanelDomain(): Promise<Result<PanelDomain>> {
   return settle(() => api.POST("/api/settings/panel-domain/recheck"));
 }
 
+/** Option « Inclure les sous-domaines (HSTS) », utile seulement pour un domaine enregistrable lui-meme (`apex`). */
+export function setPanelDomainHsts(includeSubdomains: boolean): Promise<Result<PanelDomain>> {
+  return settle(() => api.PUT("/api/settings/panel-domain/hsts", { body: { include_subdomains: includeSubdomains } }));
+}
+
 export function removePanelDomain(): Promise<Result<null>> {
   return settle(() => api.DELETE("/api/settings/panel-domain"), null);
 }

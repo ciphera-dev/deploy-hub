@@ -13,7 +13,7 @@ export const SECURITY: S["OrgSecurity"] = { mfa_required: true, ip_allowlist: []
 
 export const DANGER: S["DangerZone"] = { name: "Ciphera", projects: 4, members: 6, github_app: null };
 
-export const PANEL_DOMAIN: S["PanelDomain"] = { domain: null, status: "none", error: null };
+export const PANEL_DOMAIN: S["PanelDomain"] = { domain: null, status: "none", error: null, apex: false, hsts_include_subdomains: false };
 
 export const NOTIFICATIONS: S["NotificationSettings"] = {
   configured: true,

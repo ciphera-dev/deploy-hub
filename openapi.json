@@ -4646,6 +4646,66 @@
         ]
       }
     },
+    "/api/settings/panel-domain/hsts": {
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Option HSTS « Inclure les sous-domaines » (proprietaire seulement) :\n`includeSubDomains` sur le domaine du panneau quand il est lui-meme un\ndomaine enregistrable. Sans effet sur un domaine place sous son domaine\nenregistrable (sous-domaines couverts d'office). Jamais `preload`.",
+        "operationId": "put_panel_domain_hsts",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "Jeton CSRF de la session (obligatoire)",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPanelDomainHsts"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Option enregistree",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PanelDomain"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Proprietaire seulement, ou jeton CSRF absent ou invalide"
+          },
+          "404": {
+            "description": "Instance non configuree"
+          },
+          "422": {
+            "description": "`validation_failed`"
+          }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/settings/panel-domain/recheck": {
       "post": {
         "tags": [
@@ -7833,9 +7893,15 @@
         "type": "object",
         "description": "Reponse des routes du domaine du panneau.",
         "required": [
-          "status"
+          "status",
+          "apex",
+          "hsts_include_subdomains"
         ],
         "properties": {
+          "apex": {
+            "type": "boolean",
+            "description": "Le domaine est lui-meme un domaine enregistrable (`exemple.com`,\nd'apres la liste des suffixes publics) : HSTS n'y couvre les\nsous-domaines qu'avec `hsts_include_subdomains`. Faux sans domaine\nou pour un domaine place sous son domaine enregistrable\n(`panel.exemple.com`), dont les sous-domaines sont couverts d'office."
+          },
           "domain": {
             "type": [
               "string",
@@ -7847,6 +7913,10 @@
               "string",
               "null"
             ]
+          },
+          "hsts_include_subdomains": {
+            "type": "boolean",
+            "description": "Option du proprietaire « Inclure les sous-domaines (HSTS) »\n(desactivee par defaut). Jamais `preload`."
           },
           "status": {
             "$ref": "#/components/schemas/PanelDomainStatus"
@@ -8639,6 +8709,20 @@
           "domain": {
             "type": "string",
             "description": "Nom complet qui pointe vers l'IP du noeud."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SetPanelDomainHsts": {
+        "type": "object",
+        "description": "Corps de `PUT /api/settings/panel-domain/hsts`.",
+        "required": [
+          "include_subdomains"
+        ],
+        "properties": {
+          "include_subdomains": {
+            "type": "boolean",
+            "description": "`includeSubDomains` pour un domaine du panneau enregistrable\nlui-meme : HTTPS impose a tous les sous-domaines de la zone."
           }
         },
         "additionalProperties": false

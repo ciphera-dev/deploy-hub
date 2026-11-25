@@ -25,6 +25,24 @@ pub struct PanelDomain {
     pub domain: Option<String>,
     pub status: PanelDomainStatus,
     pub error: Option<String>,
+    /// Le domaine est lui-meme un domaine enregistrable (`exemple.com`,
+    /// d'apres la liste des suffixes publics) : HSTS n'y couvre les
+    /// sous-domaines qu'avec `hsts_include_subdomains`. Faux sans domaine
+    /// ou pour un domaine place sous son domaine enregistrable
+    /// (`panel.exemple.com`), dont les sous-domaines sont couverts d'office.
+    pub apex: bool,
+    /// Option du proprietaire « Inclure les sous-domaines (HSTS) »
+    /// (desactivee par defaut). Jamais `preload`.
+    pub hsts_include_subdomains: bool,
+}
+
+/// Corps de `PUT /api/settings/panel-domain/hsts`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetPanelDomainHsts {
+    /// `includeSubDomains` pour un domaine du panneau enregistrable
+    /// lui-meme : HTTPS impose a tous les sous-domaines de la zone.
+    pub include_subdomains: bool,
 }
 
 /// Corps de `PUT /api/settings/panel-domain`.
@@ -117,6 +135,26 @@ pub fn confirm_panel_domain() {}
 )]
 #[allow(dead_code)]
 pub fn recheck_panel_domain() {}
+
+/// Option HSTS « Inclure les sous-domaines » (proprietaire seulement) :
+/// `includeSubDomains` sur le domaine du panneau quand il est lui-meme un
+/// domaine enregistrable. Sans effet sur un domaine place sous son domaine
+/// enregistrable (sous-domaines couverts d'office). Jamais `preload`.
+#[utoipa::path(
+    put,
+    path = "/api/settings/panel-domain/hsts",
+    tag = "settings",
+    request_body = SetPanelDomainHsts,
+    params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
+    responses(
+        (status = 200, description = "Option enregistree", body = PanelDomain),
+        (status = 403, description = "Proprietaire seulement, ou jeton CSRF absent ou invalide"),
+        (status = 404, description = "Instance non configuree"),
+        (status = 422, description = "`validation_failed`"),
+    )
+)]
+#[allow(dead_code)]
+pub fn put_panel_domain_hsts() {}
 
 /// Retire le domaine du panneau (annulation avant confirmation) : route et
 /// certificat retires ; l'acces 8443 se rouvre.

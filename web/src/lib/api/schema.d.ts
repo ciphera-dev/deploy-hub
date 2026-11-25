@@ -1322,6 +1322,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/panel-domain/hsts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Option HSTS « Inclure les sous-domaines » (proprietaire seulement) :
+         *     `includeSubDomains` sur le domaine du panneau quand il est lui-meme un
+         *     domaine enregistrable. Sans effet sur un domaine place sous son domaine
+         *     enregistrable (sous-domaines couverts d'office). Jamais `preload`.
+         */
+        put: operations["put_panel_domain_hsts"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/panel-domain/recheck": {
         parameters: {
             query?: never;
@@ -2535,8 +2557,21 @@ export interface components {
         OverviewPeriod: "7d" | "30d";
         /** @description Reponse des routes du domaine du panneau. */
         PanelDomain: {
+            /**
+             * @description Le domaine est lui-meme un domaine enregistrable (`exemple.com`,
+             *     d'apres la liste des suffixes publics) : HSTS n'y couvre les
+             *     sous-domaines qu'avec `hsts_include_subdomains`. Faux sans domaine
+             *     ou pour un domaine place sous son domaine enregistrable
+             *     (`panel.exemple.com`), dont les sous-domaines sont couverts d'office.
+             */
+            apex: boolean;
             domain?: string | null;
             error?: string | null;
+            /**
+             * @description Option du proprietaire « Inclure les sous-domaines (HSTS) »
+             *     (desactivee par defaut). Jamais `preload`.
+             */
+            hsts_include_subdomains: boolean;
             status: components["schemas"]["PanelDomainStatus"];
         };
         /**
@@ -2868,6 +2903,14 @@ export interface components {
         SetPanelDomain: {
             /** @description Nom complet qui pointe vers l'IP du noeud. */
             domain: string;
+        };
+        /** @description Corps de `PUT /api/settings/panel-domain/hsts`. */
+        SetPanelDomainHsts: {
+            /**
+             * @description `includeSubDomains` pour un domaine du panneau enregistrable
+             *     lui-meme : HTTPS impose a tous les sous-domaines de la zone.
+             */
+            include_subdomains: boolean;
         };
         /** @description Premier compte : il recoit le role `owner`. */
         SetupAdmin: {
@@ -7294,6 +7337,54 @@ export interface operations {
             };
             /** @description `github_hook_not_updated` : webhook de la GitHub App non deplace, rien n'est confirme */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    put_panel_domain_hsts: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Jeton CSRF de la session (obligatoire) */
+                "X-CSRF-Token"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPanelDomainHsts"];
+            };
+        };
+        responses: {
+            /** @description Option enregistree */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PanelDomain"];
+                };
+            };
+            /** @description Proprietaire seulement, ou jeton CSRF absent ou invalide */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Instance non configuree */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `validation_failed` */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

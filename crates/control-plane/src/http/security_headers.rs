@@ -1,15 +1,28 @@
 //! En-tetes de securite poses sur TOUTES les reponses (API, interface,
 //! erreurs, redirections).
+//!
+//! HSTS : `max-age` d'un an, jamais `preload` (inscription dans les
+//! navigateurs difficile a defaire). `includeSubDomains` s'ajoute seulement
+//! aux reponses servies sous l'hote du domaine du panneau, et seulement si
+//! cet hote est strictement sous son domaine enregistrable
+//! (`panel.exemple.com`, liste des suffixes publics) ; un hote enregistrable
+//! lui-meme (`exemple.com`) exige l'option du proprietaire (desactivee par
+//! defaut), qui imposerait HTTPS a toute la zone.
 
 use axum::Router;
-use axum::extract::Request;
+use axum::extract::{Request, State};
 use axum::http::{HeaderName, HeaderValue, header};
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use tower_http::set_header::SetResponseHeaderLayer;
 
+use crate::domain::domains::panel::{PanelSwitch, Registrable, registrable};
+use crate::http::panel_host::request_host_name;
+
 pub const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
 pub const HSTS: &str = "max-age=31536000";
+/// HSTS etendu aux sous-domaines de l'hote (jamais `preload`).
+pub const HSTS_SUBDOMAINS: &str = "max-age=31536000; includeSubDomains";
 
 /// Nonce d'une page HTML (extension de la reponse) : il rejoint `style-src`
 /// pour cette seule reponse. Jamais `'unsafe-inline'`.
@@ -44,11 +57,45 @@ async fn csp(request: Request, next: Next) -> Response {
     response
 }
 
+/// HSTS d'une reponse servie sous `host` (normalise), d'apres le domaine
+/// du panneau `panel_host` et l'option du proprietaire `opt_in`.
+pub fn hsts(host: Option<&str>, panel_host: Option<&str>, opt_in: bool) -> &'static str {
+    let Some(host) = host.filter(|h| Some(*h) == panel_host) else {
+        return HSTS;
+    };
+    match registrable(host) {
+        Registrable::Below => HSTS_SUBDOMAINS,
+        Registrable::Apex if opt_in => HSTS_SUBDOMAINS,
+        Registrable::Apex | Registrable::Neither => HSTS,
+    }
+}
+
+async fn strict_transport(
+    State(panel): State<PanelSwitch>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let host = request_host_name(request.headers(), request.uri());
+    let mut response = next.run(request).await;
+    let panel_host = panel.current().map(|p| p.host);
+    let value = hsts(
+        host.as_deref(),
+        panel_host.as_deref(),
+        panel.hsts_include_subdomains(),
+    );
+    response.headers_mut().insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static(value),
+    );
+    response
+}
+
 /// Ajoute les quatre en-tetes ; ils remplacent toute valeur posee en amont.
-pub fn apply<S: Clone + Send + Sync + 'static>(router: Router<S>) -> Router<S> {
+/// `panel` : domaine du panneau et option HSTS.
+pub fn apply<S: Clone + Send + Sync + 'static>(router: Router<S>, panel: PanelSwitch) -> Router<S> {
     router
         .layer(middleware::from_fn(csp))
-        .layer(layer(header::STRICT_TRANSPORT_SECURITY, HSTS))
+        .layer(middleware::from_fn_with_state(panel, strict_transport))
         .layer(layer(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
         .layer(layer(header::REFERRER_POLICY, "no-referrer"))
 }
@@ -65,5 +112,23 @@ mod tests {
         assert!(v.contains("script-src 'self';"));
         assert!(!v.contains("unsafe-inline"));
         assert_eq!(policy(None).to_str().unwrap(), CSP);
+    }
+
+    #[test]
+    fn hsts_subdomains_only_on_the_panel_host() {
+        let sub = Some("panel.example.org");
+        let apex = Some("example.org");
+        for opt_in in [false, true] {
+            assert_eq!(hsts(sub, sub, opt_in), HSTS_SUBDOMAINS);
+            assert_eq!(hsts(Some("203.0.113.7"), sub, opt_in), HSTS);
+            assert_eq!(hsts(None, sub, opt_in), HSTS);
+            assert_eq!(hsts(sub, None, opt_in), HSTS);
+            assert_eq!(hsts(Some("localhost"), Some("localhost"), opt_in), HSTS);
+        }
+        assert_eq!(hsts(apex, apex, false), HSTS);
+        assert_eq!(hsts(apex, apex, true), HSTS_SUBDOMAINS);
+        for v in [HSTS, HSTS_SUBDOMAINS] {
+            assert!(!v.contains("preload"));
+        }
     }
 }

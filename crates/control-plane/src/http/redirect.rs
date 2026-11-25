@@ -1,6 +1,8 @@
 //! Ecouteur HTTP : redirige tout vers HTTPS (301, corps vide). Une fois le
 //! domaine du panneau confirme (acces 8443 ferme), la cible est
-//! `https://<domaine du panneau>`, quel que soit l'hote demande.
+//! `https://<domaine du panneau>` pour un hote nomme ; un hote IP recoit
+//! alors un 404 sans `Location` (le domaine n'est jamais revele a qui
+//! balaie les adresses IP).
 
 use axum::Router;
 use axum::extract::State;
@@ -21,9 +23,11 @@ struct Target {
 /// domaine confirme du panneau.
 pub fn router(https_port: u16, panel: PanelSwitch) -> Router {
     security_headers::apply(
-        Router::new()
-            .fallback(redirect)
-            .with_state(Target { https_port, panel }),
+        Router::new().fallback(redirect).with_state(Target {
+            https_port,
+            panel: panel.clone(),
+        }),
+        panel,
     )
 }
 
@@ -38,6 +42,9 @@ async fn redirect(State(target): State<Target>, headers: HeaderMap, uri: Uri) ->
     };
     let path = uri.path_and_query().map_or("/", |p| p.as_str());
     let authority = match target.panel.current() {
+        Some(panel) if panel.confirmed && is_ip(&host) => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
         Some(panel) if panel.confirmed => panel.host,
         _ if https_port == 443 => host,
         _ => format!("{host}:{https_port}"),
@@ -47,6 +54,15 @@ async fn redirect(State(target): State<Target>, headers: HeaderMap, uri: Uri) ->
         Ok(value) => (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, value)]).into_response(),
         Err(_) => StatusCode::BAD_REQUEST.into_response(),
     }
+}
+
+/// Hote IP, sous sa forme d'URL (IPv6 entre crochets).
+fn is_ip(host: &str) -> bool {
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
+        .parse::<std::net::IpAddr>()
+        .is_ok()
 }
 
 /// Retire le port de l'en-tete Host et valide le reste (nom d'hote DNS,

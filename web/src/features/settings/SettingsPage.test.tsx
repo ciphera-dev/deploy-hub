@@ -14,7 +14,7 @@ const GENERAL = { id: "7f2a4c10-0000-4000-8000-000000000000", name: "Acme", slug
 let me: Record<string, unknown>;
 let security: { mfa_required: boolean; ip_allowlist: string[]; current_ip: string; self_enrollment_required: boolean };
 let selfEnrollment: boolean;
-let panel: { domain: string | null; status: string; error: string | null };
+let panel: { domain: string | null; status: string; error: string | null; apex?: boolean; hsts_include_subdomains?: boolean };
 let requests: { method: string; path: string; body: unknown; csrf: string | null }[];
 
 const record = async (request: Request) => {
@@ -52,6 +52,11 @@ const server = setupServer(
     if (panel.status === "error") return HttpResponse.json({ error: { code: "dns_error", message: "panel.example.org pointe vers 198.51.100.9 au lieu de 203.0.113.7." } }, { status: 422 });
     panel = { ...panel, error: null };
     return HttpResponse.json(panel, { status: 202 });
+  }),
+  http.put("*/api/settings/panel-domain/hsts", async ({ request }) => {
+    await record(request);
+    panel = { ...panel, hsts_include_subdomains: (requests.at(-1)!.body as { include_subdomains: boolean }).include_subdomains };
+    return HttpResponse.json(panel);
   }),
   http.delete("*/api/settings/panel-domain", async ({ request }) => {
     await record(request);
@@ -285,6 +290,29 @@ it("domaine du panel : « Revérifier » refusé (DNS faux) affiche l'erreur de 
   mount("/settings/panel-domain");
   fireEvent.click(await screen.findByRole("button", { name: "Revérifier" }, { timeout: 5000 }));
   expect(await screen.findByText(/pointe vers 198\.51\.100\.9/)).toBeInTheDocument();
+});
+
+it("domaine du panel enregistrable : option HSTS des sous-domaines désactivée par défaut, avec son avertissement", async () => {
+  panel = { domain: "example.org", status: "active", error: null, apex: true, hsts_include_subdomains: false };
+  mount("/settings/panel-domain");
+  const toggle = await screen.findByRole("switch", { name: "Inclure les sous-domaines (HSTS)" }, { timeout: 5000 });
+  expect(toggle).toHaveAttribute("aria-checked", "false");
+  expect(toggle).not.toBeDisabled();
+  expect(screen.getByText(/impose HTTPS pendant un an à tous les sous-domaines de example\.org/)).toBeInTheDocument();
+  fireEvent.click(toggle);
+  expect(await screen.findByText("Sous-domaines inclus dans HSTS")).toBeInTheDocument();
+  expect(requests[0]).toMatchObject({ method: "PUT", path: "/api/settings/panel-domain/hsts", body: { include_subdomains: true }, csrf: "csrf-1" });
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Inclure les sous-domaines (HSTS)" })).toHaveAttribute("aria-checked", "true"));
+});
+
+it("domaine du panel sous son domaine enregistrable : sous-domaines couverts d'office, option inactive", async () => {
+  panel = { domain: "panel.example.org", status: "active", error: null, apex: false, hsts_include_subdomains: false };
+  mount("/settings/panel-domain");
+  const toggle = await screen.findByRole("switch", { name: "Inclure les sous-domaines (HSTS)" }, { timeout: 5000 });
+  expect(toggle).toHaveAttribute("aria-checked", "true");
+  expect(toggle).toBeDisabled();
+  expect(screen.getByText(/sous-domaines de panel\.example\.org sont couverts automatiquement/)).toBeInTheDocument();
+  expect(screen.queryByText(/impose HTTPS pendant un an/)).not.toBeInTheDocument();
 });
 
 it("notifications : la section SMTP est montée dans la page", async () => {

@@ -49,22 +49,32 @@ async fn redirect_goes_to_the_confirmed_panel_domain_once_8443_is_closed() {
         r.header("location"),
         Some("https://203.0.113.7:8443/projects?x=1")
     );
-    // Confirme : 8443 est ferme, tout va vers le domaine du panneau.
+    // Confirme : 8443 est ferme, un hote nomme va vers le domaine du
+    // panneau ; un hote IP recoit 404, sans `Location` ni nom.
     switch.set(Some(Panel {
         confirmed: true,
         ..panel
     }));
-    for host in [
-        "203.0.113.7",
-        "203.0.113.7:80",
-        "[2001:db8::1]",
-        "panel.example.org",
-    ] {
+    for host in ["panel.example.org", "panel.example.com:80"] {
         let r = plain_get(addr, host, "/projects?x=1").await;
         assert_eq!(r.status, 301, "{host}");
         assert_eq!(
             r.header("location"),
             Some("https://panel.example.org/projects?x=1"),
+            "{host}"
+        );
+    }
+    for host in [
+        "203.0.113.7",
+        "203.0.113.7:80",
+        "[2001:db8::1]",
+        "[2001:db8::1]:80",
+    ] {
+        let r = plain_get(addr, host, "/projects?x=1").await;
+        assert_eq!(r.status, 404, "{host}");
+        assert!(r.header("location").is_none(), "{host}");
+        assert!(
+            !String::from_utf8_lossy(&r.body).contains("example"),
             "{host}"
         );
     }

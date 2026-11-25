@@ -13,6 +13,8 @@
 //! repond plus : `ciphera admin reset-panel-domain` (rouvre 8443 au
 //! redemarrage du service).
 
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use api_types::panel_domain::{PanelDomain, PanelDomainStatus};
@@ -33,6 +35,9 @@ struct Inner {
     current: RwLock<Option<Panel>>,
     /// Vrai tant que l'acces 8443 doit rester ouvert.
     open: watch::Sender<bool>,
+    /// Option HSTS « Inclure les sous-domaines » (`instance`), lue a chaque
+    /// reponse.
+    hsts_subdomains: AtomicBool,
 }
 
 /// Etat en memoire du domaine du panneau, partage par les handlers et la
@@ -42,7 +47,7 @@ pub struct PanelSwitch(Arc<Inner>);
 
 impl Default for PanelSwitch {
     fn default() -> Self {
-        Self::with(None)
+        Self::with(None, false)
     }
 }
 
@@ -53,19 +58,57 @@ impl std::fmt::Debug for PanelSwitch {
 }
 
 impl PanelSwitch {
-    fn with(panel: Option<Panel>) -> Self {
+    fn with(panel: Option<Panel>, hsts_subdomains: bool) -> Self {
         let open = !panel.as_ref().is_some_and(|p| p.confirmed);
         let (tx, _) = watch::channel(open);
         Self(Arc::new(Inner {
             current: RwLock::new(panel),
             open: tx,
+            hsts_subdomains: AtomicBool::new(hsts_subdomains),
         }))
     }
 
     /// Etat enregistre en base (demarrage).
     pub async fn load(db: &PgPool) -> sqlx::Result<Self> {
         let mut conn = db.acquire().await?;
-        Ok(Self::with(read(&mut conn).await?))
+        let panel = read(&mut conn).await?;
+        let hsts = read_hsts_option(&mut conn).await?;
+        Ok(Self::with(panel, hsts))
+    }
+
+    /// Option HSTS « Inclure les sous-domaines » du proprietaire.
+    pub fn hsts_include_subdomains(&self) -> bool {
+        self.0.hsts_subdomains.load(Ordering::Acquire)
+    }
+
+    /// Remplace l'option HSTS en memoire. Son ecriture passe par
+    /// [`PanelSwitch::commit_hsts_with`] : la memoire suit la base.
+    pub fn set_hsts_include_subdomains(&self, on: bool) {
+        self.0.hsts_subdomains.store(on, Ordering::Release);
+    }
+
+    /// Comme [`PanelSwitch::commit_with`], pour l'option HSTS : posee avant
+    /// `commit` (verrou d'ecriture tenu), remise si `commit` echoue, le tout
+    /// detache de l'appelant.
+    pub async fn commit_hsts_with<E, F>(&self, on: bool, commit: F) -> Result<(), E>
+    where
+        E: Send + 'static,
+        F: std::future::Future<Output = Result<(), E>> + Send + 'static,
+    {
+        let switch = self.clone();
+        let task = tokio::spawn(async move {
+            let previous = switch.hsts_include_subdomains();
+            switch.set_hsts_include_subdomains(on);
+            let done = commit.await;
+            if done.is_err() {
+                switch.set_hsts_include_subdomains(previous);
+            }
+            done
+        });
+        match task.await {
+            Ok(done) => done,
+            Err(e) => std::panic::resume_unwind(e.into_panic()),
+        }
     }
 
     /// Remplace l'etat en memoire. Les ecritures du domaine passent par
@@ -139,6 +182,40 @@ impl PanelSwitch {
     }
 }
 
+/// Option HSTS enregistree (faux avant la configuration de l'instance).
+pub async fn read_hsts_option(conn: &mut PgConnection) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT coalesce((SELECT hsts_include_subdomains FROM instance LIMIT 1), false)",
+    )
+    .fetch_one(conn)
+    .await
+}
+
+/// Place d'un hote par rapport a son domaine enregistrable (liste des
+/// suffixes publics, embarquee).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Registrable {
+    /// Strictement sous son domaine enregistrable (`panel.exemple.com`).
+    Below,
+    /// Domaine enregistrable lui-meme (`exemple.com`, `exemple.co.uk`).
+    Apex,
+    /// Ni l'un ni l'autre : suffixe public, nom d'un seul label, adresse IP.
+    Neither,
+}
+
+/// Place de `host` (deja normalise : minuscules, sans port ni point final)
+/// par rapport a son domaine enregistrable.
+pub fn registrable(host: &str) -> Registrable {
+    if host.parse::<IpAddr>().is_ok() {
+        return Registrable::Neither;
+    }
+    match psl::domain_str(host) {
+        Some(domain) if domain.len() == host.len() => Registrable::Apex,
+        Some(_) => Registrable::Below,
+        None => Registrable::Neither,
+    }
+}
+
 async fn read(conn: &mut PgConnection) -> sqlx::Result<Option<Panel>> {
     let row: Option<(Uuid, String, bool)> =
         sqlx::query_as("SELECT id, host, panel_confirmed_at IS NOT NULL FROM domains WHERE panel")
@@ -165,6 +242,7 @@ struct ViewRow {
 /// arretee (tentatives epuisees) apparait en erreur, comme pour les domaines
 /// des projets : jamais d'emission « en cours » sans fin.
 pub async fn view(conn: &mut PgConnection) -> sqlx::Result<PanelDomain> {
+    let hsts_include_subdomains = read_hsts_option(&mut *conn).await?;
     let row: Option<ViewRow> = sqlx::query_as(
         "SELECT d.host, d.panel_confirmed_at IS NOT NULL AS confirmed, d.dns_status, d.dns_error, \
          CASE WHEN s.stalled THEN 'error' ELSE d.cert_status END AS cert_status, \
@@ -190,13 +268,17 @@ pub async fn view(conn: &mut PgConnection) -> sqlx::Result<PanelDomain> {
             domain: None,
             status: PanelDomainStatus::None,
             error: None,
+            apex: false,
+            hsts_include_subdomains,
         });
     };
     let (status, error) = status_of(confirmed, &dns, dns_error, &cert, cert_error);
     Ok(PanelDomain {
+        apex: registrable(&host) == Registrable::Apex,
         domain: Some(host),
         status,
         error,
+        hsts_include_subdomains,
     })
 }
 
@@ -406,6 +488,39 @@ mod tests {
             }
             assert_eq!(!switch.listens_8443(), commit_ok, "commit_ok={commit_ok}");
         }
+    }
+
+    #[test]
+    fn registrable_domain_follows_the_public_suffix_list() {
+        for (host, want) in [
+            ("panel.example.com", Registrable::Below),
+            ("a.b.example.com", Registrable::Below),
+            ("panel.example.co.uk", Registrable::Below),
+            ("example.com", Registrable::Apex),
+            ("example.co.uk", Registrable::Apex),
+            // Suffixe prive de la liste : chaque compte est enregistrable.
+            ("user.github.io", Registrable::Apex),
+            ("panel.user.github.io", Registrable::Below),
+            ("co.uk", Registrable::Neither),
+            ("github.io", Registrable::Neither),
+            ("localhost", Registrable::Neither),
+            ("203.0.113.7", Registrable::Neither),
+            ("2001:db8::1", Registrable::Neither),
+        ] {
+            assert_eq!(registrable(host), want, "{host}");
+        }
+    }
+
+    #[tokio::test]
+    async fn hsts_option_commit_failure_restores_it() {
+        let switch = PanelSwitch::default();
+        assert!(!switch.hsts_include_subdomains());
+        let r: Result<(), &str> = switch.commit_hsts_with(true, async { Err("commit") }).await;
+        assert_eq!(r, Err("commit"));
+        assert!(!switch.hsts_include_subdomains());
+        let ok: Result<(), &str> = switch.commit_hsts_with(true, async { Ok(()) }).await;
+        assert_eq!(ok, Ok(()));
+        assert!(switch.hsts_include_subdomains());
     }
 
     #[test]

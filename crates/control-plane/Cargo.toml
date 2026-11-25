@@ -38,6 +38,9 @@ clap = { version = "4.6.9", default-features = false, features = ["std", "derive
 http-body = "1.1"
 pki = { path = "../pki" }
 proto = { path = "../proto" }
+# Liste des suffixes publics embarquee (sans reseau) : domaine enregistrable
+# de l'hote du panneau, pour `includeSubDomains` du HSTS.
+psl = "2.1.263"
 # Lien QUIC + mTLS avec les agents : rustls + ring (ni aws-lc, ni OpenSSL).
 quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

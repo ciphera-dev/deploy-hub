@@ -17,6 +17,7 @@ use crate::{embed, state::AppState};
 
 /// Routeur complet du panneau : API, interface embarquee, en-tetes de securite.
 pub fn build_router(state: AppState) -> Router {
+    let panel = state.panel.clone();
     let router = Router::new()
         .route("/api/health", get(health::health))
         .merge(setup::routes())
@@ -53,7 +54,7 @@ pub fn build_router(state: AppState) -> Router {
             ip_allowlist::layer,
         ))
         .with_state(state);
-    security_headers::apply(router)
+    security_headers::apply(router, panel)
 }
 
 async fn fallback(method: Method, uri: Uri) -> Response {

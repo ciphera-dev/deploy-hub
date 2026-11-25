@@ -1257,3 +1257,137 @@ async fn reset_panel_domain_cli_still_resets_without_key_or_github_client() {
         .unwrap();
     assert_eq!(left, 0);
 }
+
+/// Route du panneau dans la table de l'agent local.
+fn panel_route_of(routes: &[Route]) -> &Route {
+    routes
+        .iter()
+        .find(|r| r.host == HOST)
+        .expect("route du panneau")
+}
+
+/// La table du proxy porte la confirmation du domaine : avant, les hotes IP
+/// sans route restent renvoyes vers 8443 ; apres, le proxy leur repond 404
+/// sans nommer le domaine. La table est renvoyee des la confirmation.
+#[tokio::test]
+async fn panel_route_carries_the_confirmation_to_the_proxy() {
+    let mut env = Env::new().await;
+    let owner = login(&env.state, "owner").await;
+    awaiting(&mut env, &owner).await;
+    let mut conn = env.state.db.acquire().await.unwrap();
+    let routes = domains::route_table(&mut conn, &env.state.cfg, env.server)
+        .await
+        .unwrap();
+    drop(conn);
+    assert!(!panel_route_of(&routes).panel_confirmed, "{routes:?}");
+
+    let r = via_proxy(&env.state, &owner, "POST", &format!("{PATH}/confirm"), HOST).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let routes = last_routes(&mut env).expect("table renvoyee a la confirmation");
+    let panel = panel_route_of(&routes);
+    assert!(panel.panel_confirmed, "{panel:?}");
+    assert!(!panel.upstreams.is_empty());
+    // Les routes des projets ne portent jamais la marque.
+    assert!(
+        routes
+            .iter()
+            .filter(|r| r.host != HOST)
+            .all(|r| !r.panel_confirmed)
+    );
+
+    // Retrait : plus de route du panneau, les hotes IP repartent vers 8443.
+    let r = send(&env.state, &owner, "DELETE", PATH, None).await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    let routes = last_routes(&mut env).expect("table renvoyee au retrait");
+    assert!(routes.iter().all(|r| r.host != HOST && !r.panel_confirmed));
+}
+
+/// Option HSTS « Inclure les sous-domaines » : proprietaire seulement,
+/// auditee, exposee avec la nature du domaine (enregistrable ou non).
+#[tokio::test]
+async fn panel_domain_hsts_option() {
+    let env = Env::new().await;
+    sqlx::query("INSERT INTO instance (id, name) VALUES ($1, 'Org')")
+        .bind(Uuid::new_v4())
+        .execute(&env.state.db)
+        .await
+        .unwrap();
+    let owner = login(&env.state, "owner").await;
+    let r = send(&env.state, &owner, "GET", PATH, None).await;
+    assert_eq!(r.json()["hsts_include_subdomains"], false, "{}", r.raw);
+    assert_eq!(r.json()["apex"], false, "{}", r.raw);
+
+    for role in ["admin", "developer"] {
+        let s = login(&env.state, role).await;
+        let r = send(
+            &env.state,
+            &s,
+            "PUT",
+            &format!("{PATH}/hsts"),
+            Some(json!({ "include_subdomains": true })),
+        )
+        .await;
+        assert_eq!(r.status, 403, "{role} : {}", r.raw);
+    }
+    for bad in [
+        json!({}),
+        json!({ "include_subdomains": "yes" }),
+        json!({ "include_subdomains": true, "x": 1 }),
+    ] {
+        let r = send(
+            &env.state,
+            &owner,
+            "PUT",
+            &format!("{PATH}/hsts"),
+            Some(bad),
+        )
+        .await;
+        assert_eq!(r.status, 422, "{}", r.raw);
+    }
+    let r = send(
+        &env.state,
+        &owner,
+        "PUT",
+        &format!("{PATH}/hsts"),
+        Some(json!({ "include_subdomains": true })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    assert_eq!(r.json()["hsts_include_subdomains"], true);
+    assert!(env.state.panel.hsts_include_subdomains());
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE action = 'panel_domain.hsts' \
+         AND detail->>'include_subdomains' = 'true'",
+    )
+    .fetch_one(&env.state.db)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+
+    // Domaine enregistrable lui-meme : `apex` vrai ; sous-domaine : faux.
+    env.dns.set("example.org", &[NODE_IP]);
+    let r = send(
+        &env.state,
+        &owner,
+        "PUT",
+        PATH,
+        Some(json!({ "domain": "example.org" })),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    assert_eq!(r.json()["apex"], true, "{}", r.raw);
+    assert_eq!(r.json()["hsts_include_subdomains"], true, "{}", r.raw);
+    let r = send(&env.state, &owner, "DELETE", PATH, None).await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    env.dns.set(HOST, &[NODE_IP]);
+    let r = send(
+        &env.state,
+        &owner,
+        "PUT",
+        PATH,
+        Some(json!({ "domain": HOST })),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    assert_eq!(r.json()["apex"], false, "{}", r.raw);
+}

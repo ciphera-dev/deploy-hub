@@ -13,20 +13,28 @@
 //!   certificat replanifiee tout de suite (reprise apres une panne) ;
 //! - `DELETE /api/settings/panel-domain` : annulation ou retrait (route et
 //!   certificat retires, acces 8443 rouvert). Domaine confirme avec une
-//!   GitHub App : son webhook revient d'abord sur l'acces direct (8443).
+//!   GitHub App : son webhook revient d'abord sur l'acces direct (8443) ;
+//! - `PUT /api/settings/panel-domain/hsts { include_subdomains }` : option
+//!   HSTS d'un domaine du panneau enregistrable lui-meme (voir
+//!   `security_headers`).
+//!
+//! La confirmation renvoie la table des routes : le proxy du noeud cesse
+//! alors de renvoyer les hotes IP vers l'acces direct (404 sans le nom).
 //!
 //! Ecritures sous CSRF (couche du routeur) et auditees.
 
 use std::net::SocketAddr;
 
-use api_types::panel_domain::{ConfirmPanelDomain, PanelDomain, PanelDomainStatus, SetPanelDomain};
+use api_types::panel_domain::{
+    ConfirmPanelDomain, PanelDomain, PanelDomainStatus, SetPanelDomain, SetPanelDomainHsts,
+};
 use axum::body::Bytes;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, State};
 use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use shared::error::ApiError;
@@ -52,6 +60,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/settings/panel-domain/confirm", post(confirm))
         .route("/api/settings/panel-domain/recheck", post(recheck))
+        .route("/api/settings/panel-domain/hsts", put(set_hsts))
         .layer(DefaultBodyLimit::max(MAX_BODY))
 }
 
@@ -382,6 +391,9 @@ async fn confirm(
     )
     .await?;
     tracing::info!(%host, "domaine du panneau confirme : acces direct ferme");
+    // La route du panneau porte la confirmation : le proxy cesse de
+    // renvoyer les hotes IP vers l'acces direct.
+    domains::push_routes(&state).await;
     Ok(Json(body).into_response())
 }
 
@@ -581,6 +593,45 @@ async fn recheck(State(state): State<AppState>, auth: Owner) -> Result<Response,
 
 fn not_found() -> ApiError {
     ApiError::new(404, "not_found", "Aucun domaine du panneau.")
+}
+
+/// `PUT /api/settings/panel-domain/hsts` : option « Inclure les
+/// sous-domaines (HSTS) », gardee dans `instance` et en memoire (lue a
+/// chaque reponse) sous le verrou du domaine du panneau.
+async fn set_hsts(
+    State(state): State<AppState>,
+    auth: Owner,
+    body: Result<Json<SetPanelDomainHsts>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let actor = owner_only(&auth)?;
+    let Json(input) = body.map_err(invalid_body)?;
+    let on = input.include_subdomains;
+    let mut tx = state.db.begin().await.map_err(db("transaction"))?;
+    lock(&mut tx).await?;
+    let updated = sqlx::query("UPDATE instance SET hsts_include_subdomains = $1")
+        .bind(on)
+        .execute(&mut *tx)
+        .await
+        .map_err(db("option HSTS"))?
+        .rows_affected();
+    if updated == 0 {
+        return Err(ApiError::new(404, "not_found", "Instance non configurée."));
+    }
+    panel::audit(
+        &mut tx,
+        Some(actor),
+        "panel_domain.hsts",
+        json!({ "include_subdomains": on }),
+    )
+    .await
+    .map_err(db("audit du domaine du panneau"))?;
+    let body = view(&mut tx).await?;
+    state
+        .panel
+        .commit_hsts_with(on, async move { tx.commit().await })
+        .await
+        .map_err(db("transaction"))?;
+    Ok(Json(body).into_response())
 }
 
 /// `DELETE /api/settings/panel-domain`

@@ -43,6 +43,10 @@ CIPHERA_PANEL_ALIASES=admin.exemple.com,ops.exemple.com
 
 Les noms reconnus sur le port 8443 sont l'hôte de `CIPHERA_PUBLIC_URL`, `CIPHERA_WEBAUTHN_RP_ID`, ces alias et le domaine du panneau confirmé. Tout autre nom reçoit `421 Misdirected Request`. Un nom internationalisé se déclare sous sa forme ASCII (punycode `xn--…`). Un nom réservé au panneau ne peut pas devenir le domaine d'un projet, et un domaine de projet ne peut pas être créé ni vérifié sous le nom par lequel on joint le panneau.
 
+Une fois le domaine du panneau confirmé (Paramètres › Domaine du panel), l'adresse IP du serveur ne mène plus au panneau : le port 8443 est fermé, et le proxy répond `404` à une requête HTTP ou HTTPS adressée à l'IP, sans révéler le domaine. Prenez l'habitude d'ouvrir le panneau par son domaine avant de confirmer. Si le domaine ne répond plus, `sudo ciphera admin reset-panel-domain` rouvre l'accès direct au redémarrage du service. Une connexion TLS sans nom (SNI) ne reçoit jamais le certificat du panneau.
+
+HSTS (un an, jamais `preload`) couvre les sous-domaines du domaine du panneau quand il n'est pas à la racine de son domaine (`panel.exemple.com`). Pour un domaine racine (`exemple.com`), l'option « Inclure les sous-domaines (HSTS) » est désactivée par défaut : activée, elle impose HTTPS pendant un an à tous les sous-domaines de la zone, y compris ceux servis ailleurs.
+
 Les passkeys sont liées à l'origine publique du panneau (domaine confirmé, sinon `CIPHERA_PUBLIC_URL`). Si ce domaine change, les passkeys enregistrées sous l'ancien ne fonctionnent plus : il faut les enregistrer à nouveau. Elles ne servent qu'à cette adresse exacte (même hôte, même port) : par l'adresse IP, par `localhost`, par un alias, par un sous-domaine ou par un autre port, le panneau ne les propose pas et indique l'adresse publique ; on s'y connecte alors par mot de passe puis code TOTP ou code de secours. Pour un autre choix, fixez `CIPHERA_WEBAUTHN_RP_ID` et `CIPHERA_WEBAUTHN_RP_ORIGIN`.
 
 ## Stack
