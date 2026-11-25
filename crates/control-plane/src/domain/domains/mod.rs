@@ -601,10 +601,16 @@ async fn panel_host(conn: &mut PgConnection, hosts: &[String]) -> sqlx::Result<b
 
 /// Domaine genere du projet (si active et l'IP du noeud connue). Rien si
 /// l'hote est deja pris.
+///
+/// `immediate` : creation du projet, premiere emission tout de suite. Une
+/// recreation (reactivation, renommage) reporte la premiere tentative d'un
+/// jour : desactiver puis reactiver ne contourne pas la limite d'une
+/// tentative par jour face aux limites de debit de l'autorite.
 pub async fn ensure_generated(
     conn: &mut PgConnection,
     cfg: &Config,
     project: Uuid,
+    immediate: bool,
 ) -> sqlx::Result<()> {
     let Some(ip) = cfg.public_ip else {
         return Ok(());
@@ -666,6 +672,9 @@ pub async fn ensure_generated(
         // existant : l'heure n'entre pas en compte.
         Some(id) => {
             acme::request(conn, id, 0).await?;
+            if !immediate {
+                acme::postpone(conn, id, acme::GENERATED_RETRY_SECS).await?;
+            }
         }
         None => tracing::warn!(%project, "domaine genere deja pris : non cree"),
     }
@@ -689,8 +698,16 @@ pub async fn regenerate(
     cfg: &Config,
     project: Uuid,
 ) -> sqlx::Result<Vec<String>> {
-    let removed = delete_generated(conn, project).await?;
-    ensure_generated(conn, cfg, project).await?;
+    let mut removed = delete_generated(conn, project).await?;
+    ensure_generated(conn, cfg, project, false).await?;
+    // Meme hote recree (nom inchange a la casse pres) : son certificat reste
+    // sur le proxy, que la nouvelle ligne reprendra.
+    let kept: Vec<String> =
+        sqlx::query_scalar("SELECT host FROM domains WHERE project_id = $1 AND generated")
+            .bind(project)
+            .fetch_all(&mut *conn)
+            .await?;
+    removed.retain(|h| !kept.contains(h));
     Ok(removed)
 }
 
@@ -712,7 +729,7 @@ pub async fn set_generated(
         .execute(&mut *conn)
         .await?;
     if enabled {
-        ensure_generated(conn, cfg, project).await?;
+        ensure_generated(conn, cfg, project, false).await?;
         Ok(Vec::new())
     } else {
         Ok(delete_generated(conn, project).await?)
@@ -815,7 +832,7 @@ pub async fn set_primary(conn: &mut PgConnection, id: Uuid) -> Result<Found> {
     }
     if found.domain.generated {
         return Err(DomainError::Conflict(
-            "Le domaine généré est servi en HTTP seulement : il ne peut pas être principal.".into(),
+            "Le domaine généré ne peut pas être principal : utilisez un domaine à vous.".into(),
         ));
     }
     sqlx::query("UPDATE domains SET is_primary = false, updated_at = now() WHERE environment_id = $1 AND is_primary AND id <> $2")

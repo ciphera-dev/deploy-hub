@@ -211,3 +211,15 @@ it("domaine généré : badge HTTP retiré une fois le certificat émis", async 
   expect(within(generated).getByText("HTTPS actif")).toBeInTheDocument();
   expect(within(generated).queryByText("HTTP, non chiffré")).not.toBeInTheDocument();
 });
+
+it("domaine généré : émission en échec, état d'erreur et non vert", async () => {
+  const failed = {
+    ...WEB_DOMAINS,
+    domains: WEB_DOMAINS.domains.map((x) => (x.generated ? { ...x, cert_status: "error" as const, cert_error: "limite de débit atteinte" } : x)),
+  };
+  server.use(http.get("*/api/domains", () => HttpResponse.json(failed)));
+  mount(`/projects/${WEB.id}/domains`);
+  const generated = await screen.findByTestId("domain-ciphera-web.203.0.113.10.sslip.io", {}, { timeout: 5000 });
+  expect(within(generated).queryByText("HTTP (domaine généré)")).not.toBeInTheDocument();
+  expect(within(generated).getAllByText("HTTP, non chiffré").length).toBeGreaterThan(1);
+});

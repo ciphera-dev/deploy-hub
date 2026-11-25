@@ -141,7 +141,7 @@ async fn create(
         .map_err(|e| store_error("creation du projet", e))?;
     audit(&mut tx, auth.user.id, "project.create", id, &draft.name).await?;
     // Domaine genere `<projet>.<ip>.sslip.io` (desactivable).
-    crate::domain::domains::ensure_generated(&mut tx, &state.cfg, id)
+    crate::domain::domains::ensure_generated(&mut tx, &state.cfg, id, true)
         .await
         .map_err(|e| internal("domaine genere", e))?;
     let project = store::get(&mut tx, &state.agents, id)
@@ -309,12 +309,11 @@ pub(crate) async fn delete_project(
         return Ok(Removal::AgentUnreachable(Vec::new()));
     }
     // Domaines du projet (supprimes en cascade) : certificats a effacer.
-    let hosts: Vec<String> =
-        sqlx::query_scalar("SELECT host FROM domains WHERE project_id = $1 AND NOT generated")
-            .bind(id)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| internal("domaines du projet", e))?;
+    let hosts: Vec<String> = sqlx::query_scalar("SELECT host FROM domains WHERE project_id = $1")
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| internal("domaines du projet", e))?;
     store::delete(&mut tx, id)
         .await
         .map_err(|e| store_error("suppression du projet", e))?;

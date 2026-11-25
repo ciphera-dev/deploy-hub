@@ -256,7 +256,7 @@ fn renew_domain() {}
         (status = 200, description = "Domaines du projet (un seul principal par environnement)", body = ProjectDomains),
         (status = 403, description = "Role insuffisant (developer et plus)"),
         (status = 404, description = "Domaine introuvable"),
-        (status = 409, description = "Domaine redirige ou genere (HTTP seulement)"),
+        (status = 409, description = "Domaine redirige ou genere (le domaine genere ne peut pas etre principal)"),
     )
 )]
 #[allow(dead_code)]

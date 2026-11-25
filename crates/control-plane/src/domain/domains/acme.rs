@@ -192,6 +192,23 @@ pub async fn request(conn: &mut PgConnection, id: Uuid, now: i64) -> sqlx::Resul
     Ok(true)
 }
 
+/// Reporte la tache d'emission en file du domaine de `secs` secondes.
+pub async fn postpone(conn: &mut PgConnection, id: Uuid, secs: i64) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE jobs SET run_at = now() + make_interval(secs => $2::float8)          WHERE dedupe_key = $1 AND status = 'queued'",
+    )
+    .bind(key(id))
+    .bind(secs as f64)
+    .execute(&mut *conn)
+    .await?;
+    // Plus d'emission immediate : le domaine n'est pas en cours d'emission.
+    sqlx::query("UPDATE domains SET cert_status = 'none', updated_at = now() WHERE id = $1 AND cert_status = 'issuing'")
+        .bind(id)
+        .execute(conn)
+        .await
+        .map(|_| ())
+}
+
 /// Verification reussie d'un domaine au certificat encore valide : la tache
 /// du domaine (renouvellement planifie) est avancee a maintenant pour
 /// demander au proxy s'il detient le certificat, sans rien emettre.

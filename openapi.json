@@ -1439,7 +1439,7 @@
             "description": "Domaine introuvable"
           },
           "409": {
-            "description": "Domaine redirige ou genere (HTTP seulement)"
+            "description": "Domaine redirige ou genere (le domaine genere ne peut pas etre principal)"
           }
         },
         "security": [

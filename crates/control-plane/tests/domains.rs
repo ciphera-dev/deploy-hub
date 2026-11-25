@@ -212,9 +212,11 @@ async fn send(
 async fn project(state: &AppState, s: &Session, name: &str) -> Uuid {
     let id = project_raw(state, s, name).await;
     sqlx::query(
-        "UPDATE jobs SET status = 'done', dedupe_key = NULL WHERE kind = 'acme_issue' \
-         AND payload->>'domain_id' IN (SELECT id::text FROM domains WHERE generated)",
+        "UPDATE jobs SET status = 'done' WHERE kind = 'acme_issue' AND status = 'queued' \
+         AND payload->>'domain_id' IN \
+           (SELECT id::text FROM domains WHERE generated AND project_id = $1)",
     )
+    .bind(id)
     .execute(&state.db)
     .await
     .unwrap();
@@ -1629,15 +1631,22 @@ async fn deleting_a_domain_or_its_project_removes_the_certificate() {
     )
     .await;
     assert_eq!(r.status, 204, "{}", r.raw);
-    let removed: Vec<String> = drain(&mut env)
+    let mut removed: Vec<String> = drain(&mut env)
         .into_iter()
         .filter_map(|m| match m {
             ControlToAgent::RemoveCertificate { host } => Some(host),
             _ => None,
         })
         .collect();
-    // Le domaine genere (HTTP seulement) n'a pas de certificat.
-    assert_eq!(removed, vec!["other.example.com".to_string()]);
+    // Le domaine genere a lui aussi un certificat a retirer.
+    removed.sort();
+    assert_eq!(
+        removed,
+        vec![
+            "gone.203.0.113.7.sslip.io".to_string(),
+            "other.example.com".to_string()
+        ]
+    );
 }
 
 /// Domaine supprime pendant son emission : le certificat emis est retire
@@ -2186,4 +2195,50 @@ async fn disabling_the_generated_domain_removes_its_certificate() {
             .any(|m| matches!(m, ControlToAgent::RemoveCertificate { host: h } if h == host)),
         "{orders:?}"
     );
+}
+
+#[tokio::test]
+async fn recreating_the_generated_domain_postpones_its_first_attempt() {
+    let mut env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let host = "again.203.0.113.7.sslip.io";
+    let p = project_raw(&env.state, &dev, "again").await;
+    let first = generated_id(&env, &dev, p, host).await;
+    // Creation du projet : tentative immediate.
+    let (run_at, _, _) = queued_job(&env.state, &first).await;
+    assert!(run_at <= unix(SystemTime::now()) + 2, "{run_at}");
+
+    // Desactiver puis reactiver ne relance pas l'emission avant un jour.
+    for enabled in [false, true] {
+        let r = send(
+            &env.state,
+            &dev,
+            "PATCH",
+            &format!("/api/domains?project={p}"),
+            Some(json!({ "generated_domain": enabled })),
+        )
+        .await;
+        assert_eq!(r.status, 200, "{}", r.raw);
+    }
+    let second = generated_id(&env, &dev, p, host).await;
+    assert_ne!(first, second);
+    let (run_at, _, _) = queued_job(&env.state, &second).await;
+    let wanted = unix(SystemTime::now()) + 86_400;
+    assert!((run_at - wanted).abs() <= 5, "{run_at} vs {wanted}");
+    let d = domain(&list(&env.state, &dev, p).await, host).clone();
+    assert_eq!(d["cert_status"], "none", "{d}");
+    drain(&mut env);
+}
+
+#[tokio::test]
+async fn regenerating_the_same_host_keeps_its_certificate() {
+    let env = Env::new().await;
+    let dev = login(&env.state, "developer").await;
+    let p = project(&env.state, &dev, "same").await;
+    let mut conn = env.state.db.acquire().await.unwrap();
+    // Nom inchange : meme hote, rien a retirer du proxy.
+    let removed = domains::regenerate(&mut conn, &env.state.cfg, p)
+        .await
+        .unwrap();
+    assert!(removed.is_empty(), "{removed:?}");
 }

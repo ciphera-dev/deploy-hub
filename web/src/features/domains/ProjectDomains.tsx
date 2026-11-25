@@ -83,6 +83,8 @@ function DnsTable({ host, nodeIp, nodeIp6, dns }: { host: string; nodeIp: string
 function tlsState(d: Domain): { status: "ok" | "error" | "pending"; label: string } {
   // Domaine généré : HTTPS dès que le certificat est émis, sinon servi en HTTP (nouvelle tentative chaque jour).
   if (d.generated && d.cert_status === "active") return { status: "ok", label: "HTTPS actif" };
+  // Émission en échec (limite de débit…) : toujours en HTTP, nouvelle tentative demain ; jamais d'état vert.
+  if (d.generated && d.cert_status === "error") return { status: "error", label: "HTTP, non chiffré" };
   if (d.generated) return d.dns_status === "ok" && d.internal_port ? { status: "ok", label: "HTTP (domaine généré)" } : { status: "pending", label: "En attente du port" };
   // DNS devenu incorrect (revérifié avant chaque émission) : domaine hors ligne, même avec un certificat encore valide.
   if (d.dns_status === "error") return { status: "error", label: "DNS incorrect" };

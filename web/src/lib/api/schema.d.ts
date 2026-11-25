@@ -4675,7 +4675,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Domaine redirige ou genere (HTTP seulement) */
+            /** @description Domaine redirige ou genere (le domaine genere ne peut pas etre principal) */
             409: {
                 headers: {
                     [name: string]: unknown;
