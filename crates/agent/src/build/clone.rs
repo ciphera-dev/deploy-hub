@@ -296,17 +296,36 @@ pub async fn run_capped<B: BuildBackend>(
     exec_capped(backend, checkout_command(c, &dest, &home), sink, dir, cap).await
 }
 
-/// Reponse a une question de `git` (`GIT_ASKPASS <question>`) : l'utilisateur
-/// des jetons d'installation, ou le jeton. Autre question, ou pas de jeton :
-/// `None` (git echoue sans demander au terminal).
+/// Origine des depots clones (`ValidatedArg::git_url` : github.com seul).
+const GIT_ORIGIN: &str = "https://github.com";
+/// Origine de la question du mot de passe : l'utilisateur des jetons
+/// d'installation sur github.com.
+const TOKEN_ORIGIN: &str = "https://x-access-token@github.com";
+
+/// URL d'une question de git de la forme `<kind> for '<url>': `, sans rien
+/// d'autre ; `None` sinon.
+fn prompt_url<'a>(prompt: &'a str, kind: &str) -> Option<&'a str> {
+    let rest = prompt.strip_prefix(kind)?.strip_prefix(" for '")?;
+    let (url, tail) = rest.split_once('\'')?;
+    (tail.trim_end() == ":").then_some(url)
+}
+
+/// Reponse a une question de `git` (`GIT_ASKPASS <question>`) :
+/// l'utilisateur des jetons d'installation si la question vient exactement
+/// de `https://github.com`, le jeton si elle vient exactement de
+/// `https://x-access-token@github.com`. Autre hote, autre utilisateur, autre
+/// question, ou pas de jeton : `None` (rien n'est ecrit, git echoue sans
+/// demander au terminal).
 pub fn askpass_answer(prompt: &str, token: Option<&str>) -> Option<String> {
-    if prompt.starts_with("Username") {
-        Some(TOKEN_USER.to_string())
-    } else if prompt.starts_with("Password") {
-        token.filter(|t| !t.is_empty()).map(str::to_string)
-    } else {
-        None
+    if let Some(url) = prompt_url(prompt, "Username") {
+        return (url == GIT_ORIGIN).then(|| TOKEN_USER.to_string());
     }
+    if let Some(url) = prompt_url(prompt, "Password") {
+        return token
+            .filter(|t| url == TOKEN_ORIGIN && !t.is_empty())
+            .map(str::to_string);
+    }
+    None
 }
 
 /// Mode `GIT_ASKPASS` du binaire de l'agent : actif seulement si
@@ -344,5 +363,39 @@ mod tests {
         );
         assert_eq!(askpass_answer("Password for 'x': ", None), None);
         assert_eq!(askpass_answer("Are you sure?", t), None);
+    }
+
+    /// Seules les questions de git pour `https://github.com` (et, pour le
+    /// mot de passe, l'utilisateur des jetons d'installation) recoivent une
+    /// reponse : un autre hote, un autre utilisateur ou un hote qui ne fait
+    /// que commencer par `github.com` n'obtiennent rien.
+    #[test]
+    fn askpass_refuses_other_host() {
+        let t = Some("ghs_x");
+        for prompt in [
+            "Username for 'https://example.com': ",
+            "Username for 'https://github.com.example.com': ",
+            "Username for 'https://github.com:8443': ",
+            "Username for 'http://github.com': ",
+            "Username for 'https://gist.github.com': ",
+            "Username for https://github.com: ",
+            "Password for 'https://x-access-token@example.com': ",
+            "Password for 'https://x-access-token@github.com.example.com': ",
+            "Password for 'https://other-user@github.com': ",
+            "Password for 'https://github.com': ",
+            "Password for 'https://x-access-token@github.com/acme': ",
+            "Password for 'https://x-access-token@github.com' 'x': ",
+        ] {
+            assert_eq!(askpass_answer(prompt, t), None, "{prompt}");
+        }
+        // Les questions attendues restent servies.
+        assert_eq!(
+            askpass_answer("Username for 'https://github.com': ", t).as_deref(),
+            Some(TOKEN_USER)
+        );
+        assert_eq!(
+            askpass_answer("Password for 'https://x-access-token@github.com': ", t).as_deref(),
+            Some("ghs_x")
+        );
     }
 }
