@@ -27,14 +27,35 @@ const FAST: Hardening = Hardening {
     max_per_ip: 2,
 };
 
+/// Reponse qui dure `STREAM_CHUNKS` x 200 ms : plus que `h2_idle`.
+async fn slow() -> axum::response::Response {
+    let chunks = futures_util::stream::unfold(0u32, |n| async move {
+        if n == STREAM_CHUNKS {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        Some((
+            Ok::<_, std::convert::Infallible>(axum::body::Bytes::from("x")),
+            n + 1,
+        ))
+    });
+    axum::response::Response::new(Body::from_stream(chunks))
+}
+
+const STREAM_CHUNKS: u32 = 6;
+
 async fn serve(h: Hardening) -> (SocketAddr, ConnLimits) {
     let limits = ConnLimits::new(h.max_connections, h.max_per_ip);
     let handle: Handle<SocketAddr> = Handle::new();
-    let app = Router::new().route("/", get(|| async { "ok" })).route(
-        "/",
-        post(|body: axum::body::Bytes| async move { format!("lu {}", body.len()) }),
-    );
+    let app = Router::new()
+        .route("/slow", get(slow))
+        .route("/", get(|| async { "ok" }))
+        .route(
+            "/",
+            post(|body: axum::body::Bytes| async move { format!("lu {}", body.len()) }),
+        );
     let app = listener::with_body_deadline(app, h.body_read);
+    let app = listener::with_idle_tracking(app, limits.clone());
     let server = listener::plain("127.0.0.1:0".parse().unwrap(), h, limits.clone())
         .handle(handle.clone())
         .serve(app.into_make_service_with_connect_info::<SocketAddr>());
@@ -173,20 +194,125 @@ async fn body_read_timeout() {
     assert!(out.starts_with(b"HTTP/1.1 200"));
 }
 
-/// HTTP/2 sans aucun flux : le serveur sonde la connexion (PING) et la ferme
-/// si le client ne repond pas.
-#[tokio::test]
-async fn h2_idle_timeout() {
-    let (addr, limits) = serve(FAST).await;
+/// Trame HTTP/2 lue : (type, drapeaux, flux, charge).
+type Frame = (u8, u8, u32, Vec<u8>);
+
+async fn read_frame(s: &mut TcpStream) -> Option<Frame> {
+    let mut head = [0u8; 9];
+    s.read_exact(&mut head).await.ok()?;
+    let len = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
+    let stream = u32::from_be_bytes([head[5], head[6], head[7], head[8]]) & 0x7fff_ffff;
+    let mut payload = vec![0u8; len];
+    s.read_exact(&mut payload).await.ok()?;
+    Some((head[3], head[4], stream, payload))
+}
+
+/// Connexion HTTP/2 (sans TLS, connaissance prealable) qui a fait un GET de
+/// `path` ; renvoie le flux et l'instant ou la reponse s'est terminee.
+/// `ack_pings` : le client repond aux PING (un client vivant).
+async fn h2_get(addr: SocketAddr, path: &str, ack_pings: bool) -> (TcpStream, Instant) {
     let mut s = TcpStream::connect(addr).await.unwrap();
-    // Preface HTTP/2 puis SETTINGS vide ; le client ne repond ensuite a rien.
     s.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
         .await
         .unwrap();
     s.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await.unwrap();
-    assert!(closed_within(&mut s, Duration::from_secs(5)).await);
+    // HPACK : :method GET, :scheme http, :path (litteral), :authority x.
+    let mut block = vec![0x82, 0x86, 0x44, path.len() as u8];
+    block.extend_from_slice(path.as_bytes());
+    block.extend_from_slice(&[0x41, 0x01, b'x']);
+    let mut frame = vec![0, 0, block.len() as u8, 1, 0x05, 0, 0, 0, 1];
+    frame.extend_from_slice(&block);
+    s.write_all(&frame).await.unwrap();
+    loop {
+        let (kind, flags, stream, payload) =
+            tokio::time::timeout(Duration::from_secs(5), read_frame(&mut s))
+                .await
+                .expect("reponse h2 a temps")
+                .expect("connexion ouverte");
+        match kind {
+            // PING du serveur : acquittement si le client est vivant.
+            6 if flags & 1 == 0 && ack_pings => {
+                let mut ack = vec![0, 0, 8, 6, 1, 0, 0, 0, 0];
+                ack.extend_from_slice(&payload);
+                s.write_all(&ack).await.unwrap();
+            }
+            // Fin du flux 1.
+            0 | 1 if stream == 1 && flags & 1 != 0 => return (s, Instant::now()),
+            _ => {}
+        }
+    }
+}
+
+/// Apres une requete, un client h2 vivant (il repond aux PING) mais sans
+/// requete en cours est ferme au bout de `h2_idle`. `first_request` est plus
+/// long que la fenetre du test : seul le delai d'inactivite peut couper.
+#[tokio::test]
+async fn h2_idle_timeout() {
+    let (addr, limits) = serve(Hardening {
+        first_request: Duration::from_secs(30),
+        header_read: Duration::from_secs(30),
+        ..FAST
+    })
+    .await;
+    let (mut s, done) = h2_get(addr, "/", true).await;
+    // Le client reste vivant : il acquitte les PING pendant l'attente.
+    let closed = loop {
+        match tokio::time::timeout(Duration::from_secs(3), read_frame(&mut s)).await {
+            Err(_) => break false,
+            Ok(None) => break true,
+            Ok(Some((6, flags, _, payload))) if flags & 1 == 0 => {
+                let mut ack = vec![0, 0, 8, 6, 1, 0, 0, 0, 0];
+                ack.extend_from_slice(&payload);
+                if s.write_all(&ack).await.is_err() {
+                    break true;
+                }
+            }
+            Ok(Some(_)) => {}
+        }
+    };
+    assert!(closed, "connexion h2 inactive restee ouverte");
+    assert!(
+        done.elapsed() >= Duration::from_millis(250),
+        "coupee trop tot"
+    );
+    assert!(done.elapsed() < Duration::from_secs(3));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(limits.open(), 0);
+}
+
+/// Un client h2 muet (aucune reponse aux PING) est coupe par la sonde.
+#[tokio::test]
+async fn h2_unresponsive_peer_is_closed() {
+    let (addr, limits) = serve(Hardening {
+        first_request: Duration::from_secs(30),
+        header_read: Duration::from_secs(30),
+        h2_idle: Duration::from_millis(300),
+        ..FAST
+    })
+    .await;
+    let (mut s, _) = h2_get(addr, "/", false).await;
+    assert!(closed_within(&mut s, Duration::from_secs(3)).await);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(limits.open(), 0);
+}
+
+/// Une reponse qui dure plus que `h2_idle` compte comme requete en cours :
+/// elle n'est pas coupee.
+#[tokio::test]
+async fn h2_open_stream_is_not_cut() {
+    let (addr, _) = serve(Hardening {
+        first_request: Duration::from_secs(30),
+        header_read: Duration::from_secs(30),
+        ..FAST
+    })
+    .await;
+    let start = Instant::now();
+    let (_s, done) = h2_get(addr, "/slow", true).await;
+    let took = done.duration_since(start);
+    assert!(
+        took > FAST.h2_idle * 3,
+        "le flux devait depasser le delai d'inactivite ({took:?})"
+    );
 }
 
 #[test]

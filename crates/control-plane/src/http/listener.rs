@@ -10,8 +10,9 @@
 //! - un delai de lecture des en-tetes de chaque requete HTTP/1, qui ferme
 //!   aussi une connexion keep-alive restee inactive ;
 //! - un delai total de lecture du corps de chaque requete ;
-//! - pour HTTP/2, une sonde (PING) apres une minute d'inactivite, la
-//!   connexion etant fermee si le client ne repond pas dans la minute ;
+//! - pour HTTP/2, une sonde (PING) qui ferme les pairs muets, et un delai
+//!   d'inactivite (aucune requete en cours depuis `h2_idle`) qui ferme aussi
+//!   ceux qui repondent aux PING sans rien demander ([`with_idle_tracking`]) ;
 //! - un plafond global de connexions et un plafond par adresse IP (IPv6 :
 //!   par /64), refusees des l'acceptation (fermeture immediate).
 //!
@@ -22,13 +23,15 @@ use std::future::{Future, Ready, ready};
 use std::io;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::Request;
+use axum::extract::{ConnectInfo, Request};
+use axum::http::Version;
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum_server::Server;
@@ -92,6 +95,75 @@ pub struct ConnLimits {
     max_total: usize,
     max_per_ip: usize,
     counts: Arc<Mutex<Counts>>,
+    conns: Arc<Mutex<HashMap<SocketAddr, Arc<ConnState>>>>,
+}
+
+/// Etat d'une connexion ouverte, partage entre son flux ([`Limited`]) et les
+/// requetes qu'elle porte ([`with_idle_tracking`]).
+struct ConnState {
+    /// Requetes dont la reponse n'est pas terminee.
+    in_flight: AtomicUsize,
+    /// Une requete HTTP/2 a ete vue : le delai d'inactivite s'applique.
+    h2: AtomicBool,
+    /// Fin de la derniere reponse (ou ouverture de la connexion).
+    idle_since: Mutex<tokio::time::Instant>,
+    /// Reveil de la lecture du flux, pour armer le delai a la fin d'une requete.
+    waker: Mutex<Option<Waker>>,
+}
+
+impl ConnState {
+    fn new() -> Self {
+        Self {
+            in_flight: AtomicUsize::new(0),
+            h2: AtomicBool::new(false),
+            idle_since: Mutex::new(tokio::time::Instant::now()),
+            waker: Mutex::new(None),
+        }
+    }
+}
+
+/// Une requete en cours : rendue a la fin de sa reponse (ou si elle est
+/// abandonnee).
+struct InFlight(Arc<ConnState>);
+
+impl InFlight {
+    fn start(state: Arc<ConnState>) -> Self {
+        state.in_flight.fetch_add(1, Ordering::SeqCst);
+        Self(state)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if self.0.in_flight.fetch_sub(1, Ordering::SeqCst) == 1 {
+            *self.0.idle_since.lock().unwrap_or_else(|e| e.into_inner()) =
+                tokio::time::Instant::now();
+            let waker = self
+                .0
+                .waker
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
+    }
+}
+
+/// Inscription d'une connexion dans le registre, retiree a sa fermeture.
+struct Registration {
+    conns: Arc<Mutex<HashMap<SocketAddr, Arc<ConnState>>>>,
+    peer: SocketAddr,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.conns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.peer);
+    }
 }
 
 /// Cle du plafond par adresse : IPv4 (ou IPv4 dans IPv6) telle quelle,
@@ -115,7 +187,33 @@ impl ConnLimits {
             max_total,
             max_per_ip,
             counts: Arc::default(),
+            conns: Arc::default(),
         }
+    }
+
+    /// Inscrit la connexion de `peer` (cle : adresse et port, uniques tant
+    /// que la connexion est ouverte).
+    fn register(&self, peer: SocketAddr) -> (Arc<ConnState>, Registration) {
+        let state = Arc::new(ConnState::new());
+        self.conns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(peer, state.clone());
+        (
+            state,
+            Registration {
+                conns: self.conns.clone(),
+                peer,
+            },
+        )
+    }
+
+    fn state_of(&self, peer: SocketAddr) -> Option<Arc<ConnState>> {
+        self.conns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&peer)
+            .cloned()
     }
 
     /// Place pour une connexion de `ip`, rendue quand le jeton est detruit.
@@ -163,6 +261,10 @@ impl Drop for ConnGuard {
 pub struct Limited<T> {
     inner: T,
     _guard: ConnGuard,
+    _registration: Registration,
+    state: Arc<ConnState>,
+    idle: Duration,
+    sleep: Pin<Box<Sleep>>,
 }
 
 impl<T: AsyncRead + Unpin> AsyncRead for Limited<T> {
@@ -171,7 +273,23 @@ impl<T: AsyncRead + Unpin> AsyncRead for Limited<T> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_read(cx, buf)
+        let this = &mut *self;
+        // HTTP/2 sans requete en cours depuis `idle` : fin de flux (la
+        // connexion se ferme), meme si le client repond aux PING.
+        if this.state.h2.load(Ordering::SeqCst) && this.state.in_flight.load(Ordering::SeqCst) == 0
+        {
+            let since = *this
+                .state
+                .idle_since
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            this.sleep.as_mut().reset(since + this.idle);
+            if this.sleep.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Ok(()));
+            }
+        }
+        *this.state.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
+        Pin::new(&mut this.inner).poll_read(cx, buf)
     }
 }
 
@@ -209,6 +327,7 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for Limited<T> {
 #[derive(Clone)]
 pub struct LimitAcceptor {
     limits: ConnLimits,
+    idle: Duration,
 }
 
 impl<S> Accept<TcpStream, S> for LimitAcceptor {
@@ -217,15 +336,19 @@ impl<S> Accept<TcpStream, S> for LimitAcceptor {
     type Future = Ready<io::Result<(Self::Stream, S)>>;
 
     fn accept(&self, stream: TcpStream, service: S) -> Self::Future {
-        let guard = stream
-            .peer_addr()
-            .ok()
-            .and_then(|peer| self.limits.try_acquire(peer.ip()));
-        ready(match guard {
-            Some(guard) => Ok((
+        let accepted = stream.peer_addr().ok().and_then(|peer| {
+            let guard = self.limits.try_acquire(peer.ip())?;
+            Some((guard, self.limits.register(peer)))
+        });
+        ready(match accepted {
+            Some((guard, (state, registration))) => Ok((
                 Limited {
                     inner: stream,
                     _guard: guard,
+                    _registration: registration,
+                    state,
+                    idle: self.idle,
+                    sleep: Box::pin(tokio::time::sleep(self.idle)),
                 },
                 service,
             )),
@@ -237,8 +360,9 @@ impl<S> Accept<TcpStream, S> for LimitAcceptor {
 fn harden<Acc>(mut server: Server<SocketAddr, Acc>, h: Hardening) -> Server<SocketAddr, Acc> {
     let builder = server.http_builder();
     builder.http1().header_read_timeout(Some(h.header_read));
-    // HTTP/2 : un client muet repond a la sonde ou est coupe ; sans cela,
-    // une connexion h2 sans flux resterait ouverte indefiniment.
+    // HTTP/2 : un client muet repond a la sonde ou est coupe. Le client qui
+    // repond aux PING sans rien demander est coupe par `with_idle_tracking`
+    // (hyper n'a pas de delai d'inactivite).
     builder
         .http2()
         .keep_alive_interval(Some(h.h2_idle))
@@ -295,6 +419,68 @@ pub fn with_body_deadline(router: Router, limit: Duration) -> Router {
     }))
 }
 
+/// Reponse dont la fin (dernier frame ou abandon) rend la requete en cours.
+struct Tracked {
+    inner: Body,
+    guard: Option<InFlight>,
+}
+
+impl HttpBody for Tracked {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
+        let polled = Pin::new(&mut self.inner).poll_frame(cx);
+        if matches!(polled, Poll::Ready(None | Some(Err(_)))) || self.inner.is_end_stream() {
+            self.guard = None;
+        }
+        polled
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+async fn track(limits: ConnLimits, request: Request, next: Next) -> Response {
+    let state = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .and_then(|ConnectInfo(peer)| limits.state_of(*peer));
+    let Some(state) = state else {
+        return next.run(request).await;
+    };
+    if request.version() == Version::HTTP_2 {
+        state.h2.store(true, Ordering::SeqCst);
+    }
+    // Tenu pendant le traitement : une requete abandonnee rend sa place.
+    let guard = InFlight::start(state);
+    let response = next.run(request).await;
+    let (parts, body) = response.into_parts();
+    let body = Body::new(Tracked {
+        inner: body,
+        guard: Some(guard),
+    });
+    Response::from_parts(parts, body)
+}
+
+/// Suit les requetes en cours de chaque connexion de l'ecouteur de `limits`
+/// (a poser sur le routeur de cet ecouteur seulement). Une connexion HTTP/2
+/// sans requete en cours depuis `h2_idle` est fermee ; un flux long (logs en
+/// direct) compte comme en cours jusqu'a sa fin et n'est jamais coupe.
+pub fn with_idle_tracking(router: Router, limits: ConnLimits) -> Router {
+    router.layer(middleware::from_fn(move |request, next| {
+        track(limits.clone(), request, next)
+    }))
+}
+
 /// Ecouteur HTTP borne (ecoute locale du proxy).
 pub fn plain(
     addr: SocketAddr,
@@ -302,7 +488,10 @@ pub fn plain(
     limits: ConnLimits,
 ) -> Server<SocketAddr, LimitAcceptor> {
     harden(
-        axum_server::bind(addr).acceptor(LimitAcceptor { limits }),
+        axum_server::bind(addr).acceptor(LimitAcceptor {
+            limits,
+            idle: h.h2_idle,
+        }),
         h,
     )
 }
@@ -315,8 +504,10 @@ pub fn tls(
     limits: ConnLimits,
 ) -> Server<SocketAddr, RustlsAcceptor<LimitAcceptor>> {
     harden(
-        axum_server::bind(addr)
-            .acceptor(RustlsAcceptor::new(config).acceptor(LimitAcceptor { limits })),
+        axum_server::bind(addr).acceptor(RustlsAcceptor::new(config).acceptor(LimitAcceptor {
+            limits,
+            idle: h.h2_idle,
+        })),
         h,
     )
 }

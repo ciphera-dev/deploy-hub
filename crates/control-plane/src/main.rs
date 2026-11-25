@@ -551,18 +551,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Acces direct : 421 pour un nom non declare (http::panel_host).
     let direct_router = panel_host::direct(router.clone(), cfg.clone(), direct_hosts);
     let https = serve_direct(https_addr, tls_config, direct_router, direct_open, stop_rx);
-    let local = listener::plain(
-        local_addr,
-        Hardening::LOCAL,
-        ConnLimits::new(
-            Hardening::LOCAL.max_connections,
-            Hardening::LOCAL.max_per_ip,
-        ),
-    )
-    .handle(handle.clone())
-    // Adresse du pair TCP : boucle locale ; requetes marquees, seules a
-    // pouvoir faire croire X-Forwarded-For (pose par le proxy).
-    .serve(panel_host::local(router).into_make_service_with_connect_info::<SocketAddr>());
+    let local_limits = ConnLimits::new(
+        Hardening::LOCAL.max_connections,
+        Hardening::LOCAL.max_per_ip,
+    );
+    let local = listener::plain(local_addr, Hardening::LOCAL, local_limits.clone())
+        .handle(handle.clone())
+        // Adresse du pair TCP : boucle locale ; requetes marquees, seules a
+        // pouvoir faire croire X-Forwarded-For (pose par le proxy).
+        .serve(
+            listener::with_idle_tracking(panel_host::local(router), local_limits)
+                .into_make_service_with_connect_info::<SocketAddr>(),
+        );
     // Redirection HTTP facultative (CIPHERA_HTTP_PORT) : le port 80 appartient
     // au proxy du noeud, qui redirige deja les hotes IP vers le panneau.
     let panel_port = cfg.panel_port;
@@ -571,17 +571,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         };
         tracing::info!("redirection HTTP sur {addr}");
-        listener::plain(
-            addr,
-            Hardening::PUBLIC,
-            ConnLimits::new(
-                Hardening::PUBLIC.max_connections,
-                Hardening::PUBLIC.max_per_ip,
-            ),
-        )
-        .handle(handle)
-        .serve(redirect::router(panel_port, panel).into_make_service())
-        .await
+        let limits = ConnLimits::new(
+            Hardening::PUBLIC.max_connections,
+            Hardening::PUBLIC.max_per_ip,
+        );
+        listener::plain(addr, Hardening::PUBLIC, limits.clone())
+            .handle(handle)
+            .serve(
+                listener::with_idle_tracking(redirect::router(panel_port, panel), limits)
+                    .into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
     };
     let served = tokio::try_join!(https, local, http);
     if let Some(endpoint) = &agent_link {
@@ -636,8 +636,7 @@ async fn serve_direct(
             .handle(handle.clone())
             // Adresse du pair TCP : IP cliente (limitation de debit, audit).
             .serve(
-                router
-                    .clone()
+                listener::with_idle_tracking(router.clone(), limits.clone())
                     .into_make_service_with_connect_info::<SocketAddr>(),
             );
         tokio::pin!(server);
