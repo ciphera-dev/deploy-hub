@@ -328,6 +328,75 @@ fn upstreams_in_other_private_ranges_are_accepted() {
         .unwrap();
 }
 
+fn app_route(host: &str, upstream: &str) -> Route {
+    Route {
+        service: Some(shared::ids::ServiceId::new()),
+        ..route(host, "/", upstream)
+    }
+}
+
+#[test]
+fn loopback_upstream_refused_for_app_route() {
+    let table = RouteTable::new();
+    for up in [
+        "127.0.0.1:8080",
+        "127.0.0.2:8080",
+        "[::1]:8080",
+        "[::ffff:127.0.0.1]:8080",
+    ] {
+        let err = table
+            .apply(vec![app_route("a.example.com", up)])
+            .unwrap_err();
+        assert!(matches!(err, RouteError::Upstream(_)), "{up} : {err}");
+    }
+    // Les autres adresses interdites le restent (non specifiee, lien-local,
+    // multicast), et une adresse de conteneur passe.
+    for up in [
+        "0.0.0.0:80",
+        "169.254.169.254:80",
+        "224.0.0.1:80",
+        "[ff02::1]:80",
+    ] {
+        let err = table
+            .apply(vec![app_route("a.example.com", up)])
+            .unwrap_err();
+        assert!(matches!(err, RouteError::Upstream(_)), "{up} : {err}");
+    }
+    table
+        .apply(vec![app_route("a.example.com", "10.89.0.5:8080")])
+        .unwrap();
+    // Seul le panneau (ni service ni redirection) joint l'ecoute locale.
+    table
+        .apply(vec![
+            route("panel.example.com", "/", "127.0.0.1:8444"),
+            route("panel6.example.com", "/", "[::1]:8444"),
+        ])
+        .unwrap();
+    // Un refus laisse la table precedente en place.
+    assert!(
+        table
+            .apply(vec![
+                route("panel.example.com", "/", "127.0.0.1:8444"),
+                app_route("b.example.com", "127.0.0.1:9"),
+            ])
+            .is_err()
+    );
+    assert!(table.snapshot().lookup("panel.example.com", "/").is_some());
+}
+
+#[test]
+fn loopback_upstream_allowed_only_by_the_explicit_test_table() {
+    let table = RouteTable::with_loopback_upstreams();
+    table
+        .apply(vec![app_route("a.example.com", "127.0.0.1:8080")])
+        .unwrap();
+    assert!(
+        table
+            .apply(vec![app_route("a.example.com", "169.254.169.254:80")])
+            .is_err()
+    );
+}
+
 #[test]
 fn access_log_path_drops_the_query_and_redacts_tokens() {
     let cases = [

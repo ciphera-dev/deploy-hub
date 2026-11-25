@@ -34,6 +34,13 @@ pub enum RouteError {
     TooMany(usize),
 }
 
+/// Route du domaine du panneau : ni service ni redirection (convention du
+/// plan de controle, que l'agent applique aussi : son seul amont admis est
+/// l'ecoute locale du panneau).
+pub fn is_panel_route(route: &Route) -> bool {
+    route.service.is_none() && route.redirect_to.is_none()
+}
+
 impl fmt::Display for RouteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -108,14 +115,14 @@ impl Table {
         self.hosts.values().flatten().map(Entry::route)
     }
 
-    fn build(routes: Vec<Route>) -> Result<Self, RouteError> {
+    fn build(routes: Vec<Route>, allow_loopback: bool) -> Result<Self, RouteError> {
         if routes.len() > MAX_ROUTES {
             return Err(RouteError::TooMany(routes.len()));
         }
         let len = routes.len();
         let mut hosts: HashMap<String, Vec<Entry>> = HashMap::new();
         for route in routes {
-            validate(&route)?;
+            validate(&route, allow_loopback)?;
             let entries = hosts.entry(route.host.clone()).or_default();
             if entries
                 .iter()
@@ -142,6 +149,8 @@ impl Table {
 #[derive(Debug, Default)]
 pub struct RouteTable {
     current: ArcSwap<Table>,
+    /// Admet les amonts en boucle locale pour toute route (tests).
+    allow_loopback: bool,
 }
 
 impl RouteTable {
@@ -149,10 +158,20 @@ impl RouteTable {
         Self::default()
     }
 
+    /// Table qui admet aussi les amonts en boucle locale pour les routes de
+    /// services. Reserve aux tests, dont les amonts ecoutent en local ; la
+    /// production utilise `new`.
+    pub fn with_loopback_upstreams() -> Self {
+        Self {
+            allow_loopback: true,
+            ..Self::default()
+        }
+    }
+
     /// Valide `routes` puis remplace la table d'un bloc. En cas d'erreur, rien
     /// ne change. Renvoie le nombre de routes appliquees.
     pub fn apply(&self, routes: Vec<Route>) -> Result<usize, RouteError> {
-        let table = Table::build(routes)?;
+        let table = Table::build(routes, self.allow_loopback)?;
         let len = table.len;
         self.current.store(Arc::new(table));
         Ok(len)
@@ -164,7 +183,7 @@ impl RouteTable {
     }
 }
 
-fn validate(route: &Route) -> Result<(), RouteError> {
+fn validate(route: &Route, allow_loopback: bool) -> Result<(), RouteError> {
     // Hote deja normalise par l'emetteur : minuscules, sans point final ni port.
     if !valid_dns_name(&route.host) || route.host.ends_with('.') {
         return Err(RouteError::Host(route.host.clone()));
@@ -182,9 +201,14 @@ fn validate(route: &Route) -> Result<(), RouteError> {
     if route.upstreams.len() > MAX_UPSTREAMS {
         return Err(RouteError::TooMany(route.upstreams.len()));
     }
+    // Seul le panneau joint l'ecoute locale de l'hote : un service de projet
+    // n'y a jamais d'amont (l'agent, le plan de controle ou le socket de
+    // pilotage ne doivent pas etre joignables par une route d'application).
+    let loopback_ok = allow_loopback || is_panel_route(route);
     for up in &route.upstreams {
         let ip = up.ip();
         if up.port() == 0
+            || (!loopback_ok && ip.to_canonical().is_loopback())
             || ip.is_unspecified()
             || ip.is_multicast()
             || is_broadcast(ip)
