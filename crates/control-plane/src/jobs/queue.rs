@@ -35,18 +35,23 @@ pub async fn enqueue_in(
 }
 
 /// Comme [`enqueue_in`], sauf si une tache du meme genre et de meme charge
-/// utile attend deja en file (`queued`) : renvoie alors celle-ci. Une tache
-/// en cours n'empeche pas l'ajout (elle a pu lire un etat deja depasse).
-/// Deux ajouts simultanes peuvent encore creer deux taches : sans danger,
-/// les gestionnaires sont idempotents.
+/// utile attend deja en file (`queued`) : celle-ci est renvoyee, avancee a
+/// maintenant (une reprise differee repart tout de suite) et verrouillee
+/// jusqu'a la fin de la transaction de l'appelant (`claim_next` la saute :
+/// elle ne peut pas s'executer avant que l'etat de l'appelant soit
+/// valide). Une tache en cours n'empeche pas l'ajout (elle a pu lire un
+/// etat deja depasse). Deux ajouts simultanes peuvent encore creer deux
+/// taches : sans danger, les gestionnaires sont idempotents.
 pub async fn enqueue_unless_queued(
     conn: &mut PgConnection,
     kind: JobKind,
     payload: Value,
 ) -> Result<JobId> {
     let existing: Option<JobId> = sqlx::query_scalar(
-        "SELECT id FROM jobs WHERE kind = $1 AND status = 'queued' AND payload = $2::jsonb \
-         LIMIT 1",
+        "UPDATE jobs SET run_at = LEAST(run_at, now()) WHERE id = ( \
+             SELECT id FROM jobs WHERE kind = $1 AND status = 'queued' \
+             AND payload = $2::jsonb LIMIT 1 FOR UPDATE SKIP LOCKED) \
+         RETURNING id",
     )
     .bind(kind.as_str())
     .bind(payload.to_string())

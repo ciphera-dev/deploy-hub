@@ -303,6 +303,7 @@ pub async fn act(
             .fetch_all(&mut *tx)
             .await?;
     let marked = (action == Action::Stop).then_some(deployment);
+    let audit_id = Uuid::new_v4();
     sqlx::query("UPDATE services SET stopped_deployment = $2 WHERE environment_id = $1")
         .bind(environment)
         .bind(marked)
@@ -315,7 +316,7 @@ pub async fn act(
     sqlx::query(
         "INSERT INTO audit_events (id, actor_id, action, target, detail) VALUES ($1, $2, $3, $4, $5)",
     )
-    .bind(Uuid::new_v4())
+    .bind(audit_id)
     .bind(actor)
     .bind(audit_action(target, action))
     .bind(if service.is_some() { "service" } else { "project" })
@@ -330,23 +331,32 @@ pub async fn act(
     tx.commit().await?;
     if let Err(e) = state.agents.send(ServerId(server), msg) {
         tracing::warn!(%server, "ordre {action:?} non envoye a l'agent : {e}");
-        restore_marks(state, environment, marked, &previous).await;
+        restore_marks(state, environment, marked, &previous, audit_id).await;
         return Err(ActionError::AgentUnavailable);
     }
     Ok(deployment)
 }
 
-/// Remet les marques d'arret d'avant un ordre qui n'est pas parti, sauf
-/// celles changees entre-temps. Au mieux : une erreur est journalisee.
+/// Ordre qui n'est pas parti apres la validation : retire son evenement
+/// d'audit (l'action n'a pas eu lieu) et remet les marques d'arret
+/// d'avant, sauf celles changees entre-temps. Une action concurrente reussie
+/// qui aurait pose la meme marque dans l'intervalle (fenetre de quelques
+/// millisecondes) la perd : l'interface montre alors l'etat reel apres le
+/// prochain etat de l'agent. Au mieux : une erreur est journalisee.
 async fn restore_marks(
     state: &AppState,
     environment: Uuid,
     marked: Option<Uuid>,
     previous: &[(Uuid, Option<Uuid>)],
+    audit_id: Uuid,
 ) {
     let restored = async {
         let mut tx = state.db.begin().await?;
         lock_environment(&mut tx, environment).await?;
+        sqlx::query("DELETE FROM audit_events WHERE id = $1")
+            .bind(audit_id)
+            .execute(&mut *tx)
+            .await?;
         for (service, mark) in previous {
             sqlx::query(
                 "UPDATE services SET stopped_deployment = $2 \

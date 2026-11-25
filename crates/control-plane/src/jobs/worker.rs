@@ -77,10 +77,13 @@ impl Handlers {
         self
     }
 
-    /// Enregistre le gestionnaire de fin d'un genre : appele (au moins une
-    /// fois, idempotent) avec la tache et sa derniere erreur quand elle
-    /// passe `dead` (echec terminal, tentatives epuisees, bail echu a la
-    /// derniere tentative). Il ne doit pas echouer : il journalise.
+    /// Enregistre le gestionnaire de fin d'un genre : appele au plus une
+    /// fois avec la tache et sa derniere erreur quand elle passe `dead`
+    /// (echec terminal, tentatives epuisees, bail echu a la derniere
+    /// tentative). Un arret entre le passage `dead` et l'appel le perd : le
+    /// gestionnaire ne doit etre qu'un raccourci, rattrape ailleurs (pour
+    /// les deploiements : chien de garde `STALE_AFTER`, demande suivante).
+    /// Il ne doit pas echouer : il journalise.
     pub fn on_dead<F, Fut>(mut self, kind: JobKind, handler: F) -> Self
     where
         F: Fn(Job, String) -> Fut + Send + Sync + 'static,

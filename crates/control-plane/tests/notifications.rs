@@ -217,7 +217,8 @@ impl Env {
     /// tourner deux (les tests de concurrence les executent sans la file).
     async fn queued_notify_jobs(&self) -> Vec<jobs::Job> {
         let rows: Vec<(uuid::Uuid, serde_json::Value)> = sqlx::query_as(
-            "SELECT id, payload FROM jobs WHERE kind = 'notify' AND status = 'queued'              ORDER BY created_at",
+            "SELECT id, payload FROM jobs WHERE kind = 'notify' AND status = 'queued' \
+             ORDER BY created_at",
         )
         .fetch_all(&self.state.db)
         .await

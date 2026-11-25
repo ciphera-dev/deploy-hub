@@ -499,6 +499,33 @@ mod tests {
         );
     }
 
+    /// Serveur SMTP injoignable (port local ferme) : l'erreur du vrai
+    /// transport est classee « connexion », ce qui arrete la tache de
+    /// notification au premier echec (`domain::notifications`).
+    #[tokio::test]
+    async fn unreachable_server_is_a_connection_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        for tls in [TlsMode::StartTls, TlsMode::Tls] {
+            let mut s = settings();
+            s.host = "127.0.0.1".into();
+            s.port = port;
+            s.tls = tls;
+            let mailer = Mailer::from_settings(&s).unwrap();
+            let err = mailer
+                .send(OutgoingMail {
+                    to: "nora@example.com".into(),
+                    subject: "Test".into(),
+                    text: "Corps".into(),
+                })
+                .await
+                .unwrap_err();
+            assert!(err.is_connection(), "{tls:?} : {err}");
+        }
+        assert!(!MailError::other("envoi SMTP refuse").is_connection());
+    }
+
     #[test]
     fn invalid_sender_gives_no_mailer() {
         let mut s = settings();

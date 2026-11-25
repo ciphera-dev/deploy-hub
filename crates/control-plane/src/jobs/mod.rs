@@ -26,7 +26,8 @@
 //!   de taches en cours ([`ACME_CONCURRENCY`], [`NOTIFY_CONCURRENCY`]) : un
 //!   serveur lent ne prive pas les deploiements de travailleurs.
 //! - **Fin d'une tache morte** : le gestionnaire de fin du genre
-//!   (`Handlers::on_dead`) est appele quand une tache passe `dead`.
+//!   (`Handlers::on_dead`) est appele au plus une fois quand une tache
+//!   passe `dead` (un arret du processus peut le perdre).
 //! - **Purge** : les taches terminees (`done`, `dead`) sont supprimees apres
 //!   [`FINISHED_RETENTION`] (entretien horaire, `purge_finished`).
 //!

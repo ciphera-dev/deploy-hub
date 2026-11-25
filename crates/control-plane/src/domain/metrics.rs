@@ -230,6 +230,11 @@ pub fn register(handlers: Handlers, state: AppState) -> Handlers {
 /// plus de 7 jours ([`jobs::purge_finished`]).
 pub async fn run_rollup(state: &AppState, _job: Job) -> Result<(), HandlerError> {
     let now = state.clock.unix_secs();
+    // Purge au mieux, avant l'agregation : un echec de celle-ci ne l'arrete
+    // pas.
+    if let Err(e) = jobs::purge_finished(&state.db, &state.clock).await {
+        tracing::warn!(error = %e, "purge des taches terminees impossible");
+    }
     rollup(&state.db, now).await.map_err(|e| {
         tracing::error!(error = %e, "agregation des metriques impossible");
         HandlerError::retry("agregation des metriques : base de donnees indisponible")
@@ -240,9 +245,6 @@ pub async fn run_rollup(state: &AppState, _job: Job) -> Result<(), HandlerError>
     };
     if let Err(e) = crate::http::email_verification::purge_pending(&state.db).await {
         tracing::warn!(error = %e, "purge des comptes en attente impossible");
-    }
-    if let Err(e) = jobs::purge_finished(&state.db, &state.clock).await {
-        tracing::warn!(error = %e, "purge des taches terminees impossible");
     }
     notifications.await.map_err(|e| {
         tracing::error!(error = %e, "entretien des notifications impossible");
