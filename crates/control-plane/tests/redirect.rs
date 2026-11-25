@@ -46,7 +46,11 @@ async fn redirect_goes_to_the_confirmed_panel_domain_once_8443_is_closed() {
     let (addr, _h) = serve_redirect_with(
         8443,
         switch.clone(),
-        vec!["admin.example.net".into(), "203.0.113.7".into(), "2001:db8::1".into()],
+        vec![
+            "admin.example.net".into(),
+            "203.0.113.7".into(),
+            "2001:db8::1".into(),
+        ],
     )
     .await;
     // Domaine pas encore confirme : 8443 reste la cible.
