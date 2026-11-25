@@ -413,6 +413,9 @@ egress_container() { # <reseau> <journal>
 }
 check "(a) ciphera-build : interface nommee ciphera-build" test -d /sys/class/net/ciphera-build
 check "(a) filtrage de sortie charge (table inet ciphera_egress)" nft list table inet ciphera_egress
+# Le panneau doit ecouter avant les sondes : un refus de connexion pendant son
+# demarrage fausserait le temoin (joignable) comme les cas « bloque ».
+check "(a) panneau joignable avant les sondes de sortie" panel_up
 egress_build || true
 egress_container bridge "$work/egress-witness.log" || true
 # Pont ciphera-prepare : cree comme l'agent le fait (gere par Ciphera, sans
