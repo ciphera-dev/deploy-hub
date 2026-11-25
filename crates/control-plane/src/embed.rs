@@ -149,7 +149,7 @@ mod tests {
     }
 
     fn with_marker(path: &str) -> Option<Asset> {
-        (path == "index.html").then(|| Asset {
+        (path == "index.html").then_some(Asset {
             data: Cow::Borrowed(br#"<meta name="csp-nonce" content="__CSP_NONCE__">"#),
         })
     }
