@@ -934,6 +934,34 @@ fn compose_image_internal_refused() {
     compose("services:\n  web:\n    image: ghcr.io/ciphera/web:1\n").unwrap();
 }
 
+/// Image designee par son identifiant (ou un prefixe), meme sans
+/// telechargement : refusee, comme tout ce qui n'est pas un nom.
+#[test]
+fn compose_image_id_refused() {
+    let hex64 = "0123456789abcdef".repeat(4);
+    for image in [
+        format!("sha256:{hex64}"),
+        format!("SHA256:{}", hex64.to_uppercase()),
+        "sha256:0123ab".to_string(),
+        hex64.clone(),
+        "0123ab".to_string(),
+        "ABCDEF".to_string(),
+        format!("0123ab@sha256:{hex64}"),
+    ] {
+        let text = format!("services:\n  web:\n    image: '{image}'\n    pull_policy: never\n");
+        let err = compose(&text).expect_err(&text);
+        assert_eq!(err.path, "services.web.image", "{err}");
+    }
+    for image in [
+        "myorg/app:abc123".to_string(),
+        "deadbeef:1.0".to_string(),
+        format!("repo@sha256:{hex64}"),
+    ] {
+        let text = format!("services:\n  web:\n    image: '{image}'\n");
+        compose(&text).unwrap_or_else(|e| panic!("{image} : {e}"));
+    }
+}
+
 #[tokio::test]
 async fn image_source_internal_ref_refused() {
     let dir = BuildsDir::new();

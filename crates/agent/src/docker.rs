@@ -1257,8 +1257,9 @@ pub fn check_pullable(image: &str) -> Result<(), PullError> {
 }
 
 /// Lit le flux d'un telechargement (`create_image`) en `timeout` au plus, et
-/// s'arrete des que la taille annoncee (plus grande taille annoncee par
-/// couche, additionnee sur les couches, arithmetique saturee) depasse
+/// s'arrete des que la taille annoncee (plus grande taille annoncee ou deja
+/// recue par couche, additionnee sur les couches, arithmetique saturee,
+/// taille compressee) depasse
 /// `max_bytes`. Abandonner le flux ferme la requete : Docker interrompt le
 /// telechargement. `status` recoit chaque etape (journal du build).
 pub async fn bounded_pull<S, F, Fut>(
@@ -1277,11 +1278,15 @@ where
         let mut layers: HashMap<String, u64> = HashMap::new();
         while let Some(step) = steps.next().await {
             let info = step.map_err(|e| PullError::Failed(e.to_string()))?;
-            let announced = info
-                .progress_detail
-                .as_ref()
-                .and_then(|p| p.total)
-                .and_then(|t| u64::try_from(t).ok());
+            // Taille annoncee, ou deja recue si le registre n'en annonce
+            // pas : une couche sans `total` est bornee par son `current`.
+            let announced = info.progress_detail.as_ref().and_then(|p| {
+                let size = |v: Option<i64>| v.and_then(|v| u64::try_from(v).ok());
+                match (size(p.current), size(p.total)) {
+                    (None, None) => None,
+                    (c, t) => Some(c.unwrap_or(0).max(t.unwrap_or(0))),
+                }
+            });
             if let (Some(id), Some(size)) = (info.id.as_ref(), announced) {
                 let layer = layers.entry(id.clone()).or_insert(0);
                 *layer = (*layer).max(size);
@@ -2496,15 +2501,38 @@ mod tests {
     }
 
     fn layer(id: &str, total: i64) -> Result<bollard::models::CreateImageInfo, BollardError> {
+        progress(id, Some(0), Some(total))
+    }
+
+    fn progress(
+        id: &str,
+        current: Option<i64>,
+        total: Option<i64>,
+    ) -> Result<bollard::models::CreateImageInfo, BollardError> {
         Ok(bollard::models::CreateImageInfo {
             id: Some(id.into()),
             status: Some("Downloading".into()),
-            progress_detail: Some(bollard::models::ProgressDetail {
-                current: Some(0),
-                total: Some(total),
-            }),
+            progress_detail: Some(bollard::models::ProgressDetail { current, total }),
             ..Default::default()
         })
+    }
+
+    #[tokio::test]
+    async fn pull_without_announced_size_is_capped_by_received_bytes() {
+        // Registre qui n'annonce aucune taille : `current` compte.
+        let over = stream::iter([
+            progress("a", Some(60), None),
+            progress("b", Some(30), None),
+            progress("b", Some(41), None),
+        ]);
+        let result = bounded_pull(over, PULL_TIMEOUT, 100, |_| async {}).await;
+        assert!(matches!(result, Err(PullError::TooLarge)), "{result:?}");
+        let fits = stream::iter([progress("a", Some(60), None), progress("b", None, None)]);
+        assert!(
+            bounded_pull(fits, PULL_TIMEOUT, 100, |_| async {})
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test(start_paused = true)]

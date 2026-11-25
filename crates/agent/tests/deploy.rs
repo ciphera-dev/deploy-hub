@@ -1844,6 +1844,11 @@ async fn orphan_labeled_containers_and_images_are_swept() {
     let built = DeploymentId::new();
     let stray_image = DeploymentId::new();
     let shared = DeploymentId::new();
+    // Anciens noms (`ciphera/`, `ciphera-staging/`) d'un deploiement
+    // anterieur : memes regles.
+    let legacy_stray = DeploymentId::new();
+    let legacy_used = DeploymentId::new();
+    let legacy = |id: DeploymentId| format!("ciphera/web-production:{id}");
     bench
         .db
         .put_outcome(built, Stage::Image, &StageStatus::Succeeded)
@@ -1887,7 +1892,17 @@ async fn orphan_labeled_containers_and_images_are_swept() {
         .docker
         .add_container("odd", "odd", &[(DEPLOYMENT_LABEL, "pas-un-uuid")], None);
     stopped_with_image(&bench, "odd", &tag(shared));
+    bench.docker.add_container(
+        "odd-legacy",
+        "odd-legacy",
+        &[(DEPLOYMENT_LABEL, "pas-un-uuid")],
+        None,
+    );
+    stopped_with_image(&bench, "odd-legacy", &legacy(legacy_used));
     bench.docker.images.lock().unwrap().extend([
+        legacy(legacy_stray),
+        format!("ciphera-staging/{legacy_stray}-web:build"),
+        legacy(legacy_used),
         tag(kept),
         tag(orphan),
         tag(live),
@@ -1919,6 +1934,7 @@ async fn orphan_labeled_containers_and_images_are_swept() {
         tag(live),
         tag(built),
         tag(shared),
+        legacy(legacy_used),
         "nginx:alpine".to_string(),
     ];
     expected.sort();

@@ -419,6 +419,33 @@ async fn fixtures_build_with_buildkit_and_load_into_docker() {
     .unwrap_or_else(|e| panic!("plan Compose : {e}\n{bundle}"));
     let order: Vec<&str> = plan.order.iter().map(|a| a.as_str()).collect();
     assert_eq!(order, ["cache"]);
+    // Un autre service designe cette image construite par son identifiant
+    // (complet, sans `sha256:`, ou prefixe court), sans telechargement :
+    // refuse avant tout deploiement.
+    let image_id: String = api
+        .inspect_image(&tag)
+        .await
+        .unwrap()
+        .id
+        .expect("identifiant de l'image construite");
+    let hex: String = image_id
+        .strip_prefix("sha256:")
+        .unwrap_or(image_id.as_str())
+        .to_string();
+    let short: String = hex[..12].to_string();
+    for reference in [image_id.clone(), hex.clone(), short] {
+        let mut stolen = bundle.clone();
+        stolen["services"]["cache"]["image"] = serde_json::Value::String(reference.clone());
+        stolen["services"]["cache"]["pull_policy"] = serde_json::Value::String("never".into());
+        let refused = ComposePlan::new(
+            &stolen,
+            "web",
+            ProjectId::new(),
+            s.deployment_id,
+            s.deployment_id,
+        );
+        assert!(refused.is_err(), "{reference} accepte");
+    }
 
     // Build en echec : etape Build en echec, aucune image (ni finale, ni
     // provisoire).

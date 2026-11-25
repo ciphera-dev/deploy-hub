@@ -171,6 +171,9 @@ async fn image_project_internal_ref_refused() {
         "docker.io/ciphera/web-production:1",
         "index.docker.io/ciphera-staging/x:build",
         "registry-1.docker.io/ciphera/web",
+        // Identifiant d'image (ou prefixe) au lieu d'un nom.
+        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "0123ab",
     ] {
         let body = json!({ "name": "cache", "source": { "type": "image", "image": image } });
         let r = send(&state, &dev, "POST", "/api/projects", Some(body)).await;

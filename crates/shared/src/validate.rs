@@ -117,7 +117,26 @@ pub fn image(value: &str) -> Result<(), Invalid> {
             "Les images « ciphera.invalid/… », « ciphera/… » et « ciphera-staging/… » sont réservées à Ciphera.",
         );
     }
+    // Nom avant un digest `@` : jamais un identifiant d'image.
+    let name = value.split_once('@').map_or(value, |(name, _)| name);
+    if is_image_id(name) {
+        return Err(
+            "Une image se désigne par son nom (exemple : ghcr.io/org/app:1.2), jamais par son identifiant.",
+        );
+    }
     Ok(())
+}
+
+/// Identifiant d'image (ou prefixe d'identifiant) plutot qu'un nom :
+/// `^(sha256:)?[0-9a-fA-F]*$`, en toute casse. Docker resout une telle
+/// reference vers une image locale par son identifiant, quel que soit le
+/// projet qui l'a construite.
+fn is_image_id(name: &str) -> bool {
+    let hex = match name.get(..7) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("sha256:") => &name[7..],
+        _ => name,
+    };
+    hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Depot GitHub : URL `https://github.com/proprietaire/nom[.git]` ou
@@ -338,5 +357,41 @@ mod tests {
             assert!(image(internal).is_err(), "{internal}");
         }
         assert!(image("ghcr.io/ciphera/web:1").is_ok());
+    }
+
+    #[test]
+    fn image_ids_are_refused() {
+        let hex64 = "3f9a1c".repeat(10) + "abcd";
+        for id in [
+            format!("sha256:{hex64}"),
+            format!("SHA256:{}", hex64.to_uppercase()),
+            "sha256:3f9a".to_string(),
+            "sha256:".to_string(),
+            hex64.clone(),
+            hex64.to_uppercase(),
+            "3f9a1c".to_string(),
+            "DEADBEEF".to_string(),
+            "a".to_string(),
+            "0".to_string(),
+            // Aucun nom de depot avant le digest.
+            format!("sha256:3f9a@sha256:{hex64}"),
+            format!("3f9a1c@sha256:{hex64}"),
+            format!("DEADBEEF@sha256:{hex64}"),
+        ] {
+            assert!(image(&id).is_err(), "{id}");
+        }
+        for ok in [
+            "myorg/app:abc123".to_string(),
+            "abc123/app".to_string(),
+            "deadbeef:1.0".to_string(),
+            "myorg/deadbeef".to_string(),
+            "nginx".to_string(),
+            "nginx:latest".to_string(),
+            format!("repo@sha256:{hex64}"),
+            format!("ghcr.io/org/app:1.2@sha256:{hex64}"),
+            format!("abc/def@sha256:{hex64}"),
+        ] {
+            assert!(image(&ok).is_ok(), "{ok}");
+        }
     }
 }
