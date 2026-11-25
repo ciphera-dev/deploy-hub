@@ -44,7 +44,8 @@
           "410": {
             "description": "`email_verification_expired`"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/email-verification/{token}/confirm": {
@@ -101,7 +102,8 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/invitations/{token}": {
@@ -139,7 +141,8 @@
           "410": {
             "description": "`invitation_expired`"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/invitations/{token}/accept": {
@@ -189,7 +192,8 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/login": {
@@ -232,7 +236,8 @@
           "429": {
             "description": "Trop de tentatives, ou connexion deja en cours sur ce compte (code `busy`) ; en-tete Retry-After"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/logout": {
@@ -263,7 +268,8 @@
           "403": {
             "description": "Jeton CSRF absent ou invalide"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/mfa/methods": {
@@ -290,7 +296,8 @@
           "409": {
             "description": "`mfa_not_pending` : la session est deja complete"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/mfa/verify": {
@@ -330,7 +337,8 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/password/forgot": {
@@ -351,7 +359,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       },
       "post": {
         "tags": [
@@ -379,7 +388,8 @@
           "429": {
             "description": "Trop de demandes ; en-tete Retry-After"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/password/reset": {
@@ -415,7 +425,8 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/password/reset/{token}": {
@@ -453,7 +464,8 @@
           "410": {
             "description": "`reset_expired`"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/recovery-code": {
@@ -493,7 +505,8 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/register": {
@@ -514,7 +527,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       },
       "post": {
         "tags": [
@@ -548,7 +562,8 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/webauthn/assert/options": {
@@ -588,7 +603,8 @@
           "429": {
             "description": "Trop de ceremonies en cours ; en-tete Retry-After"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/webauthn/assert/verify": {
@@ -631,7 +647,8 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/auth/webauthn/status": {
@@ -652,7 +669,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/connectors/github": {
@@ -676,7 +694,12 @@
           "403": {
             "description": "Role insuffisant"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -708,7 +731,13 @@
           "404": {
             "description": "`github_not_connected`"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/connectors/github/callback": {
@@ -761,7 +790,12 @@
           "502": {
             "description": "`github_unavailable`"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/connectors/github/manifest": {
@@ -815,7 +849,13 @@
           "422": {
             "description": "Origine du panneau absente ou invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/deployments": {
@@ -876,7 +916,12 @@
           "422": {
             "description": "Filtre invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/deployments/{id}": {
@@ -911,7 +956,12 @@
           "404": {
             "description": "Deploiement introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/deployments/{id}/cancel": {
@@ -964,7 +1014,59 @@
           "409": {
             "description": "`already_finished` : deploiement termine"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/deployments/{id}/logs.txt": {
+      "get": {
+        "tags": [
+          "deployments"
+        ],
+        "summary": "Telecharge le journal d'un deploiement en texte (4 Mio au plus), masque\ndes valeurs secretes du projet.",
+        "operationId": "download_deployment_logs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Identifiant du deploiement",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Journal en texte brut",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Role insuffisant"
+          },
+          "404": {
+            "description": "Journal introuvable"
+          },
+          "429": {
+            "description": "Trop de telechargements en cours (`Retry-After`)"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/deployments/{id}/rollback": {
@@ -1020,7 +1122,13 @@
           "429": {
             "description": "`too_many_queued` : 10 deploiements deja en file sur l'environnement"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/domains": {
@@ -1057,7 +1165,12 @@
           "404": {
             "description": "Projet introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -1108,7 +1221,13 @@
           "422": {
             "description": "Nom invalide (sslip.io et nip.io compris), ou port interne manquant"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -1156,7 +1275,13 @@
           "422": {
             "description": "IP publique du noeud inconnue"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/domains/{id}": {
@@ -1189,7 +1314,13 @@
           "409": {
             "description": "Domaine genere : le desactiver"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -1237,7 +1368,13 @@
           "422": {
             "description": "Valeur invalide, ou port interne manquant"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/domains/{id}/primary": {
@@ -1277,7 +1414,13 @@
           "409": {
             "description": "Domaine redirige ou genere (HTTP seulement)"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/domains/{id}/redirect": {
@@ -1330,7 +1473,13 @@
           "422": {
             "description": "Port interne manquant pour servir de nouveau le service"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/domains/{id}/renew": {
@@ -1370,7 +1519,13 @@
           "409": {
             "description": "DNS non verifie, ou certificat encore valide a plus de 30 jours"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/domains/{id}/verify": {
@@ -1413,7 +1568,13 @@
           "422": {
             "description": "Port interne manquant, ou IP du noeud inconnue"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/git/providers/github/repos": {
@@ -1446,7 +1607,12 @@
           "502": {
             "description": "`github_unavailable`"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/health": {
@@ -1477,7 +1643,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/me": {
@@ -1501,7 +1668,12 @@
           "401": {
             "description": "`unauthenticated` (pas de session) ou `mfa_required`"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -1569,7 +1741,13 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/avatar": {
@@ -1598,7 +1776,12 @@
           "404": {
             "description": "Aucun avatar"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "put": {
         "tags": [
@@ -1659,7 +1842,13 @@
           "422": {
             "description": "Image illisible ou dimensions trop grandes"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -1688,7 +1877,13 @@
           "403": {
             "description": "Jeton CSRF absent ou invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/mfa/totp": {
@@ -1741,7 +1936,13 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/mfa/totp/confirm": {
@@ -1798,7 +1999,13 @@
           "422": {
             "description": "`invalid_code`"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/mfa/totp/start": {
@@ -1856,7 +2063,13 @@
           "429": {
             "description": "Trop de tentatives de mot de passe"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/notification-prefs": {
@@ -1877,7 +2090,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "put": {
         "tags": [
@@ -1926,7 +2144,13 @@
           "422": {
             "description": "Champ manquant ou inconnu"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/password": {
@@ -1976,7 +2200,13 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/sessions": {
@@ -1997,7 +2227,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/sessions/{id}": {
@@ -2043,7 +2278,13 @@
           "409": {
             "description": "`current_session` : utiliser la deconnexion"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/webauthn": {
@@ -2067,7 +2308,12 @@
           "401": {
             "description": "Pas de session complete"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/webauthn/register/options": {
@@ -2125,7 +2371,13 @@
           "429": {
             "description": "Trop de tentatives de mot de passe"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/webauthn/register/verify": {
@@ -2182,7 +2434,13 @@
           "422": {
             "description": "`webauthn_failed` (ceremonie expiree, deja utilisee ou reponse invalide) ou `validation_failed`"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/me/webauthn/{id}": {
@@ -2244,7 +2502,13 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/organization": {
@@ -2301,7 +2565,13 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/organization/export": {
@@ -2339,7 +2609,13 @@
           "403": {
             "description": "Proprietaire seulement, ou jeton CSRF absent ou invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/overview": {
@@ -2377,7 +2653,12 @@
           "422": {
             "description": "Periode inconnue"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects": {
@@ -2407,7 +2688,12 @@
           "403": {
             "description": "Role insuffisant"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -2459,7 +2745,13 @@
           "422": {
             "description": "Nom, depot, branche, chemin ou image invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}": {
@@ -2494,7 +2786,12 @@
           "404": {
             "description": "Projet introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -2547,7 +2844,13 @@
           "422": {
             "description": "`purge_volumes` invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -2611,7 +2914,13 @@
           "422": {
             "description": "Valeur invalide, aucun champ, ou champ sans objet pour une image"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/deploy-hooks": {
@@ -2652,7 +2961,12 @@
           "404": {
             "description": "Projet introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -2716,7 +3030,13 @@
           "422": {
             "description": "Nom invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/deploy-hooks/{hookId}": {
@@ -2768,7 +3088,13 @@
           "404": {
             "description": "Projet ou deploy hook introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/deployments": {
@@ -2834,7 +3160,13 @@
           "429": {
             "description": "`too_many_queued` : 10 deploiements deja en file sur l'environnement"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/git": {
@@ -2875,7 +3207,12 @@
           "409": {
             "description": "`not_git` : projet a source image"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -2939,7 +3276,13 @@
           "422": {
             "description": "Valeur invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/overview": {
@@ -2977,7 +3320,12 @@
           "404": {
             "description": "Projet introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/redeploy": {
@@ -3030,7 +3378,13 @@
           "409": {
             "description": "`deployment_in_progress` : un deploiement est deja en file ou en cours"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/restart": {
@@ -3086,7 +3440,13 @@
           "503": {
             "description": "`agent_unavailable` : agent du serveur deconnecte"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/services": {
@@ -3127,7 +3487,12 @@
           "404": {
             "description": "Projet introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/services/{sid}": {
@@ -3199,7 +3564,13 @@
           "422": {
             "description": "`run_as` hors du format `uid[:gid]` numerique"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/services/{sid}/restart": {
@@ -3264,7 +3635,13 @@
           "503": {
             "description": "`agent_unavailable` : agent du serveur deconnecte"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/services/{sid}/stop": {
@@ -3329,7 +3706,13 @@
           "503": {
             "description": "`agent_unavailable` : agent du serveur deconnecte"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/variables": {
@@ -3379,7 +3762,12 @@
           "404": {
             "description": "Projet ou environnement introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "put": {
         "tags": [
@@ -3452,7 +3840,13 @@
           "422": {
             "description": "Cle ou valeur invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/variables/bulk": {
@@ -3527,7 +3921,13 @@
           "422": {
             "description": "Ligne invalide (numero de ligne dans le message) ; rien n'est enregistre"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/variables/status": {
@@ -3574,7 +3974,12 @@
           "404": {
             "description": "Projet ou environnement introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/projects/{id}/variables/{key}": {
@@ -3635,7 +4040,13 @@
           "404": {
             "description": "Projet, environnement ou variable introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/settings/danger": {
@@ -3659,7 +4070,12 @@
           "403": {
             "description": "Proprietaire seulement"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/settings/deployments": {
@@ -3683,7 +4099,12 @@
           "403": {
             "description": "Administrateur requis"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -3732,7 +4153,13 @@
           "422": {
             "description": "`validation_failed`"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/settings/general": {
@@ -3756,7 +4183,12 @@
           "403": {
             "description": "Administrateur requis"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -3805,7 +4237,13 @@
           "422": {
             "description": "`validation_failed`"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/settings/notifications": {
@@ -3832,7 +4270,12 @@
           "403": {
             "description": "`forbidden` : Parametres, Admin requis"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "put": {
         "tags": [
@@ -3884,7 +4327,13 @@
           "422": {
             "description": "Hote, port, mode TLS, identifiants ou expediteur invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/settings/panel-domain": {
@@ -3908,7 +4357,12 @@
           "403": {
             "description": "Proprietaire seulement"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "put": {
         "tags": [
@@ -3960,7 +4414,13 @@
           "422": {
             "description": "`validation_failed` ou `dns_error`"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -3989,7 +4449,13 @@
           "403": {
             "description": "Proprietaire seulement, ou jeton CSRF absent ou invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/settings/panel-domain/confirm": {
@@ -4056,7 +4522,13 @@
           "502": {
             "description": "`github_hook_not_updated` : webhook de la GitHub App non deplace, rien n'est confirme"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/settings/panel-domain/recheck": {
@@ -4100,7 +4572,13 @@
           "422": {
             "description": "`dns_error`"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/settings/security": {
@@ -4124,7 +4602,12 @@
           "403": {
             "description": "Administrateur requis"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -4179,7 +4662,13 @@
           "429": {
             "description": "Trop de tentatives de mot de passe"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/setup/checks": {
@@ -4220,7 +4709,8 @@
           "503": {
             "description": "Fichier du jeton absent"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/setup/complete": {
@@ -4274,7 +4764,8 @@
           "503": {
             "description": "Fichier du jeton absent"
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/setup/status": {
@@ -4295,7 +4786,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/system/update": {
@@ -4355,7 +4847,13 @@
           "503": {
             "description": "`updates_unavailable` : dossier de donnees different de celui surveille par l'updater (/var/lib/ciphera)"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/system/version": {
@@ -4382,7 +4880,12 @@
           "403": {
             "description": "Administrateur requis"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/team/invitations": {
@@ -4412,7 +4915,12 @@
           "403": {
             "description": "`forbidden` : Equipe : Admin requis"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -4467,7 +4975,13 @@
           "422": {
             "description": "E-mail, nom ou role invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/team/invitations/{id}": {
@@ -4513,7 +5027,13 @@
           "404": {
             "description": "Invitation introuvable, deja utilisee ou expiree"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/team/members": {
@@ -4543,7 +5063,12 @@
           "403": {
             "description": "`forbidden` : Equipe : Admin requis"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/team/members/{id}": {
@@ -4599,7 +5124,13 @@
           "409": {
             "description": "`last_owner` : il doit rester un proprietaire"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -4659,7 +5190,13 @@
           "422": {
             "description": "Role invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/team/members/{id}/reset-link": {
@@ -4712,7 +5249,13 @@
           "404": {
             "description": "Compte introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/team/members/{id}/reset-mfa": {
@@ -4774,7 +5317,13 @@
           "429": {
             "description": "Trop de tentatives ; en-tete Retry-After"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/variables": {
@@ -4801,7 +5350,12 @@
           "403": {
             "description": "Role insuffisant"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -4850,7 +5404,13 @@
           "422": {
             "description": "Cle, valeur, environnements ou projets invalides"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/variables/export": {
@@ -4888,7 +5448,12 @@
           "422": {
             "description": "Nom d'environnement invalide"
           }
-        }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/api/variables/{id}": {
@@ -4931,7 +5496,13 @@
           "404": {
             "description": "Variable introuvable"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -4992,7 +5563,75 @@
           "422": {
             "description": "Cle, valeur, environnements ou projets invalides"
           }
-        }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/ws/logs": {
+      "get": {
+        "tags": [
+          "deployments"
+        ],
+        "summary": "Flux de journaux en direct (developer et plus ; lecture des logs).\nMise a niveau WebSocket : l'en-tete `Origin` doit etre celui du panneau,\nsinon 403 `origin`. Un seul de `deployment` et `service` est donne. Un\nacces retire en cours de flux ferme la connexion (code 1008).",
+        "operationId": "stream_logs",
+        "parameters": [
+          {
+            "name": "deployment",
+            "in": "query",
+            "description": "Identifiant du deploiement",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "service",
+            "in": "query",
+            "description": "Identifiant du service",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tail",
+            "in": "query",
+            "description": "Lignes passees envoyees a l'ouverture (500 par defaut)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Flux ouvert (mise a niveau WebSocket)"
+          },
+          "403": {
+            "description": "Role insuffisant, ou origine refusee (`origin`)"
+          },
+          "404": {
+            "description": "Deploiement ou service introuvable"
+          },
+          "422": {
+            "description": "Parametres invalides"
+          },
+          "429": {
+            "description": "Trop de flux ouverts"
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/v1/hooks/deploy/{hookId}": {
@@ -5051,7 +5690,75 @@
           "429": {
             "description": "Trop de tentatives (`Retry-After`), ou `too_many_queued` : 10 deploiements deja en file"
           }
-        }
+        },
+        "security": []
+      }
+    },
+    "/v1/webhooks/github": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Livraison de webhook de la GitHub App (evenement `push`). Route publique :\nsignature HMAC SHA-256 du corps brut dans `X-Hub-Signature-256`, identifiant\nunique dans `X-GitHub-Delivery` (une livraison rejouee repond `duplicate`).\nHors `/api/` : sans cookie ni jeton CSRF.",
+        "operationId": "github_webhook",
+        "parameters": [
+          {
+            "name": "X-Hub-Signature-256",
+            "in": "header",
+            "description": "`sha256=` et HMAC SHA-256 du corps brut",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-GitHub-Delivery",
+            "in": "header",
+            "description": "Identifiant de la livraison",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-GitHub-Event",
+            "in": "header",
+            "description": "Genre d'evenement (seul `push` declenche)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Evenement `push` brut",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Livraison ignoree ou deja recue"
+          },
+          "202": {
+            "description": "Deploiements mis en file"
+          },
+          "400": {
+            "description": "`invalid_payload`"
+          },
+          "401": {
+            "description": "`invalid_signature`"
+          },
+          "429": {
+            "description": "Trop de livraisons depuis cette adresse (`Retry-After`)"
+          }
+        },
+        "security": []
       }
     }
   },
@@ -6845,9 +7552,7 @@
           "servers_total",
           "deployments_today",
           "period",
-          "chart",
-          "recent_deployments",
-          "servers"
+          "chart"
         ],
         "properties": {
           "chart": {
@@ -6877,17 +7582,24 @@
             "format": "int64"
           },
           "recent_deployments": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "$ref": "#/components/schemas/Deployment"
             },
-            "description": "Les 5 derniers deploiements, le plus recent d'abord."
+            "description": "Les 5 derniers deploiements, le plus recent d'abord. Absent sans la\nlecture des deploiements."
           },
           "servers": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "$ref": "#/components/schemas/ServerLoad"
-            }
+            },
+            "description": "Absent sans la lecture des serveurs."
           },
           "servers_online": {
             "type": "integer",
@@ -7164,17 +7876,18 @@
         "description": "Reponse de `GET /api/projects/{id}/overview`.",
         "required": [
           "status",
-          "metrics",
-          "services",
-          "activity"
+          "metrics"
         ],
         "properties": {
           "activity": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "$ref": "#/components/schemas/Deployment"
             },
-            "description": "Activite recente : les 4 derniers deploiements, le plus recent d'abord."
+            "description": "Activite recente : les 4 derniers deploiements, le plus recent d'abord.\nAbsente sans la lecture des deploiements."
           },
           "domain": {
             "type": [
@@ -7198,10 +7911,14 @@
             ]
           },
           "services": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "$ref": "#/components/schemas/ProjectService"
-            }
+            },
+            "description": "Absent sans la lecture des serveurs."
           },
           "status": {
             "$ref": "#/components/schemas/ProjectStatus"
@@ -8695,6 +9412,20 @@
             "description": "Adresse publique du panneau a laquelle les passkeys fonctionnent,\nquand elles sont indisponibles depuis cet hote pour cette seule raison."
           }
         }
+      }
+    },
+    "securitySchemes": {
+      "csrfHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CSRF-Token",
+        "description": "Jeton CSRF de la session, obligatoire sur toute ecriture (POST, PUT, PATCH, DELETE)."
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-ciphera_session",
+        "description": "Cookie de session `__Host-`, pose a la connexion (HttpOnly, Secure, SameSite=Strict)."
       }
     }
   }

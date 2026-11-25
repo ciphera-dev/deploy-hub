@@ -8,6 +8,7 @@ pub mod email_verification;
 pub mod github;
 pub mod health;
 pub mod invitations;
+pub mod logs;
 pub mod me;
 pub mod mfa;
 pub mod notifications;
@@ -29,6 +30,7 @@ use utoipa::OpenApi;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Ciphera API", license(name = "AGPL-3.0-only")),
+    modifiers(&Security),
     paths(
         health::health,
         setup::status,
@@ -89,11 +91,14 @@ use utoipa::OpenApi;
         github::github_callback,
         github::github_disconnect,
         github::github_repos,
+        github::github_webhook,
         deployments::create_deployment,
         deployments::list_deployments,
         deployments::get_deployment,
         deployments::cancel_deployment,
         deployments::rollback_deployment,
+        logs::stream_logs,
+        logs::download_deployment_logs,
         project_git::get_git_settings,
         project_git::update_git_settings,
         project_git::list_deploy_hooks,
@@ -283,6 +288,75 @@ use utoipa::OpenApi;
     ))
 )]
 struct ApiDoc;
+
+/// Cookie de session (`__Host-`) et en-tete CSRF des routes protegees.
+const SESSION_SCHEME: &str = "sessionCookie";
+const CSRF_SCHEME: &str = "csrfHeader";
+
+/// Nom du cookie de session (prefixe `__Host-` : `Secure`, `Path=/`, sans
+/// `Domain`).
+const SESSION_COOKIE: &str = "__Host-ciphera_session";
+
+/// Routes sans session par conception (la matrice des droits les declare
+/// `Public`) : assistant d'installation, connexion et ses suites, sonde,
+/// deploy hook et webhook, qui portent leur propre secret.
+fn is_public(path: &str) -> bool {
+    path == "/api/health"
+        || path.starts_with("/api/setup/")
+        || path.starts_with("/api/auth/")
+        || path.starts_with("/v1/hooks/deploy/")
+        || path == "/v1/webhooks/github"
+}
+
+/// Declare les schemas de securite et les rattache a chaque operation :
+/// session pour toutes les routes protegees, en-tete CSRF en plus pour les
+/// ecritures ; aucune exigence (`security: []`) pour les routes publiques.
+struct Security;
+
+impl utoipa::Modify for Security {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityRequirement, SecurityScheme};
+
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            SESSION_SCHEME,
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::with_description(
+                SESSION_COOKIE,
+                "Cookie de session `__Host-`, pose a la connexion (HttpOnly, Secure, SameSite=Strict).",
+            ))),
+        );
+        components.add_security_scheme(
+            CSRF_SCHEME,
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                "X-CSRF-Token",
+                "Jeton CSRF de la session, obligatoire sur toute ecriture (POST, PUT, PATCH, DELETE).",
+            ))),
+        );
+        let no_scopes = Vec::<String>::new;
+        for (path, item) in openapi.paths.paths.iter_mut() {
+            let ops = [
+                (&mut item.get, false),
+                (&mut item.put, true),
+                (&mut item.post, true),
+                (&mut item.delete, true),
+                (&mut item.patch, true),
+            ];
+            for (op, writes) in ops {
+                let Some(op) = op else { continue };
+                op.security = Some(if is_public(path) {
+                    Vec::new()
+                } else if writes {
+                    vec![
+                        SecurityRequirement::new(SESSION_SCHEME, no_scopes())
+                            .add(CSRF_SCHEME, no_scopes()),
+                    ]
+                } else {
+                    vec![SecurityRequirement::new(SESSION_SCHEME, no_scopes())]
+                });
+            }
+        }
+    }
+}
 
 /// Document OpenAPI complet de l'API du control-plane.
 pub fn openapi() -> utoipa::openapi::OpenApi {

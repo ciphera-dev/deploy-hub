@@ -87,6 +87,13 @@ const MATRIX: &[(&str, &str, Guard)] = &[
         "/v1/hooks/deploy/{hookId}",
         Public("deploy hook : jeton dh_ dans l'URL, compare a temps constant"),
     ),
+    (
+        "POST",
+        "/v1/webhooks/github",
+        Public("webhook GitHub : signature HMAC-SHA256 X-Hub-Signature-256"),
+    ),
+    ("GET", "/api/ws/logs", R(Logs, Rd)),
+    ("GET", "/api/deployments/{id}/logs.txt", R(Logs, Rd)),
     // Compte connecte.
     ("GET", "/api/me", Session),
     ("PATCH", "/api/me", Session),
@@ -207,18 +214,11 @@ const MATRIX: &[(&str, &str, Guard)] = &[
     ("POST", "/api/system/update", Owner),
 ];
 
-/// Routes du routeur absentes de `openapi()` (WebSocket, telechargement,
-/// webhook) : verifiees de la meme facon. Liste complete : controlee par
-/// `every_router_route_is_in_the_matrix` (routes lues dans `src/`).
-const OUTSIDE_OPENAPI: &[(&str, &str, Guard)] = &[
-    ("GET", "/api/ws/logs", R(Logs, Rd)),
-    ("GET", "/api/deployments/{id}/logs.txt", R(Logs, Rd)),
-    (
-        "POST",
-        "/v1/webhooks/github",
-        Public("webhook GitHub : signature HMAC-SHA256 X-Hub-Signature-256"),
-    ),
-];
+/// Routes du routeur absentes de `openapi()` : aucune depuis que le flux de
+/// logs, le telechargement et le webhook y figurent. Liste complete :
+/// controlee par `every_router_route_is_in_the_matrix` (routes lues dans
+/// `src/`).
+const OUTSIDE_OPENAPI: &[(&str, &str, Guard)] = &[];
 
 /// Sans session par conception, mais hors du plan de controle : rien a
 /// appeler ici, liste pour qu'aucune exemption ne reste implicite
@@ -588,4 +588,186 @@ async fn protected_routes_refuse_a_request_without_cookie() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Identifiant du compte d'une session.
+async fn me_id(state: &AppState, session: &(String, String)) -> Uuid {
+    let r = send(state, session, "GET", "/api/me", None).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    Uuid::parse_str(r.json()["id"].as_str().expect("id")).unwrap()
+}
+
+async fn member(state: &AppState, role: Role) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, role, name, email_verified_at) VALUES ($1, $2, $3, $4, 'Cible', now())",
+    )
+    .bind(id)
+    .bind(format!("cible-{}@example.com", id.simple()))
+    .bind(password::hash(PASSWORD).unwrap())
+    .bind(role.as_str())
+    .execute(&state.db)
+    .await
+    .unwrap();
+    id
+}
+
+async fn send(
+    state: &AppState,
+    session: &(String, String),
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> common::api::Reply {
+    call(
+        state,
+        method,
+        path,
+        Req {
+            cookie: Some(&session.0),
+            csrf: Some(&session.1),
+            headers: headers(),
+            body,
+            ..Req::default()
+        },
+    )
+    .await
+}
+
+/// Lien de reinitialisation et remise a zero du second facteur : jamais pour
+/// son propre compte, quel que soit le role.
+#[tokio::test]
+async fn reset_routes_refuse_the_actors_own_account() {
+    let (state, _pg) = common::state().await;
+    for (n, role) in [Role::Owner, Role::Admin].into_iter().enumerate() {
+        let me = session(&state, role, n).await;
+        let id = me_id(&state, &me).await;
+        let r = send(
+            &state,
+            &me,
+            "POST",
+            &format!("/api/team/members/{id}/reset-link"),
+            None,
+        )
+        .await;
+        assert_eq!(r.status, 403, "{role:?} {}", r.raw);
+        assert_eq!(r.code(), "use_password_change", "{role:?} {}", r.raw);
+        let r = send(
+            &state,
+            &me,
+            "POST",
+            &format!("/api/team/members/{id}/reset-mfa"),
+            Some(json!({ "password": PASSWORD })),
+        )
+        .await;
+        assert_eq!(r.status, 403, "{role:?} {}", r.raw);
+        assert_eq!(r.code(), "use_profile", "{role:?} {}", r.raw);
+    }
+}
+
+/// `Role::can_manage` est applique a la cible reelle : seuls l'owner (tous
+/// les roles) et l'admin (ops, developer, viewer) agissent sur un membre ;
+/// les autres roles sont deja refuses par la matrice.
+#[tokio::test]
+async fn member_routes_apply_can_manage_to_the_target() {
+    let (state, _pg) = common::state().await;
+    for (n, actor) in ROLES.into_iter().enumerate() {
+        let me = session(&state, actor, n).await;
+        for target in ROLES {
+            for (method, suffix) in [("POST", "/reset-link"), ("PATCH", ""), ("DELETE", "")] {
+                let id = member(&state, target).await;
+                let body = (method == "PATCH").then(|| json!({ "role": "viewer" }));
+                let r = send(
+                    &state,
+                    &me,
+                    method,
+                    &format!("/api/team/members/{id}{suffix}"),
+                    body,
+                )
+                .await;
+                let expected = authz::allowed(actor, Team, A) && actor.can_manage(target);
+                assert_eq!(
+                    r.status != 403,
+                    expected,
+                    "{actor:?} {method} sur un {target:?} : {} {}",
+                    r.status,
+                    r.raw
+                );
+                assert!(r.status < 500, "{actor:?} {method} {target:?} : {}", r.raw);
+            }
+        }
+    }
+}
+
+/// Session restreinte a l'enrolement (2FA imposee, compte sans 2FA) : toute
+/// route protegee la refuse (403 `mfa_enrollment_required`), sauf les cinq
+/// routes d'enrolement.
+#[tokio::test]
+async fn enrollment_session_is_refused_by_every_protected_route() {
+    let (state, _pg) = common::state().await;
+    let me = session(&state, Role::Owner, 0).await;
+    sqlx::query("UPDATE sessions SET enrollment_required = true")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    const OPEN: [(&str, &str); 5] = [
+        ("GET", "/api/me"),
+        ("POST", "/api/me/mfa/totp/start"),
+        ("POST", "/api/me/mfa/totp/confirm"),
+        ("POST", "/api/me/webauthn/register/options"),
+        ("POST", "/api/me/webauthn/register/verify"),
+    ];
+    let mut failures = Vec::new();
+    for &(method, template, guard) in MATRIX.iter().chain(OUTSIDE_OPENAPI) {
+        if let Public(_) = guard {
+            continue;
+        }
+        let r = send(&state, &me, method, &concrete(template), None).await;
+        let refused = r.status == 403 && r.code() == "mfa_enrollment_required";
+        let open = OPEN.contains(&(method, template));
+        if refused == open {
+            failures.push(format!(
+                "{method} {template} : {} {} ({})",
+                r.status,
+                r.raw,
+                if open {
+                    "ouverte attendue"
+                } else {
+                    "refus attendu"
+                }
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Les schemas de securite sont declares et les routes sans session sont
+/// exactement celles que la matrice declare publiques.
+#[test]
+fn openapi_security_matches_the_guards() {
+    let doc = serde_json::to_value(api_types::openapi()).unwrap();
+    let schemes = &doc["components"]["securitySchemes"];
+    assert_eq!(schemes["sessionCookie"]["in"], "cookie");
+    assert_eq!(schemes["sessionCookie"]["name"], "__Host-ciphera_session");
+    assert_eq!(schemes["csrfHeader"]["in"], "header");
+    assert_eq!(schemes["csrfHeader"]["name"], "X-CSRF-Token");
+    for &(method, path, guard) in MATRIX {
+        let op = &doc["paths"][path][method.to_ascii_lowercase()];
+        let security = op["security"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{method} {path} : security absent"));
+        match guard {
+            Public(_) => assert!(security.is_empty(), "{method} {path} : public"),
+            _ => {
+                assert_eq!(security.len(), 1, "{method} {path}");
+                let req = security[0].as_object().unwrap();
+                assert!(req.contains_key("sessionCookie"), "{method} {path}");
+                assert_eq!(
+                    req.contains_key("csrfHeader"),
+                    method != "GET",
+                    "{method} {path} : en-tete CSRF"
+                );
+            }
+        }
+    }
 }

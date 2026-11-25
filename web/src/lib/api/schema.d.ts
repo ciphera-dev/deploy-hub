@@ -415,6 +415,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/deployments/{id}/logs.txt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Telecharge le journal d'un deploiement en texte (4 Mio au plus), masque
+         *     des valeurs secretes du projet.
+         */
+        get: operations["download_deployment_logs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/deployments/{id}/rollback": {
         parameters: {
             query?: never;
@@ -1606,6 +1626,28 @@ export interface paths {
         patch: operations["update_global_variable"];
         trace?: never;
     };
+    "/api/ws/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Flux de journaux en direct (developer et plus ; lecture des logs).
+         *     Mise a niveau WebSocket : l'en-tete `Origin` doit etre celui du panneau,
+         *     sinon 403 `origin`. Un seul de `deployment` et `service` est donne. Un
+         *     acces retire en cours de flux ferme la connexion (code 1008).
+         */
+        get: operations["stream_logs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/hooks/deploy/{hookId}": {
         parameters: {
             query?: never;
@@ -1622,6 +1664,28 @@ export interface paths {
          *     constant). Limite : 5 echecs par (IP, hook) et 50 par IP en 15 min.
          */
         post: operations["trigger_deploy_hook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/webhooks/github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Livraison de webhook de la GitHub App (evenement `push`). Route publique :
+         *     signature HMAC SHA-256 du corps brut dans `X-Hub-Signature-256`, identifiant
+         *     unique dans `X-GitHub-Delivery` (une livraison rejouee repond `duplicate`).
+         *     Hors `/api/` : sans cookie ni jeton CSRF.
+         */
+        post: operations["github_webhook"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2393,9 +2457,13 @@ export interface components {
             projects_online: number;
             /** Format: int64 */
             projects_total: number;
-            /** @description Les 5 derniers deploiements, le plus recent d'abord. */
-            recent_deployments: components["schemas"]["Deployment"][];
-            servers: components["schemas"]["ServerLoad"][];
+            /**
+             * @description Les 5 derniers deploiements, le plus recent d'abord. Absent sans la
+             *     lecture des deploiements.
+             */
+            recent_deployments?: components["schemas"]["Deployment"][] | null;
+            /** @description Absent sans la lecture des serveurs. */
+            servers?: components["schemas"]["ServerLoad"][] | null;
             /** Format: int64 */
             servers_online: number;
             /** Format: int64 */
@@ -2503,13 +2571,17 @@ export interface components {
         };
         /** @description Reponse de `GET /api/projects/{id}/overview`. */
         ProjectOverview: {
-            /** @description Activite recente : les 4 derniers deploiements, le plus recent d'abord. */
-            activity: components["schemas"]["Deployment"][];
+            /**
+             * @description Activite recente : les 4 derniers deploiements, le plus recent d'abord.
+             *     Absente sans la lecture des deploiements.
+             */
+            activity?: components["schemas"]["Deployment"][] | null;
             /** @description Domaine principal de la production (absent : aucun domaine). */
             domain?: string | null;
             metrics: components["schemas"]["OverviewMetrics"];
             production?: components["schemas"]["Deployment"] | null;
-            services: components["schemas"]["ProjectService"][];
+            /** @description Absent sans la lecture des serveurs. */
+            services?: components["schemas"]["ProjectService"][] | null;
             status: components["schemas"]["ProjectStatus"];
         };
         /** @description Service d'un projet, tel que l'apercu et l'onglet Services l'affichent. */
@@ -4129,6 +4201,50 @@ export interface operations {
             };
             /** @description `already_finished` : deploiement termine */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    download_deployment_logs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Identifiant du deploiement */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Journal en texte brut */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Role insuffisant */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Journal introuvable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de telechargements en cours (`Retry-After`) */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7991,6 +8107,59 @@ export interface operations {
             };
         };
     };
+    stream_logs: {
+        parameters: {
+            query?: {
+                /** @description Identifiant du deploiement */
+                deployment?: string;
+                /** @description Identifiant du service */
+                service?: string;
+                /** @description Lignes passees envoyees a l'ouverture (500 par defaut) */
+                tail?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Flux ouvert (mise a niveau WebSocket) */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Role insuffisant, ou origine refusee (`origin`) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Deploiement ou service introuvable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Parametres invalides */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de flux ouverts */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     trigger_deploy_hook: {
         parameters: {
             query?: {
@@ -8026,6 +8195,64 @@ export interface operations {
                 content?: never;
             };
             /** @description Trop de tentatives (`Retry-After`), ou `too_many_queued` : 10 deploiements deja en file */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    github_webhook: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description `sha256=` et HMAC SHA-256 du corps brut */
+                "X-Hub-Signature-256": string;
+                /** @description Identifiant de la livraison */
+                "X-GitHub-Delivery": string;
+                /** @description Genre d'evenement (seul `push` declenche) */
+                "X-GitHub-Event": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Evenement `push` brut */
+        requestBody: {
+            content: {
+                "application/json": string;
+            };
+        };
+        responses: {
+            /** @description Livraison ignoree ou deja recue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Deploiements mis en file */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `invalid_payload` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `invalid_signature` */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de livraisons depuis cette adresse (`Retry-After`) */
             429: {
                 headers: {
                     [name: string]: unknown;

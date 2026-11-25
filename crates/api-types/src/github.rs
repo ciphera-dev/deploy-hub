@@ -143,3 +143,28 @@ pub fn github_disconnect() {}
 )]
 #[allow(dead_code)]
 pub fn github_repos() {}
+
+/// Livraison de webhook de la GitHub App (evenement `push`). Route publique :
+/// signature HMAC SHA-256 du corps brut dans `X-Hub-Signature-256`, identifiant
+/// unique dans `X-GitHub-Delivery` (une livraison rejouee repond `duplicate`).
+/// Hors `/api/` : sans cookie ni jeton CSRF.
+#[utoipa::path(
+    post,
+    path = "/v1/webhooks/github",
+    tag = "projects",
+    params(
+        ("X-Hub-Signature-256" = String, Header, description = "`sha256=` et HMAC SHA-256 du corps brut"),
+        ("X-GitHub-Delivery" = String, Header, description = "Identifiant de la livraison"),
+        ("X-GitHub-Event" = String, Header, description = "Genre d'evenement (seul `push` declenche)"),
+    ),
+    request_body(content = String, content_type = "application/json", description = "Evenement `push` brut"),
+    responses(
+        (status = 200, description = "Livraison ignoree ou deja recue"),
+        (status = 202, description = "Deploiements mis en file"),
+        (status = 400, description = "`invalid_payload`"),
+        (status = 401, description = "`invalid_signature`"),
+        (status = 429, description = "Trop de livraisons depuis cette adresse (`Retry-After`)"),
+    )
+)]
+#[allow(dead_code)]
+pub fn github_webhook() {}
