@@ -13,8 +13,8 @@ yanked = "deny"
 # `unmaintained = "workspace"` : cargo deny ne signale que les crates directes
 # du workspace, aucune n'est concernée. cargo audit les affiche en avertissements
 # (non bloquants). Aucun remplaçant direct n'existe à ce jour :
-# - chrono (RUSTSEC-2026-0543), serde_yaml -> unsafe-libyaml
-#   (RUSTSEC-2024-0449), derivative (RUSTSEC-2024-0388), rustls-pemfile
+# - chrono (RUSTSEC-2026-0543), unsafe-libyaml
+#   (RUSTSEC-2024-0449, tirée par serde_yaml 0.9.34+deprecated, sans avis propre), derivative (RUSTSEC-2024-0388), rustls-pemfile
 #   (RUSTSEC-2025-0134) : tirés par pingora-core 0.9.1, dernière version
 #   publiée ; Pingora reste en 0.9.x (le proxy dépend de ses internes) ;
 # - basic-toml (RUSTSEC-2026-0374), proc-macro-error2 (RUSTSEC-2026-0173) :

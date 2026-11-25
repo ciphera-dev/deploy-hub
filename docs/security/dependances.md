@@ -160,12 +160,12 @@ OSV.dev ne couvre pas tout : pour chaque ligne, chercher les avis de sécurité,
 
 ## Crates non maintenues acceptées (réexamen du 2026-11-25)
 
-`cargo audit` signale 7 avis « unmaintained » ; `cargo deny check` reste vert (`unmaintained = "workspace"` : seules les crates directes comptent, aucune n'est concernée). Vérification sur crates.io : `pingora-core` 0.9.1 est la dernière version, `age` 0.12.1 et `testcontainers` 0.28.0 gardent les mêmes dépendances signalées ; aucune montée n'apporte donc de gain. Pingora reste en 0.9.x (le proxy s'appuie sur ses internes).
+`cargo audit` signale 7 avis « unmaintained » (7 crates, 7 identifiants distincts, sortie « 7 allowed warnings found ») ; `cargo deny check` reste vert (`unmaintained = "workspace"` : seules les crates directes comptent, aucune n'est concernée). Vérification sur crates.io : `pingora-core` 0.9.1 est la dernière version, `age` 0.12.1 et `testcontainers` 0.28.0 gardent les mêmes dépendances signalées ; aucune montée n'apporte donc de gain. Pingora reste en 0.9.x (le proxy s'appuie sur ses internes).
 
 | Crate | Avis | Tirée par | Nature | Décision |
 |---|---|---|---|---|
 | chrono 0.4.45 | RUSTSEC-2026-0543 | pingora-core 0.9.1 | exécution (proxy) | acceptée, pas de remplaçant dans Pingora |
-| serde_yaml 0.9.34 / unsafe-libyaml 0.2.11 | RUSTSEC-2024-0449 | pingora-core 0.9.1 | exécution (proxy, configuration YAML de Pingora, jamais alimentée par un tiers) | acceptée |
+| unsafe-libyaml 0.2.11 | RUSTSEC-2024-0449 | serde_yaml 0.9.34+deprecated, tirée par pingora-core 0.9.1 (serde_yaml n'a pas d'avis propre) | exécution (proxy, configuration YAML de Pingora, jamais alimentée par un tiers) | acceptée |
 | derivative 2.2.0 | RUSTSEC-2024-0388 | pingora-core 0.9.1 | macro de compilation | acceptée |
 | rustls-pemfile 2.2.0 | RUSTSEC-2025-0134 | pingora-rustls 0.9.1 | exécution (proxy) | acceptée |
 | basic-toml 0.1.10 | RUSTSEC-2026-0374 | age 0.11.5 (i18n-config) | macro de compilation | acceptée |
