@@ -79,14 +79,17 @@ function retryAfterOf(response: Response): number | undefined {
   return Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined;
 }
 
-/** Passkeys utilisables depuis l'hote courant (faux si le panneau est joint par une adresse IP). */
-export async function fetchWebauthnStatus(): Promise<boolean> {
-  if (!webauthnSupported()) return false;
+/** Passkeys depuis l'hote courant : utilisables, ou adresse publique ou elles fonctionnent (`publicUrl`). */
+export type WebauthnStatus = { available: boolean; publicUrl: string | null };
+
+/** Passkeys utilisables depuis l'hote courant (non si le panneau est joint par une adresse IP, ou hors de son adresse publique). */
+export async function fetchWebauthnStatus(): Promise<WebauthnStatus> {
+  if (!webauthnSupported()) return { available: false, publicUrl: null };
   try {
     const result = await api.GET("/api/auth/webauthn/status");
-    return result.data?.available ?? false;
+    return { available: result.data?.available ?? false, publicUrl: result.data?.public_url ?? null };
   } catch {
-    return false;
+    return { available: false, publicUrl: null };
   }
 }
 

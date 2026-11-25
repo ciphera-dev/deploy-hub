@@ -38,6 +38,7 @@ use super::mfa::{invalid_request, not_pending, pending_session, rate_limited, wi
 use crate::auth::webauthn::{self as store, Kind, Rp};
 use crate::auth::{CurrentUser, csrf, factors, internal, password, rate_limit, recovery, session};
 use crate::http::client_ip::ClientIp;
+use crate::http::panel_host;
 use crate::state::AppState;
 
 /// Corps JSON maximal (reponse d'attestation d'un authentificateur comprise).
@@ -84,15 +85,55 @@ fn no_store(body: impl IntoResponse) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], body).into_response()
 }
 
-/// Relying party pour cette requete : variables WebAuthn, sinon origine
-/// publique (domaine du panneau confirme ou `CIPHERA_PUBLIC_URL`), sinon
-/// hote de la requete.
-pub fn rp_for(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Option<Rp> {
-    let public = state.panel.public_url(&state.cfg);
-    store::relying_party(
-        &state.cfg,
-        public.as_deref(),
-        store::request_host(headers, uri),
+/// Passkeys pour une requete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RpFor {
+    /// Utilisables depuis cet hote.
+    Here(Rp),
+    /// RP ID public que le navigateur refuserait depuis cet hote : les
+    /// passkeys ne fonctionnent qu'a cette adresse (origine publique).
+    Elsewhere(String),
+    /// Indisponibles (adresse IP, configuration ou hote invalide).
+    Unavailable,
+}
+
+/// Relying party pour cette requete : variables WebAuthn (choix explicite de
+/// l'operateur, sans controle de l'hote), sinon origine publique (domaine du
+/// panneau confirme ou `CIPHERA_PUBLIC_URL`), sinon hote de la requete. Le
+/// RP ID public n'est servi qu'a un hote egal a lui ou a l'un de ses
+/// sous-domaines ; ailleurs (IP, `localhost`, alias), [`RpFor::Elsewhere`].
+pub fn rp_for(state: &AppState, headers: &HeaderMap, uri: &Uri) -> RpFor {
+    let cfg = &state.cfg;
+    let public = state.panel.public_url(cfg);
+    let Some(rp) = store::relying_party(cfg, public.as_deref(), store::request_host(headers, uri))
+    else {
+        return RpFor::Unavailable;
+    };
+    let dedicated = cfg.webauthn_rp_id.is_some() || cfg.webauthn_rp_origin.is_some();
+    let from_public = !dedicated
+        && public
+            .as_deref()
+            .and_then(|o| webauthn_rs::prelude::Url::parse(o).ok())
+            .is_some_and(|o| o.domain().is_some());
+    if !from_public {
+        return RpFor::Here(rp);
+    }
+    let name = panel_host::request_host_name(headers, uri);
+    if name.is_some_and(|n| store::host_within(&rp.id, &n)) {
+        RpFor::Here(rp)
+    } else {
+        RpFor::Elsewhere(rp.origin.origin().ascii_serialization())
+    }
+}
+
+/// Passkeys refusees depuis cet hote : l'adresse publique est donnee.
+fn elsewhere(url: &str) -> ApiError {
+    ApiError::new(
+        409,
+        "webauthn_unavailable",
+        format!(
+            "Les clés de sécurité ne fonctionnent qu'à l'adresse publique du panneau : ouvrez {url} pour les utiliser ou en ajouter une."
+        ),
     )
 }
 
@@ -102,7 +143,11 @@ fn relying_party(
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Result<(Rp, Webauthn), ApiError> {
-    let rp = rp_for(state, headers, uri).ok_or_else(unavailable)?;
+    let rp = match rp_for(state, headers, uri) {
+        RpFor::Here(rp) => rp,
+        RpFor::Elsewhere(url) => return Err(elsewhere(&url)),
+        RpFor::Unavailable => return Err(unavailable()),
+    };
     let webauthn = store::webauthn(&rp).map_err(|e| {
         tracing::warn!(error = %e, "configuration WebAuthn refusee");
         unavailable()
@@ -119,8 +164,21 @@ fn options_body(ceremony_id: Uuid, options: serde_json::Value) -> Response {
 
 /// `GET /api/auth/webauthn/status`
 async fn status(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let available = rp_for(&state, &headers, &uri).is_some();
-    no_store(Json(WebauthnStatus { available }))
+    let body = match rp_for(&state, &headers, &uri) {
+        RpFor::Here(_) => WebauthnStatus {
+            available: true,
+            public_url: None,
+        },
+        RpFor::Elsewhere(url) => WebauthnStatus {
+            available: false,
+            public_url: Some(url),
+        },
+        RpFor::Unavailable => WebauthnStatus {
+            available: false,
+            public_url: None,
+        },
+    };
+    no_store(Json(body))
 }
 
 /// `GET /api/me/webauthn`

@@ -588,11 +588,18 @@ async fn methods(
     .fetch_one(&state.db)
     .await
     .map_err(|e| internal("lecture des seconds facteurs", e))?;
-    let available = super::webauthn::rp_for(&state, &headers, &uri).is_some();
+    // Passkey du compte inutilisable depuis cet hote : l'adresse ou elle
+    // fonctionne est donnee (l'interface propose les autres facteurs).
+    let (available, public_url) = match super::webauthn::rp_for(&state, &headers, &uri) {
+        super::webauthn::RpFor::Here(_) => (true, None),
+        super::webauthn::RpFor::Elsewhere(url) => (false, passkey.then_some(url)),
+        super::webauthn::RpFor::Unavailable => (false, None),
+    };
     let body = MfaMethods {
         totp,
         webauthn: passkey && available,
         recovery,
+        public_url,
     };
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response())
 }

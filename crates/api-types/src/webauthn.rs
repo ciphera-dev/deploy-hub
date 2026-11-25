@@ -15,9 +15,13 @@ use zeroize::Zeroizing;
 /// Reponse de `GET /api/auth/webauthn/status`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WebauthnStatus {
-    /// `false` quand le panneau est joint par une adresse IP (les navigateurs
-    /// refusent un RP ID qui en est une) : masquer les boutons passkey.
+    /// `false` quand les passkeys ne peuvent pas servir depuis cet hote
+    /// (adresse IP, ou hote hors du RP ID public) : masquer les boutons
+    /// passkey.
     pub available: bool,
+    /// Adresse publique du panneau a laquelle les passkeys fonctionnent,
+    /// quand elles sont indisponibles depuis cet hote pour cette seule raison.
+    pub public_url: Option<String>,
 }
 
 /// Options d'une ceremonie WebAuthn.

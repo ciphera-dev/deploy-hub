@@ -6451,6 +6451,13 @@
           "recovery"
         ],
         "properties": {
+          "public_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Passkey enregistree mais inutilisable depuis cet hote : adresse\npublique du panneau a laquelle elle fonctionne."
+          },
           "recovery": {
             "type": "boolean",
             "description": "Il reste au moins un code de secours non utilise."
@@ -8678,7 +8685,14 @@
         "properties": {
           "available": {
             "type": "boolean",
-            "description": "`false` quand le panneau est joint par une adresse IP (les navigateurs\nrefusent un RP ID qui en est une) : masquer les boutons passkey."
+            "description": "`false` quand les passkeys ne peuvent pas servir depuis cet hote\n(adresse IP, ou hote hors du RP ID public) : masquer les boutons\npasskey."
+          },
+          "public_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Adresse publique du panneau a laquelle les passkeys fonctionnent,\nquand elles sont indisponibles depuis cet hote pour cette seule raison."
           }
         }
       }

@@ -247,7 +247,7 @@ export function LoginFlow({ expired = false, created = false, verifyEmail = fals
           <PrimaryButton busy={busy} disabled={!valid}>
             Se connecter
           </PrimaryButton>
-          {passkeys.data && (
+          {passkeys.data?.available && (
             <>
               <MethodsDivider>ou</MethodsDivider>
               <AltMethod icon="KeyRound" title="Clé de sécurité" text="Se connecter sans mot de passe" onClick={() => void passkeyLogin()} />

@@ -463,6 +463,17 @@ async fn domain_create_refuses_current_host() {
     assert_eq!(r.status, 200, "{}", r.raw);
     assert_eq!(r.json()["dns_status"], "ok");
     drain(&mut env);
+    // En ligne, puis declare plus tard comme nom du panneau : plus route vers
+    // le projet.
+    let mut conn = env.state.db.acquire().await.unwrap();
+    let routes = domains::route_table(&mut conn, &env.state.cfg, env.server)
+        .await
+        .unwrap();
+    assert!(has_route(&routes, "shop.by-dns.example.org"));
+    let routes = domains::route_table(&mut conn, &reserved.cfg, env.server)
+        .await
+        .unwrap();
+    assert!(!has_route(&routes, "shop.by-dns.example.org"));
 }
 
 #[tokio::test]

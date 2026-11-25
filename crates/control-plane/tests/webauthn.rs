@@ -145,8 +145,46 @@ struct Registered {
 
 /// Enregistre une passkey depuis une session complete ; renvoie la session tournee.
 async fn register(state: &AppState, auth: &mut SoftPasskey, token: &str, csrf: &str) -> Registered {
-    let r = send(
+    register_at(state, auth, token, csrf, None, ORIGIN).await
+}
+
+/// Appel sous l'hote `host` (aucun en-tete `Host` si `None`).
+async fn send_at(
+    state: &AppState,
+    host: Option<&str>,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    csrf: Option<&str>,
+    body: Option<Value>,
+) -> Reply {
+    call(
         state,
+        method,
+        path,
+        Req {
+            cookie: token,
+            csrf,
+            host,
+            body,
+            ..Req::default()
+        },
+    )
+    .await
+}
+
+/// Enregistrement sous l'hote `host`, le navigateur etant sur `from`.
+async fn register_at(
+    state: &AppState,
+    auth: &mut SoftPasskey,
+    token: &str,
+    csrf: &str,
+    host: Option<&str>,
+    from: &str,
+) -> Registered {
+    let r = send_at(
+        state,
+        host,
         "POST",
         "/api/me/webauthn/register/options",
         Some(token),
@@ -159,12 +197,13 @@ async fn register(state: &AppState, auth: &mut SoftPasskey, token: &str, csrf: &
     let ccr: CreationChallengeResponse =
         serde_json::from_value(r.json()["options"].clone()).expect("options de creation WebAuthn");
     let cred = auth
-        .do_registration(origin(ORIGIN), ccr)
+        .do_registration(origin(from), ccr)
         .expect("enregistrement par l'authentificateur logiciel");
     let cred = serde_json::to_value(&cred).unwrap();
     let raw_id = cred["rawId"].as_str().unwrap().to_string();
-    let v = send(
+    let v = send_at(
         state,
+        host,
         "POST",
         "/api/me/webauthn/register/verify",
         Some(token),
@@ -374,7 +413,7 @@ async fn register_then_assert_ok() {
     assert_eq!(methods.status, 200, "{}", methods.raw);
     assert_eq!(
         methods.json(),
-        json!({ "totp": false, "webauthn": true, "recovery": true })
+        json!({ "totp": false, "webauthn": true, "recovery": true, "public_url": null })
     );
     let (ceremony, options) = assert_options(s, Some(&pending), "second_factor").await;
     assert_eq!(
@@ -672,9 +711,9 @@ async fn ip_literal_rp_id_is_unavailable() {
     assert_eq!(r.code(), "webauthn_unavailable");
 }
 
-/// RP ID annonce aux options de connexion sous l'hote `host` (`None` si
-/// WebAuthn est indisponible).
-async fn login_rp_id(state: &AppState, host: &str) -> Option<String> {
+/// RP ID annonce aux options de connexion sous l'hote `host`, ou le message
+/// de `webauthn_unavailable`.
+async fn login_rp_id(state: &AppState, host: &str) -> Result<String, String> {
     let r = call(
         state,
         "POST",
@@ -686,36 +725,84 @@ async fn login_rp_id(state: &AppState, host: &str) -> Option<String> {
         },
     )
     .await;
-    match r.status {
-        200 => Some(
-            r.json()["options"]["publicKey"]["rpId"]
-                .as_str()?
-                .to_string(),
-        ),
-        _ => {
-            assert_eq!(r.code(), "webauthn_unavailable", "{}", r.raw);
-            None
-        }
+    if r.status == 200 {
+        return Ok(r.json()["options"]["publicKey"]["rpId"]
+            .as_str()
+            .unwrap()
+            .to_string());
     }
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "webauthn_unavailable", "{}", r.raw);
+    Err(r.json()["error"]["message"].as_str().unwrap().to_string())
+}
+
+/// `GET /api/auth/webauthn/status` sous l'hote `host`.
+async fn status_at(state: &AppState, host: &str) -> Value {
+    let r = send_at(
+        state,
+        Some(host),
+        "GET",
+        "/api/auth/webauthn/status",
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    r.json()
+}
+
+/// Refus sous un hote hors du RP ID public : le message donne l'adresse.
+fn elsewhere(r: Result<String, String>, url: &str) {
+    let message = r.expect_err("passkeys indisponibles hors du RP ID public");
+    assert!(message.contains(url), "{message}");
+    assert!(message.contains("adresse publique"), "{message}");
 }
 
 #[tokio::test]
 async fn rp_id_uses_public_origin() {
-    // CIPHERA_PUBLIC_URL fixe le RP ID, quel que soit l'hote de la requete.
-    let env = env_with(&[("CIPHERA_PUBLIC_URL", "https://Panel.Example.com:8443")]).await;
+    // CIPHERA_PUBLIC_URL fixe le RP ID ; seuls cet hote et ses sous-domaines
+    // peuvent s'en servir.
+    let env = env_with(&[
+        ("CIPHERA_PUBLIC_URL", "https://Panel.Example.com:8443"),
+        ("CIPHERA_PANEL_ALIASES", "admin.example.org"),
+    ])
+    .await;
+    let s = &env.state;
     for host in [
-        "other.example.org:8443",
-        "203.0.113.7:8443",
-        "localhost:8443",
+        "panel.example.com:8443",
+        "PANEL.example.com.",
+        "eu.panel.example.com",
     ] {
         assert_eq!(
-            login_rp_id(&env.state, host).await.as_deref(),
-            Some("panel.example.com"),
+            login_rp_id(s, host).await.as_deref(),
+            Ok("panel.example.com"),
+            "{host}"
+        );
+        assert_eq!(
+            status_at(s, host).await,
+            json!({ "available": true, "public_url": null }),
+            "{host}"
+        );
+    }
+    // IP, localhost, alias, nom voisin, domaine parent : refus net, avec
+    // l'adresse publique.
+    for host in [
+        "203.0.113.7:8443",
+        "localhost:8443",
+        "admin.example.org:8443",
+        "evilpanel.example.com",
+        "example.com",
+    ] {
+        elsewhere(login_rp_id(s, host).await, "https://panel.example.com:8443");
+        assert_eq!(
+            status_at(s, host).await,
+            json!({ "available": false, "public_url": "https://panel.example.com:8443" }),
             "{host}"
         );
     }
 
-    // Domaine du panneau confirme : il prime sur l'hote (et sur l'URL publique).
+    // Domaine du panneau confirme : il prime sur l'URL publique.
     let env = env_with(&[("CIPHERA_PUBLIC_URL", "https://panel.example.com:8443")]).await;
     let panel = Panel {
         id: Uuid::new_v4(),
@@ -725,33 +812,45 @@ async fn rp_id_uses_public_origin() {
     // Pas encore confirme : l'URL publique fait foi.
     env.state.panel.set(Some(panel.clone()));
     assert_eq!(
-        login_rp_id(&env.state, "panel.example.net")
+        login_rp_id(&env.state, "panel.example.com:8443")
             .await
             .as_deref(),
-        Some("panel.example.com")
+        Ok("panel.example.com")
+    );
+    elsewhere(
+        login_rp_id(&env.state, "panel.example.net").await,
+        "https://panel.example.com:8443",
     );
     env.state.panel.set(Some(Panel {
         confirmed: true,
         ..panel
     }));
-    for host in ["panel.example.net", "other.example.org:8443"] {
-        assert_eq!(
-            login_rp_id(&env.state, host).await.as_deref(),
-            Some("panel.example.net"),
-            "{host}"
-        );
-    }
+    assert_eq!(
+        login_rp_id(&env.state, "panel.example.net")
+            .await
+            .as_deref(),
+        Ok("panel.example.net")
+    );
+    elsewhere(
+        login_rp_id(&env.state, "panel.example.com:8443").await,
+        "https://panel.example.net",
+    );
 
     // Origine publique en adresse IP (pas de RP ID possible) : l'hote de la
     // requete reste utilise, localhost compris.
     let env = env_with(&[("CIPHERA_PUBLIC_URL", "https://203.0.113.7:8443")]).await;
     assert_eq!(
         login_rp_id(&env.state, "localhost:8443").await.as_deref(),
-        Some("localhost")
+        Ok("localhost")
     );
-    assert_eq!(login_rp_id(&env.state, "203.0.113.7:8443").await, None);
+    assert!(login_rp_id(&env.state, "203.0.113.7:8443").await.is_err());
+    assert_eq!(
+        status_at(&env.state, "203.0.113.7:8443").await,
+        json!({ "available": false, "public_url": null })
+    );
 
-    // Variables WebAuthn dediees : elles priment toujours.
+    // Variables WebAuthn dediees : choix explicite de l'operateur, elles
+    // priment toujours (sans controle de l'hote).
     let env = env_with(&[
         ("CIPHERA_PUBLIC_URL", "https://panel.example.com:8443"),
         ("CIPHERA_WEBAUTHN_RP_ID", "rp.example.com"),
@@ -761,8 +860,106 @@ async fn rp_id_uses_public_origin() {
         login_rp_id(&env.state, "panel.example.com:8443")
             .await
             .as_deref(),
-        Some("rp.example.com")
+        Ok("rp.example.com")
     );
+}
+
+#[tokio::test]
+async fn passkey_only_account_reached_by_ip_falls_back_to_recovery_codes() {
+    const PUBLIC: &str = "panel.example.com:8443";
+    const BY_IP: &str = "203.0.113.7:8443";
+    let env = env_with(&[("CIPHERA_PUBLIC_URL", "https://panel.example.com:8443")]).await;
+    let s = &env.state;
+    // Passkey enregistree a l'adresse publique : seul second facteur.
+    let (token, csrf, _) = login(s).await;
+    let mut auth = authenticator();
+    let reg = register_at(
+        s,
+        &mut auth,
+        &token,
+        &csrf,
+        Some(PUBLIC),
+        "https://panel.example.com:8443",
+    )
+    .await;
+    assert_eq!(reg.recovery_codes.len(), 10);
+
+    // Ajout d'une cle depuis l'IP : refus net qui donne l'adresse publique.
+    let r = send_at(
+        s,
+        Some(BY_IP),
+        "POST",
+        "/api/me/webauthn/register/options",
+        Some(&reg.token),
+        Some(&reg.csrf),
+        Some(json!({ "current_password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "webauthn_unavailable");
+    assert!(
+        r.raw.contains("https://panel.example.com:8443"),
+        "{}",
+        r.raw
+    );
+
+    // Connexion par l'IP : la cle n'est pas proposee, les codes de secours le
+    // sont, avec l'adresse a laquelle la cle fonctionne.
+    let (pending, _, mfa) = login(s).await;
+    assert!(mfa);
+    let methods = send_at(
+        s,
+        Some(BY_IP),
+        "GET",
+        "/api/auth/mfa/methods",
+        Some(&pending),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(methods.status, 200, "{}", methods.raw);
+    assert_eq!(
+        methods.json(),
+        json!({ "totp": false, "webauthn": false, "recovery": true,
+                "public_url": "https://panel.example.com:8443" })
+    );
+    let r = send_at(
+        s,
+        Some(BY_IP),
+        "POST",
+        "/api/auth/webauthn/assert/options",
+        Some(&pending),
+        None,
+        Some(json!({ "mode": "second_factor" })),
+    )
+    .await;
+    assert_eq!(r.status, 409, "{}", r.raw);
+    assert_eq!(r.code(), "webauthn_unavailable");
+    // A l'adresse publique, la cle est proposee.
+    let methods = send_at(
+        s,
+        Some(PUBLIC),
+        "GET",
+        "/api/auth/mfa/methods",
+        Some(&pending),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(methods.json()["webauthn"], true, "{}", methods.raw);
+    assert_eq!(methods.json()["public_url"], Value::Null);
+    // Le code de secours ouvre la session depuis l'IP.
+    let r = send_at(
+        s,
+        Some(BY_IP),
+        "POST",
+        "/api/auth/recovery-code",
+        Some(&pending),
+        None,
+        Some(json!({ "code": reg.recovery_codes[0] })),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
 }
 
 #[tokio::test]

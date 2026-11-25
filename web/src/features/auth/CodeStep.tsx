@@ -31,6 +31,11 @@ const HEAD: Record<Mode, { icon: IconName; title: string; text: string }> = {
 /** Cle du compte inutilisable : panneau ouvert par son adresse IP (WebAuthn exige un nom de domaine). */
 const IP_HINT = "Votre clé de sécurité ne peut pas être utilisée ici : ouvrez le panneau par son nom de domaine (et non par son adresse IP).";
 
+/** Cle inutilisable depuis cet hote : l'adresse publique ou elle fonctionne, si le serveur la donne. */
+function keyHint(publicUrl: string | null | undefined): string {
+  return publicUrl ? `Votre clé de sécurité ne fonctionne qu'à l'adresse publique du panneau : ouvrez ${publicUrl} pour l'utiliser.` : IP_HINT;
+}
+
 function Hint({ children }: { children: string }) {
   return <p style={{ margin: 0, padding: "12px 14px", borderRadius: 12, border: "1px solid var(--border-default)", background: "var(--surface-raised)", font: "400 12px/1.5 var(--font-sans)", color: "var(--text-muted)" }}>{children}</p>;
 }
@@ -202,6 +207,7 @@ export function CodeStep({ onSubmit, methods = DEFAULT_METHODS, onBack }: CodeSt
             Vérifier
           </PrimaryButton>
           {alternatives}
+          {methods.public_url && <Hint>{keyHint(methods.public_url)}</Hint>}
         </>
       )}
 
@@ -221,11 +227,11 @@ export function CodeStep({ onSubmit, methods = DEFAULT_METHODS, onBack }: CodeSt
         </>
       )}
 
-      {mode === "none" && <Hint>{IP_HINT}</Hint>}
+      {mode === "none" && <Hint>{keyHint(methods.public_url)}</Hint>}
 
       {mode === "backup" && (
         <>
-          {keyUnusable && <Hint>{IP_HINT}</Hint>}
+          {keyUnusable && <Hint>{keyHint(methods.public_url)}</Hint>}
           <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <span style={{ font: "500 13px/1 var(--font-sans)", color: "var(--text-strong)" }}>Code de secours</span>
             <input

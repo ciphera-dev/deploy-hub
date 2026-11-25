@@ -896,6 +896,12 @@ pub async fn route_table(
     Ok(rows
         .into_iter()
         .filter_map(|r| {
+            // Nom declare pour le panneau apres coup (alias, URL publique) :
+            // il n'est plus servi au projet.
+            if reserved(cfg, &r.host) {
+                tracing::warn!(host = %r.host, "domaine de projet reserve au panneau : route retiree");
+                return None;
+            }
             let tls = if r.generated {
                 TlsMode::None
             } else {

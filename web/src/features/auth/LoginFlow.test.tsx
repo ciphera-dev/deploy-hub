@@ -19,7 +19,7 @@ let release: (() => void) | null;
 let reply: () => Response;
 let factorCalls: { path: string; body: unknown }[];
 let factorReply: () => Response;
-let methods: { totp: boolean; webauthn: boolean; recovery: boolean };
+let methods: { totp: boolean; webauthn: boolean; recovery: boolean; public_url?: string | null };
 let available: boolean;
 let statusCalls: number;
 let assertCalls: { path: string; body: unknown }[];
@@ -344,6 +344,20 @@ it("compte a cle de securite, panneau ouvert par une adresse IP : codes de secou
   expect(screen.getByText(/ouvrez le panneau par son nom de domaine/)).toBeInTheDocument();
   expect(screen.queryByLabelText("Chiffre 1")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Utiliser ma clé" })).not.toBeInTheDocument();
+});
+
+it("compte a cle de securite, panneau hors de son adresse publique : codes de secours et adresse publique", async () => {
+  methods = { totp: false, webauthn: false, recovery: true, public_url: "https://panel.example.com:8443" };
+  await reachCodeStepAs("Code de secours");
+  expect(screen.getByText(/ne fonctionne qu'à l'adresse publique du panneau : ouvrez https:\/\/panel\.example\.com:8443/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Utiliser ma clé" })).not.toBeInTheDocument();
+});
+
+it("compte a TOTP et cle, panneau hors de son adresse publique : code TOTP, et l'adresse ou la cle fonctionne", async () => {
+  methods = { totp: true, webauthn: false, recovery: true, public_url: "https://panel.example.com:8443" };
+  await reachCodeStepAs("Vérification en deux étapes");
+  expect(screen.getByLabelText("Chiffre 1")).toBeInTheDocument();
+  expect(screen.getByText(/ouvrez https:\/\/panel\.example\.com:8443 pour l'utiliser/)).toBeInTheDocument();
 });
 
 it("aucune methode utilisable : explication seule, ni code TOTP ni cle", async () => {

@@ -180,6 +180,14 @@ it("panneau ouvert par une adresse IP : pas de bouton d'ajout, explication", asy
   expect(screen.queryByRole("button", { name: "Ajouter" })).not.toBeInTheDocument();
 });
 
+it("panneau hors de son adresse publique : pas de bouton d'ajout, adresse publique donnee", async () => {
+  stubCreate();
+  server.use(http.get("*/api/auth/webauthn/status", () => HttpResponse.json({ available: false, public_url: "https://panel.example.com:8443" })));
+  renderCard();
+  expect(await screen.findByText(/ouvrez https:\/\/panel\.example\.com:8443 pour en ajouter une/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Ajouter" })).not.toBeInTheDocument();
+});
+
 it("ajout : le bouton Continuer attend le mot de passe, un mot de passe faux est signale", async () => {
   const create = stubCreate();
   server.use(http.post("*/api/me/webauthn/register/options", () => HttpResponse.json({ error: { code: "invalid_credentials", message: "x" } }, { status: 401 })));

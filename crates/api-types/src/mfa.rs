@@ -86,6 +86,9 @@ pub struct MfaMethods {
     pub webauthn: bool,
     /// Il reste au moins un code de secours non utilise.
     pub recovery: bool,
+    /// Passkey enregistree mais inutilisable depuis cet hote : adresse
+    /// publique du panneau a laquelle elle fonctionne.
+    pub public_url: Option<String>,
 }
 
 /// Corps de `DELETE /api/me/mfa/totp` : mot de passe redemande.

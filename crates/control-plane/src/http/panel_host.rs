@@ -40,6 +40,10 @@ puis redémarrez le service <code>ciphera</code>.</p>\
 /// sans crochets. `None` si la valeur est vide ou mal formee.
 pub fn host_name(raw: &str) -> Option<String> {
     let raw = raw.trim();
+    // Adresse IPv6 sans crochets (donc sans port) : prise telle quelle.
+    if let Ok(ip) = raw.parse::<IpAddr>() {
+        return Some(ip.to_string());
+    }
     let name = if let Some(rest) = raw.strip_prefix('[') {
         let (v6, after) = rest.split_once(']')?;
         if !(after.is_empty() || after.strip_prefix(':').is_some_and(is_port)) {
@@ -150,6 +154,8 @@ mod tests {
             ("203.0.113.7:8443", Some("203.0.113.7")),
             ("[2001:DB8::1]:8443", Some("2001:db8::1")),
             ("[::1]", Some("::1")),
+            ("::1", Some("::1")),
+            ("2001:DB8::1", Some("2001:db8::1")),
             ("localhost", Some("localhost")),
             ("", None),
             (":8443", None),

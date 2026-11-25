@@ -173,8 +173,14 @@ export function SecurityKeyCard() {
           ))}
         </ul>
       )}
-      {available.data === false && <p style={muted}>Ouvrez le panneau par son nom de domaine (et non par son adresse IP) pour ajouter une clé.</p>}
-      {available.data && (
+      {available.data?.available === false && (
+        <p style={muted}>
+          {available.data.publicUrl
+            ? `Les clés de sécurité ne fonctionnent qu'à l'adresse publique du panneau : ouvrez ${available.data.publicUrl} pour en ajouter une.`
+            : "Ouvrez le panneau par son nom de domaine (et non par son adresse IP) pour ajouter une clé."}
+        </p>
+      )}
+      {available.data?.available && (
         <div style={{ marginTop: "auto", display: "flex", justifyContent: "flex-end" }}>
           <Button size="sm" onClick={() => setAdding(true)}>
             Ajouter

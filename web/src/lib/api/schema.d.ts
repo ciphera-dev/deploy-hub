@@ -2221,6 +2221,11 @@ export interface components {
          *     la session en attente de MFA.
          */
         MfaMethods: {
+            /**
+             * @description Passkey enregistree mais inutilisable depuis cet hote : adresse
+             *     publique du panneau a laquelle elle fonctionne.
+             */
+            public_url?: string | null;
             /** @description Il reste au moins un code de secours non utilise. */
             recovery: boolean;
             /** @description Application d'authentification. */
@@ -3101,10 +3106,16 @@ export interface components {
         /** @description Reponse de `GET /api/auth/webauthn/status`. */
         WebauthnStatus: {
             /**
-             * @description `false` quand le panneau est joint par une adresse IP (les navigateurs
-             *     refusent un RP ID qui en est une) : masquer les boutons passkey.
+             * @description `false` quand les passkeys ne peuvent pas servir depuis cet hote
+             *     (adresse IP, ou hote hors du RP ID public) : masquer les boutons
+             *     passkey.
              */
             available: boolean;
+            /**
+             * @description Adresse publique du panneau a laquelle les passkeys fonctionnent,
+             *     quand elles sont indisponibles depuis cet hote pour cette seule raison.
+             */
+            public_url?: string | null;
         };
     };
     responses: never;
