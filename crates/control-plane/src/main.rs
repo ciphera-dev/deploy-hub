@@ -320,7 +320,10 @@ async fn run_sign_requests() -> i32 {
     }
     match signer::has_requests(&cfg.data_dir) {
         Ok(true) => {}
-        Ok(false) => return 0,
+        Ok(false) => {
+            eprintln!("aucune demande en attente : rien a signer");
+            return 0;
+        }
         Err(e) => {
             eprintln!("erreur : demandes illisibles : {e}");
             return 1;

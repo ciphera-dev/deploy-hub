@@ -62,6 +62,8 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+# ~@privileged comprend @chown : un fchown du service le tue (SIGSYS) ; les
+# fichiers qu'il remplace sont deja les siens (agents::certs::owner_change).
 SystemCallFilter=~@privileged
 
 [Install]

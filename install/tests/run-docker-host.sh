@@ -643,6 +643,12 @@ if short_link; then
 		journalctl -u ciphera -u ciphera-certsign --no-pager -n 40 || true
 	fi
 	check "(a) renouvellement du lien : meme cle, CA de l'instance, 730 jours" link_renewed
+	# Le service installe la reponse sans appel interdit par son filtre
+	# seccomp (~@privileged : un fchown le tuerait, SIGSYS).
+	check "(a) renouvellement du lien : service jamais tue par son filtre seccomp" \
+		sh -c '! journalctl -u ciphera --no-pager | grep -E -q "status=31/SYS|dumped core"'
+	check "(a) renouvellement du lien : installe par le service" \
+		wait_for 30 'journalctl -u ciphera --no-pager | grep -q "certificat tls/link.crt renouvele"'
 	check "(a) renouvellement du lien : reponse root, groupe ciphera, 0640" \
 		sh -c 'test "$(stat -c %a:%U:%G /var/lib/ciphera/cert-responses/link.crt)" = 640:root:ciphera'
 	check "(a) renouvellement du lien : journal du signataire" \

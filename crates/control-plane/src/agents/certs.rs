@@ -96,9 +96,42 @@ pub fn pair_manifest(config_dir: &Path, crt: &str) -> PathBuf {
     dir.join(format!(".{name}.pair"))
 }
 
+/// Changement de proprietaire a faire pour passer de `current` a `wanted`
+/// (uid, gid) : `Ok(false)` s'il n'y a rien a changer, `Ok(true)` pour
+/// root, erreur sinon. Le service (compte ciphera) tourne sous
+/// `SystemCallFilter=~@privileged` : un appel a `fchown` le tuerait
+/// (SIGSYS) ; il ne doit donc jamais en faire, meme pour rien.
+pub fn owner_change(current: (u32, u32), wanted: (u32, u32), root: bool) -> io::Result<bool> {
+    if current == wanted {
+        Ok(false)
+    } else if root {
+        Ok(true)
+    } else {
+        Err(io::Error::other(format!(
+            "proprietaire {}:{} attendu ({}:{} en place) : seul root peut le changer \
+             (ciphera admin renew-certs)",
+            wanted.0, wanted.1, current.0, current.1
+        )))
+    }
+}
+
+/// `file` a `wanted` (uid, gid) : aucun appel systeme si c'est deja le cas
+/// ([`owner_change`]).
+#[cfg(unix)]
+fn match_owner(file: &fs::File, wanted: (u32, u32)) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file.metadata()?;
+    let root = rustix::process::geteuid().is_root();
+    if owner_change((meta.uid(), meta.gid()), wanted, root)? {
+        std::os::unix::fs::fchown(file, Some(wanted.0), Some(wanted.1))?;
+    }
+    Ok(())
+}
+
 /// Ecrit `bytes` dans `tmp`, fichier neuf au proprietaire et aux droits de
 /// `path` (0600 si `path` n'existe pas), donnees sur disque. `path` doit
-/// etre un fichier ordinaire s'il existe (jamais a travers un lien).
+/// etre un fichier ordinaire s'il existe (jamais a travers un lien). Le
+/// proprietaire n'est change que par root ([`owner_change`]).
 fn stage(path: &Path, tmp: &Path, bytes: &[u8]) -> io::Result<()> {
     let previous = match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() || !m.is_file() => {
@@ -123,7 +156,7 @@ fn stage(path: &Path, tmp: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
     if let Some(m) = &previous {
         use std::os::unix::fs::MetadataExt;
-        if let Err(e) = std::os::unix::fs::fchown(&file, Some(m.uid()), Some(m.gid())) {
+        if let Err(e) = match_owner(&file, (m.uid(), m.gid())) {
             let _ = fs::remove_file(tmp);
             return Err(e);
         }
@@ -205,8 +238,11 @@ pub fn lock_pairs(config_dir: &Path, crt: &str) -> io::Result<PairLock> {
             {
                 use std::os::unix::fs::MetadataExt;
                 let owner = fs::metadata(dir)?;
-                // Sans droit (service non root) : deja son proprietaire.
-                let _ = std::os::unix::fs::fchown(&file, Some(owner.uid()), Some(owner.gid()));
+                // Service (non root) : jamais de `fchown` (filtre seccomp) ;
+                // le fichier est alors simplement le sien.
+                if rustix::process::geteuid().is_root() {
+                    match_owner(&file, (owner.uid(), owner.gid()))?;
+                }
             }
             file
         }
@@ -383,6 +419,8 @@ struct Pending {
     retry: Duration,
     /// Certificat actuel de l'agent (demandes d'agent seulement).
     leaf: Option<Vec<u8>>,
+    /// Derniere reponse ignoree (autre demande) deja signalee au journal.
+    ignored: Option<uuid::Uuid>,
 }
 
 /// Demandes de certificats du plan de controle au signataire root, et
@@ -434,6 +472,7 @@ impl Renewals {
                 sent: Instant::now(),
                 retry: REQUEST_RETRY,
                 leaf,
+                ignored: None,
             },
         );
         Ok(true)
@@ -492,7 +531,16 @@ impl Renewals {
     fn answer(&self, name: &str, pending: &mut Pending) -> Option<String> {
         match signer::read_response(&self.data_dir, name) {
             Ok(Some((id, pem))) if id == pending.request.request_id => return Some(pem),
-            Ok(_) => {}
+            Ok(Some((id, _))) => {
+                if pending.ignored != Some(id) {
+                    pending.ignored = Some(id);
+                    tracing::warn!(
+                        "certificat {name} : reponse du signataire ignoree (demande {id}, \
+                         une autre est en cours)"
+                    );
+                }
+            }
+            Ok(None) => {}
             Err(e) => tracing::warn!("reponse du signataire {name} illisible : {e}"),
         }
         if pending.sent.elapsed() >= pending.retry {
@@ -528,6 +576,10 @@ impl Renewals {
                 return true;
             };
             if !connected.contains(&id) {
+                tracing::warn!(
+                    "agent {id} : deconnecte, demande de certificat abandonnee \
+                     (redemandee a sa prochaine connexion)"
+                );
                 return false;
             }
             let Some(pem) = self.answer(name, p) else {

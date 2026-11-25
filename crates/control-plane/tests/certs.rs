@@ -403,3 +403,34 @@ fn pair_writes_are_serialized() {
     writer.join().unwrap();
     transport::server_config(&transport::LinkTls::load(&dir.0).unwrap()).unwrap();
 }
+
+/// Le service (non root, `SystemCallFilter=~@privileged` : `fchown` le
+/// tuerait) ne change jamais de proprietaire : rien a faire si c'est deja
+/// le bon, erreur sinon ; seul root le change.
+#[test]
+fn only_root_changes_an_owner() {
+    assert!(!certs::owner_change((999, 999), (999, 999), false).unwrap());
+    assert!(!certs::owner_change((0, 999), (0, 999), true).unwrap());
+    let e = certs::owner_change((999, 999), (0, 999), false).unwrap_err();
+    assert!(e.to_string().contains("seul root"), "{e}");
+    assert!(certs::owner_change((999, 999), (0, 999), true).unwrap());
+}
+
+/// Le service ne fait aucun `fchown` hors de [`certs::owner_change`] : les
+/// seuls appels du module passent par lui.
+#[test]
+fn service_paths_never_call_fchown_directly() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agents/certs.rs"),
+    )
+    .unwrap();
+    let calls: Vec<&str> = src
+        .lines()
+        .filter(|l| l.contains("fchown(") && !l.trim_start().starts_with("//"))
+        .collect();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(
+        calls[0].contains("Some(wanted.0), Some(wanted.1)"),
+        "{calls:?}"
+    );
+}
