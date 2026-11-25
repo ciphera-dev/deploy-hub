@@ -789,6 +789,7 @@ async fn secret_added_mid_stream_is_masked() {
         })
     };
     let server = ServerId(Uuid::new_v4());
+    state.logs.assign_build(target, server);
     state
         .logs
         .dispatch(server, &line(&format!("avant {SECRET}")))

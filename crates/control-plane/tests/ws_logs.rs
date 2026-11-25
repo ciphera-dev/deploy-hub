@@ -371,6 +371,35 @@ fn stop_orders(orders: &[ControlToAgent]) -> Vec<LogTarget> {
 }
 
 #[tokio::test]
+async fn ninth_ws_stream_refused_for_same_account() {
+    let env = Env::new().await;
+    let viewer = login(&env.state, "viewer").await;
+    let origin = env.origin();
+    let q = format!("deployment={}", env.deployment);
+    let mut open = Vec::new();
+    for _ in 0..hub::MAX_STREAMS_PER_USER {
+        open.push(env.ws(&q, Some(&viewer), Some(&origin)).await.unwrap());
+    }
+    assert_eq!(
+        env.ws(&q, Some(&viewer), Some(&origin)).await.err(),
+        Some(429)
+    );
+    // Un autre compte passe ; un flux ferme libere une place.
+    let other = login(&env.state, "admin").await;
+    assert!(env.ws(&q, Some(&other), Some(&origin)).await.is_ok());
+    open.pop().unwrap().close().await;
+    let mut again = None;
+    for _ in 0..40 {
+        if let Ok(ws) = env.ws(&q, Some(&viewer), Some(&origin)).await {
+            again = Some(ws);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(again.is_some(), "place non rendue apres fermeture");
+}
+
+#[tokio::test]
 async fn ws_requires_session_and_same_origin() {
     let mut env = Env::new().await;
     let viewer = login(&env.state, "viewer").await;
@@ -1240,12 +1269,13 @@ async fn hung_secret_source_never_delays_other_projects() {
         values.insert(b, vec!["secret-of-b".to_string()]);
     }
     secrets.2.lock().unwrap().insert(a);
+    let server = ServerId(Uuid::new_v4());
     let source = |project: Uuid| Source {
         target: LogTarget::Deployment(DeploymentId::new()),
         project,
         container: "build".into(),
         follow: None,
-        origin: None,
+        origin: Some(server),
     };
     let (src_a, src_b) = (source(a), source(b));
     let (target_a, target_b) = (src_a.target, src_b.target);
@@ -1259,7 +1289,6 @@ async fn hung_secret_source_never_delays_other_projects() {
             line: text.to_string(),
         })
     };
-    let server = ServerId(Uuid::new_v4());
 
     // Source de A bloquee : la diffusion n'attend qu'une fois `INLINE_WAIT`,
     // jamais une lecture par ligne.

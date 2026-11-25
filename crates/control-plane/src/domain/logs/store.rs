@@ -44,6 +44,9 @@ const MAX_HELD: usize = 5_000;
 /// `unchecked`) : 2 x 80 Mio, soit 160 Mio par deploiement. Aucun plafond
 /// global sur le nombre de deploiements retenus (existant avant ce correctif).
 const MAX_HELD_BYTES: usize = MAX_HELD * 16 * 1024;
+/// Deploiements dont des lignes sont retenues au plus (les plus anciennement
+/// retenus sont evinces, leurs lignes perdues).
+const MAX_HELD_DEPLOYMENTS: usize = 1_000;
 /// Reessai des lignes retenues.
 const HELD_RETRY: Duration = Duration::from_secs(2);
 
@@ -223,10 +226,14 @@ struct Projects {
     cache: HashMap<Uuid, Option<(Uuid, Option<Uuid>)>>,
     /// Lignes brutes retenues faute de masquage (ou de base), par deploiement.
     held: HashMap<Uuid, Held>,
+    /// Numero de la prochaine retenue (ordre d'eviction).
+    held_seq: u64,
 }
 
 #[derive(Default)]
 struct Held {
+    /// Ordre dans lequel le deploiement a commence a etre retenu.
+    seq: u64,
     lines: Vec<NewLine>,
     /// Octets de `lines` (total courant).
     lines_bytes: usize,
@@ -300,6 +307,25 @@ enum Sender {
 }
 
 impl Projects {
+    /// Lignes retenues du deploiement (creees au besoin) ; au-dela de
+    /// `MAX_HELD_DEPLOYMENTS`, le deploiement retenu depuis le plus
+    /// longtemps est evince.
+    fn held_for(&mut self, id: Uuid) -> &mut Held {
+        if !self.held.contains_key(&id) && self.held.len() >= MAX_HELD_DEPLOYMENTS {
+            let oldest = self.held.iter().min_by_key(|(_, h)| h.seq).map(|(d, _)| *d);
+            if let Some(oldest) = oldest {
+                tracing::warn!(deployment = %oldest, "trop de journaux retenus : le plus ancien est abandonne");
+                self.held.remove(&oldest);
+            }
+        }
+        self.held_seq += 1;
+        let seq = self.held_seq;
+        self.held.entry(id).or_insert_with(|| Held {
+            seq,
+            ..Held::default()
+        })
+    }
+
     /// `None` : deploiement inconnu (lignes ignorees).
     async fn get(&mut self, state: &AppState, deployment: Uuid) -> sqlx::Result<Option<Uuid>> {
         Ok(self
@@ -350,7 +376,8 @@ fn deployment_line((server, msg): (ServerId, AgentToControl)) -> Option<(Uuid, U
                 NewLine {
                     timestamp_ms: l.timestamp_ms,
                     stream: l.stream,
-                    line: l.line,
+                    // Plafonnee des la reception.
+                    line: super::cap_received(l.line),
                 },
             )),
             LogTarget::Service(_) => None,
@@ -382,11 +409,7 @@ async fn save(state: &AppState, projects: &mut Projects, batch: Vec<(Uuid, Uuid,
                 continue;
             }
             Sender::Unknown => {
-                projects
-                    .held
-                    .entry(id)
-                    .or_default()
-                    .keep_unchecked(server, line);
+                projects.held_for(id).keep_unchecked(server, line);
                 continue;
             }
         }
@@ -405,13 +428,13 @@ async fn save(state: &AppState, projects: &mut Projects, batch: Vec<(Uuid, Uuid,
             Err(e) => {
                 // Base indisponible : lignes retenues, reessayees ensuite.
                 tracing::error!(error = %e, deployment = %id, "journal retenu");
-                projects.held.entry(id).or_default().keep(lines);
+                projects.held_for(id).keep(lines);
                 continue;
             }
         };
         let Ok(redactor) = redactor else {
             // Echec ferme : rien n'est enregistre sans masquage.
-            let held = projects.held.entry(id).or_default();
+            let held = projects.held_for(id);
             if !held.marked {
                 let marker = NewLine {
                     timestamp_ms: jiff::Timestamp::now().as_millisecond(),
@@ -462,6 +485,7 @@ pub async fn run(
     let mut projects = Projects {
         cache: HashMap::new(),
         held: HashMap::new(),
+        held_seq: 0,
     };
     let mut expire = tokio::time::interval(PROJECTS_TTL);
     let mut retry = tokio::time::interval(HELD_RETRY);
@@ -519,6 +543,41 @@ mod held_tests {
             stream: LogStream::Stdout,
             line: "x".repeat(n),
         }
+    }
+
+    #[test]
+    fn held_deployments_are_bounded_oldest_evicted() {
+        let mut projects = Projects {
+            cache: HashMap::new(),
+            held: HashMap::new(),
+            held_seq: 0,
+        };
+        let first = Uuid::new_v4();
+        projects.held_for(first).keep(vec![new_line(3)]);
+        for _ in 0..MAX_HELD_DEPLOYMENTS + 50 {
+            projects.held_for(Uuid::new_v4()).keep(vec![new_line(3)]);
+        }
+        assert_eq!(projects.held.len(), MAX_HELD_DEPLOYMENTS);
+        assert!(!projects.held.contains_key(&first), "le plus ancien evince");
+        // Un deploiement deja retenu n'en evince pas un autre.
+        let some = *projects.held.keys().next().unwrap();
+        projects.held_for(some).keep(vec![new_line(3)]);
+        assert_eq!(projects.held.len(), MAX_HELD_DEPLOYMENTS);
+    }
+
+    #[test]
+    fn oversized_deployment_line_capped_on_receive() {
+        let server = ServerId(Uuid::new_v4());
+        let target = LogTarget::Deployment(shared::ids::DeploymentId(Uuid::new_v4()));
+        let msg = AgentToControl::LogLine(proto::LogLine {
+            target,
+            stream: LogStream::Stdout,
+            timestamp_ms: 0,
+            line: "é".repeat(super::super::MAX_RECEIVED_LINE_BYTES),
+        });
+        let (_, _, line) = deployment_line((server, msg)).unwrap();
+        assert!(line.line.len() <= super::super::MAX_RECEIVED_LINE_BYTES);
+        assert!(std::str::from_utf8(line.line.as_bytes()).is_ok());
     }
 
     #[test]

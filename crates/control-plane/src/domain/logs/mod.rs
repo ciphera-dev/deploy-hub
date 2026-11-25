@@ -25,6 +25,26 @@ pub const SYSTEM_CONTAINER: &str = "ciphera";
 /// fait toujours apres le masquage de la ligne entiere.
 pub const MAX_LINE_BYTES: usize = 16 * 1024;
 
+/// Longueur maximale d'une ligne brute a la reception (octets), avant tout
+/// masquage : celle que l'agent reassemble. La coupe a `MAX_LINE_BYTES` se
+/// fait apres le masquage (couper avant pourrait laisser le debut d'un
+/// secret) ; ce plafond borne seulement ce qu'un agent peut faire garder en
+/// memoire en attendant le masquage.
+pub const MAX_RECEIVED_LINE_BYTES: usize = 64 * 1024;
+
+/// Coupe une ligne brute recue a `MAX_RECEIVED_LINE_BYTES`, sur une
+/// frontiere de caractere.
+pub fn cap_received(mut line: String) -> String {
+    if line.len() > MAX_RECEIVED_LINE_BYTES {
+        let mut end = MAX_RECEIVED_LINE_BYTES;
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.truncate(end);
+    }
+    line
+}
+
 /// Ligne envoyee au panneau : `{ ts, level, container, message }`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct LogEvent {

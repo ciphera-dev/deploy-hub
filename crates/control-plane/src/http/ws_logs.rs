@@ -39,7 +39,7 @@ use uuid::Uuid;
 use crate::auth::internal;
 use crate::auth::webauthn::request_host;
 use crate::authz::{Level, Require, Resource, Role, allowed, lvl, res};
-use crate::domain::logs::hub::{MAX_STREAMS, MAX_TAIL, Source, Subscription};
+use crate::domain::logs::hub::{MAX_STREAMS, MAX_TAIL, Source, StreamRefused, Subscription};
 use crate::domain::logs::{BUILD_CONTAINER, LogEvent, store};
 use crate::http::client_ip::ClientIp;
 use crate::state::AppState;
@@ -180,7 +180,28 @@ struct Opened {
     history: Vec<LogEvent>,
 }
 
-async fn open_deployment(state: &AppState, id: &str, tail: u32) -> Result<Opened, ApiError> {
+/// Flux refuse : plafond de l'instance (503) ou du compte (429).
+fn refused(why: StreamRefused) -> ApiError {
+    match why {
+        StreamRefused::Instance => ApiError::new(
+            503,
+            "too_many_streams",
+            "Trop de flux de logs ouverts. Réessayez plus tard.",
+        ),
+        StreamRefused::User => ApiError::new(
+            429,
+            "too_many_streams",
+            "Trop de flux de logs ouverts pour ce compte (8 au plus). Fermez-en un et réessayez.",
+        ),
+    }
+}
+
+async fn open_deployment(
+    state: &AppState,
+    user: Uuid,
+    id: &str,
+    tail: u32,
+) -> Result<Opened, ApiError> {
     let id = Uuid::parse_str(id).map_err(|_| not_found())?;
     let row: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
         "SELECT p.id, d.server_id FROM deployments d JOIN projects p ON p.id = d.project_id \
@@ -194,16 +215,20 @@ async fn open_deployment(state: &AppState, id: &str, tail: u32) -> Result<Opened
     // Les lignes d'un build arrivent sans demande : rien a suivre chez
     // l'agent. Inscrit avant la lecture de l'historique (aucune ligne
     // manquee ; les doublons sont ecartes a l'envoi).
-    let subscription = state.logs.subscribe(
-        Source {
-            target: LogTarget::Deployment(DeploymentId(id)),
-            project,
-            container: BUILD_CONTAINER.to_string(),
-            follow: None,
-            origin: server.map(ServerId),
-        },
-        0,
-    );
+    let subscription = state
+        .logs
+        .subscribe_for(
+            user,
+            Source {
+                target: LogTarget::Deployment(DeploymentId(id)),
+                project,
+                container: BUILD_CONTAINER.to_string(),
+                follow: None,
+                origin: server.map(ServerId),
+            },
+            0,
+        )
+        .map_err(refused)?;
     let redactor = state
         .logs
         .project_redactor(project)
@@ -221,7 +246,12 @@ async fn open_deployment(state: &AppState, id: &str, tail: u32) -> Result<Opened
     })
 }
 
-async fn open_service(state: &AppState, id: &str, tail: u32) -> Result<Opened, ApiError> {
+async fn open_service(
+    state: &AppState,
+    user: Uuid,
+    id: &str,
+    tail: u32,
+) -> Result<Opened, ApiError> {
     let id = Uuid::parse_str(id).map_err(|_| not_found())?;
     // Serveur du deploiement actuel de l'environnement (dernier reussi).
     let row: Option<(Uuid, String, Option<Uuid>)> = sqlx::query_as(
@@ -239,16 +269,20 @@ async fn open_service(state: &AppState, id: &str, tail: u32) -> Result<Opened, A
     .await
     .map_err(|e| internal("lecture du service", e))?;
     let (project, name, server) = row.ok_or_else(not_found)?;
-    let subscription = state.logs.subscribe(
-        Source {
-            target: LogTarget::Service(ServiceId(id)),
-            project,
-            container: name,
-            follow: server.map(|s| (ServerId(s), tail)),
-            origin: server.map(ServerId),
-        },
-        tail as usize,
-    );
+    let subscription = state
+        .logs
+        .subscribe_for(
+            user,
+            Source {
+                target: LogTarget::Service(ServiceId(id)),
+                project,
+                container: name,
+                follow: server.map(|s| (ServerId(s), tail)),
+                origin: server.map(ServerId),
+            },
+            tail as usize,
+        )
+        .map_err(refused)?;
     Ok(Opened {
         subscription,
         history: Vec::new(),
@@ -271,16 +305,15 @@ async fn ws(
     }
     let upgrade = upgrade
         .map_err(|_| ApiError::new(400, "websocket_required", "Connexion WebSocket attendue."))?;
+    // Verification rapide avant les lectures en base ; le plafond reel est
+    // reserve sous verrou a l'inscription (`subscribe_for`).
     if state.logs.streams() >= MAX_STREAMS {
-        return Err(ApiError::new(
-            503,
-            "too_many_streams",
-            "Trop de flux de logs ouverts. Réessayez plus tard.",
-        ));
+        return Err(refused(StreamRefused::Instance));
     }
+    let user = auth.user.id;
     let opened = match (q.deployment.as_deref(), q.service.as_deref()) {
-        (Some(id), None) => open_deployment(&state, id, tail).await?,
-        (None, Some(id)) => open_service(&state, id, tail).await?,
+        (Some(id), None) => open_deployment(&state, user, id, tail).await?,
+        (None, Some(id)) => open_service(&state, user, id, tail).await?,
         _ => return Err(invalid("Indiquez un déploiement ou un service.")),
     };
     Ok(upgrade

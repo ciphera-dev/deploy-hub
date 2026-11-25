@@ -1212,6 +1212,11 @@ async fn send_build(state: &AppState, info: Info) -> Result<(), HandlerError> {
     let Some(server) = fresh.server_id else {
         return Ok(());
     };
+    // Le flux en direct n'ecoute que ce serveur pour ce build.
+    state.logs.assign_build(
+        proto::LogTarget::Deployment(DeploymentId(id)),
+        ServerId(server),
+    );
     match state
         .agents
         .send(ServerId(server), ControlToAgent::Build(spec))
