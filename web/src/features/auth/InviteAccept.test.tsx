@@ -107,7 +107,7 @@ it("refus a l'acceptation : message affiche, on reste sur l'ecran", async () => 
   acceptReply = refuse(410);
   fireEvent.click(createButton());
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Ce lien d'invitation a expiré."));
-  expect(router.state.location.pathname).toBe(`/invite/${TOKEN}`);
+  expect(router.state.location.pathname).toBe("/invite");
 });
 
 it("inscription publique fermee (defaut) : « Inscription sur invitation »", async () => {

@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import { setSessionExpiredHandler } from "@/lib/api/session";
 
-import { disableTotp, updateProfile } from "./api";
+import { changePassword, disableTotp, updateProfile } from "./api";
 import { deletePasskey } from "./security/api";
 
 const reply = (status: number, code: string) =>
@@ -22,7 +22,8 @@ it("expired_session_message : un 401 unauthenticated n'est pas « mot de passe i
   expect(profile).toEqual({ ok: false, message: "Votre session a expiré. Reconnectez-vous." });
   expect(await disableTotp("mdp")).toEqual({ ok: false, message: "Votre session a expiré. Reconnectez-vous." });
   expect(await deletePasskey("k1", "mdp")).toEqual({ ok: false, reason: "session_expired" });
-  expect(expire).toHaveBeenCalledTimes(3);
+  expect(await changePassword("ancien", "nouveau-mot-de-passe")).toEqual({ ok: false, message: "Votre session a expiré. Reconnectez-vous." });
+  expect(expire).toHaveBeenCalledTimes(4);
 });
 
 it("un 401 invalid_credentials reste « mot de passe incorrect », sans redirection", async () => {
@@ -33,5 +34,6 @@ it("un 401 invalid_credentials reste « mot de passe incorrect », sans redirect
   expect(await updateProfile({ name: "A" })).toEqual({ ok: false, message: "Mot de passe actuel incorrect." });
   expect(await disableTotp("mdp")).toEqual({ ok: false, message: "Mot de passe incorrect." });
   expect(await deletePasskey("k1", "mdp")).toEqual({ ok: false, reason: "password" });
+  expect(await changePassword("ancien", "nouveau-mot-de-passe")).toEqual({ ok: false, message: "Mot de passe actuel incorrect." });
   expect(expire).not.toHaveBeenCalled();
 });

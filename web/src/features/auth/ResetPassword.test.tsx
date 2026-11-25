@@ -107,7 +107,7 @@ it("refus a l'enregistrement : message affiche, on reste sur l'ecran", async () 
   resetReply = refuse(429, "x", { "Retry-After": "120" });
   fireEvent.click(saveButton());
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Réessayez dans 2 minutes."));
-  expect(router.state.location.pathname).toBe(`/reset/${TOKEN}`);
+  expect(router.state.location.pathname).toBe("/reset");
 });
 
 it("mot de passe oublie sans envoi possible : « contactez un administrateur »", async () => {

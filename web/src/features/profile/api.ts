@@ -94,7 +94,7 @@ export async function changePassword(currentPassword: string, newPassword: strin
   }
   const { status } = result.response;
   if (status === 204) return { ok: true };
-  if (status === 401) return { ok: false, message: "Mot de passe actuel incorrect." };
+  if (status === 401) return unauthorized(result.error, "Mot de passe actuel incorrect.");
   if (status === 422) return { ok: false, message: serverMessage(result.error) ?? "Mot de passe refusé." };
   if (status === 429) return { ok: false, message: RATE_LIMITED };
   return { ok: false, message: "Modification impossible pour le moment. Réessayez." };

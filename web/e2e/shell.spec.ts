@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { expectNoCspViolation, watchCsp } from "./csp";
 
+// Limite : `vite preview` ne pose aucune CSP ; ce controle ne voit rien ici, la couverture reelle vient du golden-path.
 test.beforeEach(async ({ page }) => {
   await watchCsp(page);
 });

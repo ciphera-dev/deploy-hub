@@ -1,25 +1,25 @@
-import { useState } from "react";
+// Jeton d'un lien à usage unique (réinitialisation, invitation, vérification d'adresse).
+// La route `/…/$token` le range ici puis redirige (remplacement d'entrée d'historique,
+// par le routeur) vers la même page sans jeton : il quitte la barre d'adresse, l'URL
+// copiée-collée et la restauration d'onglet. Il reste en mémoire le temps de la page ;
+// un rechargement le perd (le lien est à rouvrir depuis l'e-mail). L'historique global
+// du navigateur garde la visite de l'URL d'origine : le jeton reste à usage unique.
 
-/**
- * Jeton lu dans l'URL d'un lien à usage unique (réinitialisation, invitation,
- * vérification d'adresse). Une fois lu, l'adresse est remplacée par `safePath`
- * (`history.replaceState`, sans entrée d'historique) : le jeton ne reste ni
- * dans la barre d'adresse, ni dans l'historique, ni dans un `Referer` futur.
- * Le jeton est gardé en mémoire pour la suite de la page.
- */
-export function useUrlToken(token: string, safePath = "/login"): string {
-  const [held] = useState(() => {
-    stripUrlToken(safePath);
-    return token;
-  });
-  return held;
+export type TokenKind = "reset" | "invite" | "verify-email";
+
+const held = new Map<TokenKind, string>();
+
+/** Garde le jeton lu dans l'URL. */
+export function stashToken(kind: TokenKind, token: string): void {
+  held.set(kind, token);
 }
 
-/** Remplace l'adresse courante par `safePath` ; l'état d'historique du routeur est conservé. */
-export function stripUrlToken(safePath: string): void {
-  try {
-    window.history.replaceState(window.history.state, "", safePath);
-  } catch {
-    // Contexte sans historique modifiable : le jeton reste dans l'URL, rien de plus à faire.
-  }
+/** Jeton gardé en mémoire, `undefined` après un rechargement. */
+export function heldToken(kind: TokenKind): string | undefined {
+  return held.get(kind);
+}
+
+/** Oublie le jeton (tests). */
+export function clearHeldTokens(): void {
+  held.clear();
 }

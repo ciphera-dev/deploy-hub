@@ -1,16 +1,11 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-import { VerifyEmail } from "@/features/auth/VerifyEmail";
-import { useUrlToken } from "@/lib/url-token";
+import { stashToken } from "@/lib/url-token";
 
-/** Lien de verification d'adresse e-mail (usage unique, 24 h) : inscription ouverte ou changement d'adresse. */
+/** Lien de vérification d'adresse : le jeton passe en mémoire, l'URL perd le jeton (même page). */
 export const Route = createFileRoute("/_auth/verify-email/$token")({
-  component: VerifyEmailPage,
+  beforeLoad: ({ params }) => {
+    stashToken("verify-email", params.token);
+    throw redirect({ to: "/verify-email", replace: true });
+  },
 });
-
-function VerifyEmailPage() {
-  // Le jeton quitte l'URL dès la lecture (voir useUrlToken).
-  const token = useUrlToken(Route.useParams().token);
-  const navigate = useNavigate();
-  return <VerifyEmail token={token} onSignIn={() => void navigate({ to: "/login" })} />;
-}

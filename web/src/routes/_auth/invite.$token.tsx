@@ -1,22 +1,11 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-import { InviteAccept } from "@/features/auth/InviteAccept";
-import { useUrlToken } from "@/lib/url-token";
+import { stashToken } from "@/lib/url-token";
 
-/** Lien d'invitation (usage unique, 72 h) : creation du compte, puis connexion. */
+/** Lien d'invitation : le jeton passe en mémoire, l'URL perd le jeton (même page). */
 export const Route = createFileRoute("/_auth/invite/$token")({
-  component: InvitePage,
+  beforeLoad: ({ params }) => {
+    stashToken("invite", params.token);
+    throw redirect({ to: "/invite", replace: true });
+  },
 });
-
-function InvitePage() {
-  // Le jeton quitte l'URL dès la lecture (voir useUrlToken).
-  const token = useUrlToken(Route.useParams().token);
-  const navigate = useNavigate();
-  return (
-    <InviteAccept
-      token={token}
-      onAccepted={() => void navigate({ to: "/login", search: { created: 1 }, replace: true })}
-      onSignIn={() => void navigate({ to: "/login" })}
-    />
-  );
-}

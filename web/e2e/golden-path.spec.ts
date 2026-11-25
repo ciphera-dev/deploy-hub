@@ -185,6 +185,18 @@ test("parcours complet : setup, TOTP, GitHub, déploiement, HTTPS, rollback", as
     await dialog.getByRole("button", { name: "Envoyer l'invitation" }).click();
     const link = page.getByRole("dialog", { name: "Invitation créée" });
     await expect(link.getByLabel("Lien", { exact: true })).toContainText("/invite/");
+    // Le lien s'ouvre sur la page d'invitation, puis perd son jeton sans quitter la page.
+    const inviteUrl = (await link.getByLabel("Lien", { exact: true }).textContent())?.trim() ?? "";
+    const browser = context.browser();
+    if (!browser) throw new Error("navigateur absent");
+    const guest = await browser.newContext({ ignoreHTTPSErrors: true });
+    const guestPage = await guest.newPage();
+    await watchCsp(guestPage);
+    await guestPage.goto(inviteUrl);
+    await expect(guestPage).toHaveURL(/\/invite$/);
+    await expect(guestPage.getByLabel("Mot de passe", { exact: true })).toBeVisible();
+    expectNoCspViolation(guestPage);
+    await guest.close();
     await link.getByRole("button", { name: "Terminé" }).click();
     await expect(page.getByText("lecteur@ciphera-e2e.org")).toBeVisible();
     await page.getByRole("button", { name: "Annuler l'invitation de lecteur@ciphera-e2e.org" }).click();

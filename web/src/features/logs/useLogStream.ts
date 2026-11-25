@@ -1,8 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 
 import { api } from "@/lib/api/client";
-import { unwrap } from "@/lib/api/errors";
+import { notifySessionExpired } from "@/lib/api/session";
 import { openJsonSocket, wsUrl } from "@/lib/ws";
 
 /** Message de GET /api/ws/logs (lignes déjà masquées par le serveur). */
@@ -57,14 +56,30 @@ export function toLine(wire: WireLogLine): LogLine {
 
 const sourceKey = (s: LogSource) => ("deployment" in s ? `d:${s.deployment}` : `s:${s.service}:${s.tail ?? ""}`);
 
+let probing: Promise<void> | null = null;
+
+/** GET /api/me (une seule sonde à la fois) : un 401 signale la session expirée, tout autre résultat est ignoré. */
+function probeSession(): void {
+  probing ??= api
+    .GET("/api/me")
+    .then((result) => {
+      if (result.response.status === 401) notifySessionExpired();
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      probing = null;
+    });
+}
+
 /** Lignes en direct des cibles données (une connexion par cible, rouverte après une coupure). */
 export function useLogStream(sources: LogSource[]) {
   const key = sources.map(sourceKey).join("|");
-  const queryClient = useQueryClient();
   // Lignes rattachées à la clé des cibles : un changement de cibles repart de zéro.
   const [store, setStore] = useState<{ key: string; lines: LogLine[] }>({ key, lines: [] });
   // Cibles dont le flux est coupé (reconnexion en cours).
   const [down, setDown] = useState<{ key: string; sources: string[] }>({ key, sources: [] });
+  // Cibles dont le serveur a fermé le flux (accès retiré, 1008) : plus de reconnexion.
+  const [ended, setEnded] = useState<{ key: string; sources: string[] }>({ key, sources: [] });
 
   useEffect(() => {
     if (!key) return;
@@ -91,15 +106,16 @@ export function useLogStream(sources: LogSource[]) {
           if (line.t === lastT) atLast.add(sig);
           setStore((s) => ({ key, lines: [...(s.key === key ? s.lines : []), line].slice(-MAX_LINES) }));
         },
-        // Flux injoignable ou refusé : GET /api/me ; un 401 passe par la politique d'erreur
-        // (cache vidé, redirection vers la connexion).
-        onUnreachable: () => {
-          void queryClient
-            .fetchQuery({ queryKey: ["session-probe"], queryFn: async () => unwrap(await api.GET("/api/me")), staleTime: 0, retry: false })
-            .catch(() => undefined);
-        },
+        // Flux injoignable ou refusé : GET /api/me, hors du cache des requêtes (une coupure
+        // réseau ou un 5xx ne doit pas remplacer la page : le flux continue de se rouvrir).
+        // Seul un 401 applique la politique de session (cache vidé, redirection).
+        onUnreachable: probeSession,
         onStatus: (status) => {
           if (status === "reconnecting") resuming = true;
+          setEnded((e) => {
+            const prev = e.key === key ? e.sources : [];
+            return { key, sources: status === "closed" ? [...new Set([...prev, k])] : prev.filter((x) => x !== k) };
+          });
           setDown((d) => {
             const prev = d.key === key ? d.sources : [];
             const next = status === "reconnecting" ? [...new Set([...prev, k])] : prev.filter((x) => x !== k);
@@ -109,10 +125,11 @@ export function useLogStream(sources: LogSource[]) {
       });
     });
     return () => closers.forEach((close) => close());
-  }, [key, queryClient]);
+  }, [key]);
 
   const clear = useCallback(() => setStore({ key, lines: [] }), [key]);
   const lines = store.key === key ? store.lines : [];
   const reconnecting = down.key === key && down.sources.length > 0;
-  return { lines, clear, reconnecting };
+  const closed = ended.key === key && ended.sources.length > 0;
+  return { lines, clear, reconnecting, closed };
 }

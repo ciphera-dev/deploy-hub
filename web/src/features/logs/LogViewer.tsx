@@ -141,7 +141,7 @@ function ProjectLogViewer({ project, containers }: { project: string; containers
   const box = useRef<HTMLDivElement>(null);
   const selC = containers.find((c) => c.id === sel);
   const sources = useMemo<LogSource[]>(() => containers.filter((c) => c.st === "ok").map((c) => ({ service: c.service, tail: 500 })), [containers]);
-  const { lines, clear, reconnecting } = useLogStream(sources);
+  const { lines, clear, reconnecting, closed } = useLogStream(sources);
   // En pause : affichage figé sur la dernière ligne reçue ; la suite reste gardée et s'affiche à la reprise.
   const [frozen, setFrozen] = useState<number | null>(null);
   const logs = frozen === null ? lines : lines.filter((l) => l.id <= frozen);
@@ -294,10 +294,10 @@ function ProjectLogViewer({ project, containers }: { project: string; containers
             <span style={{ width: 1, height: 20, background: "var(--border-strong)" }}></span>
             <button onClick={toggleLive} style={{ ...tbtn(false), gap: 8, padding: "0 10px", color: "var(--text-strong)" }}>
               <span style={{ position: "relative", width: 8, height: 8 }}>
-                {live && !stopped && !reconnecting && <span className="live-ping" style={{ position: "absolute", inset: 0, borderRadius: 99, background: "var(--green-500)" }}></span>}
-                <span style={{ position: "absolute", inset: 0, borderRadius: 99, background: live && !stopped && !reconnecting ? "var(--green-500)" : "var(--viz-2)" }}></span>
+                {live && !stopped && !reconnecting && !closed && <span className="live-ping" style={{ position: "absolute", inset: 0, borderRadius: 99, background: "var(--green-500)" }}></span>}
+                <span style={{ position: "absolute", inset: 0, borderRadius: 99, background: live && !stopped && !reconnecting && !closed ? "var(--green-500)" : "var(--viz-2)" }}></span>
               </span>
-              {!live ? "En pause" : reconnecting ? "Reconnexion…" : "En direct"}
+              {!live ? "En pause" : closed ? "Flux fermé (accès retiré)" : reconnecting ? "Reconnexion…" : "En direct"}
               <Icon name={live ? "Pause" : "Play"} size={12} color="var(--text-muted)" />
             </button>
           </div>

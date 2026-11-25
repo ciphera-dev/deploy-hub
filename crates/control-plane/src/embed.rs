@@ -41,8 +41,12 @@ pub fn serve(path: &str) -> Response {
 
 pub(crate) fn respond(path: &str, lookup: impl Fn(&str) -> Option<Asset>) -> Response {
     let rel = path.trim_start_matches('/');
+    // `index.html` demande directement passe par le meme chemin que les routes du
+    // navigateur : sans cela, la page serait servie sans nonce.
+    let is_index = rel == "index.html";
     // Un fichier existant (JS, CSS, favicon...) est servi tel quel.
     if !rel.is_empty()
+        && !is_index
         && let Some(asset) = lookup(rel)
     {
         let cache = if rel.starts_with("assets/") {
@@ -60,10 +64,11 @@ pub(crate) fn respond(path: &str, lookup: impl Fn(&str) -> Option<Asset>) -> Res
             .into_response();
     }
     // Un chemin qui ressemble a un fichier (extension) mais absent : 404 net.
-    if rel
-        .rsplit('/')
-        .next()
-        .is_some_and(|name| name.contains('.'))
+    if !is_index
+        && rel
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.contains('.'))
     {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -90,7 +95,7 @@ fn html_with_nonce(index: &[u8]) -> Response {
     let mut response = (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::CACHE_CONTROL, "no-cache"),
+            (header::CACHE_CONTROL, "no-store"),
         ],
         html,
     )
@@ -165,6 +170,15 @@ mod tests {
         let body = body_of(a).await;
         assert!(body.contains(&format!(r#"content="{na}""#)));
         assert!(!body.contains(NONCE_PLACEHOLDER));
+    }
+
+    #[tokio::test]
+    async fn index_html_is_served_with_a_nonce_and_no_store() {
+        let r = respond("/index.html", with_marker);
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+        let nonce = nonce_of(&r);
+        assert!(body_of(r).await.contains(&nonce));
     }
 
     #[test]
