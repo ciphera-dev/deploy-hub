@@ -8,8 +8,11 @@
 #     (durcissement de l'agent : SystemCallFilter, SystemCallErrorNumber,
 #     RestrictAddressFamilies, PrivateDevices...) ;
 #   - vrai redemarrage du conteneur : sockets.target, paths.target,
-#     timers.target, ciphera-proxy.socket et ciphera-egress-check.timer
-#     actifs, aucun cycle casse dans le journal.
+#     timers.target, ciphera-proxy.socket, ciphera-egress-check.timer et
+#     ciphera-certsign.path actifs, ciphera-certsign.service passe au
+#     demarrage, aucun cycle casse dans le journal ;
+#   - une demande deposee dans /var/lib/ciphera/cert-requests declenche
+#     ciphera-certsign.service par son .path (le bouchon la consomme).
 #
 #   install/tests/units-boot.sh [debian] [ubuntu] [fedora]
 #
@@ -64,6 +67,8 @@ for b in ciphera ciphera-agent ciphera-proxy ciphera-cli; do
 	printf "#!/bin/sh\nexec sleep infinity\n" >/usr/local/bin/$b
 	chmod 0755 /usr/local/bin/$b
 done
+# Signataire (ciphera admin sign-requests) : consomme les demandes, rend la main.
+printf "#!/bin/sh\nif [ \"\$1\" = admin ]; then rm -f /var/lib/ciphera/cert-requests/*.json; exit 0; fi\nexec sleep infinity\n" >/usr/local/bin/ciphera
 for u in ciphera ciphera-agent ciphera-proxy ciphera-postgres ciphera-build; do
 	getent passwd $u >/dev/null || useradd -r -M -s /usr/sbin/nologin $u
 done
@@ -73,7 +78,7 @@ systemd-tmpfiles --create /etc/tmpfiles.d/ciphera.conf
 systemctl daemon-reload
 systemctl enable ciphera-proxy.socket ciphera-proxy.service ciphera.service \
 	ciphera-agent.service ciphera-updater.path ciphera-updater-recover.service \
-	ciphera-egress-check.timer >/dev/null 2>&1'
+	ciphera-egress-check.timer ciphera-certsign.path ciphera-certsign.service >/dev/null 2>&1'
 
 # shellcheck disable=SC2016
 verify='out=$(systemd-analyze verify multi-user.target /etc/systemd/system/ciphera*.service /etc/systemd/system/ciphera*.socket /etc/systemd/system/ciphera*.path /etc/systemd/system/ciphera*.timer 2>&1 || true)
@@ -87,10 +92,31 @@ bad=$(printf "%s\n" "$out" | grep -i ciphera | grep -Ei "unknown (key|lvalue|sec
 if [ -n "$bad" ]; then printf "%s\n" "$bad" >&2; exit 1; fi'
 
 # shellcheck disable=SC2016
-booted='for t in sockets.target paths.target timers.target ciphera-proxy.socket ciphera-egress-check.timer; do
+booted='for t in sockets.target paths.target timers.target ciphera-proxy.socket ciphera-egress-check.timer ciphera-certsign.path; do
 	test "$(systemctl is-active $t)" = active || { echo "    $t : $(systemctl is-active $t)" >&2; exit 1; }
 done
+for _ in $(seq 1 30); do
+	test "$(systemctl show -p Result --value ciphera-certsign.service)" = success && test "$(systemctl show -p ExecMainStatus --value ciphera-certsign.service)" = 0 && test -n "$(systemctl show -p InvocationID --value ciphera-certsign.service)" && break
+	sleep 1
+done
+test -n "$(systemctl show -p InvocationID --value ciphera-certsign.service)" || { echo "    ciphera-certsign.service non lance au demarrage" >&2; exit 1; }
+test "$(systemctl show -p ExecMainStatus --value ciphera-certsign.service)" = 0 || { echo "    ciphera-certsign.service : $(systemctl show -p Result --value ciphera-certsign.service)" >&2; exit 1; }
 if journalctl -b --no-pager | grep -qi "ordering cycle"; then journalctl -b --no-pager | grep -i cycle >&2; exit 1; fi'
+
+# Demande deposee (compte ciphera) : le .path lance le signataire, qui la
+# consomme ; le service se termine avec succes.
+# shellcheck disable=SC2016
+triggered='install -d -o ciphera -g ciphera -m 0750 /var/lib/ciphera /var/lib/ciphera/cert-requests
+before=$(systemctl show -p InvocationID --value ciphera-certsign.service)
+runuser -u ciphera -- sh -c "printf {} >/var/lib/ciphera/cert-requests/.t.tmp && mv /var/lib/ciphera/cert-requests/.t.tmp /var/lib/ciphera/cert-requests/link.json"
+for _ in $(seq 1 30); do
+	test ! -e /var/lib/ciphera/cert-requests/link.json && test "$(systemctl show -p InvocationID --value ciphera-certsign.service)" != "$before" && test "$(systemctl show -p ActiveState --value ciphera-certsign.service)" != activating && break
+	sleep 1
+done
+test ! -e /var/lib/ciphera/cert-requests/link.json || { echo "    demande non consommee" >&2; exit 1; }
+test "$(systemctl show -p InvocationID --value ciphera-certsign.service)" != "$before" || { echo "    signataire non lance" >&2; exit 1; }
+test "$(systemctl show -p Result --value ciphera-certsign.service)" = success || { echo "    signataire : $(systemctl show -p Result --value ciphera-certsign.service)" >&2; exit 1; }
+test "$(systemctl is-active ciphera-certsign.path)" = active'
 
 run_distro() {
 	local distro=$1 image="ciphera-install-test-$1"
@@ -104,7 +130,8 @@ run_distro() {
 	check "systemd-analyze verify : directives toutes comprises" in_ctr "$directives"
 	podman restart "$cid" >/dev/null
 	wait_boot
-	check "redemarrage : cibles, socket du proxy et minuterie actifs, aucun cycle" in_ctr "$booted"
+	check "redemarrage : cibles, socket du proxy, minuterie et signataire actifs, aucun cycle" in_ctr "$booted"
+	check "signataire : une demande declenche ciphera-certsign.service" in_ctr "$triggered"
 	podman rm -f "$cid" >/dev/null
 	cid=
 }

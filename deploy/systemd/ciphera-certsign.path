@@ -1,0 +1,15 @@
+# Declenche ciphera-certsign.service quand le plan de controle depose une
+# demande de certificat (agents::signer) : fichier <nom>.json ecrit de facon
+# atomique (renommage) dans son dossier d'etat, 0640, compte ciphera. Le
+# signataire supprime chaque demande traitee, signee ou refusee : la
+# condition retombe, jamais de boucle. Active par install.sh (et par
+# l'updater, unite nouvelle).
+[Unit]
+Description=Ciphera - surveillance des demandes de certificats
+
+[Path]
+PathExistsGlob=/var/lib/ciphera/cert-requests/*.json
+Unit=ciphera-certsign.service
+
+[Install]
+WantedBy=multi-user.target

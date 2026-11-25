@@ -27,7 +27,12 @@
 # seules capacites SETUID et SETGID ; build par le socket), aucun port publie,
 # mot de passe absent de `docker inspect`, sockets Unix crees, socket de
 # buildkitd accessible au compte de l'agent, panneau joignable, agent
-# connecte au plan de controle ; proxy du noeud sous son compte (port 80 :
+# connecte au plan de controle ; signataire root des certificats (cle de la
+# CA a root 0600, illisible par le compte ciphera, ciphera-certsign.path
+# actif) et renouvellement de bout en bout du certificat du lien avec une
+# validite courte forcee (demande du service, signature root, meme cle,
+# 730 jours, installe et recharge, agent reconnecte) ; proxy du noeud sous
+# son compte (port 80 :
 # 301 vers le panneau pour un hote IP, 404 sinon ; 443 sans certificat ;
 # socket de pilotage 0660 ciphera-proxy:ciphera-agent joint par l'agent ;
 # 65536 descripteurs, connexion muette fermee apres 10 s) ; sortie des
@@ -592,6 +597,58 @@ else
 fi
 check "(a) agent connecte au plan de controle" \
 	wait_for 60 'journalctl -u ciphera --no-pager | grep -q "lien agents : agent .* connecte ("'
+# Signataire root des certificats (ciphera-certsign) : cle de la CA a root,
+# illisible par le compte du service.
+check "(a) cle de la CA root:root 0600" sh -c 'test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca.key)" = 600:root:root'
+check "(a) cle de la CA illisible par le compte ciphera" sh -c '! runuser -u ciphera -- cat /etc/ciphera/ca/ca.key >/dev/null 2>&1'
+check "(a) ciphera-certsign.path actif" sh -c 'test "$(systemctl is-active ciphera-certsign.path)" = active'
+check "(a) ciphera-certsign.service passe a l'installation" \
+	sh -c 'test "$(systemctl show -p Result --value ciphera-certsign.service)" = success'
+# Renouvellement de bout en bout, validite courte forcee : certificat du
+# lien remplace par un certificat de la meme cle, emis par la CA, valable du
+# 1er janvier 2020 a apres-demain (deux tiers passes). Au redemarrage, le
+# service demande son renouvellement, le signataire le signe, le service
+# installe le nouveau certificat (meme cle, 730 jours) et le recharge.
+short=$work/short-link
+short_link() {
+	local san
+	mkdir -p "$short" && : >"$short/index.txt" && echo 01 >"$short/serial"
+	san=$(openssl x509 -in /etc/ciphera/tls/link.crt -noout -ext subjectAltName | sed -n 2p | sed 's/IP Address/IP/g; s/ //g')
+	[ -n "$san" ] || return 1
+	printf '[ca]\ndefault_ca=c\n[c]\ndatabase=%s/index.txt\nserial=%s/serial\nnew_certs_dir=%s\npolicy=p\ndefault_md=sha256\nunique_subject=no\nx509_extensions=e\n[p]\ncommonName=supplied\n[e]\nbasicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=%s\n' \
+		"$short" "$short" "$short" "$san" >"$short/ca.cnf"
+	openssl req -new -key /etc/ciphera/tls/link.key -subj /CN=localhost -out "$short/link.csr" 2>/dev/null &&
+		openssl ca -batch -notext -config "$short/ca.cnf" -cert /etc/ciphera/ca/ca.crt \
+			-keyfile /etc/ciphera/ca/ca.key -in "$short/link.csr" -out "$short/link.crt" \
+			-startdate 20200101000000Z -enddate "$(date -u -d '+2 days' +%Y%m%d%H%M%SZ)" 2>/dev/null &&
+		cp "$short/link.crt" /etc/ciphera/tls/link.crt
+}
+link_renewed() {
+	! cmp -s /etc/ciphera/tls/link.crt "$short/link.crt" &&
+		openssl verify -CAfile /etc/ciphera/ca/ca.crt /etc/ciphera/tls/link.crt >/dev/null &&
+		openssl x509 -in /etc/ciphera/tls/link.crt -noout -checkend $((700 * 86400)) >/dev/null &&
+		test "$(openssl x509 -in /etc/ciphera/tls/link.crt -noout -pubkey)" = "$(openssl pkey -in /etc/ciphera/tls/link.key -pubout)"
+}
+if short_link; then
+	check "(a) certificat du lien a validite courte pose" true
+	systemctl restart ciphera
+	if wait_for 120 'test -z "$(ls -A /var/lib/ciphera/cert-requests 2>/dev/null)" && ! cmp -s /etc/ciphera/tls/link.crt '"$short/link.crt"; then
+		check "(a) renouvellement du lien : demande signee par ciphera-certsign" true
+	else
+		check "(a) renouvellement du lien : demande signee par ciphera-certsign" false
+		journalctl -u ciphera -u ciphera-certsign --no-pager -n 40 || true
+	fi
+	check "(a) renouvellement du lien : meme cle, CA de l'instance, 730 jours" link_renewed
+	check "(a) renouvellement du lien : reponse root, groupe ciphera, 0640" \
+		sh -c 'test "$(stat -c %a:%U:%G /var/lib/ciphera/cert-responses/link.crt)" = 640:root:ciphera'
+	check "(a) renouvellement du lien : journal du signataire" \
+		wait_for 30 'journalctl -u ciphera-certsign --no-pager | grep -q "certificat link signe"'
+	check "(a) panneau joignable apres le renouvellement du lien" panel_up
+	check "(a) agent reconnecte apres le renouvellement du lien" \
+		wait_for 60 'test "$(journalctl -u ciphera --no-pager | grep -c "lien agents : agent .* connecte (")" -ge 2'
+else
+	check "(a) certificat du lien a validite courte pose" false
+fi
 # Commandes de secours telles qu'affichees par le panneau (sudo, sans
 # l'environnement du service) : base jointe par le socket de l'unite.
 check "(a) sudo ciphera admin clear-ip-allowlist (environnement vide)" \

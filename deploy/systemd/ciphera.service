@@ -37,8 +37,13 @@ UMask=0077
 
 NoNewPrivileges=yes
 ProtectSystem=strict
-# Certificats du lien et du panneau renouveles par le service (agents::certs).
+# Certificats du lien et du panneau re-signes par ciphera-certsign et
+# installes par le service (agents::certs).
 ReadWritePaths=-/etc/ciphera/tls
+# Cle de la CA : jamais lisible par le service, meme sur une installation
+# anterieure ou elle appartenait encore au compte ciphera (signataire root
+# separe, ciphera-certsign.service).
+InaccessiblePaths=-/etc/ciphera/ca/ca.key
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

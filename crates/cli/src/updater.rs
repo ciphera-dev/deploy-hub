@@ -77,7 +77,7 @@ pub const BINARIES: [&str; 4] = ["ciphera", "ciphera-agent", "ciphera-proxy", "c
 /// (section `[Install]`) et ne desactive puis retire que les unites du
 /// registre absentes de l'archive. Sans registre (installation anterieure),
 /// le registre vaut cette liste.
-pub const UNITS: [&str; 7] = [
+pub const UNITS: [&str; 11] = [
     "ciphera.service",
     "ciphera-proxy.socket",
     "ciphera-proxy.service",
@@ -85,6 +85,10 @@ pub const UNITS: [&str; 7] = [
     "ciphera-updater.service",
     "ciphera-updater.path",
     "ciphera-updater-recover.service",
+    "ciphera-egress-check.service",
+    "ciphera-egress-check.timer",
+    "ciphera-certsign.service",
+    "ciphera-certsign.path",
 ];
 /// Unites exigees dans toute archive : le plan de controle et la chaine de
 /// mise a jour (sans elles, plus aucune mise a jour possible).

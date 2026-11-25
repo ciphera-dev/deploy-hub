@@ -18,7 +18,9 @@
 #     ciphera.service actif une fois la base de test creee ; compte systeme
 #     ciphera-build avec ses plages de sous-uids/sous-gids sans chevauchement ;
 #     reglage du filtrage de sortie (/etc/ciphera-egress/egress.env, root,
-#     defaut 0) et minuterie ciphera-egress-check.timer active ;
+#     defaut 0) et minuterie ciphera-egress-check.timer active ; cle de la
+#     CA a root (0600), signataire ciphera-certsign.path actif et
+#     ciphera-certsign.service passe a l'installation ;
 #   - unites activees : aucun cycle d'ordre (systemd-analyze verify), puis vrai
 #     redemarrage du conteneur (sockets.target et paths.target actifs) ;
 #   - (r) relance sur l'installation : meme version = reparation (services
@@ -429,6 +431,12 @@ run_distro() {
 		in_ctr 'test "$(stat -c %a:%U:%G /etc/ciphera-egress/egress.env)" = 644:root:root && grep -qx CIPHERA_APP_EGRESS_DENY_PRIVATE=0 /etc/ciphera-egress/egress.env'
 	check "(a) minuterie ciphera-egress-check.timer active" \
 		in_ctr 'test "$(systemctl is-active ciphera-egress-check.timer)" = active'
+	check "(a) cle de la CA root:root 0600" \
+		in_ctr 'test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca.key)" = 600:root:root'
+	check "(a) signataire : ciphera-certsign.path actif" \
+		in_ctr 'test "$(systemctl is-active ciphera-certsign.path)" = active'
+	check "(a) signataire : ciphera-certsign.service passe a l'installation" \
+		in_ctr 'test "$(systemctl show -p Result --value ciphera-certsign.service)" = success'
 
 	# Fixture : role et base avec le mot de passe genere par `ciphera init`,
 	# joints par le socket de la distribution. Authentification par mot de

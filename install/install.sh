@@ -42,7 +42,7 @@ UPDATER_STATE_DIR=/var/lib/ciphera-updater
 UPDATE_LOCK=/run/ciphera/update.lock
 PANEL_PORT=8443
 BINARIES='ciphera ciphera-agent ciphera-proxy ciphera-cli'
-UNITS='ciphera.service ciphera-proxy.socket ciphera-proxy.service ciphera-agent.service ciphera-updater.service ciphera-updater.path ciphera-updater-recover.service ciphera-egress-check.service ciphera-egress-check.timer'
+UNITS='ciphera.service ciphera-proxy.socket ciphera-proxy.service ciphera-agent.service ciphera-updater.service ciphera-updater.path ciphera-updater-recover.service ciphera-egress-check.service ciphera-egress-check.timer ciphera-certsign.service ciphera-certsign.path'
 # Dossiers des sockets Unix (PostgreSQL, buildkitd), recrees a chaque demarrage.
 TMPFILES=ciphera.tmpfiles.conf
 TMPFILES_DEST=/etc/tmpfiles.d/ciphera.conf
@@ -939,6 +939,15 @@ start_services() {
 	# Docker, le service est saute par sa condition).
 	systemctl enable --now ciphera-egress-check.timer ||
 		die "activation de ciphera-egress-check.timer impossible (journalctl -u ciphera-egress-check)"
+	# Signataire root des certificats : demandes du plan de controle
+	# (ciphera-certsign.path) ; lance aussi maintenant, ce qui remet la cle de
+	# la CA d'une installation anterieure a root (0600).
+	systemctl enable --now ciphera-certsign.path ||
+		die "activation de ciphera-certsign.path impossible (journalctl -u ciphera-certsign.path)"
+	systemctl enable ciphera-certsign.service ||
+		die "activation de ciphera-certsign.service impossible"
+	systemctl start ciphera-certsign.service ||
+		die "signataire des certificats en echec (journalctl -u ciphera-certsign)"
 	# Reparation : `enable --now` ne relance pas un service deja actif ; les
 	# trois services repartent ensemble sur les fichiers reinstalles.
 	if [ "$repair" = yes ]; then

@@ -1,0 +1,54 @@
+# Signataire root des certificats de la CA de l'instance (ciphera admin
+# sign-requests), sur le modele de l'updater : la cle de la CA
+# (/etc/ciphera/ca/ca.key, root 0600) n'est lue que par lui, jamais par le
+# plan de controle (compte ciphera, InaccessiblePaths= dans ciphera.service).
+# Lance par ciphera-certsign.path a chaque demande, et une fois au demarrage
+# de la machine (WantedBy=) : cle de la CA remise a root 0600 si une
+# installation anterieure l'avait laissee au compte ciphera, puis demandes
+# en attente signees seulement pour un serveur enregistre et non revoque, et
+# pour la meme cle publique ; duree et usages imposes ; liens symboliques
+# refuses (O_NOFOLLOW). Reponses dans /var/lib/ciphera/cert-responses (root,
+# groupe ciphera, 0750). Sans demande, la base n'est pas ouverte.
+[Unit]
+Description=Ciphera - signataire des certificats de l'instance
+ConditionPathExists=/usr/local/bin/ciphera
+After=ciphera.service ciphera-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ciphera admin sign-requests
+# Aucun EnvironmentFile : /etc/ciphera/ciphera.env est modifiable par le
+# compte ciphera ; la commande le lit elle-meme sans ses cles de chemin
+# (cli::env). Attente bornee de PostgreSQL (conteneur de l'agent).
+TimeoutStartSec=5min
+UMask=0077
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+# Demandes et reponses ; cle de la CA (proprietaire et droits corriges).
+ReadWritePaths=-/var/lib/ciphera
+ReadWritePaths=-/etc/ciphera/ca
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# Base par son socket Unix (ou TCP si l'administrateur l'a configure).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Lecture des dossiers du compte ciphera, suppression des demandes,
+# proprietaire et droits de la cle de la CA et des reponses.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target
