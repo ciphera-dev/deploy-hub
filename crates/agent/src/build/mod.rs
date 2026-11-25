@@ -33,7 +33,7 @@ use proto::{
     AgentToControl, BuildMethod, BuildSource, BuildSpec, GitToken, ImageRef, LogLine, LogStream,
     LogTarget, Stage, StageStatus,
 };
-use shared::ids::{DeploymentId, ProjectId};
+use shared::ids::{DeploymentId, EnvironmentId, ProjectId};
 use tokio::sync::mpsc;
 
 use self::argv::{AllowedBin, InvalidArg, ValidatedArg};
@@ -447,6 +447,8 @@ pub(crate) struct Targets {
     environment_id: Option<ValidatedArg>,
     /// Projet du build (buildkitd et etat propres a chaque projet).
     project_uuid: Option<ProjectId>,
+    /// Environnement du build (nom du projet Compose).
+    environment_uuid: Option<EnvironmentId>,
 }
 
 /// Cloisonnement des caches de BuildKit d'un build, par environnement :
@@ -475,6 +477,7 @@ impl Targets {
                 .map(|id| ValidatedArg::name(&id.to_string()))
                 .transpose()?,
             project_uuid: spec.project_id,
+            environment_uuid: spec.environment_id,
         })
     }
 
@@ -509,10 +512,20 @@ impl Targets {
         ValidatedArg::concat(&parts)
     }
 
-    /// Nom du projet Compose a la normalisation (`<projet>-<env>`). Jamais
-    /// une cle de cache : `a` + `b-c` et `a-b` + `c` donnent le meme nom.
-    pub(crate) fn compose_project(&self) -> ValidatedArg {
-        ValidatedArg::concat(&[&self.project, &DASH, &self.env])
+    /// Nom du projet Compose a la normalisation, tire des UUID du projet et
+    /// de l'environnement (`docker::compose_project_name`), jamais de leurs
+    /// noms : un projet supprime puis recree sous le meme nom ne retrouve pas
+    /// les volumes de l'ancien. Ordre sans l'un d'eux : refuse.
+    pub(crate) fn compose_project(&self) -> Result<ValidatedArg, BuildError> {
+        let (Some(project), Some(env)) = (self.project_uuid, self.environment_uuid) else {
+            return Err(BuildError::Invalid(InvalidArg {
+                kind: "identifiant de projet ou d'environnement",
+                reason: "absent de l'ordre de build (plan de controle a mettre a jour)",
+            }));
+        };
+        Ok(ValidatedArg::name(&crate::docker::compose_project_name(
+            project, env,
+        ))?)
     }
 
     /// Caches du build, a partir des UUID du projet et de l'environnement.

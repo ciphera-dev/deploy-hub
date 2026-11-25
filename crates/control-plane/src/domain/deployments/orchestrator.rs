@@ -498,6 +498,90 @@ pub async fn remove_project_resources(state: &AppState, project: Uuid) -> bool {
     }
 }
 
+/// Inscrit le retrait du projet supprime pour chaque serveur actif, dans la
+/// transaction de la suppression : `RemoveProject` part apres elle
+/// (`send_project_removals`) et repart a chaque reconnexion jusqu'a
+/// l'accuse `ProjectRemoved`.
+pub async fn queue_project_removal(
+    conn: &mut PgConnection,
+    project: Uuid,
+    purge_volumes: bool,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO project_removals (project_id, server_id, purge_volumes) \
+         SELECT $1, id, $2 FROM servers WHERE revoked_at IS NULL \
+         ON CONFLICT (project_id, server_id) DO UPDATE \
+         SET purge_volumes = project_removals.purge_volumes OR EXCLUDED.purge_volumes",
+    )
+    .bind(project)
+    .bind(purge_volumes)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Envoie `RemoveProject` aux agents connectes qui ont un retrait de
+/// `project` a faire (apres la validation de la suppression). Agent absent
+/// ou file pleine : l'ordre repart a sa reconnexion (`reconcile`).
+pub async fn send_project_removals(state: &AppState, project: Uuid) {
+    let rows: Result<Vec<(Uuid, bool)>, _> = sqlx::query_as(
+        "SELECT server_id, purge_volumes FROM project_removals WHERE project_id = $1",
+    )
+    .bind(project)
+    .fetch_all(&state.db)
+    .await;
+    match rows {
+        Ok(rows) => {
+            for (server, purge_volumes) in rows {
+                send_logged(
+                    state,
+                    server,
+                    ControlToAgent::RemoveProject {
+                        project_id: ProjectId(project),
+                        purge_volumes,
+                    },
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, %project, "retraits du projet illisibles : renvoyes a la reconnexion")
+        }
+    }
+}
+
+/// Retraits de projet encore a faire par `server` : renvoyes (reconnexion,
+/// etat redemande).
+async fn resend_project_removals(state: &AppState, server: Uuid) -> sqlx::Result<()> {
+    let rows: Vec<(Uuid, bool)> = sqlx::query_as(
+        "SELECT project_id, purge_volumes FROM project_removals WHERE server_id = $1 \
+         ORDER BY requested_at",
+    )
+    .bind(server)
+    .fetch_all(&state.db)
+    .await?;
+    for (project, purge_volumes) in rows {
+        send_logged(
+            state,
+            server,
+            ControlToAgent::RemoveProject {
+                project_id: ProjectId(project),
+                purge_volumes,
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Accuse `ProjectRemoved` : retrait fait sur ce serveur.
+async fn on_project_removed(state: &AppState, server: Uuid, project: Uuid) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM project_removals WHERE project_id = $1 AND server_id = $2")
+        .bind(project)
+        .bind(server)
+        .execute(&state.db)
+        .await?;
+    Ok(())
+}
+
 /// Serveurs des conteneurs encore en place du projet dont l'agent n'est pas
 /// connecte (rien ne pourrait leur etre envoye).
 pub async fn unreachable_servers(state: &AppState, project: Uuid) -> sqlx::Result<Vec<Uuid>> {
@@ -1342,6 +1426,9 @@ pub async fn on_agent_message(state: &AppState, server: ServerId, msg: AgentToCo
             LogTarget::Deployment(id) => touch(state, server.0, id.0).await,
             LogTarget::Service(_) => Ok(()),
         },
+        AgentToControl::ProjectRemoved { project_id } => {
+            on_project_removed(state, server.0, project_id.0).await
+        }
         _ => Ok(()),
     };
     if let Err(e) = result {
@@ -1603,7 +1690,10 @@ pub async fn reconcile(state: &AppState, server: Uuid, agent: &AgentState) -> sq
         send_logged(state, server, ControlToAgent::ApplyRoutes(table));
     });
     let cleanups = enqueue_cleanups(state, server).await;
-    pending.and(routes).and(cleanups)
+    // Retraits de projet sans accuse (agent absent a la suppression, accuse
+    // perdu) : renvoyes.
+    let removals = resend_project_removals(state, server).await;
+    pending.and(routes).and(cleanups).and(removals)
 }
 
 async fn reconcile_deployments(

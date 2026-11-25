@@ -33,6 +33,16 @@
 //! (retention, suppression d'un projet). `Restart` redemarre les
 //! conteneurs du deploiement servi (et son ensemble Compose).
 //!
+//! `RemoveProject` (suppression d'un projet) : le projet est marque retire
+//! (tout nouvel ordre de build ou de deploiement pour lui est refuse), ses
+//! builds et deploiements en cours sont annules et nettoyes, puis ses
+//! conteneurs (etiquette `dev.ciphera.project`), son etat local, ses images
+//! de deploiement, avec `purge_volumes` ses volumes Compose, et son reseau
+//! `ciphera-p-<id>` sont supprimes. Le premier deploiement Compose d'un
+//! service qui echoue retire aussi les services non exposes qu'il a
+//! demarres. Un balayage horaire retire les reseaux de projet sans
+//! conteneur dont le projet n'est plus connu de l'agent.
+//!
 //! Livraison au moins une fois : l'issue definitive de chaque build et
 //! deploiement est gardee dans l'etat local ; un ordre rejoue pour un
 //! deploiement conclu la rapporte de nouveau sans rien refaire. Un `Deploy`
@@ -46,16 +56,17 @@
 pub mod compose;
 pub mod probe;
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use proto::{
     AgentState, AgentToControl, BuildSpec, DeploySpec, DeploymentOutcome, LogStream, Route,
     RunningDeployment, Stage, StageStatus,
 };
-use shared::ids::DeploymentId;
+use shared::ids::{DeploymentId, ProjectId};
 use tokio::sync::mpsc;
 
 use self::compose::{
@@ -67,9 +78,9 @@ use crate::build::argv::ValidatedArg;
 use crate::build::{self, BuildBackend, BuildConfig, BuildError, ProgressSink};
 use crate::docker::{
     ContainerId, ContainerSpec, DEPLOYMENT_LABEL, DockerError, DockerOps, PREPARE_ROLE, ROLE_LABEL,
-    project_network,
+    network_project, project_network,
 };
-use crate::ops::{Cancel, OpKind, Operations, Ticket};
+use crate::ops::{Busy, Cancel, OpKind, Operations, Ticket};
 use crate::routes::{RouteError, RouteSink, Router};
 use crate::state::{DeploymentRecord, StateDb, StateError};
 
@@ -77,6 +88,10 @@ use crate::state::{DeploymentRecord, StateDb, StateError};
 pub const DRAIN: Duration = Duration::from_secs(10);
 /// Attente au plus d'un build en cours par un `Deploy` du meme deploiement.
 pub const BUILD_WAIT: Duration = Duration::from_secs(60);
+/// Intervalle du balayage des reseaux de projet vides.
+pub const NETWORK_SWEEP_EVERY: Duration = Duration::from_secs(3600);
+/// Message d'un ordre recu pour un projet supprime.
+const PROJECT_REMOVED: &str = "projet supprime de ce serveur : ordre refuse";
 /// Dossiers transitoires des deploiements Compose (fichier donne a
 /// `docker compose`), sous le StateDirectory 0700 de l'agent.
 pub const DEFAULT_DEPLOYS_DIR: &str = "/var/lib/ciphera-agent/deploys";
@@ -208,6 +223,10 @@ pub struct Deployer<D, P, C, S: RouteSink> {
     compose: C,
     cfg: DeployConfig,
     ops: Operations,
+    /// Projets retires (`RemoveProject`) depuis le demarrage : plus aucune
+    /// operation n'y est lancee. Verrou tenu pendant l'inscription d'une
+    /// operation, si bien qu'un retrait voit toutes celles deja lancees.
+    removed: Mutex<HashSet<ProjectId>>,
 }
 
 impl<D, P, C, S> Deployer<D, P, C, S>
@@ -233,7 +252,31 @@ where
             compose,
             cfg,
             ops: Operations::default(),
+            removed: Mutex::new(HashSet::new()),
         }
+    }
+
+    fn removed(&self) -> std::sync::MutexGuard<'_, HashSet<ProjectId>> {
+        self.removed.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Lance l'operation `id`, sauf pour un projet retire (`None`).
+    fn spawn_op<W, F>(
+        &self,
+        id: DeploymentId,
+        kind: OpKind,
+        project: Option<ProjectId>,
+        work: W,
+    ) -> Option<Result<(), Busy>>
+    where
+        W: FnOnce(Ticket) -> F,
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let removed = self.removed();
+        if project.is_some_and(|p| removed.contains(&p)) {
+            return None;
+        }
+        Some(self.ops.spawn_in(id, kind, project, work))
     }
 
     pub fn ops(&self) -> &Operations {
@@ -307,16 +350,32 @@ where
         let deadline = tokio::time::Instant::now() + BUILD_WAIT;
         loop {
             let (this, spec_, outbox_) = (self.clone(), spec.clone(), outbox.clone());
-            let busy = match self
-                .ops
-                .spawn(id, OpKind::Deploy, move |ticket| async move {
+            let spawned = self.spawn_op(
+                id,
+                OpKind::Deploy,
+                Some(spec.project_id),
+                move |ticket| async move {
                     let sink = ProgressSink::new(id, outbox_);
                     if let Err(e) = this.run_op(&spec_, &sink, Some(ticket)).await {
                         tracing::warn!("deploiement {id} en echec : {e}");
                     }
-                }) {
-                Ok(()) => return,
-                Err(busy) => busy,
+                },
+            );
+            let busy = match spawned {
+                Some(Ok(())) => return,
+                Some(Err(busy)) => busy,
+                None => {
+                    tracing::info!("deploiement {id} : {PROJECT_REMOVED}");
+                    ProgressSink::new(id, outbox)
+                        .stage(
+                            Stage::Start,
+                            StageStatus::Failed {
+                                message: PROJECT_REMOVED.into(),
+                            },
+                        )
+                        .await;
+                    return;
+                }
             };
             if busy.kind == OpKind::Deploy {
                 tracing::info!("deploiement {id} deja en cours : ordre en double ignore");
@@ -355,9 +414,10 @@ where
         outbox: mpsc::Sender<AgentToControl>,
     ) {
         let id = spec.deployment_id;
+        let project = spec.project_id;
         let this = self.clone();
         let log = outbox.clone();
-        let spawned = self.ops.spawn(id, OpKind::Build, move |ticket| async move {
+        let spawned = self.spawn_op(id, OpKind::Build, project, move |ticket| async move {
             let sink = this.recording(&ProgressSink::new(id, outbox));
             if let Some(o) = this.outcome(id) {
                 tracing::info!("build {id} deja conclu : issue rapportee de nouveau");
@@ -391,6 +451,20 @@ where
                 Err(e) => tracing::warn!("build {id} en echec : {e}"),
             }
         });
+        let Some(spawned) = spawned else {
+            tracing::info!("build {id} : {PROJECT_REMOVED}");
+            tokio::spawn(async move {
+                ProgressSink::new(id, log)
+                    .stage(
+                        Stage::Build,
+                        StageStatus::Failed {
+                            message: PROJECT_REMOVED.into(),
+                        },
+                    )
+                    .await;
+            });
+            return;
+        };
         if spawned.is_err() {
             tracing::info!("build {id} deja en cours : ordre en double ignore");
             tokio::spawn(async move {
@@ -493,6 +567,7 @@ where
         sink: &ProgressSink,
     ) -> Result<(), DeployError> {
         self.discard(spec.deployment_id).await;
+        self.discard_first_compose_stack(spec).await;
         sink.stage(
             stage,
             StageStatus::Failed {
@@ -709,6 +784,62 @@ where
         }
     }
 
+    /// Premier deploiement Compose d'un service en echec (aucun deploiement
+    /// servi pour ce service) : les services non exposes qu'il a demarres
+    /// (projet Compose stable de l'ensemble, projet du deploiement, sans
+    /// deploiement) sont retires ; plus rien ne les retirerait. Avec un
+    /// deploiement servi, ils restent : ce sont les siens.
+    async fn discard_first_compose_stack(&self, spec: &DeploySpec) {
+        let Some(compose) = &spec.compose else {
+            return;
+        };
+        // Etat illisible : rien n'est retire (prudence).
+        let served = self.db.serving().map_or(true, |list| {
+            list.iter()
+                .any(|r| r.deployment.service_id == spec.service_id)
+        });
+        if served {
+            return;
+        }
+        let Some(stable) = self
+            .db
+            .bundle(compose.bundle)
+            .ok()
+            .flatten()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|v| v.get("name")?.as_str().map(String::from))
+            .filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        let project = spec.project_id.to_string();
+        let list = match self
+            .docker
+            .list_managed(&[
+                (COMPOSE_LABEL, stable.as_str()),
+                (PROJECT_LABEL, project.as_str()),
+            ])
+            .await
+        {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!(
+                    "deploiement {} : services Compose illisibles : {e}",
+                    spec.deployment_id
+                );
+                return;
+            }
+        };
+        for c in list
+            .iter()
+            .filter(|c| c.labels.get(DEPLOYMENT_LABEL).is_none_or(String::is_empty))
+        {
+            if let Err(e) = self.docker.remove(&c.id).await {
+                tracing::warn!("service Compose {} : suppression : {e}", c.name);
+            }
+        }
+    }
+
     async fn containers_of(&self, id: DeploymentId) -> Vec<ContainerId> {
         let label = id.to_string();
         match self
@@ -837,6 +968,117 @@ where
         if serving && let Err(e) = self.router.refresh(self.docker.as_ref(), &self.db).await {
             tracing::warn!("{e}");
         }
+    }
+
+    /// `ControlToAgent::RemoveProject` : plus aucune operation du projet
+    /// n'est lancee ; celles en cours sont annulees (un build en cours est
+    /// interrompu, son buildkitd libere) et nettoyees ; puis conteneurs du
+    /// projet (etiquette `dev.ciphera.project`), etat local et images de ses
+    /// deploiements, avec `purge_volumes` ses volumes Compose, et son reseau
+    /// sont supprimes. Routes recalculees si un deploiement servi part.
+    /// Rejouable : `Ok` quand plus rien ne reste. L'etat de buildkitd du
+    /// projet est supprime par l'appelant, apres (`BuildkitManager`).
+    pub async fn remove_project(
+        &self,
+        project: ProjectId,
+        purge_volumes: bool,
+    ) -> Result<(), DeployError> {
+        self.removed().insert(project);
+        for id in self.ops.of_project(project) {
+            if let Cancel::Cancelled(..) = self.ops.cancel(id, |_| ()).await {
+                self.cleanup(id).await;
+                tracing::info!("projet {project} supprime : operation {id} annulee");
+            }
+        }
+        let label = project.to_string();
+        let mut failure: Option<DeployError> = None;
+        for c in self
+            .docker
+            .list_managed(&[(PROJECT_LABEL, label.as_str())])
+            .await?
+        {
+            if let Err(e) = self.docker.remove(&c.id).await {
+                tracing::warn!("projet {project} : suppression de {} : {e}", c.name);
+                failure = Some(e.into());
+            }
+        }
+        let mut serving = false;
+        for r in self
+            .db
+            .deployments()?
+            .into_iter()
+            .filter(|r| r.project == Some(project))
+        {
+            let id = r.deployment.deployment_id;
+            serving |= r.deployment.serving;
+            if let Err(e) = self.docker.remove_deployment_images(id).await {
+                tracing::warn!("deploiement {id} : images : {e}");
+            }
+            self.db.remove_deployment(id)?;
+            let _ = self.db.remove_bundle(id);
+        }
+        if serving && let Err(e) = self.router.refresh(self.docker.as_ref(), &self.db).await {
+            tracing::warn!("{e}");
+        }
+        if let Some(e) = failure {
+            return Err(e);
+        }
+        if purge_volumes {
+            let n = self.docker.remove_project_volumes(project).await?;
+            tracing::info!("projet {project} : {n} volume(s) supprime(s)");
+        }
+        self.docker
+            .remove_network(&project_network(project))
+            .await?;
+        tracing::info!("projet {project} supprime de ce serveur");
+        Ok(())
+    }
+
+    /// Balayage : reseaux de projet (`ciphera-p-<id>`) sans conteneur dont
+    /// le projet n'a ni deploiement dans l'etat local ni operation en cours
+    /// (projet supprime alors que l'agent etait absent, restes) ; leur
+    /// nombre. Docker refuse de retirer un reseau encore utilise.
+    pub async fn sweep_networks(&self) -> usize {
+        let networks = match self.docker.project_networks().await {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!("reseaux de projet illisibles : {e}");
+                return 0;
+            }
+        };
+        let known: HashSet<ProjectId> = match self.db.deployments() {
+            Ok(list) => list.into_iter().filter_map(|r| r.project).collect(),
+            Err(e) => {
+                tracing::warn!("balayage des reseaux saute : {e}");
+                return 0;
+            }
+        };
+        let mut removed = 0;
+        for name in networks {
+            let Some(project) = network_project(&name) else {
+                continue;
+            };
+            if known.contains(&project) || !self.ops.of_project(project).is_empty() {
+                continue;
+            }
+            let label = project.to_string();
+            match self
+                .docker
+                .list_managed(&[(PROJECT_LABEL, label.as_str())])
+                .await
+            {
+                Ok(list) if list.is_empty() => {}
+                _ => continue,
+            }
+            match self.docker.remove_network(&name).await {
+                Ok(()) => {
+                    tracing::info!("reseau de projet vide {name} supprime");
+                    removed += 1;
+                }
+                Err(e) => tracing::warn!("reseau de projet {name} : {e}"),
+            }
+        }
+        removed
     }
 
     /// Services non exposes de l'ensemble Compose du deploiement `id` : les

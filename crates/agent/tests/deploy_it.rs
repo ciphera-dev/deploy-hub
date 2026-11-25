@@ -25,7 +25,7 @@ use proto::{
     Stage, StageStatus, TlsMode,
 };
 use serde_json::json;
-use shared::ids::{DeploymentId, ProjectId, ServiceId};
+use shared::ids::{DeploymentId, EnvironmentId, ProjectId, ServiceId};
 use tokio::sync::mpsc;
 
 const APP_IMAGE: &str = "docker.io/library/nginx:alpine";
@@ -68,6 +68,8 @@ struct Bench {
     containers: Vec<String>,
     networks: Vec<String>,
     compose_projects: Vec<String>,
+    /// Volumes a supprimer a la fin.
+    volumes: Vec<String>,
 }
 
 impl Bench {
@@ -101,6 +103,7 @@ impl Bench {
             containers: Vec::new(),
             networks: Vec::new(),
             compose_projects: Vec::new(),
+            volumes: Vec::new(),
         }
     }
 
@@ -143,6 +146,14 @@ impl Bench {
         }
         for network in &self.networks {
             let _ = api.remove_network(network).await;
+        }
+        for volume in &self.volumes {
+            let _ = api
+                .remove_volume(
+                    volume,
+                    None::<bollard::query_parameters::RemoveVolumeOptions>,
+                )
+                .await;
         }
     }
 }
@@ -609,4 +620,213 @@ async fn root_reported_in_state() {
         .find(|d| d.deployment_id == user.deployment_id)
         .unwrap();
     assert!(!reported.runs_as_root);
+}
+
+/// Ensemble Compose du projet Compose `stable` : service expose (nginx) et
+/// cache (redis), chacun avec un volume nomme.
+fn volume_bundle(stable: &str) -> serde_json::Value {
+    json!({
+        "name": stable,
+        "services": {
+            "web": {
+                "image": APP_IMAGE,
+                "depends_on": {"cache": {"condition": "service_started", "required": true}},
+                "networks": {"default": null},
+                "volumes": [{"type": "volume", "source": "data", "target": "/srv"}]
+            },
+            "cache": {
+                "image": CACHE_IMAGE,
+                "networks": {"default": null},
+                "volumes": [{"type": "volume", "source": "cache", "target": "/data"}]
+            }
+        },
+        "networks": {"default": {"name": format!("{stable}_default")}},
+        "volumes": {
+            "data": {"name": format!("{stable}_data")},
+            "cache": {"name": format!("{stable}_cache")}
+        }
+    })
+}
+
+/// Deploie l'ensemble `volume_bundle` du projet `project` (environnement
+/// `env`) ; renvoie le deploiement et le projet Compose stable.
+async fn deploy_volume_bundle(
+    bench: &mut Bench,
+    project: ProjectId,
+    env: EnvironmentId,
+    web: ServiceId,
+) -> (DeploymentId, String) {
+    let stable = docker::compose_project_name(project, env);
+    let deployment = DeploymentId::new();
+    bench.networks.push(docker::project_network(project));
+    bench.compose_projects.push(stable.clone());
+    bench
+        .compose_projects
+        .push(format!("ciphera-d-{deployment}"));
+    for key in ["data", "cache"] {
+        bench.volumes.push(format!("{stable}_{key}"));
+    }
+    bench
+        .db
+        .put_bundle(deployment, &volume_bundle(&stable).to_string())
+        .unwrap();
+    let spec = DeploySpec {
+        deployment_id: deployment,
+        service_id: web,
+        image: ImageRef(APP_IMAGE.into()),
+        internal_port: Some(80),
+        project_id: project,
+        healthcheck: Healthcheck {
+            path: "/".into(),
+            tries: 30,
+            interval_secs: 1,
+        },
+        compose: Some(ComposeDeploy {
+            service: "web".into(),
+            bundle: deployment,
+        }),
+        service_name: Some("web".into()),
+        env: Vec::new(),
+        environment_id: Some(env),
+        run_as: None,
+        read_only_rootfs: false,
+    };
+    let (result, stages) = bench.deploy(&spec).await;
+    result.unwrap_or_else(|e| panic!("compose : {e} ({stages:?})"));
+    (deployment, stable)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et docker compose : job agent-docker de la CI"]
+async fn remove_project_removes_services_network_and_volumes_when_purged() {
+    for image in [APP_IMAGE, CACHE_IMAGE] {
+        pull(image).await;
+    }
+    let mut bench = Bench::new();
+    let (project, env, web) = (ProjectId::new(), EnvironmentId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("purge.example.test", web)])
+        .await
+        .unwrap();
+    let (_, stable) = deploy_volume_bundle(&mut bench, project, env, web).await;
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    for key in ["data", "cache"] {
+        api.inspect_volume(&format!("{stable}_{key}"))
+            .await
+            .unwrap_or_else(|e| panic!("volume {key} : {e}"));
+    }
+    let label = project.to_string();
+    assert_eq!(
+        bench
+            .docker
+            .list_managed(&[(docker::PROJECT_LABEL, label.as_str())])
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+
+    bench.deployer.remove_project(project, true).await.unwrap();
+
+    assert!(
+        bench
+            .docker
+            .list_managed(&[(docker::PROJECT_LABEL, label.as_str())])
+            .await
+            .unwrap()
+            .is_empty(),
+        "services du projet supprimes"
+    );
+    assert!(
+        api.inspect_network(&docker::project_network(project), None)
+            .await
+            .is_err(),
+        "reseau du projet supprime"
+    );
+    for key in ["data", "cache"] {
+        assert!(
+            api.inspect_volume(&format!("{stable}_{key}"))
+                .await
+                .is_err(),
+            "volume {key} supprime"
+        );
+    }
+    assert!(bench.routes.upstreams("purge.example.test").is_empty());
+    assert!(bench.db.deployments().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel et docker compose : job agent-docker de la CI"]
+async fn new_project_same_name_gets_fresh_volumes() {
+    for image in [APP_IMAGE, CACHE_IMAGE] {
+        pull(image).await;
+    }
+    let mut bench = Bench::new();
+    let (old_web, new_web) = (ServiceId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![
+            route("old.example.test", old_web),
+            route("new.example.test", new_web),
+        ])
+        .await
+        .unwrap();
+    // Projet « shop » supprime sans ses volumes : ils restent sur le noeud.
+    let old = ProjectId::new();
+    let (_, old_stable) =
+        deploy_volume_bundle(&mut bench, old, EnvironmentId::new(), old_web).await;
+    bench.deployer.remove_project(old, false).await.unwrap();
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    api.inspect_volume(&format!("{old_stable}_data"))
+        .await
+        .expect("volume garde sans purge");
+
+    // Nouveau projet « shop » (meme nom, autre UUID) : volumes neufs.
+    let new = ProjectId::new();
+    let (deployment, new_stable) =
+        deploy_volume_bundle(&mut bench, new, EnvironmentId::new(), new_web).await;
+    assert_ne!(old_stable, new_stable);
+    let container = bench.db.record(deployment).unwrap().unwrap().container;
+    let info = api.inspect_container(&container.0, None).await.unwrap();
+    let volumes: Vec<String> = info
+        .mounts
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|m| m.name)
+        .collect();
+    assert_eq!(volumes, vec![format!("{new_stable}_data")]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Docker reel : job agent-docker de la CI"]
+async fn empty_project_networks_swept() {
+    pull(APP_IMAGE).await;
+    let mut bench = Bench::new();
+    // Reseau d'un projet supprime pendant une absence de l'agent : vide.
+    let gone = docker::project_network(ProjectId::new());
+    bench.networks.push(gone.clone());
+    bench.docker.ensure_network(&gone).await.unwrap();
+    // Projet deploye : son reseau reste.
+    let (live, web) = (ProjectId::new(), ServiceId::new());
+    bench.networks.push(docker::project_network(live));
+    bench
+        .deployer
+        .apply_routes(vec![route("live.example.test", web)])
+        .await
+        .unwrap();
+    let spec = app(live, web, APP_IMAGE, 30);
+    bench
+        .containers
+        .push(format!("ciphera-d-{}", spec.deployment_id));
+    let (result, stages) = bench.deploy(&spec).await;
+    result.unwrap_or_else(|e| panic!("deploiement : {e} ({stages:?})"));
+
+    assert!(bench.deployer.sweep_networks().await >= 1);
+
+    let api = Docker::connect_with_socket_defaults().unwrap();
+    assert!(api.inspect_network(&gone, None).await.is_err());
+    api.inspect_network(&docker::project_network(live), None)
+        .await
+        .expect("reseau du projet deploye garde");
 }

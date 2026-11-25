@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use proto::Stage;
-use shared::ids::DeploymentId;
+use shared::ids::{DeploymentId, ProjectId};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -38,6 +38,8 @@ impl OpKind {
 
 struct Entry {
     kind: OpKind,
+    /// Projet de l'operation, s'il est connu (retrait d'un projet).
+    project: Option<ProjectId>,
     generation: u64,
     handle: Option<JoinHandle<()>>,
     /// Bascule commencee : l'operation n'est plus interrompue.
@@ -151,6 +153,22 @@ impl Operations {
         W: FnOnce(Ticket) -> F,
         F: Future<Output = ()> + Send + 'static,
     {
+        self.spawn_in(id, kind, None, work)
+    }
+
+    /// Comme `spawn`, pour une operation du projet `project`
+    /// (`of_project`).
+    pub fn spawn_in<W, F>(
+        &self,
+        id: DeploymentId,
+        kind: OpKind,
+        project: Option<ProjectId>,
+        work: W,
+    ) -> Result<(), Busy>
+    where
+        W: FnOnce(Ticket) -> F,
+        F: Future<Output = ()> + Send + 'static,
+    {
         // Verrou tenu pendant le lancement : la tache ne peut pas retirer
         // son entree avant qu'elle soit inseree.
         let mut reg = self.lock();
@@ -177,6 +195,7 @@ impl Operations {
             id,
             Entry {
                 kind,
+                project,
                 generation,
                 handle: Some(handle),
                 switching: false,
@@ -242,6 +261,19 @@ impl Operations {
 
     pub fn is_running(&self, id: DeploymentId) -> bool {
         self.lock().entries.contains_key(&id)
+    }
+
+    /// Deploiements du projet `project` dont une operation est en cours.
+    pub fn of_project(&self, project: ProjectId) -> Vec<DeploymentId> {
+        let mut ids: Vec<_> = self
+            .lock()
+            .entries
+            .iter()
+            .filter(|(_, e)| e.project == Some(project))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort();
+        ids
     }
 
     /// Deploiements dont une operation est en cours.

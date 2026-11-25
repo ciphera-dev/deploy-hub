@@ -164,6 +164,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // File des messages de l'agent (DeployProgress, LogLine) ; les metriques
     // passent par leur emplacement.
     let (outbox_tx, outbox_rx) = mpsc::channel::<AgentToControl>(64);
+    // Retrait d'un projet : etat de son buildkitd supprime apres l'arret de
+    // ses builds.
+    let project_buildkit = buildkit.clone();
+    // Reseaux de projet vides (projets supprimes pendant une absence de
+    // l'agent, restes) : balayage horaire.
+    {
+        let deployer = deployer.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(ciphera_agent::deploy::NETWORK_SWEEP_EVERY);
+            loop {
+                every.tick().await;
+                deployer.sweep_networks().await;
+            }
+        });
+    }
     // Builds : socket de buildkitd ; sans buildkitd (compte ciphera-build
     // absent), chaque build echoue avec un message clair.
     let builder = BuildConfig::production(prepare)
@@ -234,6 +249,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ControlToAgent::RemoveDeployment { deployment_id } => {
                     let deployer = deployer.clone();
                     tokio::spawn(async move { deployer.remove(deployment_id).await });
+                }
+                // Projet supprime : builds et deploiements en cours annules,
+                // conteneurs, reseau, volumes (sur demande) et etat de son
+                // buildkitd supprimes ; accuse seulement si tout est parti
+                // (sinon le plan de controle renvoie l'ordre plus tard).
+                ControlToAgent::RemoveProject {
+                    project_id,
+                    purge_volumes,
+                } => {
+                    let deployer = deployer.clone();
+                    let buildkit = project_buildkit.clone();
+                    let outbox = outbox_tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = deployer.remove_project(project_id, purge_volumes).await {
+                            tracing::warn!("projet {project_id} : suppression incomplete : {e}");
+                            return;
+                        }
+                        if let Some(manager) = buildkit
+                            && let Err(e) = manager.remove_project(project_id).await
+                        {
+                            tracing::warn!("projet {project_id} : etat de buildkitd : {e}");
+                            return;
+                        }
+                        let _ = outbox
+                            .send(AgentToControl::ProjectRemoved { project_id })
+                            .await;
+                    });
                 }
                 ControlToAgent::Logs {
                     target,

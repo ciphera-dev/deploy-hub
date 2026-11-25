@@ -2494,7 +2494,7 @@
         "tags": [
           "projects"
         ],
-        "summary": "Supprime le projet de la base (owner et admin). Les conteneurs eventuels\nsont nettoyes par le module de deploiement.",
+        "summary": "Supprime le projet (owner et admin). Chaque serveur retire ses\nconteneurs et son reseau, et ses volumes avec `purge_volumes` ; l'ordre\nest renvoye a un serveur absent des sa reconnexion.",
         "operationId": "delete_project",
         "parameters": [
           {
@@ -2504,6 +2504,15 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "purge_volumes",
+            "in": "query",
+            "description": "Supprimer aussi les volumes (donnees) du projet ; faux par defaut",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -2528,6 +2537,9 @@
           },
           "404": {
             "description": "Projet introuvable"
+          },
+          "422": {
+            "description": "`purge_volumes` invalide"
           }
         }
       },

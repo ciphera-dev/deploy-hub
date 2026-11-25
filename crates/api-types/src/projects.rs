@@ -205,20 +205,23 @@ pub fn get_project() {}
 #[allow(dead_code)]
 pub fn update_project() {}
 
-/// Supprime le projet de la base (owner et admin). Les conteneurs eventuels
-/// sont nettoyes par le module de deploiement.
+/// Supprime le projet (owner et admin). Chaque serveur retire ses
+/// conteneurs et son reseau, et ses volumes avec `purge_volumes` ; l'ordre
+/// est renvoye a un serveur absent des sa reconnexion.
 #[utoipa::path(
     delete,
     path = "/api/projects/{id}",
     tag = "projects",
     params(
         ("id" = String, Path, description = "Identifiant du projet"),
+        ("purge_volumes" = Option<bool>, Query, description = "Supprimer aussi les volumes (donnees) du projet ; faux par defaut"),
         ("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)"),
     ),
     responses(
         (status = 204, description = "Projet supprime"),
         (status = 403, description = "Role insuffisant, ou jeton CSRF absent ou invalide"),
         (status = 404, description = "Projet introuvable"),
+        (status = 422, description = "`purge_volumes` invalide"),
     )
 )]
 #[allow(dead_code)]

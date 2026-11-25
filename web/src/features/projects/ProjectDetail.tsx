@@ -6,6 +6,7 @@ import { Button, Icon, Select, StatusDot, useToast } from "@/design-system";
 import { useDeploymentActions } from "@/features/deployments/useDeploymentActions";
 
 import { projectQueryKey, type Project } from "./api";
+import { DeleteProjectModal, useCanDeleteProject } from "./DeleteProjectModal";
 import { restartProject } from "./git/api";
 import { sourceLabel, STATUS_VIEW } from "./format";
 
@@ -14,6 +15,8 @@ import { sourceLabel, STATUS_VIEW } from "./format";
 // inactifs (ni lien, ni 404). Visiter est porte et desactive (aucun domaine) ;
 // Redémarrer redemarre le deploiement servi et Redéployer lance un deploiement
 // manuel (developer et plus, garde « déjà en cours » cote serveur aussi).
+// Supprimer (owner et admin) ouvre la confirmation ; les volumes ne sont
+// supprimes que sur demande.
 
 const TAB_STYLE: CSSProperties = { height: 38, padding: 0, background: "none", border: 0, marginBottom: -1, font: "500 13px/1 var(--font-sans)", display: "flex", alignItems: "center", gap: 6, textDecoration: "none" };
 const COUNT: CSSProperties = { font: "400 11px/1 var(--font-sans)", color: "var(--text-faint)" };
@@ -71,6 +74,8 @@ export function ProjectDetail({ project, children }: { project: Project; childre
   const { flash } = useToast();
   const client = useQueryClient();
   const [restarting, setRestarting] = useState(false);
+  const canDelete = useCanDeleteProject();
+  const [deleting, setDeleting] = useState(false);
   const restartInFlight = useRef(false);
   const restart = async () => {
     if (restartInFlight.current) return;
@@ -119,11 +124,17 @@ export function ProjectDetail({ project, children }: { project: Project; childre
             <Button variant="inverse" icon="Rocket" disabled={!actions.canRedeploy || actions.busy} title={actions.canDeploy ? actions.redeployHint : "Réservé aux rôles développeur et plus"} onClick={() => void actions.redeploy()}>
               Redéployer
             </Button>
+            {canDelete && (
+              <Button icon="Trash" title="Supprimer le projet" onClick={() => setDeleting(true)}>
+                Supprimer
+              </Button>
+            )}
           </div>
         </div>
         <ProjectTabs project={project} />
       </div>
       {children}
+      {deleting && <DeleteProjectModal project={project} onClose={() => setDeleting(false)} />}
     </div>
   );
 }

@@ -2,19 +2,20 @@
 //! `DockerOps` simule : enregistre les conteneurs et reseaux demandes, sante
 //! fixee par le test, metriques constantes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ciphera_agent::docker::{
-    ContainerId, ContainerLog, ContainerSpec, DockerError, DockerOps, Health, MANAGED_LABEL,
-    ManagedContainer,
+    COMPOSE_PROJECT_KEY, ContainerId, ContainerLog, ContainerSpec, DockerError, DockerOps, Health,
+    MANAGED_LABEL, ManagedContainer, PROJECT_LABEL, compose_project_prefix, is_project_volume,
+    network_project,
 };
 use futures_util::stream::{self, BoxStream, StreamExt};
 use proto::NodeMetrics;
-use shared::ids::DeploymentId;
+use shared::ids::{DeploymentId, ProjectId};
 use tokio::sync::mpsc;
 
 /// Conteneur connu du faux Docker.
@@ -52,6 +53,10 @@ pub struct FakeDocker {
     pub log_feeds: Mutex<HashMap<String, mpsc::UnboundedReceiver<ContainerLog>>>,
     /// CPU (%) et memoire (octets) par conteneur (`container_usage`).
     pub usage: Mutex<HashMap<String, (f32, u64)>>,
+    /// Reseaux existants (crees par `ensure_network` ou `add_network`).
+    pub networks: Mutex<HashSet<String>>,
+    /// Volumes existants : nom -> etiquettes.
+    pub volumes: Mutex<HashMap<String, HashMap<String, String>>>,
 }
 
 impl FakeDocker {
@@ -72,6 +77,29 @@ impl FakeDocker {
                 running: true,
             },
         );
+    }
+
+    /// Ajoute un reseau existant.
+    pub fn add_network(&self, name: &str) {
+        self.networks.lock().unwrap().insert(name.to_string());
+    }
+
+    /// Ajoute un volume du projet Compose `compose_project` (cle `key`).
+    pub fn add_volume(&self, compose_project: &str, key: &str) {
+        self.volumes.lock().unwrap().insert(
+            format!("{compose_project}_{key}"),
+            HashMap::from([(COMPOSE_PROJECT_KEY.to_string(), compose_project.to_string())]),
+        );
+    }
+
+    pub fn has_network(&self, name: &str) -> bool {
+        self.networks.lock().unwrap().contains(name)
+    }
+
+    pub fn volume_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.volumes.lock().unwrap().keys().cloned().collect();
+        names.sort();
+        names
     }
 
     /// Canal des journaux du conteneur `id`, lu par le prochain `logs`.
@@ -237,6 +265,7 @@ impl DockerOps for FakeDocker {
 
     async fn ensure_network(&self, name: &str) -> Result<(), DockerError> {
         self.calls.lock().unwrap().push(format!("network:{name}"));
+        self.networks.lock().unwrap().insert(name.to_string());
         Ok(())
     }
 
@@ -278,6 +307,53 @@ impl DockerOps for FakeDocker {
             .unwrap()
             .get(&id.0)
             .and_then(|c| c.ip))
+    }
+
+    async fn remove_network(&self, name: &str) -> Result<(), DockerError> {
+        self.calls.lock().unwrap().push(format!("rmnet:{name}"));
+        // Comme Docker : refuse tant qu'un conteneur du projet y est attache.
+        if let Some(project) = network_project(name) {
+            let project = project.to_string();
+            let attached = self
+                .containers
+                .lock()
+                .unwrap()
+                .values()
+                .any(|c| c.labels.get(PROJECT_LABEL) == Some(&project));
+            if attached {
+                return Err(DockerError::Api(format!("reseau {name} encore utilise")));
+            }
+        }
+        self.networks.lock().unwrap().remove(name);
+        Ok(())
+    }
+
+    async fn project_networks(&self) -> Result<Vec<String>, DockerError> {
+        let mut names: Vec<String> = self
+            .networks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|n| network_project(n).is_some())
+            .cloned()
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    async fn remove_project_volumes(&self, project: ProjectId) -> Result<usize, DockerError> {
+        let prefix = compose_project_prefix(project);
+        let mut volumes = self.volumes.lock().unwrap();
+        let doomed: Vec<String> = volumes
+            .iter()
+            .filter(|(name, labels)| is_project_volume(name, labels, &prefix))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in &doomed {
+            self.calls.lock().unwrap().push(format!("rmvol:{name}"));
+            volumes.remove(name);
+        }
+        Ok(doomed.len())
     }
 
     async fn remove_deployment_images(&self, deployment: DeploymentId) -> Result<(), DockerError> {

@@ -39,3 +39,21 @@ export async function createProject(body: NewProject): Promise<CreateResult> {
   if (status === 403) return { ok: false, message: "Accès refusé : la création d'un projet demande le rôle développeur." };
   return { ok: false, message: "Création impossible pour le moment. Réessayez." };
 }
+
+/**
+ * DELETE /api/projects/{id} : le projet et ses deploiements sont retires des
+ * serveurs ; avec `purgeVolumes`, ses volumes (donnees) aussi.
+ */
+export async function deleteProject(id: string, purgeVolumes: boolean): Promise<{ ok: true } | { ok: false; message: string }> {
+  let result;
+  try {
+    result = await api.DELETE("/api/projects/{id}", { params: { path: { id }, query: { purge_volumes: purgeVolumes } } });
+  } catch {
+    return { ok: false, message: "Serveur injoignable. Réessayez." };
+  }
+  const { status } = result.response;
+  if (result.response.ok) return { ok: true };
+  if (status === 403) return { ok: false, message: "Accès refusé : la suppression d'un projet demande le rôle administrateur." };
+  if (status === 404) return { ok: false, message: "Ce projet n'existe plus." };
+  return { ok: false, message: "Suppression impossible pour le moment. Réessayez." };
+}

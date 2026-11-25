@@ -24,7 +24,8 @@ use ciphera_agent::deploy::compose::{
 use ciphera_agent::deploy::probe::HttpProbe;
 use ciphera_agent::deploy::{DRAIN, DeployConfig, Deployer};
 use ciphera_agent::docker::{
-    DEPLOYMENT_LABEL, MANAGED_LABEL, PREPARE_ROLE, ROLE_LABEL, project_network,
+    DEPLOYMENT_LABEL, MANAGED_LABEL, PREPARE_ROLE, ROLE_LABEL, compose_project_name,
+    project_network,
 };
 use ciphera_agent::ops::OpKind;
 use ciphera_agent::routes::RouteSink;
@@ -2570,4 +2571,267 @@ async fn routes_table_survives_an_agent_restart_without_the_control_plane() {
     let sent = bench.routes.count();
     assert!(!broken.restore_routes().await);
     assert_eq!(bench.routes.count(), sent);
+}
+
+// --- retrait d'un projet -------------------------------------------------------
+
+/// `RemoveProject` : build en cours du projet interrompu et nettoye,
+/// conteneurs du projet (services Compose compris), etat local, reseau et,
+/// avec `purge_volumes`, volumes du projet supprimes ; rien d'un autre
+/// projet n'est touche. Les ordres arrives ensuite pour ce projet sont
+/// refuses, et le retrait se rejoue sans erreur.
+#[tokio::test(start_paused = true)]
+async fn remove_project_cancels_its_build_and_removes_everything_of_the_project() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    let (other, other_web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![
+            route("app.example.com", Some(web)),
+            route("other.example.com", Some(other_web)),
+        ])
+        .await
+        .unwrap();
+    let v1 = spec(project, web, "ciphera/web-production:v1");
+    deploy_ok(&bench, &v1).await;
+    let keep = spec(other, other_web, "ciphera/other-production:v1");
+    deploy_ok(&bench, &keep).await;
+    let label = project.to_string();
+    bench.docker.add_container(
+        "cid-cache",
+        "cp-cache-1",
+        &[(PROJECT_LABEL, label.as_str()), (DEPLOYMENT_LABEL, "")],
+        None,
+    );
+    let env = EnvironmentId::new();
+    bench
+        .docker
+        .add_volume(&compose_project_name(project, env), "data");
+    bench
+        .docker
+        .add_volume(&compose_project_name(other, env), "data");
+    let build = DeploymentId::new();
+    let (tx, mut rx) = mpsc::channel(1024);
+    bench.deployer.spawn_build(
+        BuildSpec {
+            project_id: Some(project),
+            environment_id: Some(env),
+            ..image_build(build)
+        },
+        build_cfg(&bench),
+        slow_pull(Duration::from_secs(3600)),
+        tx.clone(),
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(bench.deployer.ops().in_progress(), vec![build]);
+
+    bench.deployer.remove_project(project, true).await.unwrap();
+
+    assert!(
+        bench.deployer.ops().in_progress().is_empty(),
+        "build annule"
+    );
+    assert!(bench.docker.calls().contains(&format!("rmi:{build}")));
+    assert!(
+        bench
+            .docker
+            .container(&format!("id-ciphera-d-{}", v1.deployment_id))
+            .is_none()
+    );
+    assert!(bench.docker.container("cid-cache").is_none());
+    assert!(
+        bench
+            .docker
+            .container(&format!("id-ciphera-d-{}", keep.deployment_id))
+            .is_some()
+    );
+    assert!(!bench.docker.has_network(&project_network(project)));
+    assert!(bench.docker.has_network(&project_network(other)));
+    assert_eq!(
+        bench.docker.volume_names(),
+        vec![format!("{}_data", compose_project_name(other, env))]
+    );
+    assert!(bench.db.record(v1.deployment_id).unwrap().is_none());
+    assert!(bench.db.record(keep.deployment_id).unwrap().is_some());
+    assert!(bench.upstreams("app.example.com").is_empty());
+    assert_eq!(bench.upstreams("other.example.com").len(), 1);
+
+    // Ordres arrives apres le retrait : refuses, rien n'est lance.
+    drain(&mut rx).await;
+    let late_build = DeploymentId::new();
+    bench.deployer.spawn_build(
+        BuildSpec {
+            project_id: Some(project),
+            environment_id: Some(env),
+            ..image_build(late_build)
+        },
+        build_cfg(&bench),
+        slow_pull(Duration::from_secs(1)),
+        tx.clone(),
+    );
+    let late_deploy = spec(project, web, "ciphera/web-production:v2");
+    let runs = bench.docker.runs.lock().unwrap().len();
+    bench.deployer.spawn_deploy(late_deploy.clone(), tx.clone());
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let refused: Vec<_> = drain(&mut rx)
+        .await
+        .into_iter()
+        .filter_map(|m| match m {
+            AgentToControl::DeployProgress {
+                deployment_id,
+                status: StageStatus::Failed { message },
+                ..
+            } => Some((deployment_id, message)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    for id in [late_build, late_deploy.deployment_id] {
+        let (_, message) = refused.iter().find(|(d, _)| *d == id).unwrap();
+        assert!(message.contains("projet supprime"), "{message}");
+    }
+    assert!(bench.deployer.ops().in_progress().is_empty());
+    assert_eq!(bench.docker.runs.lock().unwrap().len(), runs);
+
+    // Rejoue (accuse perdu) : rien a faire, sans erreur.
+    bench.deployer.remove_project(project, true).await.unwrap();
+}
+
+/// Sans `purge_volumes`, les volumes du projet restent.
+#[tokio::test(start_paused = true)]
+async fn remove_project_keeps_volumes_unless_purged() {
+    let bench = Bench::new();
+    bench.sync_routes().await;
+    let project = ProjectId::new();
+    let env = EnvironmentId::new();
+    deploy_ok(
+        &bench,
+        &spec(project, ServiceId::new(), "ciphera/web-production:v1"),
+    )
+    .await;
+    bench
+        .docker
+        .add_volume(&compose_project_name(project, env), "data");
+    bench.deployer.remove_project(project, false).await.unwrap();
+    assert_eq!(bench.docker.volume_names().len(), 1);
+    assert!(!bench.docker.has_network(&project_network(project)));
+    assert!(bench.db.deployments().unwrap().is_empty());
+}
+
+/// Premier deploiement Compose d'un service en echec : ses services non
+/// exposes sont retires avec lui. Une fois un deploiement servi, un echec
+/// ne touche plus a ses services.
+#[tokio::test(start_paused = true)]
+async fn failed_first_compose_deploy_removes_its_unexposed_services() {
+    let bench = Bench::new();
+    let (project, web) = (ProjectId::new(), ServiceId::new());
+    bench
+        .deployer
+        .apply_routes(vec![route("shop.example.com", Some(web))])
+        .await
+        .unwrap();
+    let label = project.to_string();
+    let of_project = |bench: &Bench| -> Vec<String> {
+        let mut names: Vec<String> = bench
+            .docker
+            .containers
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|c| c.labels.get(PROJECT_LABEL) == Some(&label))
+            .map(|c| c.name.clone())
+            .collect();
+        names.sort();
+        names
+    };
+
+    // Premier deploiement : le service expose ne repond jamais.
+    let first = DeploymentId::new();
+    bench
+        .db
+        .put_bundle(first, &compose_bundle().to_string())
+        .unwrap();
+    let (result, _) = bench
+        .deploy(&compose_deploy_spec(project, web, first))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(bench.compose.ups.lock().unwrap().len(), 3, "tout a demarre");
+    assert!(of_project(&bench).is_empty(), "{:?}", of_project(&bench));
+
+    // Deploiement servi, puis un echec : les services restent.
+    for n in 100..120 {
+        bench.probe.answer(format!("172.18.1.{n}").parse().unwrap());
+    }
+    let second = DeploymentId::new();
+    bench
+        .db
+        .put_bundle(second, &compose_bundle().to_string())
+        .unwrap();
+    bench
+        .deploy(&compose_deploy_spec(project, web, second))
+        .await
+        .0
+        .unwrap();
+    *bench.probe.fail_first.lock().unwrap() = 1000;
+    let third = DeploymentId::new();
+    bench
+        .db
+        .put_bundle(third, &compose_bundle().to_string())
+        .unwrap();
+    assert!(
+        bench
+            .deploy(&compose_deploy_spec(project, web, third))
+            .await
+            .0
+            .is_err()
+    );
+    let left = of_project(&bench);
+    for service in ["shop-production-api-1", "shop-production-cache-1"] {
+        assert!(left.iter().any(|n| n == service), "{left:?}");
+    }
+    assert!(
+        bench
+            .docker
+            .container("cid-shop-production-cache-1")
+            .unwrap()
+            .running
+    );
+}
+
+/// Balayage : reseau de projet vide d'un projet inconnu supprime ; ceux d'un
+/// projet deploye, d'un projet qui a encore un conteneur, et les autres
+/// reseaux restent.
+#[tokio::test(start_paused = true)]
+async fn empty_project_networks_of_unknown_projects_are_swept() {
+    let bench = Bench::new();
+    bench.sync_routes().await;
+    let live = ProjectId::new();
+    deploy_ok(
+        &bench,
+        &spec(live, ServiceId::new(), "ciphera/web-production:v1"),
+    )
+    .await;
+    let gone = ProjectId::new();
+    bench.docker.add_network(&project_network(gone));
+    let busy = ProjectId::new();
+    bench.docker.add_network(&project_network(busy));
+    let busy_label = busy.to_string();
+    bench.docker.add_container(
+        "cid-busy",
+        "busy-1",
+        &[(PROJECT_LABEL, busy_label.as_str())],
+        None,
+    );
+    bench.docker.add_network("ciphera-internal");
+
+    assert_eq!(bench.deployer.sweep_networks().await, 1);
+    assert!(!bench.docker.has_network(&project_network(gone)));
+    for kept in [
+        project_network(live),
+        project_network(busy),
+        "ciphera-internal".to_string(),
+    ] {
+        assert!(bench.docker.has_network(&kept), "{kept}");
+    }
 }

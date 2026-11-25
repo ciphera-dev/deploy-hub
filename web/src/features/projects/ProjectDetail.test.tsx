@@ -1,5 +1,5 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from "vitest";
@@ -16,6 +16,7 @@ const FAILED = projectDetail(PROJECT_SUMMARIES[1]);
 const server = setupServer(
   http.get("*/api/me", () => HttpResponse.json(ME)),
   http.get("*/api/deployments", () => HttpResponse.json([])),
+  http.get("*/api/projects", () => HttpResponse.json([])),
   http.get("*/api/projects/:id", ({ params }) => {
     const found = PROJECT_SUMMARIES.find((p) => p.id === params.id);
     return found ? HttpResponse.json(projectDetail(found)) : HttpResponse.json({ error: { code: "not_found", message: "Projet introuvable." } }, { status: 404 });
@@ -104,4 +105,56 @@ it("« Projets » ramène à la liste", async () => {
 it("projet inconnu : message, sans écran d'erreur", async () => {
   mount("/projects/00000000-0000-4000-8000-0000000000ff");
   expect(await screen.findByText("Projet introuvable.")).toBeInTheDocument();
+});
+
+it("Supprimer : volumes gardés par défaut, case cochée envoyée, retour à la liste", async () => {
+  const deletes: { path: string; purge: string | null; csrf: string | null }[] = [];
+  server.use(
+    http.delete("*/api/projects/:id", ({ request }) => {
+      const url = new URL(request.url);
+      deletes.push({ path: url.pathname, purge: url.searchParams.get("purge_volumes"), csrf: request.headers.get("x-csrf-token") });
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  const router = mount(`/projects/${FAILED.id}`);
+  await screen.findByRole("heading", { name: "billing-api" }, { timeout: 5000 });
+  (await screen.findByRole("button", { name: "Supprimer" })).click();
+  const dialog = await screen.findByRole("dialog");
+  const purge = within(dialog).getByRole("checkbox", { name: /Supprimer aussi les volumes \(données\)/ });
+  expect(purge).not.toBeChecked();
+  const confirm = within(dialog).getByRole("button", { name: "Supprimer le projet" });
+  expect(confirm).toBeDisabled();
+  fireEvent.change(within(dialog).getByLabelText("Nom du projet"), { target: { value: "billing-api" } });
+  expect(confirm).toBeEnabled();
+  confirm.click();
+  await waitFor(() => expect(deletes).toHaveLength(1));
+  expect(deletes[0]).toEqual({ path: `/api/projects/${FAILED.id}`, purge: "false", csrf: "csrf-1" });
+  await waitFor(() => expect(router.state.location.pathname).toBe("/projects"));
+  expect(await screen.findByText("Projet supprimé")).toBeInTheDocument();
+});
+
+it("Supprimer : case cochée, purge_volumes=true", async () => {
+  const purges: (string | null)[] = [];
+  server.use(
+    http.delete("*/api/projects/:id", ({ request }) => {
+      purges.push(new URL(request.url).searchParams.get("purge_volumes"));
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  mount(`/projects/${FAILED.id}`);
+  await screen.findByRole("heading", { name: "billing-api" }, { timeout: 5000 });
+  (await screen.findByRole("button", { name: "Supprimer" })).click();
+  const dialog = await screen.findByRole("dialog");
+  within(dialog).getByRole("checkbox", { name: /Supprimer aussi les volumes/ }).click();
+  fireEvent.change(within(dialog).getByLabelText("Nom du projet"), { target: { value: "billing-api" } });
+  within(dialog).getByRole("button", { name: "Supprimer le projet" }).click();
+  await waitFor(() => expect(purges).toEqual(["true"]));
+});
+
+it("Supprimer : absent pour un développeur", async () => {
+  server.use(http.get("*/api/me", () => HttpResponse.json({ ...ME, role: "developer" })));
+  mount(`/projects/${FAILED.id}`);
+  await screen.findByRole("heading", { name: "billing-api" }, { timeout: 5000 });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Redéployer" })).toBeEnabled());
+  expect(screen.queryByRole("button", { name: "Supprimer" })).toBeNull();
 });

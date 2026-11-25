@@ -28,13 +28,14 @@ use bollard::models::{
 };
 use bollard::query_parameters::{
     CreateContainerOptions, CreateImageOptions, ListContainersOptions, ListImagesOptions,
-    LogsOptions, RemoveContainerOptions, RemoveImageOptions, RestartContainerOptions, StatsOptions,
+    ListNetworksOptions, ListVolumesOptions, LogsOptions, RemoveContainerOptions,
+    RemoveImageOptions, RemoveVolumeOptions, RestartContainerOptions, StatsOptions,
     StopContainerOptions,
 };
 use futures_util::stream::{self, BoxStream, StreamExt};
 use proto::{ImageRef, LogStream, LogTarget, NodeMetrics};
 use sha2::{Digest, Sha256};
-use shared::ids::{DeploymentId, ProjectId};
+use shared::ids::{DeploymentId, EnvironmentId, ProjectId};
 
 /// Etiquette posee sur tout ce que Ciphera cree (conteneurs, reseaux).
 pub const MANAGED_LABEL: &str = "dev.ciphera.managed";
@@ -352,6 +353,44 @@ pub fn internal_alias(service: &str) -> Option<String> {
 /// Reseau du projet : `ciphera-p-<project_id>`.
 pub fn project_network(project: ProjectId) -> String {
     format!("{PROJECT_NETWORK_PREFIX}{project}")
+}
+
+/// Projet d'un reseau `ciphera-p-<project_id>` (nom exact, sinon aucun).
+pub fn network_project(name: &str) -> Option<ProjectId> {
+    let project: ProjectId = name.strip_prefix(PROJECT_NETWORK_PREFIX)?.parse().ok()?;
+    (project_network(project) == name).then_some(project)
+}
+
+/// Etiquette posee par Compose sur ses conteneurs et ses volumes.
+pub const COMPOSE_PROJECT_KEY: &str = "com.docker.compose.project";
+/// Prefixe des projets Compose d'un environnement (`compose_project_name`).
+pub const COMPOSE_PROJECT_PREFIX: &str = "cp-";
+
+/// Projet Compose stable d'un environnement :
+/// `cp-<UUID du projet sans tirets>-<8 premiers caracteres de l'UUID de
+/// l'environnement>`. Tire des identifiants, jamais des noms : les volumes
+/// d'un projet supprime ne reviennent pas a un nouveau projet du meme nom,
+/// et ceux d'un projet se retrouvent par `compose_project_prefix`.
+pub fn compose_project_name(project: ProjectId, environment: EnvironmentId) -> String {
+    let env = environment.0.simple().to_string();
+    format!("{}{}", compose_project_prefix(project), &env[..8])
+}
+
+/// Debut du nom de tous les projets Compose de `project`.
+pub fn compose_project_prefix(project: ProjectId) -> String {
+    format!("{COMPOSE_PROJECT_PREFIX}{}-", project.0.simple())
+}
+
+/// Le volume appartient a un projet Compose de `prefix`
+/// (`compose_project_prefix`) : etiquette de Compose et nom
+/// (`<projet Compose>_<cle>`) concordants.
+pub fn is_project_volume(name: &str, labels: &HashMap<String, String>, prefix: &str) -> bool {
+    labels.get(COMPOSE_PROJECT_KEY).is_some_and(|p| {
+        p.starts_with(prefix)
+            && name
+                .strip_prefix(p.as_str())
+                .is_some_and(|rest| rest.starts_with('_'))
+    })
 }
 
 /// Montage d'un conteneur.
@@ -884,6 +923,19 @@ pub trait DockerOps: Send + Sync + 'static {
         &self,
         deployment: DeploymentId,
     ) -> impl Future<Output = Result<(), DockerError>> + Send;
+    /// Supprime le reseau gere `name` ; absent : rien a faire ; non gere :
+    /// `NotManaged`, laisse tel quel. Docker le refuse tant qu'un conteneur
+    /// y est attache.
+    fn remove_network(&self, name: &str) -> impl Future<Output = Result<(), DockerError>> + Send;
+    /// Noms des reseaux de projet geres (`ciphera-p-<uuid>`).
+    fn project_networks(&self) -> impl Future<Output = Result<Vec<String>, DockerError>> + Send;
+    /// Supprime les volumes des projets Compose de `project`
+    /// (`is_project_volume`) ; leur nombre. Un volume encore utilise fait
+    /// echouer l'appel.
+    fn remove_project_volumes(
+        &self,
+        project: ProjectId,
+    ) -> impl Future<Output = Result<usize, DockerError>> + Send;
 }
 
 /// Adresse sur l'unique reseau de projet parmi `networks` (nom -> adresse).
@@ -1366,6 +1418,75 @@ impl DockerOps for BollardDocker {
 
     async fn remove_deployment_images(&self, deployment: DeploymentId) -> Result<(), DockerError> {
         self.remove_deployment_images_impl(deployment).await
+    }
+
+    async fn remove_network(&self, name: &str) -> Result<(), DockerError> {
+        check_name(name)?;
+        match self.docker.inspect_network(name, None).await {
+            Ok(existing) => check_managed(name, existing.labels.as_ref())?,
+            Err(e) if is_status(&e, 404) => return Ok(()),
+            Err(e) => return Err(api(e)),
+        }
+        match self.docker.remove_network(name).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_status(&e, 404) => Ok(()),
+            Err(e) => Err(api(e)),
+        }
+    }
+
+    async fn project_networks(&self) -> Result<Vec<String>, DockerError> {
+        let options = ListNetworksOptions {
+            filters: Some(HashMap::from([
+                ("label".to_string(), vec![format!("{MANAGED_LABEL}=true")]),
+                ("name".to_string(), vec![PROJECT_NETWORK_PREFIX.to_string()]),
+            ])),
+        };
+        let list = self
+            .docker
+            .list_networks(Some(options))
+            .await
+            .map_err(api)?;
+        // Filtres de Docker reverifies (le filtre `name` est une sous-chaine).
+        Ok(list
+            .into_iter()
+            .filter(|n| check_managed("", n.labels.as_ref()).is_ok())
+            .filter_map(|n| n.name)
+            .filter(|n| network_project(n).is_some())
+            .collect())
+    }
+
+    async fn remove_project_volumes(&self, project: ProjectId) -> Result<usize, DockerError> {
+        let prefix = compose_project_prefix(project);
+        let options = ListVolumesOptions {
+            filters: Some(HashMap::from([(
+                "label".to_string(),
+                vec![COMPOSE_PROJECT_KEY.to_string()],
+            )])),
+        };
+        let volumes = self
+            .docker
+            .list_volumes(Some(options))
+            .await
+            .map_err(api)?
+            .volumes
+            .unwrap_or_default();
+        let mut removed = 0;
+        for v in volumes
+            .iter()
+            .filter(|v| is_project_volume(&v.name, &v.labels, &prefix))
+        {
+            check_name(&v.name)?;
+            match self
+                .docker
+                .remove_volume(&v.name, Some(RemoveVolumeOptions { force: false }))
+                .await
+            {
+                Ok(()) => removed += 1,
+                Err(e) if is_status(&e, 404) => {}
+                Err(e) => return Err(api(e)),
+            }
+        }
+        Ok(removed)
     }
 }
 

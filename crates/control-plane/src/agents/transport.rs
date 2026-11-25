@@ -357,7 +357,8 @@ async fn handle(incoming: Incoming, registry: &AgentRegistry, db: &PgPool, ca: O
                 break;
             }
             Ok(Some(msg)) => {
-                // Accuses de suppression : branches plus tard, journalises ici.
+                // Accuses de suppression, journalises ici ; `ProjectRemoved`
+                // est traite par le suivi des deploiements.
                 match &msg {
                     AgentToControl::DeploymentRemoved { deployment_id } => {
                         tracing::info!(

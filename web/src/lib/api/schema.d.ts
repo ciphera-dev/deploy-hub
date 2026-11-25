@@ -886,8 +886,9 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Supprime le projet de la base (owner et admin). Les conteneurs eventuels
-         *     sont nettoyes par le module de deploiement.
+         * Supprime le projet (owner et admin). Chaque serveur retire ses
+         *     conteneurs et son reseau, et ses volumes avec `purge_volumes` ; l'ordre
+         *     est renvoye a un serveur absent des sa reconnexion.
          */
         delete: operations["delete_project"];
         options?: never;
@@ -5654,7 +5655,10 @@ export interface operations {
     };
     delete_project: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Supprimer aussi les volumes (donnees) du projet ; faux par defaut */
+                purge_volumes?: boolean;
+            };
             header?: {
                 /** @description Jeton CSRF de la session (obligatoire) */
                 "X-CSRF-Token"?: string | null;
@@ -5683,6 +5687,13 @@ export interface operations {
             };
             /** @description Projet introuvable */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `purge_volumes` invalide */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

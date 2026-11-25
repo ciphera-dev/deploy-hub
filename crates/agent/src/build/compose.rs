@@ -9,8 +9,9 @@
 //! 2. `compose_policy::check` sur le fichier du depot, puis les fichiers
 //!    qu'il fait lire a Compose (`env_file`, `.env`) verifies dans le depot ;
 //! 3. `docker compose --project-directory <dossier> -f <fichier>
-//!    -p <projet>-<env> config --format json` (environnement vide :
-//!    interpolation depuis le `.env` du depot seulement) ;
+//!    -p cp-<UUID du projet>-<debut de l'UUID de l'environnement> config
+//!    --format json` (environnement vide : interpolation depuis le `.env` du
+//!    depot seulement ; volumes nommes d'apres ce projet Compose) ;
 //! 4. `compose_policy::check` sur la forme normalisee ; contextes et
 //!    Dockerfiles resolus dans le depot ; build de chaque service.
 
@@ -228,7 +229,7 @@ pub(crate) async fn build<B: BuildBackend>(
     compose_policy::check(&raw)?;
     check_read_files(&raw, src)?;
 
-    let project = targets.compose_project();
+    let project = targets.compose_project()?;
     let cache = targets.cache_scope()?;
     let json = backend
         .exec(

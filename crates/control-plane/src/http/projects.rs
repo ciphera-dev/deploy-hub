@@ -4,16 +4,21 @@
 //! suppression : owner et admin. Les ecritures passent par la couche CSRF.
 //! Un projet cree recoit l'environnement `production` et son service. La
 //! suppression envoie `RemoveDeployment` aux agents pour chacun de ses
-//! deploiements (au mieux), puis efface les lignes de la base (cascade). Nom, depot, branche, chemins et
+//! deploiements (au mieux), efface les lignes de la base (cascade) et, dans
+//! la meme transaction, inscrit le retrait du projet pour chaque serveur
+//! (`project_removals`) : `RemoveProject` (conteneurs, reseau, volumes sur
+//! demande avec `?purge_volumes=true`) part ensuite et repart a chaque
+//! reconnexion jusqu'a l'accuse de l'agent. Nom, depot, branche, chemins et
 //! image sont valides en liste blanche avant toute ecriture.
 
 use api_types::projects::{Build, NewProject, Source, UpdateProject};
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::json;
 use shared::error::ApiError;
 use sqlx::PgConnection;
@@ -223,14 +228,25 @@ async fn update(
     Ok(Json(project).into_response())
 }
 
-/// `DELETE /api/projects/{id}` : conteneurs retires des agents, puis cascade.
+/// Parametres de `DELETE /api/projects/{id}`.
+#[derive(Deserialize)]
+struct RemoveParams {
+    /// Volumes Compose du projet supprimes aussi (faux par defaut).
+    #[serde(default)]
+    purge_volumes: bool,
+}
+
+/// `DELETE /api/projects/{id}[?purge_volumes=true]` : conteneurs retires des
+/// agents, puis cascade.
 async fn remove(
     State(state): State<AppState>,
     auth: Require<res::Projects, lvl::Admin>,
     Path(id): Path<String>,
+    params: Result<Query<RemoveParams>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
     let id = parse_id(&id)?;
-    match delete_project(&state, auth.user.id, id, false).await? {
+    let Query(params) = params.map_err(|_| invalid("Paramètre purge_volumes invalide."))?;
+    match delete_project(&state, auth.user.id, id, false, params.purge_volumes).await? {
         Removal::NotFound => Err(not_found()),
         // Jamais renvoye sans `require_agents`.
         Removal::AgentUnreachable(_) => Err(internal("suppression du projet", "agent")),
@@ -256,14 +272,17 @@ pub(crate) enum Removal {
 }
 
 /// Supprime un projet : ordres `RemoveDeployment` aux agents, puis cascade en
-/// base et audit. Sans `require_agents`, un agent absent est seulement
-/// journalise (ses conteneurs restent) ; avec, le projet est garde tant
-/// qu'un ordre ne peut pas partir.
+/// base, retrait du projet inscrit pour chaque serveur (`RemoveProject`,
+/// volumes avec `purge_volumes`) et audit, dans une transaction ; les ordres
+/// `RemoveProject` partent apres elle. Sans `require_agents`, un agent absent
+/// est seulement journalise (il recoit `RemoveProject` a sa reconnexion) ;
+/// avec, le projet est garde tant qu'un ordre ne peut pas partir.
 pub(crate) async fn delete_project(
     state: &AppState,
     actor: Uuid,
     id: Uuid,
     require_agents: bool,
+    purge_volumes: bool,
 ) -> Result<Removal, ApiError> {
     let mut tx = begin(state).await?;
     let Some((name, _, _)) = store::lock(&mut tx, id)
@@ -296,9 +315,13 @@ pub(crate) async fn delete_project(
     store::delete(&mut tx, id)
         .await
         .map_err(|e| store_error("suppression du projet", e))?;
+    orchestrator::queue_project_removal(&mut tx, id, purge_volumes)
+        .await
+        .map_err(|e| internal("retrait du projet", e))?;
     audit(&mut tx, actor, "project.delete", id, &name).await?;
     tx.commit()
         .await
         .map_err(|e| internal("transaction des projets", e))?;
+    orchestrator::send_project_removals(state, id).await;
     Ok(Removal::Deleted(hosts))
 }

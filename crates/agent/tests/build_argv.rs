@@ -1514,3 +1514,55 @@ async fn clone_over_cap_is_refused() {
     }
     assert_eq!(clone::MAX_CLONE_BYTES, 2 << 30);
 }
+
+/// Projet Compose de la normalisation : tire des UUID du projet et de
+/// l'environnement (`cp-<projet>-<8 premiers caracteres de l'environnement>`),
+/// jamais des noms. Deux projets du meme nom (l'un supprime, l'autre recree)
+/// n'ont donc jamais le meme projet Compose, ni les memes volumes.
+#[tokio::test]
+async fn compose_project_named_after_the_uuids_not_the_names() {
+    let mut names = Vec::new();
+    for _ in 0..2 {
+        let dir = BuildsDir::new();
+        let backend = FakeBackend {
+            repo: vec![
+                ("compose.yaml", "services:\n  web:\n    build: .\n"),
+                ("Dockerfile", "FROM busybox\n"),
+            ],
+            compose_json: Some(ONE_SERVICE_JSON.to_string()),
+            ..Default::default()
+        };
+        let spec = spec(BuildMethod::Compose {
+            path: "compose.yaml".into(),
+            service: "web".into(),
+        });
+        run(&spec, &backend, &dir).await.0.unwrap();
+        let calls = backend.calls.lock().unwrap().clone();
+        let config = calls
+            .iter()
+            .find(|c| c.args.iter().any(|a| a == "config"))
+            .unwrap();
+        let name = config
+            .args
+            .windows(2)
+            .find(|w| w[0] == "-p")
+            .map(|w| w[1].clone())
+            .unwrap();
+        let (project, env) = (spec.project_id.unwrap(), spec.environment_id.unwrap());
+        assert_eq!(
+            name,
+            ciphera_agent::docker::compose_project_name(project, env)
+        );
+        assert_eq!(
+            name,
+            format!(
+                "cp-{}-{}",
+                project.0.simple(),
+                &env.0.simple().to_string()[..8]
+            )
+        );
+        assert!(!name.contains("web"), "{name}");
+        names.push(name);
+    }
+    assert_ne!(names[0], names[1], "meme nom de projet, autre UUID");
+}

@@ -24,7 +24,7 @@ use proto::{
 use rsa::pkcs1::EncodeRsaPrivateKey;
 use serde_json::{Value, json};
 use shared::config::Config;
-use shared::ids::{DeploymentId, ServerId};
+use shared::ids::{DeploymentId, ProjectId, ServerId};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wiremock::matchers::{method, path};
@@ -1915,4 +1915,109 @@ async fn state_is_requested_when_a_presumed_failure_turns_into_success() {
         .await;
     assert_eq!(env.status(id).await, "success");
     assert_eq!(env.take_state_requests(), 1);
+}
+
+/// Ordres `RemoveProject` recus par l'agent : (projet, volumes supprimes).
+fn project_removals(orders: &[ControlToAgent]) -> Vec<(Uuid, bool)> {
+    orders
+        .iter()
+        .filter_map(|o| match o {
+            ControlToAgent::RemoveProject {
+                project_id,
+                purge_volumes,
+            } => Some((project_id.0, *purge_volumes)),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn pending_removals(env: &Env, project: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM project_removals WHERE project_id = $1")
+        .bind(project)
+        .fetch_one(&env.state.db)
+        .await
+        .unwrap()
+}
+
+/// Suppression : `RemoveProject` inscrit dans la transaction et envoye ;
+/// renvoye a chaque etat de l'agent tant qu'il n'a pas accuse ; l'accuse
+/// (de ce serveur seulement) retire la ligne.
+#[tokio::test]
+async fn project_delete_queues_remove_project_until_ack() {
+    let mut env = Env::new().await;
+    let (p, _) = image_project(&env.state, "web").await;
+    successful_deploy(&mut env, p).await;
+    let admin = login(&env.state, "admin").await;
+    let bad = send(
+        &env.state,
+        &admin,
+        "DELETE",
+        &format!("/api/projects/{p}?purge_volumes=peut-etre"),
+        None,
+    )
+    .await;
+    assert_eq!(bad.status, 422, "{}", bad.raw);
+    assert!(env.orders().is_empty(), "rien de supprime");
+    let r = send(
+        &env.state,
+        &admin,
+        "DELETE",
+        &format!("/api/projects/{p}?purge_volumes=true"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    assert_eq!(project_removals(&env.orders()), vec![(p, true)]);
+    assert_eq!(pending_removals(&env, p).await, 1);
+
+    // Etat de l'agent (reconnexion, resynchronisation) sans accuse : renvoye.
+    env.agent_says(AgentToControl::State(AgentState::default()))
+        .await;
+    assert_eq!(project_removals(&env.orders()), vec![(p, true)]);
+
+    // Accuse d'un autre serveur : sans effet.
+    orchestrator::on_agent_message(
+        &env.state,
+        ServerId::new(),
+        AgentToControl::ProjectRemoved {
+            project_id: ProjectId(p),
+        },
+    )
+    .await;
+    assert_eq!(pending_removals(&env, p).await, 1);
+
+    env.agent_says(AgentToControl::ProjectRemoved {
+        project_id: ProjectId(p),
+    })
+    .await;
+    assert_eq!(pending_removals(&env, p).await, 0);
+    env.agent_says(AgentToControl::State(AgentState::default()))
+        .await;
+    assert!(project_removals(&env.orders()).is_empty());
+}
+
+/// Agent absent a la suppression : le projet est supprime, `RemoveProject`
+/// (volumes gardes par defaut) part a sa reconnexion.
+#[tokio::test]
+async fn remove_project_resent_after_reconnect() {
+    let mut env = Env::new().await;
+    let (p, _) = image_project(&env.state, "web").await;
+    successful_deploy(&mut env, p).await;
+    env.state.agents.disconnect(ServerId(env.server));
+    let admin = login(&env.state, "admin").await;
+    let r = send(
+        &env.state,
+        &admin,
+        "DELETE",
+        &format!("/api/projects/{p}"),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, 204, "{}", r.raw);
+    assert_eq!(pending_removals(&env, p).await, 1);
+
+    env.agent = env.state.agents.attach_channel(ServerId(env.server));
+    env.agent_says(AgentToControl::State(AgentState::default()))
+        .await;
+    assert_eq!(project_removals(&env.orders()), vec![(p, false)]);
 }

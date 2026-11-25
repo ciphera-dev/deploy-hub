@@ -236,7 +236,8 @@ async fn remove(
     let mut hosts = Vec::new();
     let mut deleted = 0_i64;
     for (id, name) in &projects {
-        match delete_project(&state, actor, *id, true).await {
+        // Organisation supprimee : les volumes des projets aussi.
+        match delete_project(&state, actor, *id, true, true).await {
             Ok(Removal::Deleted(h)) => {
                 hosts.extend(h);
                 deleted += 1;
