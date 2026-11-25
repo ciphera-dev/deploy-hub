@@ -1122,3 +1122,11 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Askpass : répond seulement aux invites exactes `https://github.com` (utilisateur) et `https://x-access-token@github.com` (jeton) ; sinon rien et code 1.
 - `docker compose config` avec `--env-file /dev/null`, environnement sans `COMPOSE_*`, nom de projet explicite : le `.env` du dépôt n'est plus lu (les `${VAR}` d'un fichier Compose n'en prennent plus la valeur).
 - Laissés : taille du volume de sortie non bornée pendant `prepare` (comme l'ancien dossier) ; un fichier Compose qui étiquette un volume `dev.ciphera.*` peut le faire balayer (données du seul locataire) ; budget de 120 s d'un test qui court aussi pendant le tirage de l'image.
+
+## 2026-11-25 — Task R28 : sortie réseau des applications et des builds, durcissement de l'agent
+- Décision R28 : chaque réseau de projet a un pont nommé `cphp` + 10 hex de l'UUID ; table nftables `inet ciphera_egress` générée en Rust (`agent/egress.rs`), chargée par `ciphera-agent egress load` (ExecStartPre) et rechargée toutes les 5 min par `ciphera-egress-check.timer` (remplacement atomique).
+- Applications : DNS seulement vers les résolveurs de l'hôte, adresses de métadonnées des clouds rejetées, vers l'hôte seulement TCP 80/443 (proxy du nœud, domaines du même nœud) ; réseaux privés rejetés seulement avec `CIPHERA_APP_EGRESS_DENY_PRIVATE=1` dans `/etc/ciphera-egress/egress.env` (root, lu par le binaire, 0 par défaut).
+- Builds : préfixes `64:ff9b::/96`, `2001::/32`, `2002::/16` interdits en plus ; port 53 seulement vers les résolveurs de l'hôte (lus dans resolv.conf, comme Docker).
+- Ancien réseau de projet sans pont nommé : recréé s'il n'a aucun conteneur (même arrêté), sinon gardé avec un avertissement.
+- Unité de l'agent : `SystemCallFilter=@system-service`, `PrivateDevices`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `ProtectClock`, `ProtectHostname`, `RestrictRealtime`, `RestrictNamespaces`.
+- Laissés : 80/443 vers l'hôte ouverts à tout processus de l'hôte, pas seulement au proxy ; avertissement sur les chaînes de Docker ; `ip addr` du test run-docker-host.

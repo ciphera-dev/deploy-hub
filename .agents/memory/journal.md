@@ -369,3 +369,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 07:28 — Session v0.1-sdd — claude-code (orchestrateur) — Task fix/ci-loglines : Journaux d'agent : aucune ligne partielle, aucun morceau de secret
 - fait : Test corrigé ; ligne partielle jamais envoyée, première ligne de toute lecture remplacée, TTY sans horodatage Docker
 - résultat : TERMINÉ (relecture approuvée, 4 tours)
+
+## 2026-11-25 07:42 — Session v0.1-sdd — claude-code (orchestrateur) — Task R28 : Sortie réseau des applications et des builds, durcissement de l'agent
+- fait : Pont cphp par projet, table nftables générée en Rust et rechargée toutes les 5 min, DNS vers les résolveurs de l'hôte, métadonnées rejetées, unité de l'agent durcie
+- résultat : TERMINÉ (relecture approuvée, 1 tour)
