@@ -161,6 +161,7 @@ impl RouteTable {
     /// Table qui admet aussi les amonts en boucle locale pour les routes de
     /// services. Reserve aux tests, dont les amonts ecoutent en local ; la
     /// production utilise `new`.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn with_loopback_upstreams() -> Self {
         Self {
             allow_loopback: true,
@@ -206,9 +207,11 @@ fn validate(route: &Route, allow_loopback: bool) -> Result<(), RouteError> {
     // pilotage ne doivent pas etre joignables par une route d'application).
     let loopback_ok = allow_loopback || is_panel_route(route);
     for up in &route.upstreams {
-        let ip = up.ip();
+        // Forme canonique (`::ffff:a.b.c.d` devient l'IPv4) : toutes les
+        // verifications portent sur l'adresse reellement jointe.
+        let ip = up.ip().to_canonical();
         if up.port() == 0
-            || (!loopback_ok && ip.to_canonical().is_loopback())
+            || (!loopback_ok && ip.is_loopback())
             || ip.is_unspecified()
             || ip.is_multicast()
             || is_broadcast(ip)

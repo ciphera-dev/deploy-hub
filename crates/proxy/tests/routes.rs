@@ -356,6 +356,9 @@ fn loopback_upstream_refused_for_app_route() {
         "169.254.169.254:80",
         "224.0.0.1:80",
         "[ff02::1]:80",
+        "[::ffff:0.0.0.0]:80",
+        "[::ffff:224.0.0.1]:80",
+        "[::ffff:255.255.255.255]:80",
     ] {
         let err = table
             .apply(vec![app_route("a.example.com", up)])

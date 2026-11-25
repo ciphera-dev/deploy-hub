@@ -111,6 +111,9 @@ const CLIENT_FORWARDING_HEADERS: [&str; 11] = [
 /// debit minimal de ce corps.
 #[derive(Clone, Copy, Debug)]
 pub struct IoTimeouts {
+    /// Delai maximal entre deux lectures du corps du client. Leve apres une
+    /// mise a niveau (WebSocket) : une connexion inactive y est normale.
+    pub read: Duration,
     /// Delai maximal d'une ecriture vers le client (client qui ne lit pas).
     pub write: Duration,
     /// Duree totale maximale de la requete avant la fin de son corps.
@@ -118,12 +121,14 @@ pub struct IoTimeouts {
     /// Debit minimal moyen du corps, en octets par seconde (0 : aucun),
     /// verifie une fois `body_rate_grace` ecoule.
     pub min_body_rate: u64,
+    /// Delai avant lequel le debit minimal n'est pas verifie.
     pub body_rate_grace: Duration,
 }
 
 impl Default for IoTimeouts {
     fn default() -> Self {
         Self {
+            read: DOWNSTREAM_READ_TIMEOUT,
             write: DOWNSTREAM_WRITE_TIMEOUT,
             request_body_total: REQUEST_BODY_TOTAL_TIMEOUT,
             min_body_rate: MIN_BODY_RATE,
@@ -358,18 +363,24 @@ impl ProxyHttp for Forwarder {
         if let (Some(limiter), Some(stream)) = (&self.limiter, session.stream()) {
             limiter.headers_read(stream.id());
         }
-        session.set_read_timeout(Some(DOWNSTREAM_READ_TIMEOUT));
+        session.set_read_timeout(Some(self.io.read));
         session.set_write_timeout(Some(self.io.write));
         Ok(())
     }
 
     async fn request_body_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         body: &mut Option<Bytes>,
         _end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        // Apres une mise a niveau (WebSocket), Pingora fait passer ici toutes
+        // les trames du client : ni duree totale ni debit minimal, une
+        // connexion peut rester ouverte des heures.
+        if session.was_upgraded() {
+            return Ok(());
+        }
         // Appele a chaque morceau recu : un client qui goutte reste borne par
         // la duree totale et par le debit moyen minimal.
         ctx.body_bytes += body.as_ref().map_or(0, |b| b.len() as u64);
@@ -487,6 +498,21 @@ impl ProxyHttp for Forwarder {
         // (normalise). Toute autre valeur doit faire echouer les tests.
         peer.options.http_upstream_request_policy = HttpUpstreamRequestPolicy::standard();
         Ok(Box::new(peer))
+    }
+
+    async fn response_filter(
+        &self,
+        session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        _ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        // Mise a niveau acceptee : le delai de lecture entre deux envois du
+        // client ne s'applique plus (le delai d'ecriture reste : un client
+        // qui ne lit plus est toujours coupe).
+        if upstream_response.status == http::StatusCode::SWITCHING_PROTOCOLS {
+            session.set_read_timeout(None);
+        }
+        Ok(())
     }
 
     async fn upstream_request_filter(

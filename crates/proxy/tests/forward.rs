@@ -1190,7 +1190,10 @@ fn slow_body_cut_after_total_deadline() {
     assert!(!text.starts_with("HTTP/1.1 200"), "{text}");
 }
 
-/// Un corps sous 1 Kio/s est coupe une fois le delai de grace passe.
+/// Un corps sous 1 Kio/s est coupe une fois le delai de grace passe : le
+/// proxy ferme bien avant la fin de l'envoi du client, et l'amont ne recoit
+/// jamais le corps entier (la duree totale reste a 300 s pour isoler le
+/// debit).
 #[test]
 fn slow_body_below_minimum_rate_is_cut() {
     let io = IoTimeouts {
@@ -1204,15 +1207,112 @@ fn slow_body_below_minimum_rate_is_cut() {
         b"POST / HTTP/1.1\r\nHost: rate.forward.example\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
     )
     .unwrap();
-    for _ in 0..12 {
+    let start = std::time::Instant::now();
+    // Sans coupure, les 100 octets arrivent en 25 s (un octet toutes les
+    // 250 ms) et l'amont repond 200.
+    let mut sent_all = true;
+    for _ in 0..100 {
         if s.write_all(b"x").is_err() {
+            sent_all = false;
             break;
         }
         thread::sleep(Duration::from_millis(250));
+        let mut probe = [0u8; 1];
+        s.set_nonblocking(true).unwrap();
+        let closed = matches!(s.read(&mut probe), Ok(0) | Ok(1));
+        s.set_nonblocking(false).unwrap();
+        if closed {
+            // Reponse ou fermeture recue avant la fin de l'envoi.
+            sent_all = false;
+            break;
+        }
     }
     let (out, _) = read_until_closed(&mut s, Duration::from_secs(5));
     let text = String::from_utf8_lossy(&out);
+    assert!(!sent_all, "le proxy a laisse passer tout le corps lent");
+    assert!(
+        start.elapsed() < Duration::from_secs(12),
+        "{:?}",
+        start.elapsed()
+    );
     assert!(!text.starts_with("HTTP/1.1 200"), "{text}");
+}
+
+/// Amont WebSocket : repond 101 puis renvoie en echo tout ce qu'il recoit.
+fn start_ws_upstream() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            thread::spawn(move || {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match conn.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => return,
+                    }
+                }
+                if conn
+                    .write_all(
+                        b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+                    )
+                    .is_err()
+                {
+                    return;
+                }
+                let mut buf = [0u8; 256];
+                while let Ok(n) = conn.read(&mut buf) {
+                    if n == 0 || conn.write_all(&buf[..n]).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+/// Une connexion mise a niveau (WebSocket) n'est soumise ni a la duree
+/// totale du corps, ni au debit minimal, ni au delai de lecture : elle
+/// echange encore des messages bien apres ces echeances.
+#[test]
+fn upgraded_connection_is_not_cut_by_body_deadlines() {
+    let io = IoTimeouts {
+        read: Duration::from_secs(2),
+        request_body_total: Duration::from_secs(2),
+        min_body_rate: 1024,
+        body_rate_grace: Duration::from_secs(1),
+        ..IoTimeouts::default()
+    };
+    let http = server_for("wsrate.forward.example", start_ws_upstream(), io);
+    let mut s = TcpStream::connect(http).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(
+        b"GET /ws HTTP/1.1\r\nHost: wsrate.forward.example\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+    )
+    .unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        assert_eq!(s.read(&mut byte).unwrap(), 1, "{head:?}");
+        head.push(byte[0]);
+    }
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 101"),
+        "{}",
+        String::from_utf8_lossy(&head)
+    );
+    // Messages espaces de 3,5 s : au-dela de la grace (1 s), de la duree
+    // totale (2 s) et du delai de lecture (2 s), a moins de 1 Kio/s.
+    for round in 0..3u8 {
+        thread::sleep(Duration::from_millis(3500));
+        s.write_all(&[b'a' + round]).unwrap();
+        let mut echo = [0u8; 1];
+        s.read_exact(&mut echo).unwrap();
+        assert_eq!(echo[0], b'a' + round);
+    }
 }
 
 #[test]
