@@ -4,3 +4,7 @@
 # Seule la vérification de signatures par clé publique est utilisée.
 # Décision du 2026-11-21 (.agents/memory/decisions.md), à réexaminer à chaque montée de webauthn-rs.
 ignore = ["RUSTSEC-2023-0071"]
+
+# Avis « unmaintained » (chrono, serde_yaml, unsafe-libyaml, derivative, rustls-pemfile,
+# basic-toml, proc-macro-error2, astral-tokio-tar) : affichés en avertissements non
+# bloquants, acceptés et justifiés dans deny.toml (réexamen R39, 2026-11-25).

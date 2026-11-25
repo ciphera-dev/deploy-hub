@@ -28,6 +28,11 @@ tokio = { version = "1", features = ["macros", "rt"] }
 utoipa = "6.0.0"
 uuid = { version = "1.29.3", features = ["serde", "v4"] }
 
+# Release : un debordement arithmetique doit arreter le programme au lieu de
+# se replier silencieusement (D-GH-9). Mesure R39 : voir decisions.md.
+[profile.release]
+overflow-checks = true
+
 [profile.dev]
 debug = "line-tables-only"
 incremental = false

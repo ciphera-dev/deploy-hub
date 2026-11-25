@@ -157,3 +157,19 @@ OSV.dev ne couvre pas tout : pour chaque ligne, chercher les avis de sécurité,
 
 - Node.js 22 (`crates/agent/tests/fixtures/node-app/package.json`) : avis de sécurité de la branche 22, failles marquantes passées (ex. CVE-2024-27980 (injection de commande via child_process sous Windows))
 - API `cdn.jsdelivr.net` (appelée dans `prototypes/dashboard/Security.jsx`) : incidents de sécurité, version d'API dépréciée, page de statut
+
+## Crates non maintenues acceptées (réexamen du 2026-11-25)
+
+`cargo audit` signale 7 avis « unmaintained » ; `cargo deny check` reste vert (`unmaintained = "workspace"` : seules les crates directes comptent, aucune n'est concernée). Vérification sur crates.io : `pingora-core` 0.9.1 est la dernière version, `age` 0.12.1 et `testcontainers` 0.28.0 gardent les mêmes dépendances signalées ; aucune montée n'apporte donc de gain. Pingora reste en 0.9.x (le proxy s'appuie sur ses internes).
+
+| Crate | Avis | Tirée par | Nature | Décision |
+|---|---|---|---|---|
+| chrono 0.4.45 | RUSTSEC-2026-0543 | pingora-core 0.9.1 | exécution (proxy) | acceptée, pas de remplaçant dans Pingora |
+| serde_yaml 0.9.34 / unsafe-libyaml 0.2.11 | RUSTSEC-2024-0449 | pingora-core 0.9.1 | exécution (proxy, configuration YAML de Pingora, jamais alimentée par un tiers) | acceptée |
+| derivative 2.2.0 | RUSTSEC-2024-0388 | pingora-core 0.9.1 | macro de compilation | acceptée |
+| rustls-pemfile 2.2.0 | RUSTSEC-2025-0134 | pingora-rustls 0.9.1 | exécution (proxy) | acceptée |
+| basic-toml 0.1.10 | RUSTSEC-2026-0374 | age 0.11.5 (i18n-config) | macro de compilation | acceptée |
+| proc-macro-error2 2.0.1 | RUSTSEC-2026-0173 | age 0.11.5 (i18n-embed-fl) | macro de compilation | acceptée |
+| astral-tokio-tar 0.6.4 | RUSTSEC-2026-0440 | testcontainers 0.27.3 | dev-dependency (tests) | acceptée |
+
+À réexaminer à chaque montée de `pingora`, `age` ou `testcontainers`. Le choix est consigné dans `.agents/memory/decisions.md` et `deny.toml`.

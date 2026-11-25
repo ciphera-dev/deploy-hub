@@ -102,7 +102,7 @@ pub fn retry_delay(failures: u32) -> i64 {
 
 /// Le certificat est-il encore valide a plus de 30 jours (rien a emettre) ?
 pub fn still_valid(expires_at: Option<i64>, now: i64) -> bool {
-    expires_at.is_some_and(|e| e - now > RENEW_BEFORE_SECS)
+    expires_at.is_some_and(|e| e.saturating_sub(now) > RENEW_BEFORE_SECS)
 }
 
 /// Fin de validite du certificat du domaine (secondes Unix).
@@ -217,11 +217,11 @@ fn db_error(context: &str, e: sqlx::Error) -> HandlerError {
 /// Echeance du renouvellement : J-30, ou a mi-chemin pour un certificat
 /// plus court.
 pub fn renew_at(now: i64, not_after: i64) -> i64 {
-    let at = not_after - RENEW_BEFORE_SECS;
+    let at = not_after.saturating_sub(RENEW_BEFORE_SECS);
     if at > now {
         at
     } else {
-        now + ((not_after - now) / 2).max(3600)
+        now.saturating_add((not_after.saturating_sub(now) / 2).max(3600))
     }
 }
 
@@ -405,7 +405,7 @@ pub async fn issue(state: &AppState, job: Job) -> Result<(), HandlerError> {
                     .begin()
                     .await
                     .map_err(|e| db_error("connexion a la base", e))?;
-                let next = now + retry_delay(failures);
+                let next = now.saturating_add(retry_delay(failures));
                 schedule_next(&mut tx, &job, id, next, failures.saturating_add(1)).await?;
                 tx.commit()
                     .await
@@ -504,7 +504,7 @@ async fn later(
         .begin()
         .await
         .map_err(|e| db_error("connexion a la base", e))?;
-    schedule_next(&mut tx, job, id, now + TRANSIENT_SECS, failures).await?;
+    schedule_next(&mut tx, job, id, now.saturating_add(TRANSIENT_SECS), failures).await?;
     tx.commit()
         .await
         .map_err(|e| db_error("planification du certificat", e))?;
@@ -668,7 +668,7 @@ fn failure_notice(
     valid_until: Option<i64>,
 ) -> Option<Event> {
     match valid_until {
-        Some(expires_at) if expires_at - now <= notifications::EXPIRING_SOON_SECS => {
+        Some(expires_at) if expires_at.saturating_sub(now) <= notifications::EXPIRING_SOON_SECS => {
             Some(Event::CertExpiring {
                 domain_id: id,
                 expires_at,
@@ -737,7 +737,7 @@ async fn failed_in(
             .await
             .map_err(|e| db_error("notification du certificat", e))?;
     }
-    let next = now + retry_delay(failures);
+    let next = now.saturating_add(retry_delay(failures));
     schedule_next(&mut *tx, job, id, next, failures.saturating_add(1)).await?;
     tracing::warn!(%host, next, "emission du certificat en echec : {reason}");
     Ok(())
@@ -770,5 +770,19 @@ mod tests {
         assert!(still_valid(Some(now + 31 * 86_400), now));
         assert!(!still_valid(Some(now + 30 * 86_400), now));
         assert!(!still_valid(None, now));
+    }
+
+    #[test]
+    fn deadline_arithmetic_saturates_at_the_limits() {
+        // Une echeance annoncee par l'agent ne doit jamais faire deborder.
+        assert!(still_valid(Some(i64::MAX), i64::MIN));
+        assert!(!still_valid(Some(i64::MIN), i64::MAX));
+        assert!(!still_valid(Some(i64::MIN), 0));
+        assert_eq!(renew_at(i64::MAX, i64::MAX), i64::MAX);
+        assert_eq!(renew_at(i64::MAX, i64::MIN), i64::MAX);
+        assert_eq!(renew_at(i64::MIN, i64::MIN), i64::MIN + 3600);
+        assert_eq!(renew_at(i64::MIN, i64::MAX), i64::MAX - RENEW_BEFORE_SECS);
+        assert_eq!(renew_at(0, 0), 3600);
+        assert_eq!(i64::MAX.saturating_add(retry_delay(u32::MAX)), i64::MAX);
     }
 }
