@@ -337,3 +337,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 02:48 — Session v0.1-sdd — claude-code (orchestrateur) — Task R22 : Remédiation audit — nettoyage des déploiements confirmé par l'agent
 - fait : Accusé de l'agent avant cleaned_at, renvois, rapprochement, balayage prudent des restes
 - résultat : TERMINÉ (relecture : 1 Important corrigé, approuvée)
+
+## 2026-11-25 03:03 — Session v0.1-sdd — claude-code (orchestrateur) — Task R19 : Remédiation audit — quotas des flux de journaux et bornes mémoire
+- fait : Quota par compte, coupe et débit par agent avant la diffusion, origine du build
+- résultat : TERMINÉ (relecture : 2 Importants corrigés, approuvée)

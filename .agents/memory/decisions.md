@@ -1078,3 +1078,10 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Agent : l'état local est gardé si Docker échoue ; accusé seulement quand tout est retiré ou absent.
 - Balayage des restes (démarrage puis toutes les heures) : seulement les conteneurs ARRÊTÉS absents de l'état local (ceux qui tournent sont laissés au plan de contrôle) ; garde « état neuf » (état vide alors que des conteneurs étiquetés existent : aucun balayage, journal d'erreur) ; image retirée seulement si plus aucun conteneur ne l'utilise et si son déploiement n'a pas d'issue de moins de 30 jours ; images reconnues par leur tag ; projets en cours de retrait (R23) laissés à `remove_project` ; aucun volume touché.
 - Laissés : M-1 (retour arrière Compose), M-2 (conforme au brief), M-3 (renvois à chaque `State` pendant 30 jours), M-5 (test d'image sur le Docker partagé de la CI).
+
+## 2026-11-25 — Task R19 : quotas des flux de journaux et bornes mémoire
+- Décision R19 : quota de flux de journaux par compte (migration 0041), refus en 429 (503 reste la limite de l'instance).
+- Ligne brute d'agent coupée à 64 Kio dans `AgentRegistry::publish`, avant la diffusion (borne mémoire réelle du canal commun) ; la coupe à 16 Kio reste après nettoyage et masquage (garantie R18 : jamais de secret à moitié visible).
+- Débit de 2 000 lignes/s par agent appliqué dès la réception, avant la diffusion (`domain/logs/rate.rs`) : un agent qui inonde ne fait plus perdre les lignes des autres ; repère « N lignes ignorées » émis chaque seconde, seulement dans une cible dont l'agent est l'origine.
+- Origine d'un build fixée par `assign_build` avant l'envoi (et relue en base après redémarrage) ; une cible sans origine connue ignore les lignes (l'ancien « premier émetteur cru » est retiré).
+- Laissés : le 429 n'est pas visible du navigateur à l'ouverture du WebSocket (reconnexion avec délai croissant), test d'origine du repère peu probant, table des seaux par agent non purgée pour un serveur supprimé.
