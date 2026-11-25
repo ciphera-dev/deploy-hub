@@ -55,7 +55,7 @@ async fn serve(h: Hardening) -> (SocketAddr, ConnLimits) {
             post(|body: axum::body::Bytes| async move { format!("lu {}", body.len()) }),
         );
     let app = listener::with_body_deadline(app, h.body_read);
-    let app = listener::with_idle_tracking(app, limits.clone());
+    let app = listener::with_idle_tracking(app);
     let server = listener::plain("127.0.0.1:0".parse().unwrap(), h, limits.clone())
         .handle(handle.clone())
         .serve(app.into_make_service_with_connect_info::<SocketAddr>());
@@ -243,9 +243,36 @@ async fn h2_get(addr: SocketAddr, path: &str, ack_pings: bool) -> (TcpStream, In
     }
 }
 
+/// Attend la fermeture d'une connexion h2 dont le client reste vivant (il
+/// acquitte les PING). Renvoie `Some(goaway_vu)` si elle se ferme avant
+/// `within`, `None` sinon : un test sans coupure d'inactivite echoue, il ne
+/// reste pas bloque (le serveur envoie un PING toutes les `h2_idle`).
+async fn closed_while_answering_pings(s: &mut TcpStream, within: Duration) -> Option<bool> {
+    let mut goaway = false;
+    let result = tokio::time::timeout(within, async {
+        loop {
+            match read_frame(s).await {
+                None => return,
+                Some((6, flags, _, payload)) if flags & 1 == 0 => {
+                    let mut ack = vec![0, 0, 8, 6, 1, 0, 0, 0, 0];
+                    ack.extend_from_slice(&payload);
+                    if s.write_all(&ack).await.is_err() {
+                        return;
+                    }
+                }
+                Some((7, ..)) => goaway = true,
+                Some(_) => {}
+            }
+        }
+    })
+    .await;
+    result.ok().map(|()| goaway)
+}
+
 /// Apres une requete, un client h2 vivant (il repond aux PING) mais sans
-/// requete en cours est ferme au bout de `h2_idle`. `first_request` est plus
-/// long que la fenetre du test : seul le delai d'inactivite peut couper.
+/// requete en cours est ferme au bout de `h2_idle`, par un GOAWAY.
+/// `first_request` est plus long que la fenetre du test : seul le delai
+/// d'inactivite peut couper.
 #[tokio::test]
 async fn h2_idle_timeout() {
     let (addr, limits) = serve(Hardening {
@@ -255,29 +282,40 @@ async fn h2_idle_timeout() {
     })
     .await;
     let (mut s, done) = h2_get(addr, "/", true).await;
-    // Le client reste vivant : il acquitte les PING pendant l'attente.
-    let closed = loop {
-        match tokio::time::timeout(Duration::from_secs(3), read_frame(&mut s)).await {
-            Err(_) => break false,
-            Ok(None) => break true,
-            Ok(Some((6, flags, _, payload))) if flags & 1 == 0 => {
-                let mut ack = vec![0, 0, 8, 6, 1, 0, 0, 0, 0];
-                ack.extend_from_slice(&payload);
-                if s.write_all(&ack).await.is_err() {
-                    break true;
-                }
-            }
-            Ok(Some(_)) => {}
-        }
-    };
-    assert!(closed, "connexion h2 inactive restee ouverte");
+    let goaway = closed_while_answering_pings(&mut s, Duration::from_secs(3))
+        .await
+        .expect("connexion h2 inactive restee ouverte");
+    assert!(goaway, "fermeture sans GOAWAY");
     assert!(
         done.elapsed() >= Duration::from_millis(250),
         "coupee trop tot"
     );
-    assert!(done.elapsed() < Duration::from_secs(3));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(limits.open(), 0);
+}
+
+/// La fermeture d'une connexion ne retire pas le suivi d'une autre : la
+/// seconde, ouverte avant la fin de la premiere, reste coupee a l'inactivite.
+#[tokio::test]
+async fn closing_one_connection_keeps_the_other_tracked() {
+    let (addr, limits) = serve(Hardening {
+        first_request: Duration::from_secs(30),
+        header_read: Duration::from_secs(30),
+        ..FAST
+    })
+    .await;
+    let (first, _) = h2_get(addr, "/", true).await;
+    let (mut second, done) = h2_get(addr, "/", true).await;
+    drop(first);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(limits.open(), 1);
+    assert!(
+        closed_while_answering_pings(&mut second, Duration::from_secs(3))
+            .await
+            .is_some(),
+        "la seconde connexion a perdu son suivi"
+    );
+    assert!(done.elapsed() >= Duration::from_millis(250));
 }
 
 /// Un client h2 muet (aucune reponse aux PING) est coupe par la sonde.

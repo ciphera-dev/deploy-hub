@@ -555,12 +555,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Hardening::LOCAL.max_connections,
         Hardening::LOCAL.max_per_ip,
     );
-    let local = listener::plain(local_addr, Hardening::LOCAL, local_limits.clone())
+    let local = listener::plain(local_addr, Hardening::LOCAL, local_limits)
         .handle(handle.clone())
         // Adresse du pair TCP : boucle locale ; requetes marquees, seules a
         // pouvoir faire croire X-Forwarded-For (pose par le proxy).
         .serve(
-            listener::with_idle_tracking(panel_host::local(router), local_limits)
+            listener::with_idle_tracking(panel_host::local(router))
                 .into_make_service_with_connect_info::<SocketAddr>(),
         );
     // Redirection HTTP facultative (CIPHERA_HTTP_PORT) : le port 80 appartient
@@ -575,10 +575,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Hardening::PUBLIC.max_connections,
             Hardening::PUBLIC.max_per_ip,
         );
-        listener::plain(addr, Hardening::PUBLIC, limits.clone())
+        listener::plain(addr, Hardening::PUBLIC, limits)
             .handle(handle)
             .serve(
-                listener::with_idle_tracking(redirect::router(panel_port, panel), limits)
+                listener::with_idle_tracking(redirect::router(panel_port, panel))
                     .into_make_service_with_connect_info::<SocketAddr>(),
             )
             .await
@@ -636,7 +636,7 @@ async fn serve_direct(
             .handle(handle.clone())
             // Adresse du pair TCP : IP cliente (limitation de debit, audit).
             .serve(
-                listener::with_idle_tracking(router.clone(), limits.clone())
+                listener::with_idle_tracking(router.clone())
                     .into_make_service_with_connect_info::<SocketAddr>(),
             );
         tokio::pin!(server);

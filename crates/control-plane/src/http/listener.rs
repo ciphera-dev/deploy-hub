@@ -27,16 +27,17 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
+use tower_service::Service;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::{ConnectInfo, Request};
+use axum::extract::Request;
 use axum::http::Version;
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum_server::Server;
 use axum_server::accept::Accept;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
+use axum_server::{ConnectionShutdown, Server};
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
@@ -95,11 +96,14 @@ pub struct ConnLimits {
     max_total: usize,
     max_per_ip: usize,
     counts: Arc<Mutex<Counts>>,
-    conns: Arc<Mutex<HashMap<SocketAddr, Arc<ConnState>>>>,
 }
 
+/// Delai laisse a la fermeture ordonnee (GOAWAY) avant la coupure du flux.
+const GRACE: Duration = Duration::from_secs(5);
+
 /// Etat d'une connexion ouverte, partage entre son flux ([`Limited`]) et les
-/// requetes qu'elle porte ([`with_idle_tracking`]).
+/// requetes qu'elle porte (extension posee par [`WithConn`], lue par
+/// [`with_idle_tracking`]). Propre a la connexion : aucune cle partagee.
 struct ConnState {
     /// Requetes dont la reponse n'est pas terminee.
     in_flight: AtomicUsize,
@@ -109,6 +113,10 @@ struct ConnState {
     idle_since: Mutex<tokio::time::Instant>,
     /// Reveil de la lecture du flux, pour armer le delai a la fin d'une requete.
     waker: Mutex<Option<Waker>>,
+    /// Poignee de fermeture ordonnee de la connexion (vue sur une requete).
+    shutdown: Mutex<Option<ConnectionShutdown>>,
+    /// La fermeture ordonnee a ete demandee.
+    closing: AtomicBool,
 }
 
 impl ConnState {
@@ -118,6 +126,8 @@ impl ConnState {
             h2: AtomicBool::new(false),
             idle_since: Mutex::new(tokio::time::Instant::now()),
             waker: Mutex::new(None),
+            shutdown: Mutex::new(None),
+            closing: AtomicBool::new(false),
         }
     }
 }
@@ -151,21 +161,6 @@ impl Drop for InFlight {
     }
 }
 
-/// Inscription d'une connexion dans le registre, retiree a sa fermeture.
-struct Registration {
-    conns: Arc<Mutex<HashMap<SocketAddr, Arc<ConnState>>>>,
-    peer: SocketAddr,
-}
-
-impl Drop for Registration {
-    fn drop(&mut self) {
-        self.conns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.peer);
-    }
-}
-
 /// Cle du plafond par adresse : IPv4 (ou IPv4 dans IPv6) telle quelle,
 /// IPv6 reduite a son /64 (un hote en dispose d'ordinaire en entier).
 fn ip_key(ip: IpAddr) -> IpAddr {
@@ -187,33 +182,7 @@ impl ConnLimits {
             max_total,
             max_per_ip,
             counts: Arc::default(),
-            conns: Arc::default(),
         }
-    }
-
-    /// Inscrit la connexion de `peer` (cle : adresse et port, uniques tant
-    /// que la connexion est ouverte).
-    fn register(&self, peer: SocketAddr) -> (Arc<ConnState>, Registration) {
-        let state = Arc::new(ConnState::new());
-        self.conns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(peer, state.clone());
-        (
-            state,
-            Registration {
-                conns: self.conns.clone(),
-                peer,
-            },
-        )
-    }
-
-    fn state_of(&self, peer: SocketAddr) -> Option<Arc<ConnState>> {
-        self.conns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&peer)
-            .cloned()
     }
 
     /// Place pour une connexion de `ip`, rendue quand le jeton est detruit.
@@ -261,7 +230,6 @@ impl Drop for ConnGuard {
 pub struct Limited<T> {
     inner: T,
     _guard: ConnGuard,
-    _registration: Registration,
     state: Arc<ConnState>,
     idle: Duration,
     sleep: Pin<Box<Sleep>>,
@@ -274,8 +242,9 @@ impl<T: AsyncRead + Unpin> AsyncRead for Limited<T> {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = &mut *self;
-        // HTTP/2 sans requete en cours depuis `idle` : fin de flux (la
-        // connexion se ferme), meme si le client repond aux PING.
+        // HTTP/2 sans requete en cours depuis `idle` : fermeture ordonnee
+        // (GOAWAY), meme si le client repond aux PING ; fin de flux si elle
+        // n'aboutit pas dans `GRACE`.
         if this.state.h2.load(Ordering::SeqCst) && this.state.in_flight.load(Ordering::SeqCst) == 0
         {
             let since = *this
@@ -283,9 +252,29 @@ impl<T: AsyncRead + Unpin> AsyncRead for Limited<T> {
                 .idle_since
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            this.sleep.as_mut().reset(since + this.idle);
+            let closing = this.state.closing.load(Ordering::SeqCst);
+            let limit = if closing {
+                this.idle + GRACE
+            } else {
+                this.idle
+            };
+            this.sleep.as_mut().reset(since + limit);
             if this.sleep.as_mut().poll(cx).is_ready() {
-                return Poll::Ready(Ok(()));
+                let shutdown = this
+                    .state
+                    .shutdown
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                match shutdown {
+                    Some(shutdown) if !closing => {
+                        this.state.closing.store(true, Ordering::SeqCst);
+                        shutdown.graceful_shutdown();
+                        this.sleep.as_mut().reset(since + this.idle + GRACE);
+                        let _ = this.sleep.as_mut().poll(cx);
+                    }
+                    _ => return Poll::Ready(Ok(())),
+                }
             }
         }
         *this.state.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
@@ -330,28 +319,59 @@ pub struct LimitAcceptor {
     idle: Duration,
 }
 
+/// Service d'une connexion : pose l'etat de la connexion en extension de
+/// chaque requete.
+#[derive(Clone)]
+pub struct WithConn<S> {
+    inner: S,
+    state: Arc<ConnState>,
+}
+
+impl<S, R> Service<Request<R>> for WithConn<S>
+where
+    S: Service<Request<R>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut request: Request<R>) -> Self::Future {
+        request.extensions_mut().insert(self.state.clone());
+        self.inner.call(request)
+    }
+}
+
 impl<S> Accept<TcpStream, S> for LimitAcceptor {
     type Stream = Limited<TcpStream>;
-    type Service = S;
-    type Future = Ready<io::Result<(Self::Stream, S)>>;
+    type Service = WithConn<S>;
+    type Future = Ready<io::Result<(Self::Stream, WithConn<S>)>>;
 
     fn accept(&self, stream: TcpStream, service: S) -> Self::Future {
-        let accepted = stream.peer_addr().ok().and_then(|peer| {
-            let guard = self.limits.try_acquire(peer.ip())?;
-            Some((guard, self.limits.register(peer)))
-        });
-        ready(match accepted {
-            Some((guard, (state, registration))) => Ok((
-                Limited {
-                    inner: stream,
-                    _guard: guard,
-                    _registration: registration,
-                    state,
-                    idle: self.idle,
-                    sleep: Box::pin(tokio::time::sleep(self.idle)),
-                },
-                service,
-            )),
+        let guard = stream
+            .peer_addr()
+            .ok()
+            .and_then(|peer| self.limits.try_acquire(peer.ip()));
+        ready(match guard {
+            Some(guard) => {
+                let state = Arc::new(ConnState::new());
+                Ok((
+                    Limited {
+                        inner: stream,
+                        _guard: guard,
+                        state: state.clone(),
+                        idle: self.idle,
+                        sleep: Box::pin(tokio::time::sleep(self.idle)),
+                    },
+                    WithConn {
+                        inner: service,
+                        state,
+                    },
+                ))
+            }
             None => Err(io::Error::other("plafond de connexions atteint")),
         })
     }
@@ -449,15 +469,14 @@ impl HttpBody for Tracked {
     }
 }
 
-async fn track(limits: ConnLimits, request: Request, next: Next) -> Response {
-    let state = request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .and_then(|ConnectInfo(peer)| limits.state_of(*peer));
-    let Some(state) = state else {
+async fn track(request: Request, next: Next) -> Response {
+    let Some(state) = request.extensions().get::<Arc<ConnState>>().cloned() else {
         return next.run(request).await;
     };
     if request.version() == Version::HTTP_2 {
+        if let Some(shutdown) = request.extensions().get::<ConnectionShutdown>() {
+            *state.shutdown.lock().unwrap_or_else(|e| e.into_inner()) = Some(shutdown.clone());
+        }
         state.h2.store(true, Ordering::SeqCst);
     }
     // Tenu pendant le traitement : une requete abandonnee rend sa place.
@@ -471,14 +490,12 @@ async fn track(limits: ConnLimits, request: Request, next: Next) -> Response {
     Response::from_parts(parts, body)
 }
 
-/// Suit les requetes en cours de chaque connexion de l'ecouteur de `limits`
-/// (a poser sur le routeur de cet ecouteur seulement). Une connexion HTTP/2
-/// sans requete en cours depuis `h2_idle` est fermee ; un flux long (logs en
-/// direct) compte comme en cours jusqu'a sa fin et n'est jamais coupe.
-pub fn with_idle_tracking(router: Router, limits: ConnLimits) -> Router {
-    router.layer(middleware::from_fn(move |request, next| {
-        track(limits.clone(), request, next)
-    }))
+/// Suit les requetes en cours de chaque connexion des ecouteurs bornes
+/// ([`plain`], [`tls`]). Une connexion HTTP/2 sans requete en cours depuis
+/// `h2_idle` est fermee (GOAWAY, puis coupure apres `GRACE`) ; un flux long
+/// (logs en direct) compte comme en cours jusqu'a sa fin et n'est jamais coupe.
+pub fn with_idle_tracking(router: Router) -> Router {
+    router.layer(middleware::from_fn(track))
 }
 
 /// Ecouteur HTTP borne (ecoute locale du proxy).
