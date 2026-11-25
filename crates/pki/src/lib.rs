@@ -438,6 +438,16 @@ pub fn der_from_pem(pem: &str) -> Option<Vec<u8>> {
     Some(pem.contents)
 }
 
+/// Identite d'un certificat serveur : empreinte SHA-256 de sa cle publique
+/// et ses SAN (`AB:CD:... nom1,nom2`). Une re-signature par une autre CA
+/// (meme cle, memes SAN, [`Ca::reissue_server_cert`]) la garde. `None` si
+/// le certificat est illisible ou sans SAN.
+pub fn server_identity(pem: &str) -> Option<String> {
+    let sans = server_sans(pem).filter(|s| !s.is_empty())?;
+    let spki = der_from_pem(pem).and_then(|der| public_key_der(&der))?;
+    Some(format!("{} {}", fingerprint_sha256(&spki), sans.join(",")))
+}
+
 /// SAN DNS et IP d'un certificat PEM, dans l'ordre.
 fn server_sans(pem: &str) -> Option<Vec<String>> {
     use x509_parser::extensions::GeneralName;

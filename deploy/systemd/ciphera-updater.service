@@ -12,7 +12,8 @@
 # les ecritures faites pendant la mise a jour sont perdues.
 #
 # Root, car il remplace les binaires et les unites, relance les services
-# et lit la cle d'instance (/etc/ciphera, compte ciphera). Ecritures
+# et lit la cle d'instance (/etc/ciphera : root, groupe ciphera ; fichiers
+# du compte ciphera). Ecritures
 # limitees aux dossiers de Ciphera ; capacites limitees a la lecture et a
 # l'ecriture de fichiers d'autres comptes (systemd-tmpfiles compris).
 [Unit]

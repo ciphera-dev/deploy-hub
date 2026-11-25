@@ -397,3 +397,25 @@ fn self_signed_ca_is_recognised() {
     assert_eq!(pki::sha256(b"abc").len(), 32);
     assert_ne!(pki::sha256(b"abc"), pki::sha256(b"abd"));
 }
+
+/// Identite d'un certificat serveur (cle publique et SAN) : inchangee par
+/// une re-signature (autre CA, meme cle, memes SAN), changee par une autre
+/// cle ou d'autres SAN.
+#[test]
+fn server_identity_survives_reissue_only() {
+    let ca = Ca::generate("Ciphera CA").unwrap();
+    let other = Ca::generate("Ciphera CA 2").unwrap();
+    let sans = ["203.0.113.7".to_string(), "localhost".to_string()];
+    let mut cert = ca.issue_server_cert(&sans).unwrap();
+    let _ = cert.key_pem.take();
+    let id = pki::server_identity(&cert.cert_pem).expect("identite");
+    let reissued = other.reissue_server_cert(&cert.cert_pem).unwrap();
+    assert_eq!(pki::server_identity(&reissued.cert_pem), Some(id.clone()));
+    let mut new_key = ca.issue_server_cert(&sans).unwrap();
+    let _ = new_key.key_pem.take();
+    assert_ne!(pki::server_identity(&new_key.cert_pem), Some(id.clone()));
+    let mut new_sans = ca.issue_server_cert(&["localhost".into()]).unwrap();
+    let _ = new_sans.key_pem.take();
+    assert_ne!(pki::server_identity(&new_sans.cert_pem), Some(id));
+    assert_eq!(pki::server_identity("pas un certificat"), None);
+}

@@ -178,9 +178,10 @@ fn uid_in_passwd(passwd: &str, name: &str) -> Option<u32> {
     })
 }
 
-/// Lit le mot de passe de la base dans `path`, dont le dossier
-/// (`/etc/ciphera`) appartient au compte ciphera : root ne doit pas y lire
-/// un autre fichier que ce compte y aurait mis a la place. Ouverture sans
+/// Lit le mot de passe de la base dans `path`, dans `/etc/ciphera` (a root,
+/// groupe ciphera, depuis la rotation de la CA ; au compte ciphera sur une
+/// installation plus ancienne non encore corrigee) : root ne doit pas y
+/// lire un autre fichier que le compte ciphera y aurait mis a la place. Ouverture sans
 /// suivre de lien (`O_NOFOLLOW`), puis controles sur le descripteur ouvert
 /// (`fstat`) : fichier ordinaire, un seul lien (pas de lien dur vers un
 /// fichier d'un autre compte), proprietaire root, celui du dossier ou, dossier
@@ -215,7 +216,7 @@ pub fn read_password(path: &Path) -> io::Result<String> {
         if meta.nlink() != 1 {
             return Err(refused("lien dur refuse"));
         }
-        // Dossier a root (`/etc/ciphera` cree avant l'installation) :
+        // Dossier a root (cas normal : `ciphera init`, `install.sh`) :
         // `ciphera init` y laisse un fichier au compte ciphera.
         let service = (dir_owner == 0)
             .then(|| fs::read_to_string("/etc/passwd").ok())

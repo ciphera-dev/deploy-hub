@@ -430,10 +430,22 @@ impl Agent {
         let Some(cas) = identity.check_trusted(ca_pem, link_leaf)? else {
             return Ok(false);
         };
-        crate::config::replace_file(&self.dir, crate::config::CA_FILE, ca_pem.as_bytes())
-            .map_err(|e| format!("ecriture de {} : {e}", crate::config::CA_FILE))?;
-        identity.set_cas(cas);
-        let client = client_config(&identity).map_err(|e| e.to_string())?;
+        // Configuration TLS construite avant d'ecrire `ca.crt` : un jeu que
+        // rustls refuse ne remplace rien.
+        let previous = identity.set_cas(cas);
+        let client = match client_config(&identity) {
+            Ok(c) => c,
+            Err(e) => {
+                identity.set_cas(previous);
+                return Err(e.to_string());
+            }
+        };
+        if let Err(e) =
+            crate::config::replace_file(&self.dir, crate::config::CA_FILE, ca_pem.as_bytes())
+        {
+            identity.set_cas(previous);
+            return Err(format!("ecriture de {} : {e}", crate::config::CA_FILE));
+        }
         *self.client.lock().unwrap_or_else(PoisonError::into_inner) = client;
         Ok(true)
     }

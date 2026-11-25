@@ -301,49 +301,72 @@ async fn run_rotate_ca(finish: bool, status: bool) -> i32 {
     let result = async {
         let cfg = control_plane::cli::env::admin_config()?;
         if !finish && !status {
-            return Ok::<_, Box<dyn std::error::Error>>(
-                match rotation::start(&cfg.config_dir)? {
-                    Start::Started(fp) => format!(
-                        "CA suivante creee ({fp}) : les agents connectes passent a elle d'eux-memes                          en quelques minutes ; suivre avec ciphera admin rotate-ca --status, puis                          terminer avec ciphera admin rotate-ca --finish"
-                    ),
-                    Start::InProgress(fp) => format!(
-                        "rotation deja en cours (CA suivante {fp}) : ciphera admin rotate-ca --status"
-                    ),
-                },
-            );
+            let message = match rotation::start(&cfg.config_dir)? {
+                Start::Started(fp) => {
+                    // Journal d'audit au mieux : la CA suivante est deja
+                    // ecrite, la rotation ne depend pas de la base.
+                    match admin_db(&cfg).await {
+                        Ok(db) => rotation::audit(&db, "ca.rotate.start", &fp).await,
+                        Err(e) => eprintln!("attention : debut de rotation non journalise : {e}"),
+                    }
+                    format!(
+                        "CA suivante creee ({fp}) : les agents connectes passent a elle \
+                         d'eux-memes en quelques minutes ; suivre avec ciphera admin \
+                         rotate-ca --status, puis terminer avec ciphera admin rotate-ca \
+                         --finish (une rotation commencee ne s'annule pas)"
+                    )
+                }
+                Start::InProgress(fp) => format!(
+                    "rotation deja en cours (CA suivante {fp}) : ciphera admin rotate-ca --status"
+                ),
+            };
+            return Ok::<_, Box<dyn std::error::Error>>(message);
         }
         let db = admin_db(&cfg).await?;
         if status {
             let st = rotation::status(&db, &cfg.config_dir).await?;
             let mut out = format!("CA courante : {}", st.current);
             match &st.next {
-                None => out.push_str("
-aucune rotation en cours"),
+                None => out.push_str("\naucune rotation en cours"),
                 Some(next) => {
                     out.push_str(&format!(
-                        "
-CA suivante : {next}
-{} serveur(s) restant(s)",
+                        "\nCA suivante : {next}\n{} serveur(s) restant(s)",
                         st.remaining.len()
                     ));
                     for p in &st.remaining {
-                        out.push_str(&format!("
-  {} ({})", p.name, p.id));
+                        out.push_str(&format!("\n  {} ({})", p.name, p.id));
                     }
                     if st.remaining.is_empty() {
-                        out.push_str("
-pret : ciphera admin rotate-ca --finish");
+                        out.push_str("\npret : ciphera admin rotate-ca --finish");
                     }
                 }
             }
             return Ok(out);
         }
         let done = rotation::finish(&db, &cfg.config_dir).await?;
-        Ok(format!(
-            "rotation terminee : CA de l'instance {} ; {} re-signes ; le service recharge le lien              et reconnecte les agents en quelques secondes",
-            done.fingerprint,
-            done.server_certs.join(", ")
-        ))
+        let mut out = if done.resumed {
+            format!(
+                "fin de rotation interrompue terminee : CA de l'instance {}",
+                done.fingerprint
+            )
+        } else {
+            format!(
+                "rotation terminee : CA de l'instance {} ; {} re-signes",
+                done.fingerprint,
+                done.server_certs.join(", ")
+            )
+        };
+        // Redemarrage du service : lien et panneau relus, agents reconnectes,
+        // et masquage des cles de la CA (InaccessiblePaths) repose sur les
+        // nouveaux fichiers.
+        match restart_service("ciphera.service") {
+            Ok(()) => out.push_str(" ; service ciphera redemarre"),
+            Err(e) => out.push_str(&format!(
+                " ; redemarrage du service impossible ({e}) : lancer \
+                 systemctl restart ciphera"
+            )),
+        }
+        Ok(out)
     }
     .await;
     match result {
@@ -355,6 +378,24 @@ pret : ciphera admin rotate-ca --finish");
             eprintln!("erreur : {e}");
             1
         }
+    }
+}
+
+/// `systemctl restart <unit>` (chemin absolu : la commande peut etre lancee
+/// sans PATH, `env -i`).
+fn restart_service(unit: &str) -> Result<(), String> {
+    let systemctl = ["/usr/bin/systemctl", "/bin/systemctl"]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .ok_or("systemctl introuvable")?;
+    let status = std::process::Command::new(systemctl)
+        .args(["restart", unit])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("systemctl : {status}"))
     }
 }
 

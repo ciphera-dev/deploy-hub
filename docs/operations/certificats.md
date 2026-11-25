@@ -180,9 +180,12 @@ sudo ciphera admin rotate-ca --status   # 2. suivi
 sudo ciphera admin rotate-ca --finish   # 3. ancienne CA retiree
 ```
 
-1. `rotate-ca` ecrit une nouvelle CA (10 ans) a cote de la courante :
-   `/etc/ciphera/ca/ca-next.key` (root 0600) puis `ca-next.crt` (root,
-   groupe `ciphera`, 0640). Relancee, la commande ne change rien. En
+1. `rotate-ca` ecrit une nouvelle CA (10 ans, nommee « Ciphera CA » suivie
+   de la date et de l'heure UTC) a cote de la courante : releve des
+   certificats du lien et du panneau (`ca/ca-next.own` : cle publique et
+   SAN, root 0600), `/etc/ciphera/ca/ca-next.key` (root 0600) puis
+   `ca-next.crt` (root, groupe `ciphera`, 0640). Le debut est journalise en
+   base (`ca.rotate.start`). Relancee, la commande ne change rien. En
    quelques secondes, le service :
    - accepte les certificats d'agent des deux CA sur le lien ;
    - reconnecte les agents connectes ; a chaque connexion, il leur envoie
@@ -200,31 +203,49 @@ sudo ciphera admin rotate-ca --finish   # 3. ancienne CA retiree
    dont l'agent ne presente pas encore un certificat de la nouvelle CA (y
    compris un serveur jamais reconnecte depuis la mise a jour). Un serveur
    qui ne reviendra pas se revoque : `sudo ciphera admin revoke-agent <id>`.
-3. `rotate-ca --finish` est refuse tant que cette liste n'est pas vide
-   (rien n'est change). Sinon : certificats du lien et du panneau re-signes
-   par la nouvelle CA (memes cles), puis `ca.crt` et `ca.key` remplaces
-   ensemble par la nouvelle CA (meme mecanisme de paire que le lien :
-   manifeste `ca/.ca.crt.pair`, verrou `ca/.pair.lock`), puis
-   `ca-next.{crt,key}` supprimes : l'ancienne cle n'existe plus. En quelques
-   secondes, le service recharge le lien et le panneau et reconnecte les
-   agents, qui ne gardent que la nouvelle CA dans `ca.crt`. Un certificat de
-   l'ancienne CA n'ouvre plus le lien. Une fin interrompue se reprend en
-   relancant `--finish` ; le signataire termine aussi un remplacement de
-   `ca.crt` + `ca.key` interrompu avant de lire la CA.
+3. `rotate-ca --finish` est refuse tant que cette liste n'est pas vide, ou
+   si la cle ou les SAN du lien ou du panneau ont change depuis le debut
+   (releve `ca-next.own`) : rien n'est change. Sinon : certificats du lien
+   et du panneau re-signes par la nouvelle CA (memes cles), puis `ca.crt`
+   et `ca.key` remplaces ensemble par la nouvelle CA (meme mecanisme de
+   paire que le lien : manifeste `ca/.ca.crt.pair`, verrou
+   `ca/.pair.lock`), puis `ca-next.crt` supprime, puis `ca-next.key` et le
+   releve : l'ancienne cle n'existe plus. La commande redemarre ensuite le
+   service `ciphera` (sinon elle demande `systemctl restart ciphera`) : lien
+   et panneau relus, agents reconnectes, qui ne gardent que la nouvelle CA
+   dans `ca.crt`, et cles de la CA de nouveau masquees au service
+   (`InaccessiblePaths` ne suit pas un fichier remplace). Un certificat de
+   l'ancienne CA n'ouvre plus le lien.
+
+   Une fin interrompue (coupure, erreur) se reprend en relancant
+   `--finish`, quel que soit le point d'arret : sous le verrou
+   `ca/.pair.lock`, le signataire et chaque commande root terminent d'abord
+   un remplacement de `ca.crt` + `ca.key` interrompu, puis retirent les
+   restes de la suivante (`ca-next.crt` identique a `ca.crt`, ou
+   `ca-next.key` sans `ca-next.crt`) ; `--finish` repond alors « fin de
+   rotation interrompue terminee » et redemarre le service.
 
 La fin est manuelle : elle remplace la cle de la CA (root) et l'operateur
 choisit quand retirer l'ancienne (par exemple apres avoir revoque un
-serveur perdu). Un navigateur dans lequel l'ancienne CA avait ete importee
+serveur perdu).
+
+**Une rotation commencee ne s'annule pas** (pas de `--abort`) : des que des
+agents ont un certificat de la nouvelle CA, retirer `ca-next.*` a la main
+les couperait (le lien n'accepterait plus que l'ancienne). On la termine :
+attendre la reconnexion des serveurs, revoquer ceux qui ne reviendront
+pas, puis `--finish`. Un navigateur dans lequel l'ancienne CA avait ete importee
 pour l'acces direct au panneau (port 8443) doit recevoir la nouvelle
 (`/etc/ciphera/ca/ca.crt`) ; l'empreinte du certificat du panneau change.
 
 Journal : `journalctl -u ciphera` (`CA de l'instance changees (rotation)`,
 `agent(s) reconnecte(s) pour les nouvelles CA`), `journalctl -u
 ciphera-agent` (`CA de l'instance mises a jour`, `CA de l'instance
-refusees : ...`). L'agent n'adopte des CA que si ce sont des CA racines et
+refusees : ...`). L'agent n'adopte des CA que si ce sont des CA racines,
 si le certificat du lien de la connexion en cours est emis par l'une
-d'elles (il pourra toujours se reconnecter). La fin est journalisee en base
-(`ca.rotate.cli`).
+d'elles (il pourra toujours se reconnecter) et si son propre certificat
+l'est aussi (une fois passe a la nouvelle CA, il ne revient jamais a
+l'ancienne seule). Debut et fin sont journalises en base
+(`ca.rotate.start`, `ca.rotate.cli`).
 
 ## Revoquer un serveur : `ciphera admin revoke-agent`
 

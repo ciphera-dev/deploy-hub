@@ -106,8 +106,15 @@ fn rotate_ca_writes_the_next_ca() {
         };
         assert_eq!(mode(signer::CA_NEXT_KEY), 0o600);
         assert_eq!(mode(transport::CA_NEXT_CRT), 0o640);
+        assert_eq!(mode(signer::CA_NEXT_OWN), 0o600);
     }
 
+    // Releve du lien et du panneau (cle publique et SAN).
+    let own = signer::read_next_own(&dir.0).unwrap().expect("releve");
+    for (crt, _) in certs::OWN_CERTS {
+        let id = pki::server_identity(&read(&dir.0, crt)).unwrap();
+        assert!(own.contains(&format!("{crt} {id}")), "{own}");
+    }
     assert_eq!(rotation::start(&dir.0).unwrap(), Start::InProgress(fp));
     assert_eq!(read(&dir.0, transport::CA_NEXT_CRT), next_pem, "inchangee");
 
@@ -272,4 +279,165 @@ async fn finish_refused_while_old_certs_remain() {
     let st = rotation::status(&db, &dir.0).await.unwrap();
     assert_eq!(st.next, None);
     assert!(st.remaining.is_empty());
+}
+
+/// Fin du remplacement de `ca.crt` + `ca.key` simulee jusqu'au manifeste
+/// (point de non-retour) : fichiers prepares et manifeste, comme
+/// `certs::replace_pair` les laisse s'il est coupe juste apres.
+fn interrupt_after_manifest(dir: &Path, next_pem: &str, next_key: &str) {
+    let ca = dir.join("ca");
+    std::fs::write(ca.join(".ca.crt.renew"), next_pem).unwrap();
+    std::fs::write(ca.join(".ca.key.renew"), next_key).unwrap();
+    std::fs::write(
+        certs::pair_manifest(dir, transport::CA_CRT),
+        format!("{}\n{}\n", transport::CA_CRT, certs::CA_KEY),
+    )
+    .unwrap();
+}
+
+/// Fichier secret de root (0600), comme les ecrit le signataire.
+fn write_secret(path: &Path, bytes: &[u8]) {
+    std::fs::write(path, bytes).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+/// Rotation commencee, agent unique deja passe a la CA suivante (les
+/// serveurs d'un scenario precedent de la meme base sont revoques).
+async fn ready_to_finish(db: &sqlx::PgPool, ca: &Ca, dir: &Path) -> (String, String) {
+    sqlx::query("UPDATE servers SET revoked_at = now() WHERE revoked_at IS NULL")
+        .execute(db)
+        .await
+        .unwrap();
+    rotation::start(dir).unwrap();
+    let next_pem = read(dir, transport::CA_NEXT_CRT);
+    let next_key = read(dir, signer::CA_NEXT_KEY);
+    let next = Ca::load(&next_pem, &next_key).unwrap();
+    let (id, key, _) = agent(db, ca).await;
+    let renewed = next.issue_agent_cert(id, key.public_key_der()).unwrap();
+    let fp = pki::fingerprint_sha256(&der(&renewed.cert_pem));
+    sqlx::query("UPDATE servers SET cert_fingerprint = $2 WHERE id = $1")
+        .bind(id)
+        .bind(&fp)
+        .execute(db)
+        .await
+        .unwrap();
+    servers::set_issuer(db, id, &fp, &pki::sha256(&der(&next_pem)))
+        .await
+        .unwrap();
+    (next_pem, next_key)
+}
+
+/// Apres reprise : la nouvelle CA est la courante, plus aucun reste de la
+/// suivante, le signataire lit la CA et `--status` ne voit plus de rotation.
+async fn assert_settled(db: &sqlx::PgPool, dir: &Path, next_pem: &str) {
+    assert_eq!(read(dir, transport::CA_CRT), next_pem);
+    for rel in [
+        transport::CA_NEXT_CRT,
+        signer::CA_NEXT_KEY,
+        signer::CA_NEXT_OWN,
+    ] {
+        assert!(!dir.join(rel).exists(), "{rel} retire");
+    }
+    assert!(!certs::pair_manifest(dir, transport::CA_CRT).exists());
+    let cas = signer::load_cas(dir).expect("signataire non bloque");
+    assert!(cas.next.is_none());
+    assert_eq!(cas.current.cert_pem(), next_pem);
+    certs::load_ca(dir).expect("paire de la nouvelle CA");
+    assert_eq!(rotation::status(db, dir).await.unwrap().next, None);
+    assert_eq!(TrustedCas::load(dir).unwrap().ders(), vec![der(next_pem)]);
+}
+
+/// `--finish` interrompu, puis relance : il termine la fin, quel que soit
+/// le point de la coupure (manifeste de la paire de la CA present ;
+/// `ca-next.crt` seul ; `ca-next.key` seule). Le signataire n'est jamais
+/// bloque. Une cle seule d'un debut interrompu est retiree sans rien
+/// terminer.
+#[tokio::test]
+async fn finish_resumes_after_interruption() {
+    let (db, _guard) = common::database().await;
+
+    // 1. Coupure apres le manifeste de la paire de la CA (lien et panneau
+    //    deja re-signes, `ca-next.*` encore la).
+    let ca = Ca::generate("Ciphera CA").unwrap();
+    let dir = config_dir(&ca);
+    let (next_pem, next_key) = ready_to_finish(&db, &ca, &dir.0).await;
+    let next = Ca::load(&next_pem, &next_key).unwrap();
+    let cas = signer::load_cas(&dir.0).unwrap();
+    for pair in certs::OWN_CERTS {
+        certs::renew_server_with(&dir.0, &next, &cas.trusted(), pair, certs::now_unix(), true)
+            .unwrap();
+    }
+    interrupt_after_manifest(&dir.0, &next_pem, &next_key);
+    let done = rotation::finish(&db, &dir.0).await.expect("reprise");
+    assert!(done.resumed);
+    assert_eq!(done.fingerprint, pki::fingerprint_sha256(&der(&next_pem)));
+    assert_settled(&db, &dir.0, &next_pem).await;
+    for (crt, _) in certs::OWN_CERTS {
+        assert!(pki::issued_by(&der(&next_pem), &der(&read(&dir.0, crt))));
+    }
+    assert!(
+        rotation::finish(&db, &dir.0).await.is_err(),
+        "plus rien a faire"
+    );
+
+    // 2. Coupure apres l'installation de la nouvelle CA, `ca-next.crt`
+    //    encore la (seul).
+    let ca = Ca::generate("Ciphera CA").unwrap();
+    let dir = config_dir(&ca);
+    let (next_pem, _) = ready_to_finish(&db, &ca, &dir.0).await;
+    rotation::finish(&db, &dir.0).await.unwrap();
+    std::fs::write(dir.0.join(transport::CA_NEXT_CRT), &next_pem).unwrap();
+    assert!(
+        signer::load_cas(&dir.0).unwrap().next.is_none(),
+        "signataire"
+    );
+    std::fs::write(dir.0.join(transport::CA_NEXT_CRT), &next_pem).unwrap();
+    let done = rotation::finish(&db, &dir.0).await.expect("reprise");
+    assert!(done.resumed);
+    assert_settled(&db, &dir.0, &next_pem).await;
+
+    // 3. `ca-next.key` seule (celle de la nouvelle CA courante).
+    let ca = Ca::generate("Ciphera CA").unwrap();
+    let dir = config_dir(&ca);
+    let (next_pem, next_key) = ready_to_finish(&db, &ca, &dir.0).await;
+    rotation::finish(&db, &dir.0).await.unwrap();
+    write_secret(&dir.0.join(signer::CA_NEXT_KEY), next_key.as_bytes());
+    let done = rotation::finish(&db, &dir.0).await.expect("reprise");
+    assert!(done.resumed);
+    assert_settled(&db, &dir.0, &next_pem).await;
+
+    // Cle seule d'un debut interrompu (autre cle) : retiree, aucune
+    // rotation terminee.
+    let orphan = Ca::generate("orpheline").unwrap();
+    write_secret(
+        &dir.0.join(signer::CA_NEXT_KEY),
+        orphan.key_pem().as_bytes(),
+    );
+    assert!(rotation::finish(&db, &dir.0).await.is_err());
+    assert!(!dir.0.join(signer::CA_NEXT_KEY).exists());
+}
+
+/// `--finish` refuse de re-signer un lien dont la cle (ou les SAN) a change
+/// depuis le debut de la rotation : rien n'est change.
+#[tokio::test]
+async fn finish_refuses_a_changed_link() {
+    let (db, _guard) = common::database().await;
+    let ca = Ca::generate("Ciphera CA").unwrap();
+    let dir = config_dir(&ca);
+    let (next_pem, _) = ready_to_finish(&db, &ca, &dir.0).await;
+    let before = read(&dir.0, transport::CA_CRT);
+    let mut other = ca
+        .issue_server_cert(&["203.0.113.7".into(), "evil.example".into()])
+        .unwrap();
+    let _ = other.key_pem.take();
+    std::fs::write(dir.0.join(transport::LINK_CRT), &other.cert_pem).unwrap();
+    let e = rotation::finish(&db, &dir.0).await.unwrap_err().to_string();
+    assert!(e.contains("ont change"), "{e}");
+    assert_eq!(read(&dir.0, transport::CA_CRT), before);
+    assert_eq!(read(&dir.0, transport::CA_NEXT_CRT), next_pem);
+    assert_eq!(read(&dir.0, transport::LINK_CRT), other.cert_pem);
 }

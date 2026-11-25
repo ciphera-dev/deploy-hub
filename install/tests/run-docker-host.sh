@@ -669,7 +669,6 @@ check "(a) ca/ non renommable par le compte ciphera" \
 # Rotation de la CA sur l'instance : nouvelle CA, agent local passe a elle de
 # lui-meme sur le lien, fin, puis lien et agent sur la seule nouvelle CA.
 ca_before=$(openssl x509 -in /etc/ciphera/ca/ca.crt -noout -fingerprint -sha256)
-connected_before=$(journalctl -u ciphera --no-pager | grep -c "lien agents : agent .* connecte (" || true)
 check "(a) rotate-ca : CA suivante creee (cle root 0600, certificat root:ciphera 0640)" \
 	sh -c 'env -i /usr/local/bin/ciphera admin rotate-ca && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca-next.key)" = 600:root:root && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca-next.crt)" = 640:root:ciphera'
 if wait_for 180 'env -i /usr/local/bin/ciphera admin rotate-ca --status 2>&1 | grep -q "^0 serveur(s) restant(s)"'; then
@@ -681,7 +680,12 @@ else
 fi
 check "(a) rotate-ca : certificat de l'agent emis par la nouvelle CA" \
 	sh -c 'openssl verify -CAfile /etc/ciphera/ca/ca-next.crt /etc/ciphera-agent/agent.crt >/dev/null'
+# Connexions comptees juste avant la fin : seule une reconnexion apres elle
+# fait passer la verification « agent reconnecte ».
+connected_before=$(journalctl -u ciphera --no-pager | grep -c "lien agents : agent .* connecte (" || true)
 check "(a) rotate-ca --finish" sh -c 'env -i /usr/local/bin/ciphera admin rotate-ca --finish'
+check "(a) rotate-ca : cles de la CA masquees au service redemarre" \
+	sh -c 'pid=$(systemctl show -p MainPID --value ciphera) && test "$pid" != 0 && test "$(stat -c %s /proc/$pid/root/etc/ciphera/ca/ca.key)" = 0'
 check "(a) rotate-ca : nouvelle CA en place, ancienne retiree" \
 	sh -c 'test ! -e /etc/ciphera/ca/ca-next.crt && test ! -e /etc/ciphera/ca/ca-next.key && test "$(openssl x509 -in /etc/ciphera/ca/ca.crt -noout -fingerprint -sha256)" != "'"$ca_before"'" && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca.key)" = 600:root:root && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca.crt)" = 640:root:ciphera'
 check "(a) rotate-ca : lien et panneau re-signes par la nouvelle CA" \

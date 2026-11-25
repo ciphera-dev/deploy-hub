@@ -236,9 +236,11 @@ impl Identity {
     /// CA envoyees par le plan de controle (`ControlToAgent::TrustedCas`),
     /// sur une connexion dont le certificat du lien est `link_leaf` (DER).
     /// Adoptees seulement si chaque certificat est une CA racine (au plus
-    /// [`MAX_TRUSTED_CAS`]) et si `link_leaf` est emis par l'une d'elles :
-    /// l'agent pourra se reconnecter. `Ok(None)` : jeu identique au sien.
-    /// Rien n'est ecrit ici.
+    /// [`MAX_TRUSTED_CAS`]), si `link_leaf` est emis par l'une d'elles
+    /// (l'agent pourra se reconnecter) et si le certificat actuel de l'agent
+    /// l'est aussi : une fois l'agent passe a une nouvelle CA, aucun jeu qui
+    /// l'exclut (retour a l'ancienne seule, racine etrangere) n'est adopte.
+    /// `Ok(None)` : jeu identique au sien. Rien n'est ecrit ici.
     pub fn check_trusted(
         &self,
         ca_pem: &str,
@@ -259,15 +261,21 @@ impl Identity {
         if !cas.iter().any(|ca| pki::issued_by(ca, link_leaf)) {
             return Err("certificat du lien emis par aucune de ces CA");
         }
+        if !cas.iter().any(|ca| pki::issued_by(ca, &self.cert)) {
+            return Err("certificat de l'agent emis par aucune de ces CA");
+        }
         if cas == self.ca {
             return Ok(None);
         }
         Ok(Some(cas))
     }
 
-    /// Remplace les CA de confiance (apres l'ecriture de `ca.crt`).
-    pub(crate) fn set_cas(&mut self, cas: Vec<CertificateDer<'static>>) {
-        self.ca = cas;
+    /// Remplace les CA de confiance ; renvoie les precedentes.
+    pub(crate) fn set_cas(
+        &mut self,
+        cas: Vec<CertificateDer<'static>>,
+    ) -> Vec<CertificateDer<'static>> {
+        std::mem::replace(&mut self.ca, cas)
     }
 
     /// Le certificat actuel a-t-il passe les deux tiers de sa validite ?
@@ -496,9 +504,43 @@ mod tests {
             identity.check_trusted(&many, &link_old).unwrap_err(),
             "trop de CA"
         );
-        // Fin de rotation : la nouvelle seule, le lien deja emis par elle.
+        // Certificat de l'agent encore de l'ancienne CA : la nouvelle seule
+        // est refusee, meme sur un lien emis par elle.
+        assert_eq!(
+            identity
+                .check_trusted(next.cert_pem(), &link_next)
+                .unwrap_err(),
+            "certificat de l'agent emis par aucune de ces CA"
+        );
+        // L'agent passe a la nouvelle CA (meme cle).
         let mut identity = identity;
         identity.set_cas(adopted);
+        let renewed = next.issue_agent_cert(id, key.public_key_der()).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let renewed = identity.check_renewed(&renewed.cert_pem, now).unwrap();
+        identity.set_cert(renewed);
+        // Retour en arriere refuse : un lien de l'ancienne CA ne peut plus
+        // faire adopter l'ancienne seule, ni l'ancienne et une autre racine.
+        assert_eq!(
+            identity
+                .check_trusted(old.cert_pem(), &link_old)
+                .unwrap_err(),
+            "certificat de l'agent emis par aucune de ces CA"
+        );
+        let rogue = pki::Ca::generate("Ciphera CA").unwrap();
+        let old_and_rogue = format!("{}{}", old.cert_pem(), rogue.cert_pem());
+        assert_eq!(
+            identity
+                .check_trusted(&old_and_rogue, &link_old)
+                .unwrap_err(),
+            "certificat de l'agent emis par aucune de ces CA"
+        );
+        // Les deux CA (rotation en cours) restent acceptees.
+        assert_eq!(identity.check_trusted(&both, &link_old), Ok(None));
+        // Fin de rotation : la nouvelle seule, le lien deja emis par elle.
         assert!(
             identity
                 .check_trusted(next.cert_pem(), &link_next)

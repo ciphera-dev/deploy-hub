@@ -495,13 +495,14 @@ fn certsign_is_a_hardened_root_oneshot_triggered_by_requests() {
     assert_eq!(values(&svc, "WantedBy"), vec!["multi-user.target"]);
 }
 
-/// Le plan de controle ne peut jamais lire la cle de la CA.
+/// Le plan de controle ne peut jamais lire la cle de la CA, ni celle de la
+/// CA suivante pendant une rotation.
 #[test]
 fn control_plane_cannot_read_the_ca_key() {
     let text = unit("ciphera.service");
     assert_eq!(
         values(&text, "InaccessiblePaths"),
-        vec!["-/etc/ciphera/ca/ca.key"]
+        vec!["-/etc/ciphera/ca/ca.key", "-/etc/ciphera/ca/ca-next.key"]
     );
 }
 

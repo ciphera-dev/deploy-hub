@@ -1,9 +1,9 @@
 //! Rotation de la CA de l'instance (`ciphera admin rotate-ca`, root), voir
 //! `docs/operations/certificats.md`.
 //!
-//! 1. [`start`] : nouvelle CA ecrite a cote de la courante
-//!    (`ca/ca-next.key` root 0600, puis `ca/ca-next.crt` root, groupe du
-//!    service, 0640). Le service la voit en quelques secondes
+//! 1. [`start`] : nouvelle CA ecrite a cote de la courante (releve des
+//!    certificats du lien et du panneau `ca/ca-next.own` et `ca/ca-next.key`
+//!    root 0600, puis `ca/ca-next.crt` root, groupe du service, 0640). Le service la voit en quelques secondes
 //!    (`agents::transport::TrustWatch`) : le lien accepte les certificats
 //!    d'agent des deux CA, les agents sont reconnectes, recoivent les deux CA
 //!    (`TrustedCas`) puis un certificat de la suivante (le signataire signe
@@ -11,13 +11,20 @@
 //!    est notee a sa connexion (`servers.cert_issuer_fingerprint`).
 //! 2. [`status`] : serveurs non revoques dont l'agent ne presente pas encore
 //!    un certificat de la CA suivante.
-//! 3. [`finish`] (`--finish`, manuel) : refuse tant qu'il en reste ; sinon
-//!    certificats du lien et du panneau re-signes par la suivante (meme cle),
-//!    puis la paire `ca/ca.crt` + `ca/ca.key` remplacee par la suivante
-//!    (`certs::replace_pair` : jamais un certificat et une cle qui ne vont
-//!    pas ensemble ; reprise par `signer::harden_ca`), puis `ca/ca-next.*`
-//!    retires. L'ancienne cle n'existe plus. Le service recharge le lien,
-//!    reconnecte les agents, qui ne gardent que la nouvelle CA.
+//! 3. [`finish`] (`--finish`, manuel) : refuse tant qu'il en reste, ou si
+//!    la cle ou les SAN du lien ou du panneau ont change depuis le debut ;
+//!    sinon certificats du lien et du panneau re-signes par la suivante
+//!    (meme cle), puis la paire `ca/ca.crt` + `ca/ca.key` remplacee par la
+//!    suivante (`certs::replace_pair` : jamais un certificat et une cle qui
+//!    ne vont pas ensemble), puis `ca/ca-next.*` retires (certificat
+//!    d'abord). L'ancienne cle n'existe plus. Une fin interrompue est
+//!    reprise par `signer::load_cas` (relancer `--finish`). Le service
+//!    recharge le lien, reconnecte les agents, qui ne gardent que la
+//!    nouvelle CA.
+//!
+//! Une rotation commencee ne s'annule pas : retirer la CA suivante couperait
+//! les agents deja passes a elle. On la termine (en revoquant au besoin les
+//! serveurs qui ne reviendront pas).
 //!
 //! Le lien et le panneau ne passent a la nouvelle CA qu'a la fin : un agent
 //! qui n'a pas encore recu la nouvelle CA (eteint pendant la rotation) peut
@@ -64,12 +71,43 @@ fn ca_sha256(ca: &pki::Ca) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// Dossiers remis a root et fin de rotation interrompue reprise, puis CA
-/// lues.
-fn prepare(config_dir: &Path) -> Result<Cas, RotationError> {
+/// Dossiers remis a root, puis CA lues apres la reprise d'une fin de
+/// rotation interrompue (vrai si elle vient d'etre terminee).
+fn prepare(config_dir: &Path) -> Result<(Cas, bool), RotationError> {
     signer::harden_config_dir(config_dir).map_err(|e| err("dossier de configuration", e))?;
     signer::harden_ca(config_dir).map_err(|e| err("dossier de la CA", e))?;
-    signer::load_cas(config_dir).map_err(|e| err("CA de l'instance illisible", e))
+    signer::load_cas_settled(config_dir).map_err(|e| err("CA de l'instance illisible", e))
+}
+
+/// Releve des certificats du lien et du panneau : `<certificat> <identite>`
+/// par ligne (cle publique et SAN, [`pki::server_identity`]).
+fn own_identities(config_dir: &Path) -> Result<String, RotationError> {
+    let mut out = String::new();
+    for (crt, _) in OWN_CERTS {
+        let pem = std::fs::read_to_string(config_dir.join(crt)).map_err(|e| err(crt, e))?;
+        let id = pki::server_identity(&pem)
+            .ok_or_else(|| RotationError(format!("{crt} : certificat serveur illisible")))?;
+        out.push_str(&format!("{crt} {id}\n"));
+    }
+    Ok(out)
+}
+
+/// Evenement du journal d'audit de la rotation (`ca.rotate.start`,
+/// `ca.rotate.cli`), au mieux : un echec est seulement signale.
+pub async fn audit(db: &PgPool, action: &str, fingerprint: &str) {
+    let audited = sqlx::query(
+        "INSERT INTO audit_events (id, actor_id, action, target, detail) \
+         VALUES ($1, NULL, $2, 'ca', $3)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(action)
+    .bind(json!({ "fingerprint": fingerprint }))
+    .execute(db)
+    .await;
+    if let Err(e) = audited {
+        tracing::warn!("rotation de la CA non journalisee ({action}) : {e}");
+        eprintln!("attention : rotation de la CA non journalisee ({action}) : {e}");
+    }
 }
 
 /// Issue de [`start`].
@@ -83,25 +121,38 @@ pub enum Start {
 }
 
 /// Debut de rotation : CA suivante generee et ecrite (voir le module).
+/// Le journal d'audit (`ca.rotate.start`, [`audit`]) est a la charge de
+/// l'appelant (la commande ouvre la base).
 pub fn start(config_dir: &Path) -> Result<Start, RotationError> {
-    let cas = prepare(config_dir)?;
+    let (cas, _) = prepare(config_dir)?;
     if let Some(next) = &cas.next {
+        // Rotation commencee sans releve : il est fait maintenant.
+        if signer::read_next_own(config_dir)
+            .map_err(|e| err(signer::CA_NEXT_OWN, e))?
+            .is_none()
+        {
+            signer::write_next_own(config_dir, &own_identities(config_dir)?)
+                .map_err(|e| err(signer::CA_NEXT_OWN, e))?;
+        }
         return Ok(Start::InProgress(ca_fingerprint(next)));
     }
+    let own = own_identities(config_dir)?;
     let name = format!(
         "Ciphera CA {}",
         time_label(certs::now_unix()).unwrap_or_default()
     );
     let next = pki::Ca::generate(name.trim()).map_err(|e| err("generation de la CA", e))?;
-    signer::write_next_ca(config_dir, &next).map_err(|e| err("ecriture de la CA suivante", e))?;
+    signer::write_next_ca(config_dir, &next, &own)
+        .map_err(|e| err("ecriture de la CA suivante", e))?;
     Ok(Start::Started(ca_fingerprint(&next)))
 }
 
-/// Date `AAAA-MM-JJ` (UTC) d'un instant Unix, pour le nom de la CA.
+/// Date et heure `AAAA-MM-JJ HH:MM:SSZ` (UTC) d'un instant Unix : nom de la
+/// CA, distinct d'une rotation a l'autre.
 fn time_label(at: i64) -> Option<String> {
     jiff::Timestamp::from_second(at)
         .ok()
-        .map(|t| t.strftime("%Y-%m-%d").to_string())
+        .map(|t| t.strftime("%Y-%m-%d %H:%M:%SZ").to_string())
 }
 
 /// Serveur dont l'agent ne presente pas encore un certificat de la CA
@@ -142,7 +193,7 @@ async fn remaining(db: &PgPool, issuer: &[u8]) -> Result<Vec<Pending>, RotationE
 
 /// Etat de la rotation : CA courante, suivante, serveurs restants.
 pub async fn status(db: &PgPool, config_dir: &Path) -> Result<Status, RotationError> {
-    let cas = prepare(config_dir)?;
+    let (cas, _) = prepare(config_dir)?;
     let (next, remaining) = match &cas.next {
         Some(next) => (
             Some(ca_fingerprint(next)),
@@ -164,15 +215,27 @@ pub struct Finished {
     pub fingerprint: String,
     /// Certificats du plan de controle re-signes par elle.
     pub server_certs: Vec<&'static str>,
+    /// Fin interrompue terminee a la reprise (rien d'autre a faire).
+    pub resumed: bool,
 }
 
 /// Fin de rotation (voir le module). Refusee sans rotation en cours, ou
 /// tant qu'un serveur non revoque presente un certificat d'une autre CA
 /// que la suivante (a reconnecter, ou a revoquer : `ciphera admin
-/// revoke-agent`). Relancee apres une interruption, elle reprend.
+/// revoke-agent`), ou si la cle ou les SAN du lien ou du panneau ont change
+/// depuis le debut. Relancee apres une interruption, elle reprend.
 pub async fn finish(db: &PgPool, config_dir: &Path) -> Result<Finished, RotationError> {
-    let cas = prepare(config_dir)?;
+    let (cas, resumed) = prepare(config_dir)?;
     let Some(next) = &cas.next else {
+        if resumed {
+            let fingerprint = ca_fingerprint(&cas.current);
+            audit(db, "ca.rotate.cli", &fingerprint).await;
+            return Ok(Finished {
+                fingerprint,
+                server_certs: Vec::new(),
+                resumed: true,
+            });
+        }
         return Err(RotationError(
             "aucune rotation en cours (ciphera admin rotate-ca pour la commencer)".into(),
         ));
@@ -190,6 +253,23 @@ pub async fn finish(db: &PgPool, config_dir: &Path) -> Result<Finished, Rotation
             left.len(),
             names.join(", ")
         )));
+    }
+    // Lien et panneau inchanges depuis le debut (meme cle, memes SAN) : root
+    // ne re-signe pas un contenu change entre-temps dans `tls/`.
+    let recorded = signer::read_next_own(config_dir)
+        .map_err(|e| err(signer::CA_NEXT_OWN, e))?
+        .ok_or_else(|| {
+            RotationError(format!(
+                "{} absent : relancer ciphera admin rotate-ca (il le refait), puis --finish",
+                signer::CA_NEXT_OWN
+            ))
+        })?;
+    if own_identities(config_dir)? != recorded {
+        return Err(RotationError(
+            "la cle ou les SAN du lien ou du panneau ont change depuis le debut de la \
+             rotation : rien n'est re-signe (verifier tls/link.crt et tls/panel.crt)"
+                .into(),
+        ));
     }
     // 1. Lien et panneau re-signes par la suivante (meme cle) : tous les
     //    agents s'y fient deja.
@@ -212,20 +292,11 @@ pub async fn finish(db: &PgPool, config_dir: &Path) -> Result<Finished, Rotation
     // 3. Fichiers de la suivante retires.
     signer::remove_next_ca(config_dir).map_err(|e| err(CA_NEXT_CRT, e))?;
     let fingerprint = ca_fingerprint(next);
-    let audited = sqlx::query(
-        "INSERT INTO audit_events (id, actor_id, action, target, detail) \
-         VALUES ($1, NULL, 'ca.rotate.cli', 'ca', $2)",
-    )
-    .bind(uuid::Uuid::new_v4())
-    .bind(json!({ "fingerprint": fingerprint }))
-    .execute(db)
-    .await;
-    if let Err(e) = audited {
-        tracing::warn!("rotation de la CA non journalisee : {e}");
-    }
+    audit(db, "ca.rotate.cli", &fingerprint).await;
     Ok(Finished {
         fingerprint,
         server_certs,
+        resumed: false,
     })
 }
 
@@ -234,9 +305,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ca_name_carries_the_utc_date() {
-        assert_eq!(time_label(0).as_deref(), Some("1970-01-01"));
-        assert_eq!(time_label(1_764_028_800).as_deref(), Some("2025-11-25"));
-        assert_eq!(time_label(951_782_400).as_deref(), Some("2000-02-29"));
+    fn ca_name_carries_the_utc_date_and_time() {
+        assert_eq!(time_label(0).as_deref(), Some("1970-01-01 00:00:00Z"));
+        assert_eq!(
+            time_label(1_764_028_800 + 3_723).as_deref(),
+            Some("2025-11-25 01:02:03Z")
+        );
+        assert_eq!(
+            time_label(951_782_400).as_deref(),
+            Some("2000-02-29 00:00:00Z")
+        );
     }
 }

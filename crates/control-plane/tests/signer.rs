@@ -532,7 +532,7 @@ fn ca_is_hardened_in_place() {
 }
 
 /// Dossier de configuration d'une installation anterieure (au compte du
-/// service) : remis au proprietaire du signataire, groupe conserve, 0750 ;
+/// service) : remis au proprietaire du signataire, groupe de `ca/`, 0750 ;
 /// le service le traverse mais ne peut plus y renommer `ca/`. Un lien est
 /// refuse.
 #[cfg(unix)]
@@ -545,6 +545,10 @@ fn config_dir_is_hardened_in_place() {
     std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(signer::harden_config_dir(&dir.0).unwrap());
     assert_eq!(mode(&dir.0), 0o750);
+    // Groupe de `ca/` (celui du service), jamais un autre.
+    use std::os::unix::fs::MetadataExt;
+    let gid = |p: &Path| std::fs::metadata(p).unwrap().gid();
+    assert_eq!(gid(&dir.0), gid(&dir.0.join("ca")));
     assert!(!signer::harden_config_dir(&dir.0).unwrap(), "deja fait");
 
     let elsewhere = common::TempDir::new();

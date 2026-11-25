@@ -100,7 +100,9 @@ pub async fn set_issuer(
     issuer: &[u8],
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE servers SET cert_issuer_fingerprint = $3          WHERE id = $1 AND cert_fingerprint = $2 AND revoked_at IS NULL          AND cert_issuer_fingerprint IS DISTINCT FROM $3",
+        "UPDATE servers SET cert_issuer_fingerprint = $3 \
+         WHERE id = $1 AND cert_fingerprint = $2 AND revoked_at IS NULL \
+         AND cert_issuer_fingerprint IS DISTINCT FROM $3",
     )
     .bind(id)
     .bind(fingerprint)

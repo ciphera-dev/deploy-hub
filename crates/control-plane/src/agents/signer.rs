@@ -389,19 +389,35 @@ fn file_name(rel: &str) -> &str {
     rel.rsplit('/').next().unwrap_or(rel)
 }
 
+/// Releve des certificats du plan de controle au debut d'une rotation
+/// (`ca/ca-next.own`, root 0600) : `<certificat> <identite>` par ligne
+/// ([`pki::server_identity`]). `rotate-ca --finish` ne re-signe le lien et
+/// le panneau que s'ils n'ont pas change depuis.
+pub const CA_NEXT_OWN: &str = "ca/ca-next.own";
+
 /// CA courante et, si `ca/ca-next.crt` existe (rotation en cours), CA
 /// suivante : `ca/ca-next.key` aux memes conditions que la cle courante
-/// ([`load_cas`] pour root seulement).
+/// ([`load_cas`] pour root seulement). Sous le verrou des paires de `ca/`,
+/// apres la reprise d'une fin de rotation interrompue ([`settle_locked`]).
 pub fn load_cas(config_dir: &Path) -> io::Result<Cas> {
-    let current = load_ca(config_dir)?;
+    load_cas_settled(config_dir).map(|(cas, _)| cas)
+}
+
+/// Comme [`load_cas`] ; vrai en plus si une fin de rotation interrompue
+/// vient d'etre terminee.
+pub fn load_cas_settled(config_dir: &Path) -> io::Result<(Cas, bool)> {
+    let _lock = super::certs::lock_pairs(config_dir, CA_CRT)?;
     let ca = fsio::Dir::open(&config_dir.join("ca"))?;
+    let finished = settle_locked(config_dir, &ca)?;
+    let current = load_ca(config_dir)?;
     let cert = match ca.read_file(file_name(CA_NEXT_CRT), MAX_CA_BYTES) {
         Ok(c) => c,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Ok(Cas {
+            let cas = Cas {
                 current,
                 next: None,
-            });
+            };
+            return Ok((cas, finished));
         }
         Err(e) => return Err(e),
     };
@@ -409,19 +425,86 @@ pub fn load_cas(config_dir: &Path) -> io::Result<Cas> {
     let key = std::str::from_utf8(&key).map_err(io::Error::other)?;
     let cert = std::str::from_utf8(&cert).map_err(io::Error::other)?;
     let next = pki::Ca::load(cert, key).map_err(io::Error::other)?;
-    Ok(Cas {
+    let cas = Cas {
         current,
         next: Some(next),
-    })
+    };
+    Ok((cas, finished))
 }
 
-/// Ecrit la CA suivante (debut d'une rotation, root) : `ca/ca-next.key`
-/// (0600, proprietaire et groupe du processus) puis `ca/ca-next.crt` (0640,
-/// groupe du dossier : le service le lit). Le certificat est ecrit en
-/// dernier : sa presence signale la rotation au service. Jamais a travers
-/// un lien.
-pub fn write_next_ca(config_dir: &Path, next: &pki::Ca) -> io::Result<()> {
+fn read_optional(ca: &fsio::Dir, rel: &str) -> io::Result<Option<Vec<u8>>> {
+    match ca.read_file(file_name(rel), MAX_CA_BYTES) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Reprise d'une fin de rotation interrompue, sous le verrou des paires de
+/// `ca/` (root) :
+/// - remplacement de `ca.crt` + `ca.key` interrompu : termine ou annule
+///   ([`super::certs::recover_pair`]) ;
+/// - `ca-next.crt` identique a `ca.crt` (la suivante est deja la courante) :
+///   restes de la suivante retires ;
+/// - `ca-next.key` (ou le releve) sans `ca-next.crt` : pas de rotation,
+///   restes retires (debut interrompu, ou fin interrompue entre les deux
+///   suppressions).
+///
+/// Vrai si une fin de rotation a ete terminee ici.
+fn settle_locked(config_dir: &Path, ca: &fsio::Dir) -> io::Result<bool> {
+    let mut finished = super::certs::recover_pair_locked(config_dir, (CA_CRT, CA_KEY))?;
+    let next = read_optional(ca, CA_NEXT_CRT)?;
+    let stale = match &next {
+        Some(next) => {
+            let current = read_optional(ca, CA_CRT)?;
+            let der = |b: &[u8]| std::str::from_utf8(b).ok().and_then(pki::der_from_pem);
+            let same = current
+                .as_deref()
+                .and_then(der)
+                .is_some_and(|c| der(next) == Some(c));
+            if same {
+                finished = true;
+            }
+            same
+        }
+        None => {
+            // Cle seule : celle de la CA courante si la fin l'avait deja
+            // installee.
+            let key = read_optional(ca, CA_NEXT_KEY)?;
+            if let Some(key) = key {
+                let current = read_optional(ca, CA_KEY)?;
+                if current.is_some_and(|c| c == key) {
+                    finished = true;
+                }
+            }
+            true
+        }
+    };
+    if stale {
+        remove_next_locked(ca)?;
+    }
+    Ok(finished)
+}
+
+/// Fichiers de la suivante retires : certificat d'abord (sans lui, plus de
+/// rotation), puis cle et releve, puis dossier sur disque.
+fn remove_next_locked(ca: &fsio::Dir) -> io::Result<()> {
+    ca.remove(file_name(CA_NEXT_CRT))?;
+    ca.remove(file_name(CA_NEXT_KEY))?;
+    ca.remove(file_name(CA_NEXT_OWN))?;
+    ca.sync()
+}
+
+/// Ecrit la CA suivante (debut d'une rotation, root), sous le verrou des
+/// paires de `ca/` : releve des certificats du plan de controle (`own`,
+/// [`CA_NEXT_OWN`], 0600), `ca/ca-next.key` (0600, proprietaire et groupe
+/// du processus) puis `ca/ca-next.crt` (0640, groupe du dossier : le
+/// service le lit). Le certificat est ecrit en dernier : sa presence
+/// signale la rotation au service. Jamais a travers un lien.
+pub fn write_next_ca(config_dir: &Path, next: &pki::Ca, own: &str) -> io::Result<()> {
+    let _lock = super::certs::lock_pairs(config_dir, CA_CRT)?;
     let ca = fsio::Dir::open(&config_dir.join("ca"))?;
+    ca.write_atomic_mode(file_name(CA_NEXT_OWN), own.as_bytes(), 0o600, true)?;
     ca.write_atomic_mode(
         file_name(CA_NEXT_KEY),
         next.key_pem().as_bytes(),
@@ -433,33 +516,60 @@ pub fn write_next_ca(config_dir: &Path, next: &pki::Ca) -> io::Result<()> {
         next.cert_pem().as_bytes(),
         0o640,
         false,
-    )
+    )?;
+    ca.sync()
+}
+
+/// Releve des certificats du plan de controle ecrit au debut de la rotation
+/// en cours ([`CA_NEXT_OWN`]) ; `None` s'il manque.
+pub fn read_next_own(config_dir: &Path) -> io::Result<Option<String>> {
+    let ca = fsio::Dir::open(&config_dir.join("ca"))?;
+    match ca.read_secret(file_name(CA_NEXT_OWN), MAX_CA_BYTES) {
+        Ok(b) => String::from_utf8(b).map(Some).map_err(io::Error::other),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Ecrit le releve seul (rotation commencee sans lui), sous le verrou.
+pub fn write_next_own(config_dir: &Path, own: &str) -> io::Result<()> {
+    let _lock = super::certs::lock_pairs(config_dir, CA_CRT)?;
+    let ca = fsio::Dir::open(&config_dir.join("ca"))?;
+    ca.write_atomic_mode(file_name(CA_NEXT_OWN), own.as_bytes(), 0o600, true)?;
+    ca.sync()
 }
 
 /// Retire la CA suivante (fin d'une rotation, apres son installation comme
-/// CA courante) : cle d'abord, certificat ensuite.
+/// CA courante), sous le verrou des paires de `ca/` : certificat, puis cle
+/// et releve, puis dossier sur disque.
 pub fn remove_next_ca(config_dir: &Path) -> io::Result<()> {
-    let ca = fsio::Dir::open(&config_dir.join("ca"))?;
-    ca.remove(file_name(CA_NEXT_KEY))?;
-    ca.remove(file_name(CA_NEXT_CRT))
+    let _lock = super::certs::lock_pairs(config_dir, CA_CRT)?;
+    remove_next_locked(&fsio::Dir::open(&config_dir.join("ca"))?)
 }
 
-/// Dossier de configuration (`/etc/ciphera`) a root, groupe conserve (celui
-/// du service), 0750 : le service le traverse et y lit ses fichiers, mais ne
-/// peut ni renommer ni remplacer `ca/` ou un autre de ses dossiers. Jamais
-/// a travers un lien. Vrai si quelque chose a change.
+/// Dossier de configuration (`/etc/ciphera`) a root, groupe de `ca/` (celui
+/// du service, voir [`harden_ca`]), 0750 : le service le traverse et y lit
+/// ses fichiers, mais ne peut ni renommer ni remplacer `ca/` ou un autre de
+/// ses dossiers. Sans `ca/`, groupe conserve. Jamais a travers un lien.
+/// Vrai si quelque chose a change.
 pub fn harden_config_dir(config_dir: &Path) -> io::Result<bool> {
-    fsio::Dir::open(config_dir)?.harden_self(0o750)
+    let dir = fsio::Dir::open(config_dir)?;
+    let group = match dir.open_sub("ca")? {
+        Some(ca) => Some(ca.group()?),
+        None => None,
+    };
+    dir.harden_self(0o750, group)
 }
 
 /// Passage d'une installation anterieure (dossier de la CA au compte du
 /// service) : `ca/` au proprietaire du processus (root), groupe conserve
 /// (celui du service), 0750 ; `ca/ca.crt` idem en 0640 (le service le lit) ;
 /// `ca/ca.key` au proprietaire et au groupe du processus, 0600 (de meme pour
-/// `ca-next.crt` et `ca-next.key` pendant une rotation). Le service ne
-/// peut alors ni lire la cle ni remplacer ou supprimer la cle ou le
-/// certificat. Jamais a travers un lien ; fichier a plusieurs liens durs
-/// refuse. Vrai si quelque chose a change. Sans dossier : rien a faire.
+/// `ca-next.crt`, `ca-next.key` et le releve pendant une rotation). Le
+/// service ne peut alors ni lire la cle ni remplacer ou supprimer la cle ou
+/// le certificat. Jamais a travers un lien ; fichier a plusieurs liens durs
+/// refuse. Vrai si quelque chose a change. Sans dossier : rien a faire. Une
+/// fin de rotation interrompue est reprise par [`load_cas`], sous le verrou.
 pub fn harden_ca(config_dir: &Path) -> io::Result<bool> {
     let ca = match fsio::Dir::open(&config_dir.join("ca")) {
         Ok(d) => d,
@@ -470,12 +580,8 @@ pub fn harden_ca(config_dir: &Path) -> io::Result<bool> {
     changed |= ca.harden(file_name(CA_CRT), 0o640, false)?;
     changed |= ca.harden(file_name(CA_NEXT_KEY), 0o600, true)?;
     changed |= ca.harden(file_name(CA_NEXT_CRT), 0o640, false)?;
-    changed |= ca.harden_self(0o750)?;
-    // Fin de rotation interrompue (remplacement de `ca.crt` + `ca.key`) :
-    // terminee ou annulee avant toute lecture de la CA.
-    if super::certs::recover_pair(config_dir, (CA_CRT, CA_KEY))? {
-        changed = true;
-    }
+    changed |= ca.harden(file_name(CA_NEXT_OWN), 0o600, true)?;
+    changed |= ca.harden_self(0o750, None)?;
     Ok(changed)
 }
 
@@ -869,8 +975,9 @@ mod fsio {
             Ok(out)
         }
 
-        /// Ce dossier au proprietaire du processus (groupe conserve), `mode`.
-        pub fn harden_self(&self, mode: u32) -> io::Result<bool> {
+        /// Ce dossier au proprietaire du processus, `mode`, groupe `group`
+        /// (`None` : conserve).
+        pub fn harden_self(&self, mode: u32, group: Option<u32>) -> io::Result<bool> {
             let st = rustix::fs::fstat(&self.fd)?;
             let mut changed = false;
             // Droits d'abord, proprietaire ensuite : jamais d'instant ou le
@@ -880,12 +987,24 @@ mod fsio {
                 rustix::fs::fchmod(&self.fd, Mode::from_raw_mode(mode))?;
                 changed = true;
             }
-            if st.st_uid != euid() {
+            let group = group.filter(|g| *g != st.st_gid);
+            if st.st_uid != euid() || group.is_some() {
                 let file = File::from(self.fd.try_clone()?);
-                std::os::unix::fs::fchown(&file, Some(euid()), None)?;
+                std::os::unix::fs::fchown(&file, Some(euid()), group)?;
                 changed = true;
             }
             Ok(changed)
+        }
+
+        /// Groupe de ce dossier.
+        pub fn group(&self) -> io::Result<u32> {
+            Ok(rustix::fs::fstat(&self.fd)?.st_gid)
+        }
+
+        /// Ce dossier sur disque (creations, renommages et suppressions
+        /// durables).
+        pub fn sync(&self) -> io::Result<()> {
+            rustix::fs::fsync(&self.fd).map_err(Into::into)
         }
 
         /// Deplace l'entree `name` dans `to` sous le nom `new` (un lien est
@@ -1073,8 +1192,16 @@ mod fsio {
             Ok(out)
         }
 
-        pub fn harden_self(&self, _mode: u32) -> io::Result<bool> {
+        pub fn harden_self(&self, _mode: u32, _group: Option<u32>) -> io::Result<bool> {
             Ok(false)
+        }
+
+        pub fn group(&self) -> io::Result<u32> {
+            Ok(0)
+        }
+
+        pub fn sync(&self) -> io::Result<()> {
+            Ok(())
         }
 
         pub fn move_to(&self, name: &OsStr, to: &Dir, new: &str) -> io::Result<()> {

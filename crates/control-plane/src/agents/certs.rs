@@ -340,7 +340,8 @@ pub fn recover_pair(config_dir: &Path, pair: (&str, &str)) -> io::Result<bool> {
     recover_pair_locked(config_dir, pair)
 }
 
-fn recover_pair_locked(config_dir: &Path, (crt, key): (&str, &str)) -> io::Result<bool> {
+/// Comme [`recover_pair`], verrou deja pris par l'appelant.
+pub fn recover_pair_locked(config_dir: &Path, (crt, key): (&str, &str)) -> io::Result<bool> {
     let (crt_path, key_path) = (config_dir.join(crt), config_dir.join(key));
     let dir = crt_path.parent().unwrap_or(config_dir);
     let manifest = pair_manifest(config_dir, crt);
