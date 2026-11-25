@@ -1189,8 +1189,12 @@ pub trait DockerOps: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), DockerError>> + Send;
     /// Supprime le reseau gere `name` ; absent : rien a faire ; non gere :
     /// `NotManaged`, laisse tel quel. Docker le refuse tant qu'un conteneur
-    /// y est attache.
+    /// en marche y est attache (un conteneur arrete : voir `network_in_use`).
     fn remove_network(&self, name: &str) -> impl Future<Output = Result<(), DockerError>> + Send;
+    /// Un conteneur, arrete compris et gere ou non, est-il rattache au reseau
+    /// `name` ? Docker laisse supprimer un reseau sans point d'acces actif :
+    /// un conteneur arrete ne pourrait alors plus redemarrer.
+    fn network_in_use(&self, name: &str) -> impl Future<Output = Result<bool, DockerError>> + Send;
     /// Noms des reseaux de projet geres (`ciphera-p-<uuid>`).
     fn project_networks(&self) -> impl Future<Output = Result<Vec<String>, DockerError>> + Send;
     /// Supprime les volumes des projets Compose de `project`
@@ -1766,9 +1770,11 @@ impl DockerOps for BollardDocker {
                     // Reseau d'une version precedente : recree avec le nom
                     // de pont attendu par le filtrage de sortie.
                     self.recreate_network(name, &existing).await?;
-                } else if existing.containers.as_ref().is_none_or(|c| c.is_empty()) {
-                    // Reseau de projet d'une version precedente, vide :
-                    // recree avec son pont `cphp<hex>` (filtre).
+                } else if !self.network_in_use(name).await? {
+                    // Reseau de projet d'une version precedente sans aucun
+                    // conteneur (arrete compris : `containers` de l'inspection
+                    // ne liste que ceux en marche) : recree avec son pont
+                    // `cphp<hex>` (filtre).
                     match self.docker.remove_network(name).await {
                         Ok(()) => {}
                         Err(e) if is_status(&e, 404) => {}
@@ -1777,7 +1783,8 @@ impl DockerOps for BollardDocker {
                     tracing::info!("reseau {name} recree (nom du pont pour le filtrage de sortie)");
                 } else {
                     // Jamais d'application arretee pour cela : garde tel quel
-                    // (sans filtrage de sortie) jusqu'a ce qu'il soit vide.
+                    // (sans filtrage de sortie) tant qu'un conteneur, meme
+                    // arrete, y est rattache.
                     tracing::warn!(
                         "reseau {name} sans pont {} : sortie des applications non filtree \
                          jusqu'a sa recreation (une fois sans conteneur)",
@@ -1889,6 +1896,24 @@ impl DockerOps for BollardDocker {
 
     async fn remove_deployment_images(&self, deployment: DeploymentId) -> Result<(), DockerError> {
         self.remove_deployment_images_impl(deployment).await
+    }
+
+    async fn network_in_use(&self, name: &str) -> Result<bool, DockerError> {
+        check_name(name)?;
+        let options = ListContainersOptions {
+            all: true,
+            filters: Some(HashMap::from([(
+                "network".to_string(),
+                vec![name.to_string()],
+            )])),
+            ..Default::default()
+        };
+        let list = self
+            .docker
+            .list_containers(Some(options))
+            .await
+            .map_err(api)?;
+        Ok(!list.is_empty())
     }
 
     async fn remove_network(&self, name: &str) -> Result<(), DockerError> {

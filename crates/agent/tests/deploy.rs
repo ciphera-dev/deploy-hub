@@ -4287,3 +4287,22 @@ async fn empty_project_networks_of_unknown_projects_are_swept() {
         assert!(bench.docker.has_network(&kept), "{kept}");
     }
 }
+
+/// Balayage : un conteneur seulement arrete (sans etiquette du projet, par
+/// exemple rattache a la main) garde le reseau, que Docker laisserait
+/// supprimer faute de point d'acces actif.
+#[tokio::test(start_paused = true)]
+async fn project_network_with_a_stopped_container_is_not_swept() {
+    let bench = Bench::new();
+    let gone = ProjectId::new();
+    let net = project_network(gone);
+    bench.docker.add_network(&net);
+    bench
+        .docker
+        .add_container("cid-stopped", "stopped-1", &[], None);
+    bench.docker.set_running("cid-stopped", false);
+    bench.docker.attach("cid-stopped", &net);
+
+    assert_eq!(bench.deployer.sweep_networks().await, 0);
+    assert!(bench.docker.has_network(&net));
+}

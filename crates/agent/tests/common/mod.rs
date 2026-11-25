@@ -57,6 +57,9 @@ pub struct FakeDocker {
     pub usage: Mutex<HashMap<String, (f32, u64)>>,
     /// Reseaux existants (crees par `ensure_network` ou `add_network`).
     pub networks: Mutex<HashSet<String>>,
+    /// Rattachements explicites (conteneur, reseau) en plus de celui d'un
+    /// conteneur a son reseau de projet (etiquette du projet).
+    pub attached: Mutex<Vec<(String, String)>>,
     /// Volumes existants : nom -> etiquettes.
     pub volumes: Mutex<HashMap<String, HashMap<String, String>>>,
     /// `remove` et `remove_with_volumes` echouent (erreur d'API) tant que vrai.
@@ -94,6 +97,21 @@ impl FakeDocker {
                 running: true,
             },
         );
+    }
+
+    /// Marque le conteneur `id` en marche ou arrete.
+    pub fn set_running(&self, id: &str, running: bool) {
+        if let Some(c) = self.containers.lock().unwrap().get_mut(id) {
+            c.running = running;
+        }
+    }
+
+    /// Rattache le conteneur `id` au reseau `network`.
+    pub fn attach(&self, id: &str, network: &str) {
+        self.attached
+            .lock()
+            .unwrap()
+            .push((id.to_string(), network.to_string()));
     }
 
     /// Ajoute un reseau existant.
@@ -388,6 +406,15 @@ impl DockerOps for FakeDocker {
         }
         self.networks.lock().unwrap().remove(name);
         Ok(())
+    }
+
+    async fn network_in_use(&self, name: &str) -> Result<bool, DockerError> {
+        let project = network_project(name).map(|p| p.to_string());
+        let attached = self.attached.lock().unwrap();
+        Ok(self.containers.lock().unwrap().iter().any(|(id, c)| {
+            (project.is_some() && c.labels.get(PROJECT_LABEL) == project.as_ref())
+                || attached.iter().any(|(a, n)| a == id && n == name)
+        }))
     }
 
     async fn project_networks(&self) -> Result<Vec<String>, DockerError> {

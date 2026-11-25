@@ -152,9 +152,10 @@ fn publish_with(
         .chain(updater::UNITS.iter().chain(&[updater::TMPFILES]).filter(|u| !skip.contains(u)).map(|u| {
             let mut unit = format!("# {u} {version}");
             if *u == "ciphera-agent.service" {
-                // Outil de l'hote exige par l'unite (filtrage des builds).
+                // Outil de l'hote exige par l'unite : nft, lance par
+                // `ciphera-agent egress` (filtrage de la sortie).
                 unit.push_str(
-                    "\nConditionPathExists=/var/run/docker.sock\nExecStartPre=+/usr/sbin/nft \"add table inet t\"\nExecStart=/usr/local/bin/ciphera-agent\n",
+                    "\nConditionPathExists=/var/run/docker.sock\nExecStartPre=+/usr/local/bin/ciphera-agent egress load\nExecStart=/usr/local/bin/ciphera-agent\n",
                 );
             }
             (format!("{name}/systemd/{u}"), unit.into_bytes())

@@ -26,7 +26,7 @@
 //! pare-feu de Docker (iptables ou nftables).
 
 use std::fmt;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::IpAddr;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -83,8 +83,8 @@ pub const BUILD_BLOCKED6: [&str; 9] = [
 /// Metadonnees des clouds interdites aux applications (IPv4) : lien local
 /// entier (169.254.169.254 et voisines), Alibaba, Azure (WireServer).
 pub const APP_METADATA4: [&str; 3] = ["100.100.100.200", "168.63.129.16", "169.254.0.0/16"];
-/// Metadonnees des clouds interdites aux applications (IPv6, AWS).
-pub const APP_METADATA6: [&str; 1] = ["fd00:ec2::254"];
+/// Metadonnees des clouds interdites aux applications (IPv6 : AWS, GCP).
+pub const APP_METADATA6: [&str; 2] = ["fd00:ec2::254", "fd20:ce::254"];
 /// Plages privees, interdites aux applications avec `DENY_PRIVATE_KEY=1`.
 pub const APP_PRIVATE4: [&str; 4] = [
     "10.0.0.0/8",
@@ -126,8 +126,10 @@ impl fmt::Display for EgressError {
 impl std::error::Error for EgressError {}
 
 /// Valeur de `DENY_PRIVATE_KEY` dans le texte de `CONFIG_FILE` (lignes
-/// `CLE=valeur`, commentaires `#` et lignes vides ignores, autres cles
-/// ignorees) : `0` ou absente => `false`, `1` => `true`, autre => erreur.
+/// `CLE=valeur`, commentaires `#` et lignes vides ignores) : `0` ou absente
+/// => `false`, `1` => `true`, autre valeur => erreur. Toute autre cle (faute
+/// de frappe, `export ...`) est refusee : jamais le defaut permissif par
+/// erreur.
 pub fn parse_config(text: &str) -> Result<bool, EgressError> {
     let mut deny = false;
     for line in text.lines().map(str::trim) {
@@ -138,7 +140,10 @@ pub fn parse_config(text: &str) -> Result<bool, EgressError> {
             return Err(EgressError::Config(format!("ligne invalide : {line:?}")));
         };
         if key.trim() != DENY_PRIVATE_KEY {
-            continue;
+            return Err(EgressError::Config(format!(
+                "cle inconnue {:?} : seule {DENY_PRIVATE_KEY} est lue",
+                key.trim()
+            )));
         }
         deny = match value.trim() {
             "0" | "" => false,
@@ -157,21 +162,25 @@ pub fn parse_config(text: &str) -> Result<bool, EgressError> {
 /// proprietaire que root, ou modifiable par le groupe ou les autres :
 /// refuse (il decide du filtrage applique en root).
 pub fn read_config(path: &Path) -> Result<bool, EgressError> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
+    let config = |e: std::io::Error| EgressError::Config(e.to_string());
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(EgressError::Config(e.to_string())),
+        Err(e) => return Err(config(e)),
     };
+    // Droits lus sur le fichier ouvert : celui-la meme qui est lu.
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(path).map_err(|e| EgressError::Config(e.to_string()))?;
+        let meta = file.metadata().map_err(config)?;
         if meta.uid() != 0 || meta.mode() & 0o022 != 0 {
             return Err(EgressError::Config(
                 "doit appartenir a root et n'etre modifiable que par lui".into(),
             ));
         }
     }
+    let mut text = String::new();
+    file.read_to_string(&mut text).map_err(config)?;
     parse_config(&text)
 }
 
@@ -390,6 +399,35 @@ pub fn load(cfg: &EgressConfig) -> Result<(), EgressError> {
     }
 }
 
+/// La table chargee a-t-elle au moins un resolveur ?
+fn table_has_resolvers() -> bool {
+    let (family, name) = TABLE.split_once(' ').unwrap_or(("inet", TABLE));
+    ["resolvers4", "resolvers6"].iter().any(|set| {
+        Command::new(NFT)
+            .args(["list", "set", family, name, set])
+            .stderr(Stdio::null())
+            .output()
+            .is_ok_and(|o| o.status.success() && has_elements(&String::from_utf8_lossy(&o.stdout)))
+    })
+}
+
+/// Sortie de `nft list set` : l'ensemble a-t-il des elements ?
+pub fn has_elements(listing: &str) -> bool {
+    listing.contains("elements =")
+}
+
+/// Controle periodique : la table en place est-elle gardee telle quelle ?
+/// Oui quand la lecture ne donne aucun resolveur alors que la table en a
+/// (`resolv.conf` vide pendant sa reecriture) : le DNS des builds n'est pas
+/// coupe jusqu'au passage suivant.
+pub fn keep_loaded(
+    check: bool,
+    cfg: &EgressConfig,
+    loaded_has_resolvers: impl FnOnce() -> bool,
+) -> bool {
+    check && cfg.resolvers.is_empty() && loaded_has_resolvers()
+}
+
 /// La table est-elle chargee ?
 pub fn present() -> bool {
     let (family, name) = TABLE.split_once(' ').unwrap_or(("inet", TABLE));
@@ -403,8 +441,9 @@ pub fn present() -> bool {
 
 /// Mode `ciphera-agent egress <load|check>` (root, avant toute autre
 /// initialisation) : `Some(code de sortie)`, ou `None` hors de ce mode.
-/// `check` signale une table disparue puis recharge dans tous les cas
-/// (remplacement atomique : resolveurs et reglage a jour).
+/// `check` signale une table disparue puis recharge (remplacement atomique :
+/// resolveurs et reglage a jour), sauf quand aucun resolveur n'est lu alors
+/// que la table en place en a (`keep_loaded`).
 pub fn cli_main(args: &[String]) -> Option<i32> {
     if args.get(1).map(String::as_str) != Some("egress") {
         return None;
@@ -418,7 +457,16 @@ pub fn cli_main(args: &[String]) -> Option<i32> {
         }
     };
     let missing = check && !present();
-    let result = host_config().and_then(|cfg| load(&cfg).map(|()| cfg));
+    let result = host_config().and_then(|cfg| {
+        if !missing && keep_loaded(check, &cfg, table_has_resolvers) {
+            eprintln!(
+                "ciphera-agent egress : aucun resolveur lu, table {TABLE} gardee \
+                 (nouvel essai au passage suivant)"
+            );
+            return Ok(cfg);
+        }
+        load(&cfg).map(|()| cfg)
+    });
     Some(match result {
         Ok(cfg) => {
             if missing {
@@ -596,7 +644,7 @@ mod tests {
             ]
         );
         assert!(s.contains("elements = { 100.100.100.200, 168.63.129.16, 169.254.0.0/16 }"));
-        assert!(s.contains("elements = { fd00:ec2::254 }"));
+        assert!(s.contains("elements = { fd00:ec2::254, fd20:ce::254 }"));
         let forward = chain(&s, "app_forward");
         assert!(forward.contains(&"ip daddr @app_metadata4 reject with icmpx admin-prohibited"));
         assert!(forward.contains(&"ip6 daddr @app_metadata6 reject with icmpx admin-prohibited"));
@@ -633,14 +681,16 @@ mod tests {
         assert!(!parse_config("# commentaire\n\nCIPHERA_APP_EGRESS_DENY_PRIVATE=0\n").unwrap());
         assert!(parse_config("CIPHERA_APP_EGRESS_DENY_PRIVATE=1\n").unwrap());
         assert!(parse_config("  CIPHERA_APP_EGRESS_DENY_PRIVATE = 1  \n").unwrap());
-        // Autre cle : ignoree ; derniere valeur retenue.
+        // Derniere valeur retenue.
         assert!(
-            parse_config(
-                "AUTRE=x\nCIPHERA_APP_EGRESS_DENY_PRIVATE=0\nCIPHERA_APP_EGRESS_DENY_PRIVATE=1\n"
-            )
-            .unwrap()
+            parse_config("CIPHERA_APP_EGRESS_DENY_PRIVATE=0\nCIPHERA_APP_EGRESS_DENY_PRIVATE=1\n")
+                .unwrap()
         );
         for bad in [
+            // Autre cle, faute de frappe, `export` : refusees.
+            "AUTRE=x\nCIPHERA_APP_EGRESS_DENY_PRIVATE=1\n",
+            "CIPHERA_APP_EGRESS_DENY_PRVATE=1\n",
+            "export CIPHERA_APP_EGRESS_DENY_PRIVATE=1\n",
             "CIPHERA_APP_EGRESS_DENY_PRIVATE=yes\n",
             "CIPHERA_APP_EGRESS_DENY_PRIVATE=\"1\"\n",
             "CIPHERA_APP_EGRESS_DENY_PRIVATE=2\n",
@@ -681,6 +731,57 @@ mod tests {
         assert!(resolvers(None, None).is_empty());
         assert!(resolvers(Some(stub), None).is_empty());
         assert!(nameservers("nameserver\nnameserver x\n#nameserver 1.1.1.1\n").is_empty());
+    }
+
+    /// Fichier temporaire de reglage, de mode `mode` et appartenant a
+    /// l'utilisateur des tests.
+    #[cfg(unix)]
+    fn config_file(mode: u32) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!(
+            "ciphera-egress-{}",
+            shared::ids::DeploymentId::new()
+        ));
+        std::fs::write(&path, "CIPHERA_APP_EGRESS_DENY_PRIVATE=1\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_writable_by_others_or_not_owned_by_root_is_refused() {
+        use std::os::unix::fs::MetadataExt;
+        // Modifiable par tous : refuse, meme pour un fichier de root.
+        let open = config_file(0o666);
+        let r = read_config(&open);
+        let _ = std::fs::remove_file(&open);
+        assert!(matches!(r, Err(EgressError::Config(_))), "{r:?}");
+        // Proprietaire autre que root (tests lances sans root) : refuse.
+        let mine = config_file(0o644);
+        let owner = std::fs::metadata(&mine).unwrap().uid();
+        let r = read_config(&mine);
+        let _ = std::fs::remove_file(&mine);
+        if owner != 0 {
+            assert!(matches!(r, Err(EgressError::Config(_))), "{r:?}");
+        } else {
+            assert!(r.unwrap());
+        }
+    }
+
+    #[test]
+    fn check_keeps_the_table_when_resolvers_vanish() {
+        let none = cfg(false, &[]);
+        let some = cfg(false, &["192.0.2.53"]);
+        assert!(keep_loaded(true, &none, || true));
+        assert!(!keep_loaded(true, &none, || false));
+        assert!(!keep_loaded(true, &some, || panic!("non interroge")));
+        assert!(!keep_loaded(false, &none, || panic!("non interroge")));
+        assert!(has_elements(
+            "table inet ciphera_egress {\n\tset resolvers4 {\n\t\ttype ipv4_addr\n\t\telements = { 192.0.2.53 }\n\t}\n}\n"
+        ));
+        assert!(!has_elements(
+            "table inet ciphera_egress {\n\tset resolvers4 {\n\t\ttype ipv4_addr\n\t}\n}\n"
+        ));
     }
 
     #[test]

@@ -17,7 +17,7 @@ use bollard::exec::{CreateExecOptions, StartExecResults};
 use bollard::models::{ContainerCreateBody, HostConfig, NetworkCreateRequest};
 use bollard::query_parameters::{
     CreateContainerOptions, CreateImageOptions, RemoveContainerOptions, RemoveVolumeOptions,
-    TopOptions,
+    StopContainerOptions, TopOptions,
 };
 use ciphera_agent::buildkit::{BuildkitManager, DockerFs};
 use ciphera_agent::docker::{
@@ -912,6 +912,23 @@ async fn project_network_gets_its_bridge_name_and_legacy_one_is_recreated_once_e
     let kept = api.inspect_network(&net, None).await.unwrap();
     assert_eq!(docker::bridge_name_of(&kept), None);
     assert!(api.inspect_container(&busy, None).await.is_ok());
+
+    // Conteneur seulement arrete (deploiement servi apres `StopContainers`) :
+    // le reseau reste, sinon son redemarrage echouerait.
+    api.stop_container(
+        &busy,
+        Some(StopContainerOptions {
+            t: Some(0),
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap();
+    docker.ensure_network(&net).await.unwrap();
+    let still = api.inspect_network(&net, None).await.unwrap();
+    assert_eq!(still.id, kept.id);
+    assert_eq!(docker::bridge_name_of(&still), None);
+    api.start_container(&busy, None).await.unwrap();
 
     // Vide : recree avec son pont.
     remove_container(&api, &busy).await;

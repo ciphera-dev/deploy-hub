@@ -1947,6 +1947,17 @@ where
                 Ok(list) if list.is_empty() => {}
                 _ => continue,
             }
+            // Conteneur encore rattache, meme arrete ou sans etiquette : le
+            // reseau reste (Docker le laisserait supprimer sans point d'acces
+            // actif, et ce conteneur ne redemarrerait plus).
+            match self.docker.network_in_use(&name).await {
+                Ok(false) => {}
+                Ok(true) => continue,
+                Err(e) => {
+                    tracing::warn!("reseau de projet {name} : {e}");
+                    continue;
+                }
+            }
             match self.docker.remove_network(&name).await {
                 Ok(()) => {
                     tracing::info!("reseau de projet vide {name} supprime");

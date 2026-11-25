@@ -977,17 +977,22 @@ fn unit_changes(
     Ok((journal, change))
 }
 
+/// Agent installe, dont le mode `egress` charge le filtrage par nft.
+const AGENT_BIN: &str = "/usr/local/bin/ciphera-agent";
+const NFT_BIN: &str = "/usr/sbin/nft";
+
 /// Paquet du systeme qui fournit un outil de l'hote (message d'erreur).
 fn package_of(tool: &str) -> &str {
     match tool {
-        "/usr/sbin/nft" => "nftables",
+        NFT_BIN => "nftables",
         _ => "le paquet qui le fournit",
     }
 }
 
 /// Programmes lances par les unites de la release (`ExecStart*=`, prefixes
-/// `+-!@:` retires) hors de Ciphera (`/usr/local`) : chacun doit exister et
-/// etre executable sur l'hote. Toutes les unites sont activees : meme une
+/// `+-!@:` retires) hors de Ciphera (`/usr/local`), et nft pour
+/// `ciphera-agent egress` : chacun doit exister et etre executable sur
+/// l'hote. Toutes les unites sont activees : meme une
 /// unite dont une `ConditionPathExists=` est fausse a cet instant (l'agent,
 /// Docker arrete ou pas encore installe) demarrera plus tard, donc l'outil
 /// est exige dans tous les cas.
@@ -1003,12 +1008,17 @@ fn check_host_tools(paths: &Paths, staged: &release::Staged) -> Result<(), Updat
             if !key.trim_end().starts_with("ExecStart") {
                 continue;
             }
-            let program = value
+            let mut words = value
                 .trim_start()
                 .trim_start_matches(['+', '-', '!', '@', ':'])
-                .split_whitespace()
-                .next()
-                .unwrap_or("");
+                .split_whitespace();
+            let program = words.next().unwrap_or("");
+            // Filtrage de la sortie : `ciphera-agent egress` lance nft.
+            let program = if program == AGENT_BIN && words.next() == Some("egress") {
+                NFT_BIN
+            } else {
+                program
+            };
             if !program.starts_with('/') || program.starts_with("/usr/local/") {
                 continue;
             }
