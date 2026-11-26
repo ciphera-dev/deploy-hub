@@ -25,7 +25,7 @@ install-test = []
 # `update-hmac.key` ; jamais l'identite age, feature `age` absente),
 # verification minisign + SHA-256, archives tar.gz lues sans `unpack`,
 # sauvegarde pg_dump compressee zstd.
-shared = { path = "../shared", features = ["update"] }
+shared = { path = "../shared", features = ["update", "latest"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.11.1"

@@ -4,6 +4,8 @@ pub mod config;
 pub mod error;
 pub mod ids;
 pub mod images;
+#[cfg(feature = "latest")]
+pub mod latest;
 #[cfg(feature = "age")]
 pub mod secretbox;
 #[cfg(feature = "update")]

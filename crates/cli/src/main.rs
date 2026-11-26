@@ -4,6 +4,8 @@
 //! ciphera-cli updater                     demande du plan de controle (unite ciphera-updater.service)
 //! ciphera-cli updater --recover           reprise seule, au demarrage (ciphera-updater-recover.service)
 //! ciphera-cli updater --version vX.Y.Z    mise a jour vers une version superieure
+//! ciphera-cli updater --latest            mise a jour vers la derniere version publiee
+//!                                         (latest.json signe minisign, verifie)
 //! ciphera-cli updater --version vX.Y.Z --allow-downgrade --restore-db <sauvegarde.sql.zst>
 //!                                         retour a une version anterieure et a sa base
 //! ciphera-cli post-install --from vX.Y.Z --to vX.Y.Z
@@ -28,7 +30,7 @@ use ciphera_cli::updater::config::UpdaterConfig;
 use ciphera_cli::updater::{self, Outcome, Paths, Sources, UpdateError, host::Host};
 use shared::update::Version;
 
-const USAGE: &str = "usage : ciphera-cli updater [--recover | --version vX.Y.Z \
+const USAGE: &str = "usage : ciphera-cli updater [--recover | --latest | --version vX.Y.Z \
                      [--allow-downgrade --restore-db <sauvegarde.sql.zst>]]\n        \
                      ciphera-cli post-install --from vX.Y.Z --to vX.Y.Z";
 
@@ -100,6 +102,7 @@ fn parse_updater(args: &[String]) -> Result<Mode, String> {
     let mut allow_downgrade = false;
     let mut restore_db: Option<PathBuf> = None;
     let mut recover = false;
+    let mut latest = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -116,14 +119,21 @@ fn parse_updater(args: &[String]) -> Result<Mode, String> {
                 restore_db = Some(PathBuf::from(p));
             }
             "--recover" => recover = true,
+            "--latest" => latest = true,
             _ => return Err("option inconnue".into()),
         }
     }
     if recover {
-        if version.is_some() || allow_downgrade || restore_db.is_some() {
+        if version.is_some() || allow_downgrade || restore_db.is_some() || latest {
             return Err("--recover s'utilise seul".into());
         }
         return Ok(Mode::Recover);
+    }
+    if latest {
+        if version.is_some() || allow_downgrade || restore_db.is_some() {
+            return Err("--latest s'utilise seul (jamais de retour en arriere)".into());
+        }
+        return Ok(Mode::Latest);
     }
     if allow_downgrade && restore_db.is_none() {
         return Err(
@@ -276,5 +286,17 @@ mod tests {
         assert!(matches!(parse(&["--recover"]), Ok(Mode::Recover)));
         assert!(parse(&["--recover", "--version", "v1.0.0"]).is_err());
         assert!(matches!(parse(&[]), Ok(Mode::Request)));
+        assert!(matches!(parse(&["--latest"]), Ok(Mode::Latest)));
+        assert!(parse(&["--latest", "--version", "v1.0.0"]).is_err());
+        assert!(parse(&["--latest", "--recover"]).is_err());
+        assert!(
+            parse(&[
+                "--latest",
+                "--allow-downgrade",
+                "--restore-db",
+                "/var/backups/ciphera/a.sql.zst"
+            ])
+            .is_err()
+        );
     }
 }

@@ -267,9 +267,6 @@ const RESTORE_SQL: &str = "restore.sql";
 pub const DEFAULT_BASE_URL: &str = "https://get.ciphera.ch";
 /// Origine des outils tiers (releases GitHub, comme `install.sh`).
 pub const DEFAULT_TOOLS_BASE_URL: &str = "https://github.com";
-/// Cles publiques minisign de confiance des releases (celles injectees dans
-/// `install.sh` publie ; plusieurs pendant une rotation).
-const PUBKEY_FILE: &str = include_str!("../../../install/ciphera.pub");
 
 const JOURNAL: &str = "journal.json";
 const PREVIOUS: &str = "previous";
@@ -357,14 +354,10 @@ pub struct Sources {
 }
 
 /// Cles integrees (`install/ciphera.pub` : chaque ligne qui n'est ni vide
-/// ni un commentaire minisign).
+/// ni un commentaire minisign), les memes que celles du plan de controle
+/// pour `latest.json`.
 pub fn embedded_pubkeys() -> Vec<String> {
-    PUBKEY_FILE
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with("untrusted comment:"))
-        .map(str::to_string)
-        .collect()
+    shared::latest::embedded_pubkeys()
 }
 
 /// Cible des archives pour l'architecture de ce binaire.
@@ -533,6 +526,11 @@ pub enum Mode {
         allow_downgrade: bool,
         restore_db: Option<PathBuf>,
     },
+    /// Ligne de commande (root) : `--latest`, derniere version publiee lue
+    /// dans `releases/latest.json`, signe minisign et verifie avant tout
+    /// usage (`shared::latest`) ; ensuite comme `--version` (jamais de
+    /// retour en arriere).
+    Latest,
     /// Demarrage de la machine (`ciphera-updater-recover.service`, avant
     /// les services) : reprise d'une mise a jour interrompue seulement, sans
     /// arreter ni relancer de service.
@@ -613,6 +611,19 @@ pub fn run(
                 eprintln!("attention : {e}");
             }
             (Some(version), allow_downgrade, restore_db)
+        }
+        Mode::Latest => {
+            if let Err(e) = request_key(paths) {
+                eprintln!("attention : {e}");
+            }
+            let dir = paths
+                .state_dir
+                .join(format!("latest-{}", std::process::id()));
+            reset_dir(&dir)?;
+            let latest =
+                release::fetch_latest(sys, &dir, sources).map_err(UpdateError::Verification);
+            let _ = fs::remove_dir_all(&dir);
+            (Some(latest?), false, None)
         }
         Mode::Request => (read_request(sys, paths)?, false, None),
         Mode::Recover => (None, false, None),

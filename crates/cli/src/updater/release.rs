@@ -138,6 +138,41 @@ fn verify_any(pubkeys: &[String], data: &[u8], sig: &str) -> Result<(), String> 
     }
 }
 
+/// Avertissement d'un `latest.json` dont l'echeance est passee (meme sens
+/// que le message du panneau).
+pub(super) const LATEST_EXPIRED: &str = "impossible de garantir que Ciphera est a jour \
+    (metadonnees de version de plus de 120 jours)";
+
+/// Derniere version publiee (`--latest`) : `releases/latest.json` et
+/// `latest.json.minisig`, verifies par une cle de confiance
+/// ([`shared::latest::verify_latest`] : signature, commentaire de confiance,
+/// version identique) avant tout usage ; sinon refus. Echeance passee :
+/// avertissement seulement. La version obtenue suit ensuite le meme chemin
+/// que `--version` (anti-retrogradation, minisign de `SHA256SUMS`).
+pub(super) fn fetch_latest(
+    sys: &dyn System,
+    dir: &Path,
+    sources: &Sources,
+) -> Result<Version, String> {
+    let base = format!("{}/releases", sources.release_base_url);
+    for f in ["latest.json", "latest.json.minisig"] {
+        get(sys, &format!("{base}/{f}"), &dir.join(f), METADATA_LIMIT)?;
+    }
+    let json = read_small(&dir.join("latest.json"))?;
+    let sig = read_small(&dir.join("latest.json.minisig"))?;
+    let latest = shared::latest::verify_latest(&sources.pubkeys, json.as_bytes(), &sig)
+        .map_err(|e| e.to_string())?;
+    if latest.expired(sys.now()) {
+        eprintln!(
+            "attention : {LATEST_EXPIRED} : latest.json signe le {}, echeance depassee ; \
+             mise a jour poursuivie",
+            super::utc_stamp(latest.issued)
+        );
+    }
+    eprintln!("derniere version publiee : {}", latest.version);
+    Ok(latest.version)
+}
+
 pub(super) fn fetch(
     sys: &dyn System,
     staging: &Path,

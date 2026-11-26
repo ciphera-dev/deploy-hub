@@ -573,6 +573,8 @@ struct Env {
     files: HashMap<String, Vec<u8>>,
     /// Cle des demandes (`<config_dir>/update-hmac.key`).
     key: [u8; 32],
+    /// Cle de signature des releases publiees.
+    signer: Keys,
 }
 
 /// Ciphera v0.1.0 installe ; releases v0.0.9, v0.1.0 et v0.2.0 publiees.
@@ -622,6 +624,7 @@ fn env() -> Env {
         sources,
         files,
         key,
+        signer: good,
     }
 }
 
@@ -2166,4 +2169,172 @@ fn restore_sql_removed_after_partial_rollback() {
         !env.paths.state_dir.join("restore.sql").exists(),
         "restore.sql laisse sur disque"
     );
+}
+
+// --- latest.json signe (`--latest`) -----------------------------------------
+
+/// Commentaire de confiance de `latest.json` (comme install/sign-latest.sh).
+fn latest_comment(version: &str, issued: u64) -> String {
+    let expires = issued + shared::latest::VALIDITY_SECS;
+    format!("ciphera-latest version={version} issued={issued} expires={expires}")
+}
+
+/// Publie `latest.json` (`json`) et sa signature par `keys` avec `comment`.
+fn publish_latest(sys: &Mock, keys: &Keys, json: &str, comment: &str) {
+    let sig = minisign::sign(
+        Some(&keys.pk),
+        &keys.sk,
+        json.as_bytes(),
+        Some(comment),
+        None,
+    )
+    .unwrap()
+    .to_string()
+    .into_bytes();
+    let mut files = sys.files.lock().unwrap();
+    files.insert(
+        format!("{BASE}/releases/latest.json"),
+        json.as_bytes().to_vec(),
+    );
+    files.insert(format!("{BASE}/releases/latest.json.minisig"), sig);
+}
+
+#[test]
+fn latest_signed_by_a_trusted_key_updates() {
+    let env = env();
+    let sys = Mock::new(&env, true);
+    publish_latest(
+        &sys,
+        &env.signer,
+        "{\"version\":\"v0.2.0\"}\n",
+        &latest_comment("v0.2.0", NOW - 3600),
+    );
+    let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
+    assert!(
+        matches!(r, Ok(Outcome::Updated { to, .. }) if to == v("v0.2.0")),
+        "{r:?}"
+    );
+    assert_eq!(env.installed(), "v0.2.0");
+    // Metadonnees : bornes de SHA256SUMS ; dossier de travail retire.
+    for (url, limit) in sys.limits.lock().unwrap().iter() {
+        if url.contains("latest.json") {
+            assert_eq!(*limit, updater::METADATA_LIMIT, "{url}");
+        }
+    }
+    let left: Vec<_> = std::fs::read_dir(&env.paths.state_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("latest-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn latest_signature_required() {
+    let json = "{\"version\":\"v0.2.0\"}\n";
+    let comment = latest_comment("v0.2.0", NOW - 3600);
+
+    // Signature absente.
+    let env = env();
+    let sys = Mock::new(&env, true);
+    sys.files.lock().unwrap().insert(
+        format!("{BASE}/releases/latest.json"),
+        json.as_bytes().to_vec(),
+    );
+    let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
+    assert!(matches!(r, Err(UpdateError::Verification(_))), "{r:?}");
+    assert_eq!(sys.count("pg_dump") + sys.count("restart"), 0);
+    env.assert_untouched();
+
+    // Signee par une cle hors de l'ensemble de confiance.
+    let sys = Mock::new(&env, true);
+    publish_latest(&sys, &keys(), json, &comment);
+    let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
+    match r {
+        Err(UpdateError::Verification(m)) => assert!(m.contains("signature"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(sys.count("download"), 2, "rien d'autre telecharge");
+    env.assert_untouched();
+
+    // Contenu modifie apres la signature (version annoncee changee).
+    let sys = Mock::new(&env, true);
+    publish_latest(&sys, &env.signer, json, &comment);
+    sys.files.lock().unwrap().insert(
+        format!("{BASE}/releases/latest.json"),
+        b"{\"version\":\"v0.2.1\"}\n".to_vec(),
+    );
+    let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
+    assert!(matches!(r, Err(UpdateError::Verification(_))), "{r:?}");
+    env.assert_untouched();
+
+    // Commentaire de confiance par defaut de minisign (sans version ni
+    // echeance) : refuse.
+    let sys = Mock::new(&env, true);
+    publish_latest(
+        &sys,
+        &env.signer,
+        json,
+        "timestamp:1800000000\tfile:latest.json",
+    );
+    let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
+    match r {
+        Err(UpdateError::Verification(m)) => assert!(m.contains("commentaire"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    env.assert_untouched();
+    assert!(env.backups().is_empty());
+}
+
+#[test]
+fn latest_version_mismatch_refused() {
+    let env = env();
+    let sys = Mock::new(&env, true);
+    // Signature valide, mais la version du JSON n'est pas celle du
+    // commentaire signe.
+    publish_latest(
+        &sys,
+        &env.signer,
+        "{\"version\":\"v0.2.0\"}\n",
+        &latest_comment("v0.3.0", NOW - 3600),
+    );
+    let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
+    match r {
+        Err(UpdateError::Verification(m)) => assert!(m.contains("version differente"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(sys.count("pg_dump") + sys.count("restart"), 0);
+    env.assert_untouched();
+
+    // latest.json signe et valide, mais pour une version anterieure :
+    // l'anti-retrogradation reste en place.
+    let sys = Mock::new(&env, true);
+    publish_latest(
+        &sys,
+        &env.signer,
+        "{\"version\":\"v0.0.9\"}\n",
+        &latest_comment("v0.0.9", NOW - 3600),
+    );
+    let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
+    assert!(matches!(r, Err(UpdateError::Refused(_))), "{r:?}");
+    env.assert_untouched();
+}
+
+#[test]
+fn expired_latest_warns_not_blocks() {
+    let env = env();
+    let sys = Mock::new(&env, true);
+    // Signe il y a 200 jours : echeance (120 jours) depassee.
+    publish_latest(
+        &sys,
+        &env.signer,
+        "{\"version\":\"v0.2.0\"}\n",
+        &latest_comment("v0.2.0", NOW - 200 * 24 * 3600),
+    );
+    let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
+    assert!(
+        matches!(r, Ok(Outcome::Updated { to, .. }) if to == v("v0.2.0")),
+        "{r:?}"
+    );
+    assert_eq!(env.installed(), "v0.2.0");
 }

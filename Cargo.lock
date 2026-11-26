@@ -5200,6 +5200,7 @@ dependencies = [
  "axum",
  "getrandom 0.4.3",
  "hmac 0.13.0",
+ "minisign-verify",
  "rustix",
  "serde",
  "serde_json",
