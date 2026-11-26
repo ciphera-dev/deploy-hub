@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-26 16:44
+# État courant — mis à jour le 2026-11-26 19:55
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R52 : Mode test retiré du binaire livré — statut : TERMINÉ (TERMINÉ (relecture approuvée, 1 petit tour))
+Task R53 : latest.json signé, avec échéance — statut : TERMINÉ (TERMINÉ (relecture approuvée après 1 tour de correction))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R53 : latest.json signé, avec échéance
 - Task R52 : Mode test retiré du binaire livré
 - Task R41 : Updater root durci
 - Task R54 : rsa 0.10.0, garde-fous Pingora
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R40 : install.sh / uninstall.sh durcis
 - Task R42 : Chaîne de release
 - Task R49 : Rotation de la CA de l'instance
-- Task R50 : Domaine généré en HTTPS
 
 ## Prochaine étape exacte
-R53, puis R44 (clôture de l'audit)
+R44 (clôture de l'audit), puis Release (test) et tag v0.1.0
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,10 +32,14 @@ R53, puis R44 (clôture de l'audit)
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
+- `crates/shared`
 - `crates/cli`
+- `crates/control-plane`
+- `crates/api-types`
+- `web/src`
+- `install`
 - `.github/workflows`
-- `install/tests`
-- `docs/adr`
+- `docs`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

@@ -219,3 +219,6 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 
 ## 2026-11-26 — D-INST-1 (binaire) : Résolu par R52
 - Le mode test de `ciphera-cli` n'existe que dans les builds `--features install-test` ; contrôle `strings` bloquant (échec fermé) sur les binaires des archives signées.
+
+## 2026-11-26 — D-INST-3 : latest.json non signé et sans échéance — Résolu (R53)
+- Signature minisign avec commentaire de confiance (version, issued, expires +120 j), vérifiée par le plan de contrôle et l'updater ; fichier expiré signalé sans blocage.

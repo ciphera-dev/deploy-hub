@@ -477,3 +477,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 16:44 — Session v0.1-sdd — claude-code (orchestrateur) — Task R52 : Mode test retiré du binaire livré
 - fait : feature install-test, CLI livré et ciphera-cli-test séparés, contrôle strings bloquant fail-closed, tests dans les deux configurations
 - résultat : TERMINÉ (relecture approuvée, 1 petit tour)
+
+## 2026-11-26 19:55 — Session v0.1-sdd — claude-code (orchestrateur) — Task R53 : latest.json signé, avec échéance
+- fait : shared::latest, updater --latest, sign-latest/check-latest, refresh-latest.yml (clé de la release seulement), latest_expired dans l'API et le panneau
+- résultat : TERMINÉ (relecture approuvée après 1 tour de correction)
