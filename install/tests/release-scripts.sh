@@ -270,15 +270,33 @@ nl_name="x
 ciphera-$version-x86_64-unknown-linux-musl.tar.gz"
 printf 'x\n' >"releases/$kept/$nl_name"
 # Release v9.9.5 (bonne cle) dont SHA256SUMS signe un nom avec espace et un
-# nom echappe par sha256sum (ligne commencant par \) ; un fichier non signe
-# porte le debut du nom avec espace.
+# nom echappe (ligne commencant par \) ; un fichier non signe porte le debut
+# du nom avec espace. sign-release refuse ces noms (verifie plus bas) : les
+# deux lignes sont donc ecrites a la main, au format de sha256sum, puis
+# SHA256SUMS est resigne directement par minisign (meme commentaire de
+# confiance). Pas de sha256sum -c ici : seule la lecture par pages-site compte.
 sp=v9.9.5
-mkdir -p "dist-$sp" "releases/$sp"
+mkdir -p "dist-$sp" "releases/$sp" dist-badname
 cp dist/ciphera-*.tar.gz "dist-$sp/"
+sh "$root/install/sign-release.sh" "$sp" plain.key plain.pub "dist-$sp" release >/dev/null
 printf 'espace\n' >"dist-$sp/ciphera-a b.tar.gz"
 printf 'echappe\n' >"dist-$sp/ciphera-x\\y.tar.gz"
-sh "$root/install/sign-release.sh" "$sp" plain.key plain.pub "dist-$sp" release >/dev/null
+{
+	printf '%s  %s\n' "$(sha256sum <"dist-$sp/ciphera-a b.tar.gz" | cut -d' ' -f1)" 'ciphera-a b.tar.gz'
+	printf '\\%s  %s\n' "$(sha256sum <"dist-$sp/ciphera-x\\y.tar.gz" | cut -d' ' -f1)" 'ciphera-x\\y.tar.gz'
+} >>"dist-$sp/SHA256SUMS"
+rm -f "dist-$sp/SHA256SUMS.minisig"
+minisign -S -s plain.key -m "dist-$sp/SHA256SUMS" -t "ciphera $sp SHA256SUMS (release)" </dev/null >/dev/null 2>&1
 cp "dist-$sp"/* "releases/$sp/"
+# sign-release refuse d'emblee les noms hors du jeu sur (antislash, espace).
+cp dist/ciphera-*.tar.gz dist-badname/
+printf 'x\n' >'dist-badname/ciphera-x\y.tar.gz'
+check "sign-release : nom d'archive avec antislash refuse" \
+	fails_with "nom d'archive non autorise" sh "$root/install/sign-release.sh" "$sp" plain.key plain.pub dist-badname release
+rm -f 'dist-badname/ciphera-x\y.tar.gz'
+printf 'x\n' >'dist-badname/ciphera-a b.tar.gz'
+check "sign-release : nom d'archive avec espace refuse" \
+	fails_with "nom d'archive non autorise" sh "$root/install/sign-release.sh" "$sp" plain.key plain.pub dist-badname release
 printf 'x\n' >"releases/$sp/ciphera-a"
 cat >bin/gh <<'GH'
 #!/bin/sh
@@ -322,12 +340,24 @@ check "site : fichier annexe d'une release precedente retire" test ! -e "site/re
 check "site : fichier cache d'une release precedente retire" test ! -e "site/releases/$kept/.cache"
 check "site : avertissement pour le fichier annexe retire" grep -q "$kept.*annexe.html" pages.err
 check "site : nom avec saut de ligne retire" test ! -e "site/releases/$kept/$nl_name"
-check "site : nom signe avec espace garde intact" test -f "site/releases/$sp/ciphera-a b.tar.gz"
-check "site : debut d'un nom signe avec espace retire" test ! -e "site/releases/$sp/ciphera-a"
-check "site : ligne echappee de SHA256SUMS : fichier retire" test ! -e "site/releases/$sp/ciphera-x\\y.tar.gz"
-check "site : avertissement pour la ligne echappee" grep -q "$sp : 1 ligne(s) de SHA256SUMS echappee" pages.err
-check "site : archives ordinaires de v9.9.5 gardees" \
-	test -f "site/releases/$sp/ciphera-$version-x86_64-unknown-linux-musl.tar.gz"
+# La release v9.9.5 n'est lue que si sha256sum -c accepte une ligne echappee
+# (coreutils : oui, c'est le cas des runners de release ubuntu-24.04). uutils
+# (ubuntu 26.04) la rejette : pages-site refuse alors la release en entier,
+# ce qui est plus strict et reste sur ; seule la liste signee compte ici.
+mkdir -p probe
+printf '\\%s  %s\n' "$(printf x | sha256sum | cut -d' ' -f1)" 'a\\b' >probe/S
+printf x >'probe/a\b'
+if (cd probe && sha256sum -c --strict --quiet S >/dev/null 2>&1); then
+	check "site : nom signe avec espace garde intact" test -f "site/releases/$sp/ciphera-a b.tar.gz"
+	check "site : debut d'un nom signe avec espace retire" test ! -e "site/releases/$sp/ciphera-a"
+	check "site : ligne echappee de SHA256SUMS : fichier retire" test ! -e "site/releases/$sp/ciphera-x\y.tar.gz"
+	check "site : avertissement pour la ligne echappee" grep -q "$sp : 1 ligne(s) de SHA256SUMS echappee" pages.err
+	check "site : archives ordinaires de v9.9.5 gardees" \
+		test -f "site/releases/$sp/ciphera-$version-x86_64-unknown-linux-musl.tar.gz"
+else
+	printf 'note : sha256sum -c rejette les lignes echappees (uutils) : v9.9.5 refusee en entier\n'
+	check "site : ligne echappee, sha256sum -c strict : release refusee" test ! -e "site/releases/$sp"
+fi
 entries() { # <dossier> : noms des entrees (fichiers caches compris), tries
 	find "$1" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
 }

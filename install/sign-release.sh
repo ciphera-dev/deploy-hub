@@ -48,6 +48,12 @@ sh "$here/release-script.sh" "$pub" "$here/install.sh" "$dist/install.sh"
 	cd "$dist"
 	set -- ciphera-*.tar.gz
 	[ -f "$1" ] || die "aucune archive dans $dist"
+	# Noms limites a un jeu sur : sha256sum echappe (prefixe \) les noms avec
+	# antislash ou saut de ligne, et selon l'implementation (coreutils, uutils)
+	# sha256sum -c ne relit pas toujours ces lignes.
+	for f in "$@"; do
+		case $f in *[!A-Za-z0-9._+-]*) die "nom d'archive non autorise (A-Z a-z 0-9 . _ + - seulement) : $f" ;; esac
+	done
 	sha256sum "$@" >SHA256SUMS
 	sha256sum install.sh >install.sh.sha256
 )
