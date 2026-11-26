@@ -247,3 +247,8 @@ Synthèse des limites connues et acceptées pour v0.1.0, formulées en état. D�
 - Le projet n'a qu'un compte mainteneur : l'environnement `release` a un seul relecteur obligatoire, et *Prevent self-review* doit rester décoché (sinon personne ne peut approuver une release poussée par ce compte). La signature d'une release dépend donc de la seule approbation de ce compte. Releases immuables et ruleset des tags `v*` actifs.
 - `new-signing-key.ps1 -CheckOnly` échoue volontairement sur ce point (il exige 2 relecteurs) ; la clé de signature est déjà dans l'environnement, le script n'est pas nécessaire pour v0.1.0.
 - À faire dès l'arrivée d'un second mainteneur : 2 relecteurs, *Prevent self-review* coché, puis `-CheckOnly` vert (docs/operations/release.md, étape 7).
+
+## 2026-11-26 — H11-2 : ancien historique (adresse e-mail personnelle) — nettoyé en local, purge GitHub demandée au support
+- Constat vérifié le 2026-11-26 : 184 commits antérieurs à la réécriture du 24 novembre ne sont plus atteignables depuis aucune branche ni tag, mais GitHub les sert encore par leur identifiant ; 97 portent l'adresse e-mail personnelle de l'auteur. L'historique actuel n'utilise que l'adresse `noreply` de GitHub ; aucune pull request ne les garde en vie.
+- Fait en local : `git reflog expire --expire=now --expire-unreachable=now --all` puis `git gc --prune=now` ; plus aucun de ces commits dans le dépôt local, `git fsck` sans erreur. Les deux sauvegardes `.bundle` du 24 novembre restent à côté du dépôt, dans un dossier non synchronisé.
+- Reste (utilisateur) : demande de purge au support GitHub (suppression des commits non référencés et des vues en cache) avant de rendre le dépôt public. H11-2 reste résiduel jusqu'à la confirmation du support.

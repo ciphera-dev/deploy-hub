@@ -493,3 +493,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 23:00 — Session v0.1-sdd — claude-code (orchestrateur) — Task fixe2e : Test golden-path aligné sur le step-up de R56
 - fait : Le parcours e2e saisit mot de passe et code TOTP frais pour créer l'invitation ; échec en 15 s si le bouton reste désactivé
 - résultat : Relu par l'orchestrateur (diff de test seul)
+
+## 2026-11-26 23:31 — Session v0.1-sdd — claude-code (orchestrateur) — Task readme : README refait, code de conduite, remerciements
+- fait : README sur le modèle de Dokploy/Coolify, CODE_OF_CONDUCT.md, docs/operations/installation.md et builds.md, remerciements Kimi et Claude Code (exception AGENTS.md) ; H11-2 nettoyé en local
+- résultat : Relu par l'orchestrateur ; ai-traces strict sans signalement

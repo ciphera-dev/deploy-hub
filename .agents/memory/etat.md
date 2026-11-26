@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-26 23:00
+# État courant — mis à jour le 2026-11-26 23:31
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task fixe2e : Test golden-path aligné sur le step-up de R56 — statut : TERMINÉ (Relu par l'orchestrateur (diff de test seul))
+Task readme : README refait, code de conduite, remerciements — statut : TERMINÉ (Relu par l'orchestrateur ; ai-traces strict sans signalement)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task readme : README refait, code de conduite, remerciements
 - Task fixe2e : Test golden-path aligné sur le step-up de R56
 - Task R44 : Clôture de l'audit
 - Task R56 : Step-up pour les changements d'équipe privilégiés
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R52 : Mode test retiré du binaire livré
 - Task R41 : Updater root durci
 - Task R54 : rsa 0.10.0, garde-fous Pingora
-- Task R43 : Hygiène du dépôt avant publication
 
 ## Prochaine étape exacte
-CI verte, Release (test), tag v0.1.0
+Approbation des environnements release et github-pages ; demande de purge au support GitHub avant passage en public
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,7 +32,8 @@ CI verte, Release (test), tag v0.1.0
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `web/e2e/golden-path.spec.ts`
+- `README.md`
+- `CODE_OF_CONDUCT.md`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
