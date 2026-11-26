@@ -163,27 +163,34 @@ export async function fetchTeamInvitations(): Promise<PendingInvitation[]> {
   return unwrap(await api.GET("/api/team/invitations"));
 }
 
-export function changeMemberRole(id: string, role: TeamRole): Promise<Result<null>> {
-  return settle(() => api.PATCH("/api/team/members/{id}", { params: { path: { id } }, body: { role } }), null);
+/**
+ * Confirmation renforcee des changements d'equipe privilegies (invitation, role, retrait, lien de
+ * reinitialisation, remise a zero du 2FA) : mot de passe de l'auteur, plus le code de son second
+ * facteur (application ou code de secours) s'il en a un.
+ */
+export type StepUp = { password: string; code?: string };
+
+export function changeMemberRole(id: string, role: TeamRole, stepUp: StepUp): Promise<Result<null>> {
+  return settle(() => api.PATCH("/api/team/members/{id}", { params: { path: { id } }, body: { role, ...stepUp } }), null);
 }
 
 /** Retire le membre : ses sessions sont revoquees, ses deploy hooks et invitations non utilisees supprimes. */
-export function removeMember(id: string): Promise<Result<RemovedMember>> {
-  return settle(() => api.DELETE("/api/team/members/{id}", { params: { path: { id } } }));
+export function removeMember(id: string, stepUp: StepUp): Promise<Result<RemovedMember>> {
+  return settle(() => api.DELETE("/api/team/members/{id}", { params: { path: { id } }, body: stepUp }));
 }
 
 /** Lien a usage unique (30 minutes) ; il n'est jamais redonne. */
-export function createResetLink(id: string): Promise<Result<{ link: string }>> {
-  return settle(() => api.POST("/api/team/members/{id}/reset-link", { params: { path: { id } } }));
+export function createResetLink(id: string, stepUp: StepUp): Promise<Result<{ link: string }>> {
+  return settle(() => api.POST("/api/team/members/{id}/reset-link", { params: { path: { id } }, body: stepUp }));
 }
 
-/** Supprime TOTP, passkeys et codes de secours du membre et revoque ses sessions ; mot de passe de l'auteur exige. */
-export function resetMemberMfa(id: string, password: string): Promise<Result<null>> {
-  return settle(() => api.POST("/api/team/members/{id}/reset-mfa", { params: { path: { id } }, body: { password } }), null);
+/** Supprime TOTP, passkeys et codes de secours du membre et revoque ses sessions. */
+export function resetMemberMfa(id: string, stepUp: StepUp): Promise<Result<null>> {
+  return settle(() => api.POST("/api/team/members/{id}/reset-mfa", { params: { path: { id } }, body: stepUp }), null);
 }
 
-export function inviteMember(body: { email: string; name?: string; role: TeamRole }): Promise<Result<{ link: string }>> {
-  return settle(() => api.POST("/api/team/invitations", { body }));
+export function inviteMember(body: { email: string; name?: string; role: TeamRole }, stepUp: StepUp): Promise<Result<{ link: string }>> {
+  return settle(() => api.POST("/api/team/invitations", { body: { ...body, ...stepUp } }));
 }
 
 export function cancelInvitation(id: string): Promise<Result<null>> {

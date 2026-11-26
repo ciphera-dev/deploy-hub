@@ -3,6 +3,7 @@ import { useState, type CSSProperties } from "react";
 
 import { Avatar, Badge, Button, CopyButton, Icon, Menu, Modal, TextField, useToast, type IconName, type MenuItem } from "@/design-system";
 import { fetchMe, ME_QUERY_KEY, MFA_PENDING } from "@/features/auth/api";
+import { asksForCode, hasSecondFactor } from "@/features/auth/step-up";
 import { FormError } from "@/features/auth/ui";
 
 import {
@@ -16,7 +17,10 @@ import {
   resetMemberMfa,
   TEAM_INVITATIONS_QUERY_KEY,
   TEAM_MEMBERS_QUERY_KEY,
+  type Failure,
   type PendingInvitation,
+  type Result,
+  type StepUp,
   type TeamMember,
   type TeamRole,
 } from "../api";
@@ -104,6 +108,72 @@ const plural = (n: number, one: string, many: string) => `${n} ${n > 1 ? many : 
 /** Le serveur peut repondre par un chemin (`/invite/<jeton>`) : le lien affiche est absolu. */
 const absolute = (link: string) => (link.startsWith("/") ? window.location.origin + link : link);
 
+/**
+ * Confirmation renforcee (features/auth/step-up, comme la suppression de l'organisation et les
+ * deploy hooks) : mot de passe de l'auteur, plus le code de son second facteur s'il en a un ou si
+ * le serveur le demande. Champs vides apres un refus.
+ */
+function useStepUp() {
+  const client = useQueryClient();
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [needsCode, setNeedsCode] = useState(() => hasSecondFactor(client));
+  const trimmed = code.trim();
+  return {
+    ready: !!password && (!needsCode || !!trimmed),
+    value: (): StepUp => (needsCode && trimmed ? { password, code: trimmed } : { password }),
+    refused: (failure: Failure) => {
+      setPassword("");
+      setCode("");
+      if (asksForCode(failure.code)) setNeedsCode(true);
+    },
+    fields: (onEdit: () => void) => (
+      <>
+        <TextField label="Votre mot de passe" type="password" autoComplete="current-password" value={password} onChange={(v) => { setPassword(v); onEdit(); }} />
+        {needsCode && <TextField label="Code de vérification (application ou code de secours)" autoComplete="one-time-code" value={code} onChange={(v) => { setCode(v); onEdit(); }} />}
+      </>
+    ),
+  };
+}
+
+/** Action d'equipe privilegiee confirmee par le step-up ; `onDone` recoit la reponse du serveur. */
+function StepUpModal<T>({ title, description, action, icon, run, onClose, onDone }: { title: string; description: string; action: string; icon: IconName; run: (stepUp: StepUp) => Promise<Result<T>>; onClose: () => void; onDone: (data: T) => void }) {
+  const stepUp = useStepUp();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const go = async () => {
+    if (!stepUp.ready || busy) return;
+    setBusy(true);
+    const result = await run(stepUp.value());
+    setBusy(false);
+    if (!result.ok) {
+      setErr(result.message);
+      stepUp.refused(result);
+      return;
+    }
+    onDone(result.data);
+  };
+  return (
+    <Modal
+      title={title}
+      description={description}
+      width={460}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Annuler</Button>
+          <Button variant="inverse" icon={busy ? "Loader" : icon} disabled={!stepUp.ready || busy} onClick={() => void go()}>
+            {action}
+          </Button>
+        </>
+      }
+    >
+      {stepUp.fields(() => setErr(""))}
+      {err && <FormError>{err}</FormError>}
+    </Modal>
+  );
+}
+
 /** Lien a copier : affiche une seule fois (le serveur ne le redonne jamais). */
 function LinkModal({ title, description, link, onClose }: { title: string; description: string; link: string; onClose: () => void }) {
   const url = absolute(link);
@@ -125,15 +195,17 @@ function InviteModal({ roles, onClose, onCreated }: { roles: TeamRole[]; onClose
   const [role, setRole] = useState<TeamRole>(roles.includes("viewer") ? "viewer" : roles[0]!);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const valid = /^\S+@\S+\.\S+$/.test(email.trim()) && !busy;
+  const stepUp = useStepUp();
+  const valid = /^\S+@\S+\.\S+$/.test(email.trim()) && stepUp.ready && !busy;
 
   const send = async () => {
     if (!valid) return;
     setBusy(true);
-    const result = await inviteMember({ email: email.trim().toLowerCase(), name: name.trim() || undefined, role });
+    const result = await inviteMember({ email: email.trim().toLowerCase(), name: name.trim() || undefined, role }, stepUp.value());
     setBusy(false);
     if (!result.ok) {
       setErr(result.message);
+      stepUp.refused(result);
       return;
     }
     onCreated(result.data.link);
@@ -171,85 +243,45 @@ function InviteModal({ roles, onClose, onCreated }: { roles: TeamRole[]; onClose
           })}
         </div>
       </div>
+      {stepUp.fields(() => setErr(""))}
       {err && <FormError>{err}</FormError>}
     </Modal>
   );
 }
 
 function RemoveModal({ member, onClose, onRemoved }: { member: TeamMember; onClose: () => void; onRemoved: (hooks: number, invitations: number) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const who = member.name || member.email;
-  const go = async () => {
-    setBusy(true);
-    const result = await removeMember(member.id);
-    setBusy(false);
-    if (!result.ok) {
-      setErr(result.message);
-      return;
-    }
-    onRemoved(result.data.deleted_hooks, result.data.deleted_invitations);
-  };
   return (
-    <Modal
-      title={`Retirer ${who} ?`}
+    <StepUpModal
+      title={`Retirer ${member.name || member.email} ?`}
       description="Le compte est supprimé définitivement et ses sessions sont révoquées. Ses déploiements restent dans l'historique. Les deploy hooks et les invitations en attente qu'il a créés sont supprimés avec lui."
-      width={460}
+      action="Retirer"
+      icon="Trash"
+      run={(stepUp) => removeMember(member.id, stepUp)}
       onClose={onClose}
-      footer={
-        <>
-          <Button onClick={onClose}>Annuler</Button>
-          <Button variant="inverse" icon={busy ? "Loader" : "Trash"} disabled={busy} onClick={() => void go()}>
-            Retirer
-          </Button>
-        </>
-      }
-    >
-      {err && <FormError>{err}</FormError>}
-    </Modal>
+      onDone={(data) => onRemoved(data.deleted_hooks, data.deleted_invitations)}
+    />
   );
 }
 
-/** Remise a zero du second facteur : le mot de passe de l'auteur est redemande (re-authentification). */
+/** Remise a zero du second facteur d'un membre. */
 function ResetMfaModal({ member, onClose, onDone }: { member: TeamMember; onClose: () => void; onDone: () => void }) {
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const who = member.name || member.email;
-  const go = async () => {
-    if (!password || busy) return;
-    setBusy(true);
-    const result = await resetMemberMfa(member.id, password);
-    setBusy(false);
-    if (!result.ok) {
-      setErr(result.message);
-      return;
-    }
-    onDone();
-  };
   return (
-    <Modal
-      title={`Réinitialiser le 2FA de ${who} ?`}
+    <StepUpModal
+      title={`Réinitialiser le 2FA de ${member.name || member.email} ?`}
       description="L'application d'authentification, les passkeys et les codes de secours sont supprimés, et ses sessions sont fermées. Il se reconnecte avec son mot de passe, puis ajoute un nouveau facteur."
-      width={460}
+      action="Réinitialiser"
+      icon="ShieldX"
+      run={(stepUp) => resetMemberMfa(member.id, stepUp)}
       onClose={onClose}
-      footer={
-        <>
-          <Button onClick={onClose}>Annuler</Button>
-          <Button variant="inverse" icon={busy ? "Loader" : "ShieldX"} disabled={!password || busy} onClick={() => void go()}>
-            Réinitialiser
-          </Button>
-        </>
-      }
-    >
-      <TextField label="Votre mot de passe" type="password" autoComplete="current-password" value={password} onChange={(v) => { setPassword(v); setErr(""); }} />
-      {err && <FormError>{err}</FormError>}
-    </Modal>
+      onDone={onDone}
+    />
   );
 }
 
 type Dialog =
   | { kind: "invite" }
+  | { kind: "role"; member: TeamMember; role: TeamRole }
+  | { kind: "reset-link"; member: TeamMember }
   | { kind: "reset-mfa"; member: TeamMember }
   | { kind: "remove"; member: TeamMember }
   | { kind: "link"; title: string; description: string; link: string };
@@ -265,19 +297,6 @@ function MembersView({ me, members, invitations }: { me: { id: string; role: str
 
   const refresh = () => Promise.all([client.invalidateQueries({ queryKey: TEAM_MEMBERS_QUERY_KEY }), client.invalidateQueries({ queryKey: TEAM_INVITATIONS_QUERY_KEY })]);
 
-  const setRole = async (m: TeamMember, role: TeamRole) => {
-    setErr("");
-    const result = await changeMemberRole(m.id, role);
-    if (!result.ok) return setErr(result.message);
-    flash(`${m.name || m.email} → ${roleName(role)}`);
-    await refresh();
-  };
-  const resetLink = async (m: TeamMember) => {
-    setErr("");
-    const result = await createResetLink(m.id);
-    if (!result.ok) return setErr(result.message);
-    setDialog({ kind: "link", title: "Lien de réinitialisation", description: `À transmettre à ${m.name || m.email} : valable 30 minutes, à usage unique.`, link: result.data.link });
-  };
   const cancel = async (i: PendingInvitation) => {
     setErr("");
     const result = await cancelInvitation(i.id);
@@ -316,7 +335,7 @@ function MembersView({ me, members, invitations }: { me: { id: string; role: str
           const items: MenuItem[] = m.pending
             ? [removal]
             : [
-                { icon: "KeyRound", label: "Lien de réinitialisation", onSelect: () => void resetLink(m) },
+                { icon: "KeyRound", label: "Lien de réinitialisation", onSelect: () => setDialog({ kind: "reset-link", member: m }) },
                 ...(m.two_factor ? [{ icon: "ShieldX", label: "Réinitialiser le 2FA", onSelect: () => setDialog({ kind: "reset-mfa", member: m }) } as MenuItem] : []),
                 "separator",
                 removal,
@@ -334,7 +353,7 @@ function MembersView({ me, members, invitations }: { me: { id: string; role: str
                   <span style={{ ...lbl, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.email}</span>
                 </div>
               </div>
-              {manage && !m.pending ? <RolePicker member={m} roles={roles} onChange={(r) => void setRole(m, r)} /> : <span><RoleBadge id={m.role} /></span>}
+              {manage && !m.pending ? <RolePicker member={m} roles={roles} onChange={(r) => setDialog({ kind: "role", member: m, role: r })} /> : <span><RoleBadge id={m.role} /></span>}
               <span>
                 {m.two_factor ? (
                   <span style={{ display: "flex", alignItems: "center", gap: 6, font: "400 12px/1 var(--font-sans)", color: "var(--text-body)" }}>
@@ -390,6 +409,32 @@ function MembersView({ me, members, invitations }: { me: { id: string; role: str
             setDialog({ kind: "link", title: "Invitation créée", description: "Transmettez ce lien à l'invité : il est valable 72 heures et à usage unique.", link });
             void refresh();
           }}
+        />
+      )}
+      {dialog?.kind === "role" && (
+        <StepUpModal
+          title={`Changer le rôle de ${dialog.member.name || dialog.member.email} ?`}
+          description={`Nouveau rôle : ${roleName(dialog.role)}. Les autres propriétaires en sont avertis.`}
+          action="Confirmer"
+          icon="Check"
+          run={(stepUp) => changeMemberRole(dialog.member.id, dialog.role, stepUp)}
+          onClose={() => setDialog(null)}
+          onDone={() => {
+            flash(`${dialog.member.name || dialog.member.email} → ${roleName(dialog.role)}`);
+            setDialog(null);
+            void refresh();
+          }}
+        />
+      )}
+      {dialog?.kind === "reset-link" && (
+        <StepUpModal
+          title={`Lien de réinitialisation pour ${dialog.member.name || dialog.member.email} ?`}
+          description="Un lien à usage unique, valable 30 minutes, permet de choisir un nouveau mot de passe. Les autres propriétaires en sont avertis."
+          action="Générer le lien"
+          icon="KeyRound"
+          run={(stepUp) => createResetLink(dialog.member.id, stepUp)}
+          onClose={() => setDialog(null)}
+          onDone={(data) => setDialog({ kind: "link", title: "Lien de réinitialisation", description: `À transmettre à ${dialog.member.name || dialog.member.email} : valable 30 minutes, à usage unique.`, link: data.link })}
         />
       )}
       {dialog?.kind === "link" && <LinkModal title={dialog.title} description={dialog.description} link={dialog.link} onClose={() => setDialog(null)} />}
