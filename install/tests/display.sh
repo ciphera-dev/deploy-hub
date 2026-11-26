@@ -211,6 +211,28 @@ check "dossier du journal en lien : mode simple" grep -qx 'ciphera : repli dossi
 check "dossier du journal en lien : rien ecrit dans sa cible" test -z "$(ls -A "$work/realdir")"
 check "dossier du journal en lien : sans sequence d'echappement" no_esc "$work/dirlink.out"
 
+# Lien plus haut sur le chemin (dossier final ordinaire, 0700, meme
+# proprietaire) : chemin reel different, refuse.
+mkdir -p "$work/plink" "$work/autre/log"
+chmod 0700 "$work/autre/log"
+ln -s "$work/autre" "$work/plink/p"
+rich_run plink 'INSTALL_LOG_DIR=$W/plink/p/log
+ui_start v9.9.9; say "repli lien parent"' "${utf[@]}"
+check "lien sur le chemin du dossier : mode simple" grep -qx 'ciphera : repli lien parent' "$work/plink.out"
+check "lien sur le chemin du dossier : rien ecrit" test -z "$(ls -A "$work/autre/log")"
+
+# Course : dossier renomme puis remplace par un lien vers un autre dossier
+# 0700 du meme proprietaire juste avant mktemp (mktemp remplace par une
+# fonction qui fait l'echange) : chemin lu dans /proc different, refuse.
+mkdir -p "$work/swap/log" "$work/cible"
+chmod 0700 "$work/swap/log" "$work/cible"
+rich_run swap 'mktemp() { mv "$W/swap/log" "$W/swap/log.ancien"; ln -s "$W/cible" "$W/swap/log"; command mktemp "$@"; }
+ui_start v9.9.9; say "repli course"' "${utf[@]}"
+check "course sur le dossier : mode simple" grep -qx 'ciphera : repli course' "$work/swap.out"
+check "course sur le dossier : rien laisse dans l'autre dossier" test -z "$(ls -A "$work/cible")"
+check "course sur le dossier : rien ecrit dans l'ancien dossier" test -z "$(ls -A "$work/swap/log.ancien")"
+check "course sur le dossier : sans sequence d'echappement" no_esc "$work/swap.out"
+
 mkdir -p "$work/mode/log"
 chmod 0755 "$work/mode/log"
 rich_run mode 'ui_start v9.9.9; say "repli droits"' "${utf[@]}"
@@ -232,6 +254,7 @@ ui_step_begin 2 "Téléchargement" "Telechargement"
 printf "%s\n" "$ui_spin_pid" >"$W/fail/spin.pid"
 say "ligne de contexte 42"
 say "$(printf "controles: C1 \302\233[31m ESC \033[31m BEL \007 fin")"
+say "$(printf "imbrique: \302\302\233\233[32m fin")"
 warn "avertissement avant echec"
 die "signature invalide : rien n est installe"
 echo APRES_DIE' "${utf[@]}"
@@ -245,6 +268,7 @@ check "echec : chemin du journal" has "$work/fail.out" "$work/fail/log/install.l
 check "echec : erreur dans le journal" has "$work/fail/log/install.log" 'ciphera : erreur : signature invalide'
 check "echec : ligne nettoyee montree" has "$work/fail.out" 'controles: C1 [31m ESC [31m BEL  fin'
 check "echec : aucun C1 (C2 9B) a l'ecran" bash -c "! LC_ALL=C grep -q \$'\\302\\233' '$work/fail.out'"
+check "echec : C1 imbrique (C2 C2 9B 9B) retire" has "$work/fail.out" 'imbrique: [32m fin'
 check "echec : aucun BEL a l'ecran" bash -c "! LC_ALL=C grep -q \$'\\007' '$work/fail.out'"
 check "echec : rien apres die" lacks "$work/fail.out" APRES_DIE
 check "echec : spinner arrete" dead "$work/fail/spin.pid"

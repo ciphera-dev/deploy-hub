@@ -209,17 +209,25 @@ ui_log_dir_ok() { # <dossier>
 # renomme en INSTALL_LOG_NAME, et son chemin reel verifie par /proc : un
 # lien pose entre-temps (a la place du dossier ou du fichier) n'est jamais
 # suivi pour ecrire ni pour relire. Ecran sauve sur 3 et 4.
+# Le chemin reel du dossier doit etre INSTALL_LOG_DIR lui-meme (aucun lien
+# sur le chemin), et celui du fichier ouvert exactement
+# INSTALL_LOG_DIR/<nom donne par mktemp> : un dossier renomme puis remplace
+# par un lien vers un autre dossier (meme de root en 0700) est refuse.
 ui_log_open() {
 	ui_log_dir_ok "$INSTALL_LOG_DIR" || return 1
 	ui_real=$(readlink -f "$INSTALL_LOG_DIR") || return 1
-	ui_log_dir_ok "$ui_real" || return 1
-	ui_new=$(umask 077 && mktemp "$ui_real/.install.XXXXXX" 2>/dev/null) || return 1
+	[ "$ui_real" = "$INSTALL_LOG_DIR" ] || return 1
+	ui_new=$(umask 077 && mktemp "$INSTALL_LOG_DIR/.install.XXXXXX" 2>/dev/null) || return 1
+	case "$ui_new" in
+	"$INSTALL_LOG_DIR"/.install.*) ;;
+	*) return 1 ;;
+	esac
 	exec 3>&1 4>&2
 	# Ecriture (1, 2) et relecture (5) du meme journal : voulu.
 	# shellcheck disable=SC2094
 	exec >>"$ui_new" 2>&1 5<"$ui_new"
 	if [ "$(readlink "/proc/$$/fd/1")" != "$ui_new" ] || [ "$(readlink "/proc/$$/fd/5")" != "$ui_new" ] ||
-		! mv -fT "$ui_new" "$ui_real/$INSTALL_LOG_NAME" 2>/dev/null; then
+		! mv -fT "$ui_new" "$INSTALL_LOG_DIR/$INSTALL_LOG_NAME" 2>/dev/null; then
 		exec >&3 2>&4 5<&- 3>&- 4>&-
 		rm -f "$ui_new"
 		return 1
@@ -354,12 +362,12 @@ ui_flush_warnings() {
 
 # Caracteres de controle retires (aucune sequence d'echappement venue d'une
 # sortie de commande) : C0 et DEL, puis C1 (U+0080 a U+009F, octets C2 80 a
-# C2 9F) en UTF-8 ; hors UTF-8, tout octet non ASCII (C1 bruts 80 a 9F
-# compris).
+# C2 9F, retirees jusqu a point fixe) en UTF-8 ; hors UTF-8, tout octet
+# non ASCII (C1 bruts 80 a 9F compris).
 ui_sanitize() {
 	if [ "$ui_utf8" = yes ]; then
 		LC_ALL=C tr -d '\000-\010\013-\037\177' |
-			LC_ALL=C sed "s/$(printf '\302')[$(printf '\200')-$(printf '\237')]//g"
+			LC_ALL=C sed -e ":a" -e "s/$(printf '\302')[$(printf '\200')-$(printf '\237')]//" -e "ta"
 	else
 		LC_ALL=C tr -d '\000-\010\013-\037\177-\377'
 	fi
