@@ -8,32 +8,22 @@ targets = [
 [advisories]
 version = 2
 yanked = "deny"
-# Avis « unmaintained » acceptés (réexamen R39, 2026-11-25 ; décision dans
-# .agents/memory/decisions.md, détail dans docs/security/dependances.md).
-# `unmaintained = "workspace"` : cargo deny ne signale que les crates directes
-# du workspace, aucune n'est concernée. cargo audit les affiche en avertissements
-# (non bloquants). Aucun remplaçant direct n'existe à ce jour :
-# - chrono (RUSTSEC-2026-0543), unsafe-libyaml
-#   (RUSTSEC-2024-0449, tirée par serde_yaml 0.9.34+deprecated, sans avis propre), derivative (RUSTSEC-2024-0388), rustls-pemfile
-#   (RUSTSEC-2025-0134) : tirés par pingora-core 0.9.1, dernière version
-#   publiée ; Pingora reste en 0.9.x (le proxy dépend de ses internes) ;
-# - basic-toml (RUSTSEC-2026-0374), proc-macro-error2 (RUSTSEC-2026-0173) :
-#   macros de compilation de age (i18n-embed-fl), toujours présentes dans
-#   age 0.12.1 ; rien n'est lié au binaire ;
-# - astral-tokio-tar (RUSTSEC-2026-0440) : testcontainers, dev-dependency des
-#   tests du plan de contrôle seulement, toujours dans testcontainers 0.28.0.
-# Réexaminer à chaque montée de pingora, age ou testcontainers.
-# DEP-2 : à réexaminer aussi à chaque nouvelle version de pingora-core ou de
-# webauthn-rs (RUSTSEC-2023-0071, ci-dessus).
-unmaintained = "workspace"
+# Avis « unmaintained » : liste explicite des avis acceptés (réexamen R39
+# 2026-11-25 puis R54, vérification du 2026-11-24 : dernières versions publiées,
+# aucun remplaçant direct). `unmaintained = "all"` : toute nouvelle crate non
+# maintenue, directe ou transitive, fait échouer cargo-deny tant qu'elle n'est
+# pas ajoutée ici avec sa crate parente. Détail dans docs/security/dependances.md
+# et .agents/memory/decisions.md. À réexaminer à chaque montée de pingora, age
+# ou testcontainers.
+unmaintained = "all"
 ignore = [
-    # rsa (attaque Marvin, aucune version corrigée), tiré par webauthn-rs via crypto-glue.
-    # Ciphera ne fait que vérifier des signatures avec des clés publiques : aucun
-    # déchiffrement ni signature RSA avec une clé privée. Décision du 2026-11-21
-    # (.agents/memory/decisions.md), à réexaminer à chaque montée de webauthn-rs.
-    # Les tests de la GitHub App (dev-dependency, même version) ne s'en servent que
-    # pour générer une clé jetable ; le JWT de l'App est signé par ring (2026-11-22).
-    { id = "RUSTSEC-2023-0071", reason = "rsa : vérification par clé publique (WebAuthn) et génération de clés de test seulement ; aucune signature ni déchiffrement par clé privée en production" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45, tirée par pingora-core 0.9.1 (dernière version), pas de remplaçant" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml 0.2.11, tirée par serde_yaml 0.9.34+deprecated puis pingora-core 0.9.1 ; le YAML de Pingora n'est jamais chargé (clippy.toml)" },
+    { id = "RUSTSEC-2024-0388", reason = "derivative 2.2.0, macro de compilation tirée par pingora-core 0.9.1" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0, tirée par pingora-rustls 0.9.1" },
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml 0.1.10, macro de compilation (i18n-config) tirée par age 0.11.5, toujours présente dans age 0.12.1" },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 2.0.1, macro de compilation (i18n-embed-fl) tirée par age 0.11.5, toujours présente dans age 0.12.1" },
+    { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar 0.6.4, dev-dependency de testcontainers (tests du plan de contrôle seulement), toujours dans testcontainers 0.28.0" },
 ]
 
 [licenses]

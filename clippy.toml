@@ -1,0 +1,18 @@
+# Garde-fous clippy.
+#
+# Pingora 0.9.1 sait lire sa configuration dans un fichier YAML (serde_yaml,
+# unsafe-libyaml : crates non maintenues) et dans la ligne de commande. Ciphera
+# construit la configuration dans le code (`crates/proxy/src/lib.rs`) et ne
+# charge jamais de YAML : ces chargeurs sont interdits pour qu'aucun appel ne
+# les réintroduise. Chemins vérifiés dans pingora-core 0.9.1
+# (src/server/configuration/mod.rs et src/server/mod.rs).
+disallowed-methods = [
+    { path = "pingora_core::server::configuration::ServerConf::load_from_yaml", reason = "Ciphera ne charge pas de YAML : construire ServerConf dans le code" },
+    { path = "pingora_core::server::configuration::ServerConf::from_yaml", reason = "Ciphera ne charge pas de YAML : construire ServerConf dans le code" },
+    { path = "pingora_core::server::configuration::ServerConf::load_yaml_with_opt_override", reason = "Ciphera ne charge pas de YAML : construire ServerConf dans le code" },
+    { path = "pingora_core::server::configuration::ServerConf::new", reason = "lit le YAML de Pingora (ligne de commande) : construire ServerConf dans le code" },
+    { path = "pingora_core::server::configuration::ServerConf::new_with_opt_override", reason = "lit le YAML de Pingora : construire ServerConf dans le code" },
+    { path = "pingora_core::server::configuration::Opt::parse_args", reason = "lit la ligne de commande (dont le chemin du YAML) : passer None à Server::new_with_opt_and_conf" },
+    { path = "pingora_core::server::configuration::Opt::parse_from_args", reason = "lit la ligne de commande (dont le chemin du YAML) : passer None à Server::new_with_opt_and_conf" },
+    { path = "pingora_core::server::Server::new", reason = "charge le YAML de Pingora : utiliser Server::new_with_opt_and_conf(None, conf)" },
+]

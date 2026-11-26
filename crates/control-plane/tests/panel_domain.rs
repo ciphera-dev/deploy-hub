@@ -951,7 +951,7 @@ fn test_key() -> String {
     use base64::Engine;
     use rsa::pkcs1::EncodeRsaPrivateKey;
     let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
-    let key = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
+    let key = rsa::PrivateKey::new(&mut rng, 2048).unwrap();
     let der = key.to_pkcs1_der().unwrap();
     let body = base64::engine::general_purpose::STANDARD.encode(der.as_bytes());
     // En-tete PEM factice coupe par concat! : aucune ligne de la source n'imite une vraie cle (scanner de secrets).

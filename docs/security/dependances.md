@@ -160,7 +160,7 @@ OSV.dev ne couvre pas tout : pour chaque ligne, chercher les avis de sécurité,
 
 ## Crates non maintenues acceptées (réexamen du 2026-11-25)
 
-`cargo audit` signale 7 avis « unmaintained » (7 crates, 7 identifiants distincts, sortie « 7 allowed warnings found ») ; `cargo deny check` reste vert (`unmaintained = "workspace"` : seules les crates directes comptent, aucune n'est concernée). Vérification sur crates.io : `pingora-core` 0.9.1 est la dernière version, `age` 0.12.1 et `testcontainers` 0.28.0 gardent les mêmes dépendances signalées ; aucune montée n'apporte donc de gain. Pingora reste en 0.9.x (le proxy s'appuie sur ses internes).
+`cargo audit` signale 7 avis « unmaintained » (7 crates, 7 identifiants distincts, sortie « 7 allowed warnings found ») ; `cargo deny check` reste vert : `unmaintained = "all"` avec les 7 avis listés explicitement dans `deny.toml` (R54), donc toute nouvelle crate non maintenue, directe ou transitive, le fait échouer. Vérification sur crates.io : `pingora-core` 0.9.1 est la dernière version, `age` 0.12.1 et `testcontainers` 0.28.0 gardent les mêmes dépendances signalées ; aucune montée n'apporte donc de gain. Pingora reste en 0.9.x (le proxy s'appuie sur ses internes).
 
 | Crate | Avis | Tirée par | Nature | Décision |
 |---|---|---|---|---|
@@ -173,3 +173,8 @@ OSV.dev ne couvre pas tout : pour chaque ligne, chercher les avis de sécurité,
 | astral-tokio-tar 0.6.4 | RUSTSEC-2026-0440 | testcontainers 0.27.3 | dev-dependency (tests) | acceptée |
 
 À réexaminer à chaque montée de `pingora`, `age` ou `testcontainers`. Le choix est consigné dans `.agents/memory/decisions.md` et `deny.toml`.
+
+## RSA (RUSTSEC-2023-0071) et YAML de Pingora (R54, 2026-11-26)
+
+- `rsa` passe de 0.10.0-rc.19 à 0.10.0, version corrigée de RUSTSEC-2023-0071 (`patched = [">= 0.10.0"]` dans la base RustSec). `crypto-glue` passe de 0.2.2 à 0.2.3 (tirée par webauthn-rs 0.6.2). L'exemption est retirée de `deny.toml` et de `.cargo/audit.toml`.
+- `clippy.toml` interdit les chargeurs YAML et la lecture de la ligne de commande de Pingora 0.9.1 (`ServerConf::load_from_yaml`, `from_yaml`, `load_yaml_with_opt_override`, `new`, `new_with_opt_override`, `Opt::parse_args`, `parse_from_args`, `Server::new`). La configuration du proxy reste construite dans le code (`Server::new_with_opt_and_conf(None, conf)`), donc `serde_yaml` et `unsafe-libyaml` ne traitent jamais de contenu extérieur.
