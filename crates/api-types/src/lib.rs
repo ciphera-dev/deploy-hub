@@ -738,7 +738,7 @@ mod tests {
         let admin = setup::SetupAdmin {
             name: "A".into(),
             email: "a@example.com".into(),
-            password: "test-password-value".into(),
+            password: zeroize::Zeroizing::new("test-password-value".to_string()),
         };
         assert!(!format!("{admin:?}").contains("test-password-value"));
     }

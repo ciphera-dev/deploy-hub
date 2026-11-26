@@ -504,7 +504,14 @@ async fn later(
         .begin()
         .await
         .map_err(|e| db_error("connexion a la base", e))?;
-    schedule_next(&mut tx, job, id, now.saturating_add(TRANSIENT_SECS), failures).await?;
+    schedule_next(
+        &mut tx,
+        job,
+        id,
+        now.saturating_add(TRANSIENT_SECS),
+        failures,
+    )
+    .await?;
     tx.commit()
         .await
         .map_err(|e| db_error("planification du certificat", e))?;
