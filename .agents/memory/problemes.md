@@ -210,3 +210,9 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 - Symptôme : « (a) rotate-ca : cle de la CA suivante masquee au service redemarre » et « cles de la CA masquees au service redemarre » en échec, 9 ms après `rotate-ca` / `--finish`.
 - Cause : course dans le test, pas un défaut de masquage. ciphera.service est `Type=simple` : `systemctl restart` rend la main dès le fork, avant que systemd-executor monte l'espace de noms (`InaccessiblePaths`) et lance le binaire ; `/proc/<pid>/root` montrait encore la racine de l'hôte.
 - Résolu : `ca_key_masked` attend un MainPID nouveau, actif, dont l'exécutable est déjà `/usr/local/bin/ciphera`, puis exige une clé non vide sur l'hôte et vide dans l'espace du service ; diagnostic complet (pid, stat, InaccessiblePaths, mountinfo, journal) en cas d'échec. Le contrôle échoue toujours si la clé est lisible par le service.
+
+## 2026-11-26 — CI rouge (release-scripts) : ubuntu-latest passé à Ubuntu 26.04 (sha256sum uutils)
+- Symptôme : « sha256sum: WARNING: 1 line is improperly formatted » puis « sign-release.sh : empreintes incorrectes » sur la release de test v9.9.5 (nom avec antislash, ajoutée par R42).
+- Cause : `ubuntu-latest` est désormais Ubuntu 26.04, dont `sha256sum` est uutils 0.10.0 ; son `sha256sum -c` ne relit pas ses propres lignes échappées (`\hash  x\y`). GNU coreutils (Debian 12, Ubuntu 24.04) les relit.
+- Résolu : `sign-release.sh` refuse les noms d'archive hors `[A-Za-z0-9._+-]` (les archives de production n'en ont jamais) ; le test écrit les lignes espace/échappée à la main et re-signe `SHA256SUMS` avec minisign, la couverture de `pages-site.sh` est gardée (sous uutils, la release est refusée en entier, plus strict) ; job `release-scripts` épinglé sur `ubuntu-24.04` comme `release.yml`.
+- À surveiller : les autres jobs de ci.yml restent sur `ubuntu-latest` (26.04) ; tout écart coreutils/uutils dans un script shell peut y apparaître.
