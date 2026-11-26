@@ -2109,7 +2109,7 @@ async fn rate_limited_generated_domain_stays_http_and_retries() {
     );
     assert!(cert_notices(&env.state).await.is_empty());
     let routes = domains::route_table(
-        &mut *env.state.db.acquire().await.unwrap(),
+        &mut env.state.db.acquire().await.unwrap(),
         &env.state.cfg,
         env.server,
     )
