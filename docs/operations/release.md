@@ -33,6 +33,7 @@ Dans cet ordre :
    - Cliquer *Create*.
 6. **Environnement `release` et releases immuables.** L'environnement `release` existe déjà : il a été créé à la publication du dépôt. Aller dans Settings → Environments → `release` :
    - *Required reviewers* : coché, avec **au moins deux relecteurs** (`duckysface` et un second compte, distinct de celui qui pousse les tags).
+     Le contrôle compte les entrées de la liste : une équipe compte pour **un seul** relecteur, quel que soit son nombre de membres. Ajouter deux comptes (ou une équipe et un compte), pas une seule équipe.
    - **Prevent self-review** : coché. Celui qui a poussé le tag ne peut pas approuver seul la signature : l'autre relecteur doit le faire.
    - *Save protection rules*.
    - *Deployment branches and tags* : *Selected branches and tags*, avec une seule règle, de type **Tag**, motif `v*`. Aucune branche.
@@ -48,7 +49,7 @@ Dans cet ordre :
    pwsh scripts/release/new-signing-key.ps1 -CheckOnly
    ```
 
-   Le script lit par `gh api` l'environnement `release` (au moins 2 relecteurs, *Prevent self-review*, tags `v*` seulement), le ruleset des tags (étape 5 : actif, motif `v*`, les quatre restrictions, contournement par *Repository admin* seulement) et les releases immuables. Il liste tout ce qui manque et échoue tant qu'un réglage n'est pas en place ; l'étape 7 fait le même contrôle avant tout envoi. gh doit être connecté avec un compte administrateur du dépôt (sinon les rulesets et le réglage des releases immuables ne sont pas lisibles).
+   Le script lit par `gh api` l'environnement `release` (au moins 2 relecteurs, une équipe comptant pour un, *Prevent self-review*, tags `v*` seulement), le ruleset des tags (étape 5 : actif, motif `v*`, les quatre restrictions, contournement par *Repository admin* seulement) et les releases immuables. Il liste tout ce qui manque et échoue tant qu'un réglage n'est pas en place ; l'étape 7 fait le même contrôle avant tout envoi. gh doit être connecté avec un compte administrateur du dépôt : sinon les rulesets, leur liste de contournement et le réglage des releases immuables ne sont pas lisibles (HTTP 403), et le script le dit. Un ruleset d'organisation dont la liste de contournement n'est pas lisible est accepté avec un avertissement ; celle-ci se vérifie alors dans les réglages de l'organisation.
 7. **Créer la clé de production.** Dans votre propre terminal PowerShell 7, à la racine du dépôt. Il faut minisign (`winget install jedisct1.minisign`) et gh connecté (`gh auth login`).
 
    ```powershell

@@ -167,6 +167,21 @@ done
 # la liste signee, ils ne doivent jamais etre servis par le site.
 printf '<p>annexe</p>\n' >"releases/$kept/annexe.html"
 printf 'x\n' >"releases/$kept/.cache"
+# Nom avec saut de ligne dont la seconde ligne est un nom signe : retire.
+nl_name="x
+ciphera-$version-x86_64-unknown-linux-musl.tar.gz"
+printf 'x\n' >"releases/$kept/$nl_name"
+# Release v9.9.5 (bonne cle) dont SHA256SUMS signe un nom avec espace et un
+# nom echappe par sha256sum (ligne commencant par \) ; un fichier non signe
+# porte le debut du nom avec espace.
+sp=v9.9.5
+mkdir -p "dist-$sp" "releases/$sp"
+cp dist/ciphera-*.tar.gz "dist-$sp/"
+printf 'espace\n' >"dist-$sp/ciphera-a b.tar.gz"
+printf 'echappe\n' >"dist-$sp/ciphera-x\\y.tar.gz"
+sh "$root/install/sign-release.sh" "$sp" plain.key plain.pub "dist-$sp" release >/dev/null
+cp "dist-$sp"/* "releases/$sp/"
+printf 'x\n' >"releases/$sp/ciphera-a"
 cat >bin/gh <<'GH'
 #!/bin/sh
 # Bouchon de gh : release list / release view / release download.
@@ -188,7 +203,7 @@ esac
 GH
 chmod +x bin/gh
 export GH_STUB_RELEASES="$work/releases" GH_STUB_LATEST="$version"
-export GH_STUB_TAGS="$version $old $kept $ret"
+export GH_STUB_TAGS="$version $old $kept $ret $sp"
 
 pages() { # <cles retirees> <dist> <version> <sortie>
 	env PATH="$work/bin:$PATH" sh "$root/install/pages-site.sh" ciphera-dev/deploy-hub plain.pub "$@"
@@ -208,6 +223,13 @@ check "site : release signee par une cle inconnue ignoree" test ! -e "site/relea
 check "site : fichier annexe d'une release precedente retire" test ! -e "site/releases/$kept/annexe.html"
 check "site : fichier cache d'une release precedente retire" test ! -e "site/releases/$kept/.cache"
 check "site : avertissement pour le fichier annexe retire" grep -q "$kept.*annexe.html" pages.err
+check "site : nom avec saut de ligne retire" test ! -e "site/releases/$kept/$nl_name"
+check "site : nom signe avec espace garde intact" test -f "site/releases/$sp/ciphera-a b.tar.gz"
+check "site : debut d'un nom signe avec espace retire" test ! -e "site/releases/$sp/ciphera-a"
+check "site : ligne echappee de SHA256SUMS : fichier retire" test ! -e "site/releases/$sp/ciphera-x\\y.tar.gz"
+check "site : avertissement pour la ligne echappee" grep -q "$sp : 1 ligne(s) de SHA256SUMS echappee" pages.err
+check "site : archives ordinaires de v9.9.5 gardees" \
+	test -f "site/releases/$sp/ciphera-$version-x86_64-unknown-linux-musl.tar.gz"
 entries() { # <dossier> : noms des entrees (fichiers caches compris), tries
 	find "$1" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
 }

@@ -186,34 +186,48 @@ function Get-JsonProp($Object, [string]$Name) {
     if ($p) { $p.Value } else { $null }
 }
 
-# Lit <Path> par `gh api` (GET seulement) ; $null si l'appel echoue.
+# Lit <Path> par `gh api` (GET seulement). Renvoie Status (ok, 404, 403 ou
+# erreur) et Data (JSON lu sans enumeration : `[]` reste une liste vide).
 function Get-GitHubJson([string]$Path) {
-    $json = gh api $Path 2>$null
-    if ($LASTEXITCODE -ne 0) { return $null }
-    , (($json -join "`n") | ConvertFrom-Json)
+    $out = @(gh api $Path 2>&1)
+    $code = $LASTEXITCODE
+    $text = ($out | ForEach-Object { "$_" }) -join "`n"
+    if ($code -ne 0) {
+        $status = if ($text -match 'HTTP 404|"status":\s*"404"') { '404' }
+        elseif ($text -match 'HTTP 403|"status":\s*"403"') { '403' }
+        else { 'erreur' }
+        return [pscustomobject]@{ Status = $status; Data = $null }
+    }
+    $json = ($out | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] }) -join "`n"
+    [pscustomobject]@{ Status = 'ok'; Data = ($json | ConvertFrom-Json -NoEnumerate) }
 }
 
-# Vrai si le ruleset <Rs> (detail) protege les tags v* : actif, cible tag,
-# motif refs/tags/v* (ou ~ALL) sans exclusion, creation, mise a jour,
-# suppression et force push restreints, contournement reserve aux
-# administrateurs (role admin du depot, administrateurs de l'organisation).
-# bypass_actors n'est renvoye qu'a un jeton qui peut modifier le ruleset :
-# absent, il n'est pas verifie.
-function Test-TagRuleset($Rs) {
-    if ((Get-JsonProp $Rs 'target') -ne 'tag' -or (Get-JsonProp $Rs 'enforcement') -ne 'active') { return $false }
+$AdminHint = 'connecter gh avec un compte administrateur du depot'
+
+# Etat du ruleset <Rs> (detail) pour les tags v* :
+#   ok          actif, cible tag, motif refs/tags/v* (ou ~ALL) sans exclusion,
+#               creation, mise a jour, suppression et force push restreints,
+#               contournement reserve aux administrateurs (role admin du
+#               depot, administrateurs de l'organisation) ;
+#   no-bypass   conforme, mais bypass_actors absent (GitHub ne le renvoie
+#               qu'a un jeton qui peut modifier le ruleset) ;
+#   non         non conforme.
+function Get-TagRulesetState($Rs) {
+    if ((Get-JsonProp $Rs 'target') -ne 'tag' -or (Get-JsonProp $Rs 'enforcement') -ne 'active') { return 'non' }
     $ref = Get-JsonProp (Get-JsonProp $Rs 'conditions') 'ref_name'
     $include = @(Get-JsonProp $ref 'include')
     $exclude = @(Get-JsonProp $ref 'exclude' | Where-Object { $_ })
-    if (-not ($include -ccontains 'refs/tags/v*' -or $include -ccontains '~ALL')) { return $false }
-    if ($exclude.Count -ne 0) { return $false }
+    if (-not ($include -ccontains 'refs/tags/v*' -or $include -ccontains '~ALL')) { return 'non' }
+    if ($exclude.Count -ne 0) { return 'non' }
     $types = @(Get-JsonProp $Rs 'rules' | ForEach-Object { Get-JsonProp $_ 'type' })
-    foreach ($t in $TagRules) { if ($types -cnotcontains $t) { return $false } }
+    foreach ($t in $TagRules) { if ($types -cnotcontains $t) { return 'non' } }
+    if ($null -eq $Rs.PSObject.Properties['bypass_actors']) { return 'no-bypass' }
     foreach ($a in @(Get-JsonProp $Rs 'bypass_actors' | Where-Object { $_ })) {
         $type = Get-JsonProp $a 'actor_type'
         $admin = ($type -eq 'RepositoryRole' -and (Get-JsonProp $a 'actor_id') -eq 5) -or $type -eq 'OrganizationAdmin'
-        if (-not $admin) { return $false }
+        if (-not $admin) { return 'non' }
     }
-    $true
+    'ok'
 }
 
 # Reglages GitHub exiges avant tout envoi de secret (lecture seule, gh api) :
@@ -227,6 +241,7 @@ function Assert-GitHubReady([string]$Repo) {
     if ($LASTEXITCODE -ne 0) { throw "environnement GitHub '$Environment' introuvable dans $Repo ($ReleaseDoc)" }
     $envInfo = ($envJson -join "`n") | ConvertFrom-Json
     $reviewRule = @(Get-JsonProp $envInfo 'protection_rules' | Where-Object { (Get-JsonProp $_ 'type') -eq 'required_reviewers' })
+    # Une equipe compte pour un seul relecteur, quel que soit son effectif.
     $reviewers = @($reviewRule | ForEach-Object { @(Get-JsonProp $_ 'reviewers') } | Where-Object { $_ })
     $selfReview = @($reviewRule | Where-Object { (Get-JsonProp $_ 'prevent_self_review') -eq $true }).Count -gt 0
     $policy = Get-JsonProp $envInfo 'deployment_branch_policy'
@@ -250,25 +265,57 @@ function Assert-GitHubReady([string]$Repo) {
     }
 
     # Rulesets du depot et herites de l'organisation (une page de 100 suffit).
-    $rulesets = Get-GitHubJson "repos/$Repo/rulesets?includes_parents=true&targets=tag&per_page=100"
-    if ($null -eq $rulesets) {
-        $problems += 'rulesets illisibles (gh api repos/<depot>/rulesets) : droits insuffisants ?'
+    # Un ruleset du depot dont le contournement n'est pas lisible ne compte
+    # pas : seul un ruleset d'organisation est accepte ainsi (avertissement).
+    $list = Get-GitHubJson "repos/$Repo/rulesets?includes_parents=true&targets=tag&per_page=100"
+    if ($list.Status -eq '403') {
+        $problems += "rulesets illisibles (HTTP 403) : $AdminHint"
+    }
+    elseif ($list.Status -ne 'ok') {
+        $problems += "rulesets illisibles (gh api repos/<depot>/rulesets : $($list.Status))"
     }
     else {
         $protected = $false
-        foreach ($r in @($rulesets | Where-Object { (Get-JsonProp $_ 'target') -eq 'tag' -and (Get-JsonProp $_ 'enforcement') -eq 'active' })) {
-            $detail = Get-GitHubJson "repos/$Repo/rulesets/$([int](Get-JsonProp $r 'id'))?includes_parents=true"
-            if ($null -ne $detail -and (Test-TagRuleset $detail)) { $protected = $true; break }
+        $bypassUnreadable = @()
+        $unreadable = @()
+        foreach ($r in @($list.Data | Where-Object { (Get-JsonProp $_ 'target') -eq 'tag' -and (Get-JsonProp $_ 'enforcement') -eq 'active' })) {
+            $id = [int](Get-JsonProp $r 'id')
+            $detail = Get-GitHubJson "repos/$Repo/rulesets/$($id)?includes_parents=true"
+            if ($detail.Status -ne 'ok') { $unreadable += "$id (HTTP $($detail.Status))"; continue }
+            $state = Get-TagRulesetState $detail.Data
+            $source = Get-JsonProp $r 'source_type'
+            if ($null -eq $source) { $source = Get-JsonProp $detail.Data 'source_type' }
+            if ($state -eq 'ok') { $protected = $true; break }
+            if ($state -eq 'no-bypass') {
+                if ($source -eq 'Repository') { $bypassUnreadable += $id; continue }
+                Write-Warning "ruleset d'organisation $id : contournement non verifiable (ruleset d'organisation), accepte"
+                $protected = $true
+                break
+            }
         }
         if (-not $protected) {
-            $problems += 'aucun ruleset de tags actif ne protege refs/tags/v* (Restrict creations, updates, deletions, Block force pushes ; contournement : Repository admin seulement)'
+            if ($bypassUnreadable.Count) {
+                $problems += "contournement du ruleset $($bypassUnreadable -join ', ') illisible : $AdminHint"
+            }
+            if ($unreadable.Count) {
+                $problems += "detail de ruleset illisible : $($unreadable -join ', ')"
+            }
+            if (-not $bypassUnreadable.Count) {
+                $problems += 'aucun ruleset de tags actif ne protege refs/tags/v* (Restrict creations, updates, deletions, Block force pushes ; contournement : Repository admin seulement)'
+            }
         }
     }
 
-    # 404 : releases immuables non activees.
+    # 200 avec enabled=true : activees ; 404 : non activees ; 403 : droits.
     $immutable = Get-GitHubJson "repos/$Repo/immutable-releases"
-    if ((Get-JsonProp $immutable 'enabled') -ne $true) {
+    if ($immutable.Status -eq '403') {
+        $problems += "reglage Immutable releases illisible (HTTP 403) : $AdminHint"
+    }
+    elseif ($immutable.Status -eq '404' -or ($immutable.Status -eq 'ok' -and (Get-JsonProp $immutable.Data 'enabled') -ne $true)) {
         $problems += 'Immutable releases non activees (Settings > General > Releases)'
+    }
+    elseif ($immutable.Status -ne 'ok') {
+        $problems += "reglage Immutable releases illisible ($($immutable.Status))"
     }
 
     if ($problems.Count) {

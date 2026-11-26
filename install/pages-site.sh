@@ -69,12 +69,31 @@ verify() {
 	(cd "$2" && sha256sum -c --strict --quiet SHA256SUMS install.sh.sha256 >/dev/null 2>&1)
 }
 
+# is_signed <nom> : vrai si <nom> est exactement une ligne de $signed
+# (comparaison de chaines ligne a ligne : un nom qui contient un saut de
+# ligne ne correspond jamais).
+is_signed() {
+	while IFS= read -r s; do
+		[ "$s" = "$1" ] && return 0
+	done <<EOF
+$signed
+EOF
+	return 1
+}
+
 # keep_signed <dossier> <release> : apres verify, ne garde que la liste
 # signee (fichiers nommes dans SHA256SUMS, SHA256SUMS, install.sh, leurs
 # .minisig et install.sh.sha256). Toute autre entree (fichier annexe, cache,
 # dossier, lien) est supprimee, avec un avertissement.
+# Lignes de SHA256SUMS : <64 hex><espace><espace ou *><nom>, le nom garde
+# ses espaces. Une ligne echappee (commencant par \, nom avec \ ou saut de
+# ligne) ou mal formee ne garde aucun fichier.
 keep_signed() {
-	signed=$(awk '{ f = $2; sub(/^\*/, "", f); print f }' "$1/SHA256SUMS")
+	signed=$(sed -n 's/^[0-9a-f]\{64\} [ *]//p' "$1/SHA256SUMS")
+	rejected=$(grep -c -v '^[0-9a-f]\{64\} [ *].' "$1/SHA256SUMS" || true)
+	if [ "$rejected" -ne 0 ]; then
+		warn "release $2 : $rejected ligne(s) de SHA256SUMS echappee(s) ou mal formee(s), ignoree(s)"
+	fi
 	removed=
 	for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do
 		[ -e "$p" ] || [ -L "$p" ] || continue
@@ -83,7 +102,7 @@ keep_signed() {
 			case "$name" in
 			SHA256SUMS | SHA256SUMS.minisig | install.sh | install.sh.minisig | install.sh.sha256) continue ;;
 			esac
-			if printf '%s\n' "$signed" | grep -qxF -- "$name"; then
+			if is_signed "$name"; then
 				continue
 			fi
 		fi

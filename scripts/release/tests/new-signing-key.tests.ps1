@@ -79,16 +79,17 @@ function global:gh {
     if ($args[0] -eq 'api' -and $args[1] -like '*/deployment-branch-policies') { return $global:policiesJson }
     if ($args[0] -eq 'api' -and $args[1] -like '*/environments/release') { return $global:envJson }
     if ($args[0] -eq 'api' -and $args[1] -match '/rulesets\?') {
-        if ($null -eq $global:rulesetsJson) { $global:LASTEXITCODE = 1; return '{"message":"Forbidden"}' }
+        if ($null -eq $global:rulesetsJson) { $global:LASTEXITCODE = 1; return '{"message":"Must have admin rights to Repository.","status":"403"}' }
         return $global:rulesetsJson
     }
     if ($args[0] -eq 'api' -and $args[1] -match '/rulesets/(\d+)\?includes_parents=true$') {
         $detail = $global:rulesetDetails[[int]$Matches[1]]
-        if (-not $detail) { $global:LASTEXITCODE = 1; return '{"message":"Not Found"}' }
+        if (-not $detail) { $global:LASTEXITCODE = 1; return '{"message":"Not Found","status":"404"}' }
         return $detail
     }
     if ($args[0] -eq 'api' -and $args[1] -like '*/immutable-releases') {
-        if (-not $global:immutableJson) { $global:LASTEXITCODE = 1; return '{"message":"Not Found"}' }
+        if ($global:immutableJson -eq '403') { $global:LASTEXITCODE = 1; return '{"message":"Must have admin rights to Repository.","status":"403"}' }
+        if (-not $global:immutableJson) { $global:LASTEXITCODE = 1; return '{"message":"Not Found","status":"404"}' }
         return $global:immutableJson
     }
     if ($args[0] -eq 'release' -and $args[1] -eq 'view') {
@@ -190,36 +191,51 @@ try {
     Assert-Refused 'Prevent self-review non renvoye refuse' 'Prevent self-review' {
         $global:envJson = $global:goodEnv -replace '"prevent_self_review":true,', ''
     }
-    Assert-Refused 'aucun ruleset de tags refuse' 'ruleset' {
+    Assert-Refused 'aucun ruleset de tags refuse' 'aucun ruleset de tags actif' {
         $global:rulesetsJson = '[{"id":7,"name":"branche main","target":"branch","enforcement":"active","source_type":"Repository"}]'
     }
-    Assert-Refused 'liste des rulesets illisible refusee' 'rulesets illisibles' {
+    Assert-Refused 'liste des rulesets en 403 : compte administrateur demande' 'rulesets illisibles \(HTTP 403\) : connecter gh avec un compte administrateur' {
         $global:rulesetsJson = $null
     }
-    Assert-Refused 'ruleset en mode evaluate refuse' 'ruleset' {
+    Assert-Refused 'liste des rulesets vide : aucun ruleset' 'aucun ruleset de tags actif' {
+        $global:rulesetsJson = '[]'
+    }
+    Assert-Refused 'liste des rulesets vide : pas de faux message de droits' '^(?!.*illisible).*aucun ruleset de tags actif' {
+        $global:rulesetsJson = '[]'
+    }
+    Assert-Refused 'detail du ruleset en 404 refuse' 'detail de ruleset illisible : 42 \(HTTP 404\).*aucun ruleset de tags actif' {
+        $global:rulesetDetails = @{}
+    }
+    Assert-Refused 'ruleset du depot sans bypass_actors refuse' 'contournement du ruleset 42 illisible : connecter gh avec un compte administrateur du depot' {
+        $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace ',"bypass_actors":\[[^\]]*\]', '') }
+    }
+    Assert-Refused 'ruleset en mode evaluate refuse' 'aucun ruleset de tags actif' {
         $global:rulesetsJson = $global:goodRulesets -replace '"tag","enforcement":"active"', '"tag","enforcement":"evaluate"'
         $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace '"enforcement":"active"', '"enforcement":"evaluate"') }
     }
-    Assert-Refused 'ruleset sans Restrict deletions refuse' 'ruleset' {
+    Assert-Refused 'ruleset sans Restrict deletions refuse' 'aucun ruleset de tags actif' {
         $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace ',\{"type":"deletion"\}', '') }
     }
-    Assert-Refused 'ruleset sur un autre motif refuse' 'ruleset' {
+    Assert-Refused 'ruleset sur un autre motif refuse' 'aucun ruleset de tags actif' {
         $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace 'refs/tags/v\*', 'refs/tags/release-*') }
     }
-    Assert-Refused 'ruleset avec exclusion refuse' 'ruleset' {
+    Assert-Refused 'ruleset avec exclusion refuse' 'aucun ruleset de tags actif' {
         $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace '"exclude":\[\]', '"exclude":["refs/tags/v0*"]') }
     }
-    Assert-Refused 'ruleset contournable par un utilisateur refuse' 'ruleset' {
+    Assert-Refused 'ruleset contournable par un utilisateur refuse' 'aucun ruleset de tags actif' {
         $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace '"actor_id":5,"actor_type":"RepositoryRole"', '"actor_id":99,"actor_type":"User"') }
     }
-    Assert-Refused 'ruleset contournable par le role write refuse' 'ruleset' {
+    Assert-Refused 'ruleset contournable par le role write refuse' 'aucun ruleset de tags actif' {
         $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace '"actor_id":5', '"actor_id":4') }
     }
-    Assert-Refused 'releases immuables non activees (404) refusees' 'Immutable releases' {
+    Assert-Refused 'releases immuables non activees (404) refusees' 'Immutable releases non activees' {
         $global:immutableJson = ''
     }
-    Assert-Refused 'releases immuables enabled=false refusees' 'Immutable releases' {
+    Assert-Refused 'releases immuables enabled=false refusees' 'Immutable releases non activees' {
         $global:immutableJson = '{"enabled":false,"enforced_by_owner":false}'
+    }
+    Assert-Refused 'releases immuables en 403 : compte administrateur demande' 'Immutable releases illisible \(HTTP 403\) : connecter gh avec un compte administrateur' {
+        $global:immutableJson = '403'
     }
     Assert-Refused 'tous les problemes listes ensemble' 'au moins 2 relecteurs.*Immutable releases' {
         $global:envJson = $global:oneReviewerEnv
@@ -227,16 +243,24 @@ try {
     }
     Assert 'reglages GitHub refuses : aucun secret envoye' { @(Get-Sets).Count -eq 0 }
 
-    # Variantes acceptees : ruleset d'organisation sur ~ALL sans bypass_actors
-    # (non renvoye a un jeton sans droit d'ecriture sur le ruleset), equipe
-    # parmi les relecteurs.
+    # Ruleset d'organisation sur ~ALL sans bypass_actors (non renvoye a un
+    # jeton sans droit d'ecriture sur le ruleset) : accepte avec un
+    # avertissement ; equipe parmi les relecteurs (compte pour un).
     Set-GoodRepo
     $global:rulesetsJson = '[{"id":43,"name":"org","target":"tag","enforcement":"active","source_type":"Organization"}]'
     $global:rulesetDetails = @{ 43 = '{"id":43,"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["~ALL"],"exclude":[]}},"rules":[{"type":"creation"},{"type":"update"},{"type":"deletion"},{"type":"non_fast_forward"}]}' }
     $global:envJson = $global:goodEnv -replace '\{"type":"User","reviewer":\{"login":"relecteur-b"\}\}', '{"type":"Team","reviewer":{"slug":"mainteneurs"}}'
     $ok = $true
-    try { Assert-GitHubReady 'ciphera-dev/deploy-hub' *> $null } catch { $ok = $false; Write-Host $_.Exception.Message }
+    $warnings = @()
+    try {
+        $warnings = @(Assert-GitHubReady 'ciphera-dev/deploy-hub' 3>&1 6>$null |
+                Where-Object { $_ -is [Management.Automation.WarningRecord] })
+    }
+    catch { $ok = $false; Write-Host $_.Exception.Message }
     Assert 'ruleset d''organisation ~ALL et equipe acceptes' { $ok }
+    Assert 'ruleset d''organisation sans bypass_actors : avertissement' {
+        @($warnings | Where-Object { $_.Message -match 'contournement non verifiable \(ruleset d''organisation\)' }).Count -eq 1
+    }
     Set-GoodRepo
 
     # -CheckOnly : verifie les reglages, rien d'autre (ni minisign, ni secret).
