@@ -65,6 +65,7 @@ Intentions : dashboard, backend. Source : `references/stacks.md` + écrans du de
   - certificats émis par la mini-PKI (`crates/pki`), rotation automatique ;
   - révocation à la suppression d'un serveur ;
   - le jeton d'enrôlement est à usage unique, expire en 15 min et n'est stocké que sous forme de hash.
+  - État v0.1 : un seul agent, local ; le lien n'écoute qu'en boucle locale (refus au démarrage sinon), révocation par `ciphera admin revoke-agent`, rotation de la CA par `ciphera admin rotate-ca`. L'enrôlement par jeton est décrit pour v0.2 dans `docs/adr/0004-enrolement-des-agents.md`.
 - [ ] Terminal (ADR 0002) :
   - désactivé par défaut ;
   - réservé aux rôles owner/admin, avec re-auth + MFA ;
@@ -76,7 +77,7 @@ Intentions : dashboard, backend. Source : `references/stacks.md` + écrans du de
 ### Secrets et données
 - [ ] Variables secrètes, tokens de connecteurs, clés S3/Supabase, clé Tailscale : chiffrement enveloppe age côté serveur, **écriture seule** (l'API ne renvoie jamais la valeur), export `.env` sans les secrets.
 - [ ] Jetons API `cph_*` stockés en hash (argon2/sha-256 + sel), affichés une seule fois. Préfixe et 4 derniers caractères seulement en liste, avec permissions, expiration et liste d'IP autorisées.
-- [ ] Secrets de webhook (`whsec_*`) et URL de deploy hooks : rotation possible, comparaison à temps constant, signature HMAC SHA-256 vérifiée sur les webhooks Git entrants.
+- [ ] Secrets de webhook (`whsec_*`) et URL de deploy hooks : rotation possible, comparaison à temps constant, signature HMAC SHA-256 vérifiée sur les webhooks Git entrants. État v0.1 : jeton de deploy hook lu dans l'en-tête `X-Ciphera-Hook-Token` (`?token=` déprécié), expiration de 90 jours par défaut (365 au plus).
 - [ ] Données personnelles (profil, sessions avec IP et géolocalisation, audit) : minimisation, export et suppression (RGPD), rétention configurable des journaux d'accès et des IP d'attaquants.
 - [ ] Le contenu des tickets envoyé à un LLM tiers passe par le serveur (clés jamais côté client), avec filtrage des secrets et consentement explicite.
 
@@ -85,13 +86,15 @@ Intentions : dashboard, backend. Source : `references/stacks.md` + écrans du de
 - [ ] Inscription publique désactivée par défaut ; ajout des membres par invitation.
 - [ ] WebAuthn (passkeys) + TOTP (seed chiffré) + codes de secours (hashés). 2FA obligatoire activable pour l'organisation, SSO SAML/OIDC sans licence.
 - [ ] Re-auth + MFA pour : reset du mot de passe root, révélation des identifiants de base de données, création de jeton, restauration, suppression d'organisation, ouverture du terminal.
+  - État v0.1 : step-up mot de passe + second facteur pour la suppression de l'organisation, la création d'un deploy hook et la prolongation de son expiration ; mot de passe seul pour la réinitialisation du second facteur d'un membre. Les autres actions de la liste n'existent pas encore en v0.1.
 
 ### Livraison
 - [ ] `install.sh` (ADR 0003) :
   - minisign obligatoire, puis SHA-256 ;
   - fonction `main` appelée à la dernière ligne, `--proto '=https' --tlsv1.2`, `mktemp` + `trap` ;
   - arrêt sans installer si une vérification échoue.
-- [ ] Clé de signature des releases dans un environnement CI protégé, jamais dans le dépôt. Procédure de rotation et de révocation documentée.
+- [ ] Clé de signature des releases dans un environnement CI protégé, jamais dans le dépôt. Procédure de rotation et de révocation documentée (`docs/security/release-signing.md`).
+- [ ] `latest.json` signé par la clé de release, avec une échéance (120 jours) ; vérifié par le plan de contrôle et l'updater ; re-signé chaque mois. Aucun mode test dans le script ni dans le binaire publiés.
 - [ ] SPA servie avec CSP stricte, HSTS, `frame-ancestors 'none'` et sans aucune ressource tierce (CDN, polices, favicons).
 - [ ] CI : `cargo audit`, `cargo deny`, `npm audit` / `osv-scanner`, `shellcheck`, `actionlint` et `npx design-to-dev ai-traces scan . --strict` avant chaque merge.
 

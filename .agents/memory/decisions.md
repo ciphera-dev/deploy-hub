@@ -1304,3 +1304,14 @@ Format : titre (date), Décision, Raison, Alternatives écartées, Validée par.
 - Agent : au plus 2 CA dans `TrustedCas` (courante et suivante), qui doivent couvrir le lien en cours et le certificat de l'agent.
 - Panneau : `StepUpModal` partagé (`web/src/features/settings/StepUpModal.tsx`) pour l'écran Équipe et les réglages de notification.
 - Laissés : pendant le début d'une rotation de CA, l'agent ne peut pas distinguer la CA suivante légitime d'une racine étrangère (le plan de contrôle authentifié peut en ajouter une, sans pouvoir retirer la CA courante ; fermer ce point demanderait un changement de protocole) ; le réglage du domaine du panneau n'exige pas de step-up (il ne coupe pas les avis) ; les adresses des propriétaires destinataires restent dans `jobs.payload` jusqu'à la purge des tâches terminées (7 jours), aucune route ni journal ne les expose ; un destinataire dont le compte a disparu peut recevoir jusqu'à 6 copies (nouvelles tentatives sans ligne de livraison) ; deux propriétaires qui se retirent l'un l'autre en même temps : le second peut recevoir une erreur 500, le résultat reste correct (un propriétaire au moins).
+## 2026-11-26 — Task R14 : réinitialisation du second facteur (entrée ajoutée à la clôture R44)
+- Entrée manquante relevée par R44, reconstituée depuis le code (commits 4a6792a, bb2711c, 1bfb397).
+- Origine du lien de réinitialisation gardée en base (migration `0030_password_reset_origin.sql`) : un lien émis pour un membre ne sert pas à autre chose.
+- `reset-mfa` depuis le panneau : réservé à un rang supérieur à la cible (`Role::can_manage`), avec re-saisie du mot de passe de l'auteur ; rang de la cible relu dans la transaction.
+- Recours hors panneau : `ciphera admin reset-mfa <email>` (accès root à l'hôte).
+- Laissés : empreinte du mot de passe de l'auteur non revérifiée dans la transaction ; la commande CLI ne notifie pas ; syntaxe des commandes CLI non homogène ; un refus tardif compte comme un échec de connexion ; pas de step-up à second facteur (voir la relecture R44).
+
+## 2026-11-26 — Task R44 : clôture de l'audit du 2026-11-24
+- Rejeu de la couverture des 139 identifiants : 132 résolus, 2 résiduels acceptés (DEP-1, D-BUILD-6), 5 actions de l'utilisateur (H09-1, H09-3, H11-1, H11-2, D-REPO-3), aucun à traiter. Détail : `docs/security/audit-2026-11-24-cloture.md`.
+- Anciennes entrées de problemes.md marquées « Résolu » seulement après vérification dans le code ; résiduels regroupés dans « Résiduels acceptés v0.1.0 ».
+- Relecture différentielle consultative : aucun point critique ; un point important (changements d'équipe privilégiés sans step-up) laissé à la décision de l'utilisateur, pas corrigé dans cette tâche (aucune correction de code en R44).

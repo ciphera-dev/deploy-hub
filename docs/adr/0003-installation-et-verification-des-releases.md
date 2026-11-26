@@ -11,7 +11,7 @@ La version auto-hébergée, la seule qui existe, doit s'installer en une command
 
 **Commande publique :**
 ```sh
-curl -fsSL https://get.ciphera.ch/install.sh | sh
+curl -fsSL https://get.ciphera.ch/install.sh | sudo sh
 ```
 
 **Script `install/install.sh`** (POSIX sh, publié avec chaque release) :
@@ -54,10 +54,12 @@ curl -fsSL https://get.ciphera.ch/install.sh | sh
 - L'anti-rétrogradation reste : l'updater refuse toute version inférieure ou égale à la version installée. Un ancien `latest.json` rejoué ne peut donc que cacher une version plus récente, ce que l'échéance borne à 120 jours.
 - `refresh-latest.yml` (mensuel, environnement `release` avec approbation, puis `github-pages`) re-signe le `latest.json` de la dernière release avec une nouvelle échéance, sans en changer la version, et republie le site.
 
+**Note (chaîne de release, audit 2026-11-24, R42) :** le site `get.ciphera.ch` (`install/pages-site.sh`) ne sert que des releases vérifiées (minisign puis SHA-256) et, pour chacune, seulement sa liste signée ; tout autre fichier est retiré avec un avertissement. Les réglages GitHub de la release (environnements protégés, approbation) se contrôlent sans rien modifier par `scripts/release/new-signing-key.ps1 -CheckOnly`.
+
 ## Conséquences
 
 - (+) Installation en une commande ; une altération est détectée avant toute exécution.
-- (−) La clé minisign est à garder, à faire tourner et à révoquer si besoin (`docs/security/release-signing.md`, à rédiger).
+- (−) La clé minisign est à garder, à faire tourner et à révoquer si besoin (procédure dans `docs/security/release-signing.md`).
 - (−) `curl | sh` reste un acte de confiance envers le domaine `get.ciphera.ch`, d'où le mode prudent documenté.
 
 ## Alternatives écartées
