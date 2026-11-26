@@ -395,6 +395,12 @@ fn file_name(rel: &str) -> &str {
 /// le panneau que s'ils n'ont pas change depuis.
 pub const CA_NEXT_OWN: &str = "ca/ca-next.own";
 
+/// Constat d'une fin de rotation interrompue terminee par la reprise
+/// ([`settle_locked`], root 0600) : `rotate-ca --finish` le consomme
+/// ([`take_finished`]) pour l'annoncer et redemarrer le service, meme si
+/// c'est le signataire qui a termine la fin.
+pub const CA_FINISHED: &str = "ca/.rotation-finished";
+
 /// CA courante et, si `ca/ca-next.crt` existe (rotation en cours), CA
 /// suivante : `ca/ca-next.key` aux memes conditions que la cle courante
 /// ([`load_cas`] pour root seulement). Sous le verrou des paires de `ca/`,
@@ -440,6 +446,15 @@ fn read_optional(ca: &fsio::Dir, rel: &str) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
+/// Cle lue comme un secret (root 0600), effacee de la memoire apres usage.
+fn read_key_optional(ca: &fsio::Dir, rel: &str) -> io::Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
+    match ca.read_secret(file_name(rel), MAX_CA_BYTES) {
+        Ok(b) => Ok(Some(zeroize::Zeroizing::new(b))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// Reprise d'une fin de rotation interrompue, sous le verrou des paires de
 /// `ca/` (root) :
 /// - remplacement de `ca.crt` + `ca.key` interrompu : termine ou annule
@@ -450,7 +465,9 @@ fn read_optional(ca: &fsio::Dir, rel: &str) -> io::Result<Option<Vec<u8>>> {
 ///   restes retires (debut interrompu, ou fin interrompue entre les deux
 ///   suppressions).
 ///
-/// Vrai si une fin de rotation a ete terminee ici.
+/// Vrai si une fin de rotation a ete terminee ici : la paire de la CA est
+/// alors remise aux droits attendus (`ca.key` 0600, `ca.crt` 0640) et le
+/// constat [`CA_FINISHED`] est ecrit.
 fn settle_locked(config_dir: &Path, ca: &fsio::Dir) -> io::Result<bool> {
     let mut finished = super::certs::recover_pair_locked(config_dir, (CA_CRT, CA_KEY))?;
     let next = read_optional(ca, CA_NEXT_CRT)?;
@@ -469,11 +486,11 @@ fn settle_locked(config_dir: &Path, ca: &fsio::Dir) -> io::Result<bool> {
         }
         None => {
             // Cle seule : celle de la CA courante si la fin l'avait deja
-            // installee.
-            let key = read_optional(ca, CA_NEXT_KEY)?;
-            if let Some(key) = key {
-                let current = read_optional(ca, CA_KEY)?;
-                if current.is_some_and(|c| c == key) {
+            // installee. Illisible comme secret (droits) : retiree sans
+            // comparaison.
+            if let Ok(Some(key)) = read_key_optional(ca, CA_NEXT_KEY) {
+                let current = read_key_optional(ca, CA_KEY)?;
+                if current.is_some_and(|c| *c == *key) {
                     finished = true;
                 }
             }
@@ -483,7 +500,29 @@ fn settle_locked(config_dir: &Path, ca: &fsio::Dir) -> io::Result<bool> {
     if stale {
         remove_next_locked(ca)?;
     }
+    if finished {
+        ca.harden(file_name(CA_KEY), 0o600, true)?;
+        ca.harden(file_name(CA_CRT), 0o640, false)?;
+        ca.write_atomic_mode(file_name(CA_FINISHED), b"", 0o600, true)?;
+        ca.sync()?;
+    }
     Ok(finished)
+}
+
+/// Constat d'une fin de rotation terminee par la reprise ([`CA_FINISHED`]) :
+/// vrai s'il existait (il est alors retire). Sous le verrou des paires.
+pub fn take_finished(config_dir: &Path) -> io::Result<bool> {
+    let _lock = super::certs::lock_pairs(config_dir, CA_CRT)?;
+    let ca = fsio::Dir::open(&config_dir.join("ca"))?;
+    match ca.read_file(file_name(CA_FINISHED), MAX_CA_BYTES) {
+        Ok(_) => {
+            ca.remove(file_name(CA_FINISHED))?;
+            ca.sync()?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// Fichiers de la suivante retires : certificat d'abord (sans lui, plus de
@@ -504,6 +543,8 @@ fn remove_next_locked(ca: &fsio::Dir) -> io::Result<()> {
 pub fn write_next_ca(config_dir: &Path, next: &pki::Ca, own: &str) -> io::Result<()> {
     let _lock = super::certs::lock_pairs(config_dir, CA_CRT)?;
     let ca = fsio::Dir::open(&config_dir.join("ca"))?;
+    // Constat d'une rotation precedente : perime.
+    ca.remove(file_name(CA_FINISHED))?;
     ca.write_atomic_mode(file_name(CA_NEXT_OWN), own.as_bytes(), 0o600, true)?;
     ca.write_atomic_mode(
         file_name(CA_NEXT_KEY),

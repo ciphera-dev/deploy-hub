@@ -227,7 +227,10 @@ pub struct Finished {
 pub async fn finish(db: &PgPool, config_dir: &Path) -> Result<Finished, RotationError> {
     let (cas, resumed) = prepare(config_dir)?;
     let Some(next) = &cas.next else {
-        if resumed {
+        // Fin terminee ici, ou deja par le signataire (constat) : rien
+        // d'autre a faire que l'annoncer (la commande redemarre le service).
+        let taken = signer::take_finished(config_dir).map_err(|e| err(signer::CA_FINISHED, e))?;
+        if resumed || taken {
             let fingerprint = ca_fingerprint(&cas.current);
             audit(db, "ca.rotate.cli", &fingerprint).await;
             return Ok(Finished {
@@ -265,11 +268,13 @@ pub async fn finish(db: &PgPool, config_dir: &Path) -> Result<Finished, Rotation
             ))
         })?;
     if own_identities(config_dir)? != recorded {
-        return Err(RotationError(
+        return Err(RotationError(format!(
             "la cle ou les SAN du lien ou du panneau ont change depuis le debut de la \
-             rotation : rien n'est re-signe (verifier tls/link.crt et tls/panel.crt)"
-                .into(),
-        ));
+             rotation : rien n'est re-signe (verifier tls/link.crt et tls/panel.crt) ; si \
+             ce changement est voulu, supprimer {} puis relancer ciphera admin rotate-ca \
+             (il refait le releve), puis --finish",
+            signer::CA_NEXT_OWN
+        )));
     }
     // 1. Lien et panneau re-signes par la suivante (meme cle) : tous les
     //    agents s'y fient deja.

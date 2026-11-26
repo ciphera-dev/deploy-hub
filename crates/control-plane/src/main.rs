@@ -309,12 +309,16 @@ async fn run_rotate_ca(finish: bool, status: bool) -> i32 {
                         Ok(db) => rotation::audit(&db, "ca.rotate.start", &fp).await,
                         Err(e) => eprintln!("attention : debut de rotation non journalise : {e}"),
                     }
-                    format!(
+                    let mut out = format!(
                         "CA suivante creee ({fp}) : les agents connectes passent a elle \
                          d'eux-memes en quelques minutes ; suivre avec ciphera admin \
                          rotate-ca --status, puis terminer avec ciphera admin rotate-ca \
                          --finish (une rotation commencee ne s'annule pas)"
-                    )
+                    );
+                    // Redemarrage : la cle de la CA suivante, creee apres le
+                    // demarrage du service, lui est masquee (InaccessiblePaths).
+                    restart_notice(&mut out);
+                    out
                 }
                 Start::InProgress(fp) => format!(
                     "rotation deja en cours (CA suivante {fp}) : ciphera admin rotate-ca --status"
@@ -359,13 +363,7 @@ async fn run_rotate_ca(finish: bool, status: bool) -> i32 {
         // Redemarrage du service : lien et panneau relus, agents reconnectes,
         // et masquage des cles de la CA (InaccessiblePaths) repose sur les
         // nouveaux fichiers.
-        match restart_service("ciphera.service") {
-            Ok(()) => out.push_str(" ; service ciphera redemarre"),
-            Err(e) => out.push_str(&format!(
-                " ; redemarrage du service impossible ({e}) : lancer \
-                 systemctl restart ciphera"
-            )),
-        }
+        restart_notice(&mut out);
         Ok(out)
     }
     .await;
@@ -378,6 +376,17 @@ async fn run_rotate_ca(finish: bool, status: bool) -> i32 {
             eprintln!("erreur : {e}");
             1
         }
+    }
+}
+
+/// Redemarre `ciphera.service` et complete `out` (ou dit quoi lancer).
+fn restart_notice(out: &mut String) {
+    match restart_service("ciphera.service") {
+        Ok(()) => out.push_str(" ; service ciphera redemarre"),
+        Err(e) => out.push_str(&format!(
+            " ; redemarrage du service impossible ({e}) : lancer \
+             systemctl restart ciphera"
+        )),
     }
 }
 

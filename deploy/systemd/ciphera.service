@@ -43,8 +43,10 @@ ReadWritePaths=-/etc/ciphera/tls
 # Cles de la CA (courante, et suivante pendant une rotation) : jamais
 # lisibles par le service, meme sur une installation anterieure ou elles
 # appartenaient encore au compte ciphera (signataire root separe,
-# ciphera-certsign.service). Masquage pose au demarrage du service :
-# `ciphera admin rotate-ca --finish` le redemarre.
+# ciphera-certsign.service). Masquage pose au demarrage du service (un
+# chemin absent a ce moment n'est pas masque) : `ciphera admin rotate-ca`
+# le redemarre apres avoir ecrit ca-next.key, et `--finish` apres avoir
+# remplace ca.key.
 InaccessiblePaths=-/etc/ciphera/ca/ca.key
 InaccessiblePaths=-/etc/ciphera/ca/ca-next.key
 ProtectHome=yes

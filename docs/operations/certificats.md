@@ -185,8 +185,10 @@ sudo ciphera admin rotate-ca --finish   # 3. ancienne CA retiree
    certificats du lien et du panneau (`ca/ca-next.own` : cle publique et
    SAN, root 0600), `/etc/ciphera/ca/ca-next.key` (root 0600) puis
    `ca-next.crt` (root, groupe `ciphera`, 0640). Le debut est journalise en
-   base (`ca.rotate.start`). Relancee, la commande ne change rien. En
-   quelques secondes, le service :
+   base (`ca.rotate.start`), puis la commande redemarre le service
+   `ciphera` : la nouvelle cle lui est masquee (`InaccessiblePaths` ne
+   masque qu'un fichier present au demarrage). Relancee, la commande ne
+   change rien. Le service :
    - accepte les certificats d'agent des deux CA sur le lien ;
    - reconnecte les agents connectes ; a chaque connexion, il leur envoie
      les deux CA (`TrustedCas`), que l'agent ecrit dans
@@ -222,12 +224,25 @@ sudo ciphera admin rotate-ca --finish   # 3. ancienne CA retiree
    `ca/.pair.lock`, le signataire et chaque commande root terminent d'abord
    un remplacement de `ca.crt` + `ca.key` interrompu, puis retirent les
    restes de la suivante (`ca-next.crt` identique a `ca.crt`, ou
-   `ca-next.key` sans `ca-next.crt`) ; `--finish` repond alors « fin de
-   rotation interrompue terminee » et redemarre le service.
+   `ca-next.key` sans `ca-next.crt`). Si c'est le signataire qui a termine
+   la fin avant la relance, il en laisse le constat
+   (`ca/.rotation-finished`). Dans les deux cas, `--finish` repond « fin de
+   rotation interrompue terminee » (code 0) et redemarre le service.
 
 La fin est manuelle : elle remplace la cle de la CA (root) et l'operateur
 choisit quand retirer l'ancienne (par exemple apres avoir revoque un
 serveur perdu).
+
+**Lien ou panneau changes pendant la rotation** (cle ou SAN, par exemple
+apres un changement d'adresse IP) : `--finish` refuse de les re-signer.
+Si le changement est voulu, verifier `tls/link.crt` et `tls/panel.crt`,
+puis :
+
+```sh
+sudo rm /etc/ciphera/ca/ca-next.own
+sudo ciphera admin rotate-ca            # refait le releve, rien d'autre
+sudo ciphera admin rotate-ca --finish
+```
 
 **Une rotation commencee ne s'annule pas** (pas de `--abort`) : des que des
 agents ont un certificat de la nouvelle CA, retirer `ca-next.*` a la main

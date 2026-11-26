@@ -671,6 +671,10 @@ check "(a) ca/ non renommable par le compte ciphera" \
 ca_before=$(openssl x509 -in /etc/ciphera/ca/ca.crt -noout -fingerprint -sha256)
 check "(a) rotate-ca : CA suivante creee (cle root 0600, certificat root:ciphera 0640)" \
 	sh -c 'env -i /usr/local/bin/ciphera admin rotate-ca && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca-next.key)" = 600:root:root && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca-next.crt)" = 640:root:ciphera'
+# Service redemarre par rotate-ca : la cle de la CA suivante lui est
+# masquee (fichier vide dans son espace de montage).
+check "(a) rotate-ca : cle de la CA suivante masquee au service redemarre" \
+	sh -c 'pid=$(systemctl show -p MainPID --value ciphera) && test "$pid" != 0 && test "$(stat -c %s /proc/$pid/root/etc/ciphera/ca/ca-next.key)" = 0 && test "$(stat -c %s /etc/ciphera/ca/ca-next.key)" != 0'
 if wait_for 180 'env -i /usr/local/bin/ciphera admin rotate-ca --status 2>&1 | grep -q "^0 serveur(s) restant(s)"'; then
 	check "(a) rotate-ca : agent local passe a la nouvelle CA" true
 else

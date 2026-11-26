@@ -287,7 +287,7 @@ async fn finish_refused_while_old_certs_remain() {
 fn interrupt_after_manifest(dir: &Path, next_pem: &str, next_key: &str) {
     let ca = dir.join("ca");
     std::fs::write(ca.join(".ca.crt.renew"), next_pem).unwrap();
-    std::fs::write(ca.join(".ca.key.renew"), next_key).unwrap();
+    write_secret(&ca.join(".ca.key.renew"), next_key.as_bytes());
     std::fs::write(
         certs::pair_manifest(dir, transport::CA_CRT),
         format!("{}\n{}\n", transport::CA_CRT, certs::CA_KEY),
@@ -347,6 +347,20 @@ async fn assert_settled(db: &sqlx::PgPool, dir: &Path, next_pem: &str) {
     assert!(cas.next.is_none());
     assert_eq!(cas.current.cert_pem(), next_pem);
     certs::load_ca(dir).expect("paire de la nouvelle CA");
+    // Paire reprise remise aux droits attendus.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |rel: &str| {
+            std::fs::metadata(dir.join(rel))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+        };
+        assert_eq!(mode(certs::CA_KEY), 0o600);
+        assert_eq!(mode(transport::CA_CRT), 0o640);
+    }
     assert_eq!(rotation::status(db, dir).await.unwrap().next, None);
     assert_eq!(TrustedCas::load(dir).unwrap().ders(), vec![der(next_pem)]);
 }
@@ -385,7 +399,8 @@ async fn finish_resumes_after_interruption() {
     );
 
     // 2. Coupure apres l'installation de la nouvelle CA, `ca-next.crt`
-    //    encore la (seul).
+    //    encore la (seul) ; le signataire passe avant l'operateur et
+    //    termine la fin : `--finish` relance le constate (sans erreur).
     let ca = Ca::generate("Ciphera CA").unwrap();
     let dir = config_dir(&ca);
     let (next_pem, _) = ready_to_finish(&db, &ca, &dir.0).await;
@@ -395,10 +410,16 @@ async fn finish_resumes_after_interruption() {
         signer::load_cas(&dir.0).unwrap().next.is_none(),
         "signataire"
     );
-    std::fs::write(dir.0.join(transport::CA_NEXT_CRT), &next_pem).unwrap();
-    let done = rotation::finish(&db, &dir.0).await.expect("reprise");
+    assert!(!dir.0.join(transport::CA_NEXT_CRT).exists());
+    let done = rotation::finish(&db, &dir.0)
+        .await
+        .expect("fin deja terminee par le signataire");
     assert!(done.resumed);
     assert_settled(&db, &dir.0, &next_pem).await;
+    assert!(
+        rotation::finish(&db, &dir.0).await.is_err(),
+        "constat consomme"
+    );
 
     // 3. `ca-next.key` seule (celle de la nouvelle CA courante).
     let ca = Ca::generate("Ciphera CA").unwrap();
