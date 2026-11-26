@@ -1,6 +1,8 @@
 # Machine de test Ubuntu 24.04 avec systemd. PostgreSQL de la distribution :
 # fixture de test seulement (en production, conteneur epingle lance par l'agent).
-FROM docker.io/library/ubuntu:24.04
+# Image epinglee par digest (index multi-architecture, Docker Hub, releve le
+# 2026-11-25) : ubuntu:24.04.
+FROM docker.io/library/ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends systemd systemd-sysv dbus ca-certificates \

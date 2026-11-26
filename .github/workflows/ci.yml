@@ -470,4 +470,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-      - run: npx --yes design-to-dev@2.7.0 ai-traces scan . --strict
+      # design-to-dev fige par .github/tools/ai-traces/package-lock.json
+      # (version et integrite), installe sans script d'installation.
+      - run: npm ci --ignore-scripts --prefix .github/tools/ai-traces
+      - run: npm audit --audit-level=high --prefix .github/tools/ai-traces
+      - run: .github/tools/ai-traces/node_modules/.bin/design-to-dev ai-traces scan . --strict

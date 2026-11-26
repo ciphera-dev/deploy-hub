@@ -1,6 +1,8 @@
 # Machine de test Debian 12 avec systemd. PostgreSQL de la distribution :
 # fixture de test seulement (en production, conteneur epingle lance par l'agent).
-FROM docker.io/library/debian:12
+# Image epinglee par digest (index multi-architecture, Docker Hub, releve le
+# 2026-11-25) : debian:12.
+FROM docker.io/library/debian@sha256:1d04200c2ece1d4d75a2a6f8e11ebce7d86a2ae28b34bb2c9cbb3ee9f4953e75
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends systemd systemd-sysv dbus ca-certificates \

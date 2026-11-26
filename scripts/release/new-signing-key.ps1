@@ -8,7 +8,7 @@
   (PowerShell 7 : Windows, Linux ou macOS). Aucun agent ni la CI ne lance
   ce script. Procedure complete : docs/security/release-signing.md.
 
-  Trois modes :
+  Modes :
 
   (defaut) premiere cle : install/ciphera.pub porte encore la cle de test.
     Demande deux fois le mot de passe (jamais affiche, jamais en argument),
@@ -34,8 +34,17 @@
     (copie hors ligne) et son mot de passe correspondent a une cle de
     install/ciphera.pub. Aucun appel a GitHub, rien n'est envoye.
 
-  Avant tout envoi, l'environnement `release` doit exiger un relecteur et
-  n'accepter que les tags v*.
+  -CheckOnly : verifie seulement les reglages GitHub de la release (ceux
+    controles avant tout envoi, ci-dessous). Ni minisign ni cle : rien
+    n'est cree ni envoye.
+
+  Avant tout envoi, le depot doit etre pret pour une release :
+    - environnement `release` : au moins 2 relecteurs obligatoires, Prevent
+      self-review coche, deploiements limites aux tags v* ;
+    - un ruleset de tags actif sur refs/tags/v* (creation, mise a jour,
+      suppression et force push restreints ; contournement par les
+      administrateurs seulement) ;
+    - releases immuables (Immutable releases) activees.
 
   Les fichiers temporaires (signature d'essai) sont reecrits puis supprimes.
 
@@ -58,6 +67,8 @@ param(
     [switch]$Activate,
     [Parameter(ParameterSetName = 'Verify', Mandatory)]
     [switch]$Verify,
+    [Parameter(ParameterSetName = 'CheckOnly', Mandatory)]
+    [switch]$CheckOnly,
     [Parameter(ParameterSetName = 'Activate', Mandatory)]
     [Parameter(ParameterSetName = 'Verify', Mandatory)]
     [string]$SecretKeyFile
@@ -71,6 +82,11 @@ $PasswordName = 'CIPHERA_MINISIGN_PASSWORD'
 $Environment = 'release'
 $MinPasswordLength = 16
 $MaxTrustedKeys = 3
+$MinReviewers = 2
+# Regles exigees du ruleset des tags v* (Restrict creations, updates,
+# deletions, Block force pushes).
+$TagRules = @('creation', 'update', 'deletion', 'non_fast_forward')
+$ReleaseDoc = 'docs/operations/release.md, « Mise en place »'
 $ScriptName = 'scripts/release/new-signing-key.ps1'
 
 function Write-Step([string]$Message) {
@@ -162,30 +178,101 @@ function Test-SecretExists([string]$Repo) {
     @($names) -contains $SecretKeyName
 }
 
+# Propriete d'un objet JSON, $null si absente (Set-StrictMode refuse
+# l'acces a une propriete inexistante).
+function Get-JsonProp($Object, [string]$Name) {
+    if ($null -eq $Object) { return $null }
+    $p = $Object.PSObject.Properties[$Name]
+    if ($p) { $p.Value } else { $null }
+}
+
+# Lit <Path> par `gh api` (GET seulement) ; $null si l'appel echoue.
+function Get-GitHubJson([string]$Path) {
+    $json = gh api $Path 2>$null
+    if ($LASTEXITCODE -ne 0) { return $null }
+    , (($json -join "`n") | ConvertFrom-Json)
+}
+
+# Vrai si le ruleset <Rs> (detail) protege les tags v* : actif, cible tag,
+# motif refs/tags/v* (ou ~ALL) sans exclusion, creation, mise a jour,
+# suppression et force push restreints, contournement reserve aux
+# administrateurs (role admin du depot, administrateurs de l'organisation).
+# bypass_actors n'est renvoye qu'a un jeton qui peut modifier le ruleset :
+# absent, il n'est pas verifie.
+function Test-TagRuleset($Rs) {
+    if ((Get-JsonProp $Rs 'target') -ne 'tag' -or (Get-JsonProp $Rs 'enforcement') -ne 'active') { return $false }
+    $ref = Get-JsonProp (Get-JsonProp $Rs 'conditions') 'ref_name'
+    $include = @(Get-JsonProp $ref 'include')
+    $exclude = @(Get-JsonProp $ref 'exclude' | Where-Object { $_ })
+    if (-not ($include -ccontains 'refs/tags/v*' -or $include -ccontains '~ALL')) { return $false }
+    if ($exclude.Count -ne 0) { return $false }
+    $types = @(Get-JsonProp $Rs 'rules' | ForEach-Object { Get-JsonProp $_ 'type' })
+    foreach ($t in $TagRules) { if ($types -cnotcontains $t) { return $false } }
+    foreach ($a in @(Get-JsonProp $Rs 'bypass_actors' | Where-Object { $_ })) {
+        $type = Get-JsonProp $a 'actor_type'
+        $admin = ($type -eq 'RepositoryRole' -and (Get-JsonProp $a 'actor_id') -eq 5) -or $type -eq 'OrganizationAdmin'
+        if (-not $admin) { return $false }
+    }
+    $true
+}
+
+# Reglages GitHub exiges avant tout envoi de secret (lecture seule, gh api) :
+# environnement `release`, ruleset des tags v*, releases immuables. Tous les
+# problemes sont listes ensemble.
 function Assert-GitHubReady([string]$Repo) {
-    Write-Step "verification de gh et de l'environnement $Environment de $Repo"
+    Write-Step "verification de gh et des reglages de release de $Repo"
     gh auth status *> $null
     if ($LASTEXITCODE -ne 0) { throw 'gh non connecte : gh auth login' }
     $envJson = gh api "repos/$Repo/environments/$Environment"
-    if ($LASTEXITCODE -ne 0) { throw "environnement GitHub '$Environment' introuvable dans $Repo (docs/operations/release.md, « Verifier l'environnement release »)" }
+    if ($LASTEXITCODE -ne 0) { throw "environnement GitHub '$Environment' introuvable dans $Repo ($ReleaseDoc)" }
     $envInfo = ($envJson -join "`n") | ConvertFrom-Json
-    $reviewers = @($envInfo.protection_rules | Where-Object { $_.type -eq 'required_reviewers' } |
-            ForEach-Object { @($_.reviewers) })
-    $policy = $envInfo.deployment_branch_policy
+    $reviewRule = @(Get-JsonProp $envInfo 'protection_rules' | Where-Object { (Get-JsonProp $_ 'type') -eq 'required_reviewers' })
+    $reviewers = @($reviewRule | ForEach-Object { @(Get-JsonProp $_ 'reviewers') } | Where-Object { $_ })
+    $selfReview = @($reviewRule | Where-Object { (Get-JsonProp $_ 'prevent_self_review') -eq $true }).Count -gt 0
+    $policy = Get-JsonProp $envInfo 'deployment_branch_policy'
     $policiesJson = gh api "repos/$Repo/environments/$Environment/deployment-branch-policies"
     if ($LASTEXITCODE -ne 0) { throw "regles de deploiement de '$Environment' illisibles" }
     $policies = @((($policiesJson -join "`n") | ConvertFrom-Json).branch_policies)
     $problems = @()
     if ($reviewers.Count -eq 0) { $problems += 'aucun relecteur obligatoire (Required reviewers)' }
-    if ($null -eq $policy -or -not $policy.custom_branch_policies) {
+    elseif ($reviewers.Count -lt $MinReviewers) {
+        $problems += "au moins $MinReviewers relecteurs obligatoires requis sur l'environnement $Environment (Required reviewers : $($reviewers.Count))"
+    }
+    if ($reviewers.Count -gt 0 -and -not $selfReview) {
+        $problems += "Prevent self-review non coche sur l'environnement $Environment"
+    }
+    if ($null -eq $policy -or -not (Get-JsonProp $policy 'custom_branch_policies')) {
         $problems += 'deploiements non limites (Deployment branches and tags : Selected branches and tags)'
     }
     elseif (@($policies | Where-Object { $_.type -eq 'tag' -and $_.name -eq 'v*' }).Count -ne 1 -or
         @($policies | Where-Object { -not ($_.type -eq 'tag' -and $_.name -eq 'v*') }).Count -ne 0) {
         $problems += 'les regles de deploiement doivent etre exactement : tag v* (aucune branche)'
     }
+
+    # Rulesets du depot et herites de l'organisation (une page de 100 suffit).
+    $rulesets = Get-GitHubJson "repos/$Repo/rulesets?includes_parents=true&targets=tag&per_page=100"
+    if ($null -eq $rulesets) {
+        $problems += 'rulesets illisibles (gh api repos/<depot>/rulesets) : droits insuffisants ?'
+    }
+    else {
+        $protected = $false
+        foreach ($r in @($rulesets | Where-Object { (Get-JsonProp $_ 'target') -eq 'tag' -and (Get-JsonProp $_ 'enforcement') -eq 'active' })) {
+            $detail = Get-GitHubJson "repos/$Repo/rulesets/$([int](Get-JsonProp $r 'id'))?includes_parents=true"
+            if ($null -ne $detail -and (Test-TagRuleset $detail)) { $protected = $true; break }
+        }
+        if (-not $protected) {
+            $problems += 'aucun ruleset de tags actif ne protege refs/tags/v* (Restrict creations, updates, deletions, Block force pushes ; contournement : Repository admin seulement)'
+        }
+    }
+
+    # 404 : releases immuables non activees.
+    $immutable = Get-GitHubJson "repos/$Repo/immutable-releases"
+    if ((Get-JsonProp $immutable 'enabled') -ne $true) {
+        $problems += 'Immutable releases non activees (Settings > General > Releases)'
+    }
+
     if ($problems.Count) {
-        throw "environnement '$Environment' non protege : $($problems -join ' ; '). Voir docs/operations/release.md, « Verifier l'environnement release »."
+        throw "depot $Repo pas pret pour une release : $($problems -join ' ; '). Voir $ReleaseDoc."
     }
 }
 
@@ -388,7 +475,17 @@ function Invoke-Verify([string]$PubTarget) {
     Write-Host "Cle lisible, mot de passe correct, cle de confiance : $key"
 }
 
+function Invoke-CheckOnly {
+    Assert-GitHubReady $Repo
+    Write-Host "Reglages GitHub de release conformes pour $Repo (environnement $Environment, ruleset des tags v*, releases immuables)."
+}
+
 function Invoke-Main {
+    if ($CheckOnly) {
+        Test-Tool 'gh' 'https://cli.github.com (Windows : winget install GitHub.cli), puis gh auth login'
+        Invoke-CheckOnly
+        return
+    }
     $root = Get-RepoRoot
     $pubTarget = Join-Path $root 'install' 'ciphera.pub'
     $testKey = Get-PublicKeyLine (Join-Path $root 'install' 'tests' 'ciphera-test.pub')

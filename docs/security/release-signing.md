@@ -43,12 +43,14 @@ Garde-fous automatiques :
 - **Mot de passe** : 16 caractères minimum, conservé uniquement dans un gestionnaire de mots de passe, jamais à côté du fichier de clé.
 - **Clé secrète** (fichier chiffré) : deux copies hors ligne (clé USB chiffrée, coffre). Aucune copie ne reste sur le poste après la mise en place. Jamais dans le dépôt, un ticket, une conversation ou un outil d'IA.
 - **Environnements protégés** :
-  - `release` : relecteur obligatoire, déploiements limités aux tags `v*`. Seul `sign-release` lit ses secrets.
-  - `github-pages` : relecteur obligatoire, tags `v*` seulement.
+  - `release` : au moins deux relecteurs obligatoires, *Prevent self-review*, déploiements limités aux tags `v*`. Seul `sign-release` lit ses secrets.
+  - `github-pages` : mêmes relecteurs, *Prevent self-review*, tags `v*` seulement.
   - Les tags `v*` sont réservés aux administrateurs (ruleset). Le relecteur vérifie le tag et le commit avant chaque approbation.
+  - Releases immuables activées : une release publiée ne change plus.
+  - `pwsh scripts/release/new-signing-key.ps1 -CheckOnly` contrôle ces réglages (lecture seule) ; la création et l'activation d'une clé les exigent.
 - **Accès** : le propriétaire de l'organisation. Tout ajout d'administrateur du dépôt est traité comme un accès à la clé.
 - **Contrôle annuel** :
-  - relire les administrateurs, les relecteurs des deux environnements, le ruleset et les secrets ;
+  - relire les administrateurs, les relecteurs des deux environnements, le ruleset et les secrets, et lancer `pwsh scripts/release/new-signing-key.ps1 -CheckOnly` ;
   - vérifier que les copies hors ligne se lisent : `pwsh scripts/release/new-signing-key.ps1 -Verify -SecretKeyFile <copie>`. Cette commande fait une signature d'essai et la vérifie contre `install/ciphera.pub`. Elle n'appelle pas GitHub et n'envoie rien.
 
 ## Rotation planifiée (tous les 2 ans, ou départ d'une personne ayant eu accès)

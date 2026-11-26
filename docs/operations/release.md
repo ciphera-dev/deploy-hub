@@ -5,7 +5,7 @@ Toute la chaîne est dans `.github/workflows/release.yml` : build, tests de bout
 | Déclencheur | Ce qui se passe |
 |---|---|
 | push sur `main` (install/, deploy/, crates/…) ou lancement manuel, **même sur un tag** | Release de **test** : clé de test (`CIPHERA_TEST_MINISIGN_KEY`), artefacts de workflow seulement. Rien n'est publié. |
-| push d'un tag `v*` | Release de **production**, dans cet ordre : tests de bout en bout ; vérification que le commit du tag est sur `main` ; approbation de l'environnement `release` ; signature minisign (clé de production), cosign keyless et attestation SLSA ; GitHub Release ; site construit depuis les fichiers signés **de ce run** ; approbation de l'environnement `github-pages` ; déploiement. |
+| push d'un tag `v*` | Release de **production**, dans cet ordre : tests de bout en bout et exécution de l'archive aarch64 ; vérification que le commit du tag est sur `main` ; approbation de l'environnement `release` ; archives comparées (SHA-256) à celles du job `build` ; signature minisign (clé de production, binaire minisign épinglé), cosign keyless et attestation SLSA ; GitHub Release ; site construit depuis les fichiers signés **de ce run** ; approbation de l'environnement `github-pages` ; déploiement. |
 
 Il n'existe aucun autre moyen de publier le site. Si le déploiement échoue, utiliser *Re-run failed jobs* sur le même run.
 
@@ -23,20 +23,32 @@ Dans cet ordre :
    - Attendre la vérification DNS, puis cocher **Enforce HTTPS**.
    - Ce réglage est obligatoire : avec un déploiement par Actions, le fichier `CNAME` du site ne suffit pas.
 4. **Protéger l'environnement `github-pages`.** Il est créé à l'étape 3. Le déploiement du site vaut une signature, puisque `install.sh` porte les clés de confiance. Aller dans Settings → Environments → `github-pages` :
-   - *Required reviewers* : cocher, ajouter `duckysface`, cocher *Prevent self-review* seulement s'il y a un second relecteur, puis *Save protection rules*.
+   - *Required reviewers* : cocher, ajouter les deux relecteurs de l'étape 6, cocher *Prevent self-review*, puis *Save protection rules*.
    - *Deployment branches and tags* → *Selected branches and tags*. Supprimer la règle `main`, puis *Add deployment branch or tag rule* → type **Tag**, motif `v*`.
 5. **Réserver les tags `v*` aux administrateurs.** Settings → Rules → Rulesets → *New ruleset* → *New tag ruleset* :
    - Nom : `tags de release`. *Enforcement status* : **Active**.
-   - *Bypass list* : *Add bypass* → **Repository admin** (rôle).
+   - *Bypass list* : *Add bypass* → **Repository admin** (rôle), et rien d'autre : aucun utilisateur, équipe, application ni rôle *Write* ou *Maintain*.
    - *Target tags* : *Add target* → *Include by pattern* → `v*`.
    - Règles à cocher : **Restrict creations**, **Restrict updates**, **Restrict deletions**, **Block force pushes**.
    - Cliquer *Create*.
-6. **Vérifier l'environnement `release`.** Il existe déjà : il a été créé à la publication du dépôt. Aller dans Settings → Environments → `release` et vérifier :
-   - *Required reviewers* : coché, avec `duckysface`.
+6. **Environnement `release` et releases immuables.** L'environnement `release` existe déjà : il a été créé à la publication du dépôt. Aller dans Settings → Environments → `release` :
+   - *Required reviewers* : coché, avec **au moins deux relecteurs** (`duckysface` et un second compte, distinct de celui qui pousse les tags).
+   - **Prevent self-review** : coché. Celui qui a poussé le tag ne peut pas approuver seul la signature : l'autre relecteur doit le faire.
+   - *Save protection rules*.
    - *Deployment branches and tags* : *Selected branches and tags*, avec une seule règle, de type **Tag**, motif `v*`. Aucune branche.
    - *Environment secrets* : vide avant l'étape 7.
 
-   S'il manque, le créer à l'identique : *New environment* → `release`, avec les mêmes réglages. Le script de l'étape 7 lit ces réglages et refuse de continuer tant qu'ils ne sont pas en place.
+   S'il manque, le créer à l'identique : *New environment* → `release`, avec les mêmes réglages.
+
+   Puis activer les **releases immuables** : Settings → General → section *Releases* → cocher **Enable release immutability**. Une release publiée ne peut alors plus recevoir de fichier, perdre un fichier ou changer de tag.
+
+   **Contrôler le tout** (lecture seule, aucune clé, rien n'est envoyé) :
+
+   ```powershell
+   pwsh scripts/release/new-signing-key.ps1 -CheckOnly
+   ```
+
+   Le script lit par `gh api` l'environnement `release` (au moins 2 relecteurs, *Prevent self-review*, tags `v*` seulement), le ruleset des tags (étape 5 : actif, motif `v*`, les quatre restrictions, contournement par *Repository admin* seulement) et les releases immuables. Il liste tout ce qui manque et échoue tant qu'un réglage n'est pas en place ; l'étape 7 fait le même contrôle avant tout envoi. gh doit être connecté avec un compte administrateur du dépôt (sinon les rulesets et le réglage des releases immuables ne sont pas lisibles).
 7. **Créer la clé de production.** Dans votre propre terminal PowerShell 7, à la racine du dépôt. Il faut minisign (`winget install jedisct1.minisign`) et gh connecté (`gh auth login`).
 
    ```powershell
@@ -44,7 +56,7 @@ Dans cet ordre :
    ```
 
    Ce que fait le script :
-   - vérifie l'environnement `release` (étape 6) ;
+   - vérifie les réglages des étapes 5 et 6 (comme `-CheckOnly`) ;
    - demande deux fois le mot de passe (16 caractères minimum, jamais affiché) ;
    - génère la paire hors du dépôt (`~/ciphera-release-key-AAAAMMJJHHMMSS`) et la vérifie ;
    - écrit **seulement** la clé publique dans `install/ciphera.pub` ;
@@ -65,7 +77,7 @@ Dans cet ordre :
    git tag -s v0.1.0 -m "Ciphera v0.1.0"   # -a si aucune clé de signature git
    git push origin v0.1.0
    ```
-3. Aller dans Actions → Release → le run du tag. Après `install-e2e`, le job `sign-release` attend une **approbation**. Vérifier que le run vient bien du tag attendu et du bon commit, puis *Review deployments* → *Approve*.
+3. Aller dans Actions → Release → le run du tag. Après `install-e2e` et `smoke-aarch64` (`ciphera --version` de l'archive aarch64 sous qemu), le job `sign-release` attend une **approbation**. Vérifier que le run vient bien du tag attendu et du bon commit, puis *Review deployments* → *Approve*.
 4. `publish` crée la GitHub Release, puis `pages-site` construit le site. Le job `pages-deploy` attend une **seconde approbation** (`github-pages`) : vérifier que c'est le même run, puis *Approve*.
    - Les déploiements passent un par un.
    - Un run dont la release n'est plus la dernière publiée refuse de construire ou de déployer le site. Un run plus ancien, approuvé plus tard, n'écrase donc pas le site.
@@ -82,7 +94,7 @@ Dans cet ordre :
 | `/install.sh`, `/install.sh.minisig`, `/install.sh.sha256` | Copies exactes des fichiers signés par le run de la release. |
 | `/ciphera.pub` | Clés publiques minisign de confiance (une seule, ou deux pendant une rotation). |
 | `/releases/latest.json` | Dernière version, utilisée pour la vérification des mises à jour du panneau. Ce fichier n'est pas signé. |
-| `/releases/<version>/…` | Assets de la release, plus ceux des 4 releases précédentes qui se vérifient avec une clé de confiance ou une clé retirée (`install/ciphera.retired.pub`). Lus par `install.sh` et `ciphera-cli updater`. |
+| `/releases/<version>/…` | Assets de la release, plus ceux des 4 releases précédentes qui se vérifient avec une clé de confiance ou une clé retirée (`install/ciphera.retired.pub`). Seule la liste signée est servie : archives nommées dans `SHA256SUMS`, `SHA256SUMS`, `install.sh`, leurs `.minisig` et `install.sh.sha256`. Tout autre fichier d'une release (ajouté après coup, bundle cosign, `latest.json`) est retiré, avec un avertissement dans le job `pages-site`. Lus par `install.sh` et `ciphera-cli updater`. |
 | Autres chemins | Page 404 avec un lien vers GitHub Releases. |
 
 GitHub Pages ne fait pas de redirection HTTP, donc les assets sont recopiés sur le site : environ 45 Mo par release, pour une limite de 1 Go. La bande passante de Pages est limitée à environ 100 Go/mois ; au-delà, prévoir un CDN devant le même contenu.

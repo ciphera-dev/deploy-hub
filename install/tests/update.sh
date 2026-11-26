@@ -100,7 +100,8 @@ signer_image=ciphera-install-test-minisign
 if command -v minisign >/dev/null; then
 	msign() { (cd "$work" && minisign "$@"); }
 else
-	printf 'FROM docker.io/library/debian:12\nRUN apt-get update && apt-get install -y --no-install-recommends minisign && rm -rf /var/lib/apt/lists/*\n' |
+	# debian:12 epinglee par digest, comme install/tests/Containerfile.debian.
+	printf 'FROM docker.io/library/debian@sha256:1d04200c2ece1d4d75a2a6f8e11ebce7d86a2ae28b34bb2c9cbb3ee9f4953e75\nRUN apt-get update && apt-get install -y --no-install-recommends minisign && rm -rf /var/lib/apt/lists/*\n' |
 		podman build -q -t "$signer_image" -f - "$work" >/dev/null
 	msign() { podman run --rm -v "$work:/w:Z" -w /w "$signer_image" minisign "$@"; }
 fi

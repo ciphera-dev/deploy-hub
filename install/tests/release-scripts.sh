@@ -9,7 +9,7 @@
 #   - install/pages-site.sh : site get.ciphera.ch construit depuis les
 #     artefacts signes du run et les releases publiees precedentes (gh
 #     remplace par un bouchon), install.sh identique au fichier signe,
-#     release alteree refusee.
+#     release alteree refusee, fichiers hors de la liste signee retires.
 #
 #   bash install/tests/release-scripts.sh      (exige minisign, sha256sum)
 set -euo pipefail
@@ -163,6 +163,10 @@ for t in "$old:other" "$kept:plain" "$ret:retired"; do
 	sh "$root/install/sign-release.sh" "$tag" "$k.key" "$k.pub" "dist-$tag" release >/dev/null
 	cp "dist-$tag"/* "releases/$tag/"
 done
+# Fichiers annexes ajoutes a une release publiee apres sa signature : hors de
+# la liste signee, ils ne doivent jamais etre servis par le site.
+printf '<p>annexe</p>\n' >"releases/$kept/annexe.html"
+printf 'x\n' >"releases/$kept/.cache"
 cat >bin/gh <<'GH'
 #!/bin/sh
 # Bouchon de gh : release list / release view / release download.
@@ -177,7 +181,7 @@ case "$1 $2" in
 		case "$1" in --dir) dir=$2; shift 2 ;; *) shift ;; esac
 	done
 	mkdir -p "$dir"
-	cp "$GH_STUB_RELEASES/$tag/"* "$dir/"
+	cp -R "$GH_STUB_RELEASES/$tag/." "$dir/"
 	;;
 *) echo "gh (bouchon) : $*" >&2; exit 2 ;;
 esac
@@ -201,6 +205,22 @@ check "site : archives de la release" \
 check "site : release precedente gardee" test -f "site/releases/$kept/SHA256SUMS"
 check "site : release signee par une cle retiree gardee" test -f "site/releases/$ret/SHA256SUMS"
 check "site : release signee par une cle inconnue ignoree" test ! -e "site/releases/$old"
+check "site : fichier annexe d'une release precedente retire" test ! -e "site/releases/$kept/annexe.html"
+check "site : fichier cache d'une release precedente retire" test ! -e "site/releases/$kept/.cache"
+check "site : avertissement pour le fichier annexe retire" grep -q "$kept.*annexe.html" pages.err
+entries() { # <dossier> : noms des entrees (fichiers caches compris), tries
+	find "$1" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+}
+signed_list() { # <dossier> : fichiers de la liste signee, tries
+	{
+		awk '{ print $2 }' "$1/SHA256SUMS"
+		printf '%s\n' SHA256SUMS SHA256SUMS.minisig install.sh install.sh.minisig install.sh.sha256
+	} | sort
+}
+check "site : release precedente = liste signee exactement" \
+	test "$(entries "site/releases/$kept")" = "$(signed_list "site/releases/$kept")"
+check "site : release du run = liste signee exactement" \
+	test "$(entries "site/releases/$version")" = "$(signed_list "site/releases/$version")"
 check "site : avertissement pour la release ignoree" grep -q "$old" pages.err
 check "site : CNAME" grep -qx get.ciphera.ch site/CNAME
 check "site : cles publiques = ensemble courant seulement" cmp -s site/ciphera.pub plain.pub

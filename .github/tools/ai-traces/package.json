@@ -1,0 +1,8 @@
+{
+  "name": "ciphera-ai-traces",
+  "private": true,
+  "description": "Outil du job CI ai-traces : design-to-dev fige par package-lock.json, installe par npm ci --ignore-scripts.",
+  "dependencies": {
+    "design-to-dev": "2.7.0"
+  }
+}

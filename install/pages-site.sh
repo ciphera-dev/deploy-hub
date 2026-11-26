@@ -17,8 +17,12 @@
 # cle de <cles publiques> ou de <cles retirees> (fichier facultatif, lu
 # seulement ici : une release signee par une cle retiree reste servie aux
 # serveurs anciens, qui la verifient avec leurs propres cles) ; une release
-# qui echoue est ignoree. Le run doit porter la derniere release publiee :
-# un run plus ancien n'ecrase jamais le site d'une release plus recente.
+# qui echoue est ignoree. Une release verifiee ne garde que sa liste signee
+# (fichiers de SHA256SUMS, SHA256SUMS, install.sh, leurs .minisig,
+# install.sh.sha256) : tout autre fichier est retire, avec un avertissement
+# (les bundles cosign restent sur GitHub Releases). Le run doit porter la
+# derniere release publiee : un run plus ancien n'ecrase jamais le site d'une
+# release plus recente.
 #
 #   install/pages-site.sh <depot owner/nom> <cles publiques> <cles retirees> <dist> <version> <sortie>
 #
@@ -65,6 +69,32 @@ verify() {
 	(cd "$2" && sha256sum -c --strict --quiet SHA256SUMS install.sh.sha256 >/dev/null 2>&1)
 }
 
+# keep_signed <dossier> <release> : apres verify, ne garde que la liste
+# signee (fichiers nommes dans SHA256SUMS, SHA256SUMS, install.sh, leurs
+# .minisig et install.sh.sha256). Toute autre entree (fichier annexe, cache,
+# dossier, lien) est supprimee, avec un avertissement.
+keep_signed() {
+	signed=$(awk '{ f = $2; sub(/^\*/, "", f); print f }' "$1/SHA256SUMS")
+	removed=
+	for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+		[ -e "$p" ] || [ -L "$p" ] || continue
+		name=${p##*/}
+		if [ -f "$p" ] && [ ! -L "$p" ]; then
+			case "$name" in
+			SHA256SUMS | SHA256SUMS.minisig | install.sh | install.sh.minisig | install.sh.sha256) continue ;;
+			esac
+			if printf '%s\n' "$signed" | grep -qxF -- "$name"; then
+				continue
+			fi
+		fi
+		rm -rf -- "$p"
+		removed="$removed $name"
+	done
+	if [ -n "$removed" ]; then
+		warn "release $2 : retire(s), hors de la liste signee :$removed"
+	fi
+}
+
 check_tag "$latest"
 published=$(gh release view --repo "$repo" --json tagName --jq .tagName)
 [ "$published" = "$latest" ] ||
@@ -83,6 +113,7 @@ cur="$out/releases/$latest"
 mkdir "$cur"
 cp "$dist"/* "$cur/"
 verify "$pub" "$cur" || die "release $latest : signature ou empreinte invalide, site non construit"
+keep_signed "$cur" "$latest"
 
 tags=$(gh release list --repo "$repo" --exclude-drafts --exclude-pre-releases \
 	--limit "$((keep_older + 1))" --json tagName --jq '.[].tagName')
@@ -96,6 +127,8 @@ for tag in $tags; do
 	if ! verify "$older_keys" "$out/releases/$tag"; then
 		warn "release $tag ignoree (signature ou empreinte invalide pour $pub et $retired)"
 		rm -rf "${out:?}/releases/$tag"
+	else
+		keep_signed "$out/releases/$tag" "$tag"
 	fi
 done
 

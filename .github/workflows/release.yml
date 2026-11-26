@@ -33,19 +33,27 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # minisign des jobs de signature et du site : binaire officiel epingle,
+  # archive verifiee par SHA-256. Source : release 0.12 de jedisct1/minisign
+  # (https://github.com/jedisct1/minisign/releases/tag/0.12), archive
+  # minisign-0.12-linux.tar.gz, signature .minisig verifiee avec la cle de
+  # l'auteur (RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3) le
+  # 2026-11-25, puis empreinte calculee.
+  MINISIGN_VERSION: "0.12"
+  MINISIGN_SHA256: 9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
 
 jobs:
   web:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # Sans cache npm : le build de release ne restaure rien d'un cache
+      # ecrit par un autre workflow.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - run: npm ci
         working-directory: web
       - run: npm run build
@@ -59,9 +67,12 @@ jobs:
 
   build:
     needs: web
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      # Empreintes des archives construites ici, comparees par les jobs de
+      # signature avant de signer.
+      archives-sha256: ${{ steps.sums.outputs.archives-sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -111,6 +122,15 @@ jobs:
           for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
             sh install/package.sh "$VERSION" "$t" "target/$t/release" dist
           done
+      - name: Empreintes des archives
+        id: sums
+        run: |
+          set -eu
+          {
+            echo 'archives-sha256<<CIPHERA_SHA256_EOF'
+            (cd dist && sha256sum ciphera-*.tar.gz)
+            echo 'CIPHERA_SHA256_EOF'
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: archives
@@ -121,7 +141,7 @@ jobs:
   sign-test:
     if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) }}
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -130,7 +150,37 @@ jobs:
         with:
           name: archives
           path: dist
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      - name: Archives identiques a celles du job build (SHA-256)
+        env:
+          EXPECTED: ${{ needs.build.outputs.archives-sha256 }}
+        run: |
+          set -eu
+          export LC_ALL=C
+          sums="$RUNNER_TEMP/build.sha256"
+          printf '%s\n' "$EXPECTED" | sed '/^$/d' | sort -k 2 > "$sums"
+          [ "$(wc -l < "$sums")" -eq 2 ] || { echo "::error::empreintes du job build : 2 archives attendues"; exit 1; }
+          awk '{ print $2 }' "$sums" > "$RUNNER_TEMP/build.names"
+          (cd dist && find . -mindepth 1 -maxdepth 1 -printf '%f\n' | sort) > "$RUNNER_TEMP/dist.names"
+          diff -u "$RUNNER_TEMP/build.names" "$RUNNER_TEMP/dist.names" || {
+            echo "::error::les fichiers a signer ne sont pas exactement les archives du job build"
+            exit 1
+          }
+          (cd dist && sha256sum -c --strict "$sums") || {
+            echo "::error::une archive differe de celle construite par le job build"
+            exit 1
+          }
+      - name: minisign (version epinglee, SHA-256 verifie)
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          f="minisign-$MINISIGN_VERSION-linux.tar.gz"
+          curl -fsSLO "https://github.com/jedisct1/minisign/releases/download/$MINISIGN_VERSION/$f"
+          echo "$MINISIGN_SHA256  $f" | sha256sum -c -
+          tar -xzf "$f" minisign-linux/x86_64/minisign
+          install -D -m 0755 minisign-linux/x86_64/minisign minisign-bin/minisign
+          rm -rf "$f" minisign-linux
+          echo "$RUNNER_TEMP/minisign-bin" >> "$GITHUB_PATH"
+          minisign-bin/minisign -v
       - name: Release de test signee (minisign)
         env:
           VERSION: ${{ needs.build.outputs.version }}
@@ -159,7 +209,7 @@ jobs:
 
   install-e2e:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -185,13 +235,46 @@ jobs:
       - name: Mise a jour de bout en bout
         run: sudo CIPHERA_TEST_BIN_DIR="$RUNNER_TEMP/bin" bash install/tests/update.sh debian
 
+  # L'archive aarch64 est executee avant d'etre signee : `ciphera --version`
+  # sous qemu (binfmt), dans un conteneur arm64. Images epinglees par digest
+  # (index multi-architecture, Docker Hub, releves le 2026-11-25) :
+  # tonistiigi/binfmt:qemu-v10.2.3 et debian:12.
+  smoke-aarch64:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archives
+          path: dist
+      - name: ciphera --version (aarch64 sous qemu)
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          BINFMT_IMAGE: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          ARM64_IMAGE: docker.io/library/debian@sha256:1d04200c2ece1d4d75a2a6f8e11ebce7d86a2ae28b34bb2c9cbb3ee9f4953e75
+        run: |
+          set -eu
+          name="ciphera-$VERSION-aarch64-unknown-linux-musl"
+          bin="$RUNNER_TEMP/arm64"
+          mkdir -p "$bin"
+          tar -xzf "dist/$name.tar.gz" -C "$bin" --strip-components=2 "$name/bin"
+          file "$bin/ciphera" | grep -q 'ARM aarch64'
+          docker run --privileged --rm "$BINFMT_IMAGE" --install arm64
+          out=$(docker run --rm --platform linux/arm64 -v "$bin:/b:ro" "$ARM64_IMAGE" /b/ciphera --version)
+          printf '%s\n' "$out"
+          [ "$out" = "ciphera ${VERSION#v}" ] || {
+            echo "::error::ciphera --version (aarch64) : attendu ciphera ${VERSION#v}"
+            exit 1
+          }
+
   # Production : apres les tests de bout en bout, avec l'approbation de
   # l'environnement `release` (tags v* seulement). Seul job qui lit la cle
   # minisign de production ; id-token pour cosign keyless et l'attestation.
   sign-release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, install-e2e]
-    runs-on: ubuntu-latest
+    needs: [build, install-e2e, smoke-aarch64]
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: read
@@ -212,7 +295,37 @@ jobs:
         with:
           name: archives
           path: dist
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      - name: Archives identiques a celles du job build (SHA-256)
+        env:
+          EXPECTED: ${{ needs.build.outputs.archives-sha256 }}
+        run: |
+          set -eu
+          export LC_ALL=C
+          sums="$RUNNER_TEMP/build.sha256"
+          printf '%s\n' "$EXPECTED" | sed '/^$/d' | sort -k 2 > "$sums"
+          [ "$(wc -l < "$sums")" -eq 2 ] || { echo "::error::empreintes du job build : 2 archives attendues"; exit 1; }
+          awk '{ print $2 }' "$sums" > "$RUNNER_TEMP/build.names"
+          (cd dist && find . -mindepth 1 -maxdepth 1 -printf '%f\n' | sort) > "$RUNNER_TEMP/dist.names"
+          diff -u "$RUNNER_TEMP/build.names" "$RUNNER_TEMP/dist.names" || {
+            echo "::error::les fichiers a signer ne sont pas exactement les archives du job build"
+            exit 1
+          }
+          (cd dist && sha256sum -c --strict "$sums") || {
+            echo "::error::une archive differe de celle construite par le job build"
+            exit 1
+          }
+      - name: minisign (version epinglee, SHA-256 verifie)
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          f="minisign-$MINISIGN_VERSION-linux.tar.gz"
+          curl -fsSLO "https://github.com/jedisct1/minisign/releases/download/$MINISIGN_VERSION/$f"
+          echo "$MINISIGN_SHA256  $f" | sha256sum -c -
+          tar -xzf "$f" minisign-linux/x86_64/minisign
+          install -D -m 0755 minisign-linux/x86_64/minisign minisign-bin/minisign
+          rm -rf "$f" minisign-linux
+          echo "$RUNNER_TEMP/minisign-bin" >> "$GITHUB_PATH"
+          minisign-bin/minisign -v
       - name: Cles de confiance de production (jamais la cle de test)
         run: |
           # Meme lecture que release-script.sh : commentaires et espaces retires.
@@ -267,7 +380,7 @@ jobs:
 
   publish:
     needs: [build, sign-release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -290,7 +403,7 @@ jobs:
   # commit. Deploiement dans l'environnement protege `github-pages`.
   pages-site:
     needs: [build, publish]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -299,7 +412,18 @@ jobs:
         with:
           name: release
           path: dist
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      - name: minisign (version epinglee, SHA-256 verifie)
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          f="minisign-$MINISIGN_VERSION-linux.tar.gz"
+          curl -fsSLO "https://github.com/jedisct1/minisign/releases/download/$MINISIGN_VERSION/$f"
+          echo "$MINISIGN_SHA256  $f" | sha256sum -c -
+          tar -xzf "$f" minisign-linux/x86_64/minisign
+          install -D -m 0755 minisign-linux/x86_64/minisign minisign-bin/minisign
+          rm -rf "$f" minisign-linux
+          echo "$RUNNER_TEMP/minisign-bin" >> "$GITHUB_PATH"
+          minisign-bin/minisign -v
       - name: Site (fichiers signes de ce run, releases precedentes verifiees)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -317,7 +441,7 @@ jobs:
   # approuve plus tard n'ecrase pas le site).
   pages-deploy:
     needs: [build, pages-site]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     concurrency:
       group: pages
       cancel-in-progress: false

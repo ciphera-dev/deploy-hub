@@ -78,18 +78,43 @@ function global:gh {
     if ($args[0] -eq 'secret' -and $args[1] -eq 'set' -and $args[2] -eq $global:failSecret) { $global:LASTEXITCODE = 1; return 'HTTP 500' }
     if ($args[0] -eq 'api' -and $args[1] -like '*/deployment-branch-policies') { return $global:policiesJson }
     if ($args[0] -eq 'api' -and $args[1] -like '*/environments/release') { return $global:envJson }
+    if ($args[0] -eq 'api' -and $args[1] -match '/rulesets\?') {
+        if ($null -eq $global:rulesetsJson) { $global:LASTEXITCODE = 1; return '{"message":"Forbidden"}' }
+        return $global:rulesetsJson
+    }
+    if ($args[0] -eq 'api' -and $args[1] -match '/rulesets/(\d+)\?includes_parents=true$') {
+        $detail = $global:rulesetDetails[[int]$Matches[1]]
+        if (-not $detail) { $global:LASTEXITCODE = 1; return '{"message":"Not Found"}' }
+        return $detail
+    }
+    if ($args[0] -eq 'api' -and $args[1] -like '*/immutable-releases') {
+        if (-not $global:immutableJson) { $global:LASTEXITCODE = 1; return '{"message":"Not Found"}' }
+        return $global:immutableJson
+    }
     if ($args[0] -eq 'release' -and $args[1] -eq 'view') {
         if (-not $global:latestTag) { $global:LASTEXITCODE = 1; return 'release not found' }
         return $global:latestTag
     }
     if ($args[0] -eq 'release' -and $args[1] -eq 'download') { return @('#!/bin/sh', "CIPHERA_PUBKEYS='$global:latestKeys'", 'main') }
 }
-# Environnement `release` conforme (relecteur, tag v* seulement), puis
-# variantes non conformes.
-$global:goodEnv = '{"protection_rules":[{"type":"required_reviewers","reviewers":[{"type":"User","reviewer":{"login":"duckysface"}}]},{"type":"branch_policy"}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+# Depot conforme : environnement `release` (deux relecteurs, Prevent
+# self-review, tag v* seulement), ruleset actif sur refs/tags/v* (creation,
+# mise a jour, suppression, force push ; contournement : administrateurs
+# seulement), releases immuables ; puis variantes non conformes.
+$global:goodEnv = '{"protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"relecteur-a"}},{"type":"User","reviewer":{"login":"relecteur-b"}}]},{"type":"branch_policy"}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}'
+$global:oneReviewerEnv = $global:goodEnv -replace ',\{"type":"User","reviewer":\{"login":"relecteur-b"\}\}', ''
 $global:goodPolicies = '{"branch_policies":[{"name":"v*","type":"tag"}]}'
-$global:envJson = $global:goodEnv
-$global:policiesJson = $global:goodPolicies
+$global:goodRulesets = '[{"id":7,"name":"branche main","target":"branch","enforcement":"active","source_type":"Repository"},{"id":42,"name":"tags de release","target":"tag","enforcement":"active","source_type":"Repository"}]'
+$global:goodRuleset = '{"id":42,"name":"tags de release","target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":[]}},"rules":[{"type":"creation"},{"type":"update"},{"type":"deletion"},{"type":"non_fast_forward"}],"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}'
+$global:goodImmutable = '{"enabled":true,"enforced_by_owner":false}'
+function global:Set-GoodRepo {
+    $global:envJson = $global:goodEnv
+    $global:policiesJson = $global:goodPolicies
+    $global:rulesetsJson = $global:goodRulesets
+    $global:rulesetDetails = @{ 42 = $global:goodRuleset }
+    $global:immutableJson = $global:goodImmutable
+}
+Set-GoodRepo
 $global:latestTag = ''
 $global:latestKeys = ''
 
@@ -99,6 +124,7 @@ function Use-Mode([string]$Mode, [string]$Out = '', [string]$Key = '') {
     $script:Rotate = [switch]($Mode -eq 'Rotate')
     $script:Activate = [switch]($Mode -eq 'Activate')
     $script:Verify = [switch]($Mode -eq 'Verify')
+    $script:CheckOnly = [switch]($Mode -eq 'CheckOnly')
     $script:OutDir = $Out
     $script:SecretKeyFile = $Key
 }
@@ -145,6 +171,91 @@ try {
     Assert-Throws 'environnement ouvert a une branche refuse' 'exactement : tag v\*' { Invoke-Main }
     $global:policiesJson = $global:goodPolicies
     Assert 'environnement refuse : aucun secret envoye' { @(Get-Sets).Count -eq 0 }
+
+    # --- reglages GitHub de la release (Assert-GitHubReady) ------------------------
+    function Assert-Refused([string]$Label, [string]$Pattern, [scriptblock]$Setup) {
+        Set-GoodRepo
+        & $Setup
+        Use-Mode Init (Join-Path $work ('out-gh-' + [Guid]::NewGuid().ToString('N')))
+        Assert-Throws $Label $Pattern { Invoke-Main }
+        Set-GoodRepo
+    }
+    $global:calls.Clear()
+    Assert-Refused 'un seul relecteur refuse' 'au moins 2 relecteurs' {
+        $global:envJson = $global:oneReviewerEnv
+    }
+    Assert-Refused 'Prevent self-review decoche refuse' 'Prevent self-review' {
+        $global:envJson = $global:goodEnv -replace '"prevent_self_review":true', '"prevent_self_review":false'
+    }
+    Assert-Refused 'Prevent self-review non renvoye refuse' 'Prevent self-review' {
+        $global:envJson = $global:goodEnv -replace '"prevent_self_review":true,', ''
+    }
+    Assert-Refused 'aucun ruleset de tags refuse' 'ruleset' {
+        $global:rulesetsJson = '[{"id":7,"name":"branche main","target":"branch","enforcement":"active","source_type":"Repository"}]'
+    }
+    Assert-Refused 'liste des rulesets illisible refusee' 'rulesets illisibles' {
+        $global:rulesetsJson = $null
+    }
+    Assert-Refused 'ruleset en mode evaluate refuse' 'ruleset' {
+        $global:rulesetsJson = $global:goodRulesets -replace '"tag","enforcement":"active"', '"tag","enforcement":"evaluate"'
+        $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace '"enforcement":"active"', '"enforcement":"evaluate"') }
+    }
+    Assert-Refused 'ruleset sans Restrict deletions refuse' 'ruleset' {
+        $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace ',\{"type":"deletion"\}', '') }
+    }
+    Assert-Refused 'ruleset sur un autre motif refuse' 'ruleset' {
+        $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace 'refs/tags/v\*', 'refs/tags/release-*') }
+    }
+    Assert-Refused 'ruleset avec exclusion refuse' 'ruleset' {
+        $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace '"exclude":\[\]', '"exclude":["refs/tags/v0*"]') }
+    }
+    Assert-Refused 'ruleset contournable par un utilisateur refuse' 'ruleset' {
+        $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace '"actor_id":5,"actor_type":"RepositoryRole"', '"actor_id":99,"actor_type":"User"') }
+    }
+    Assert-Refused 'ruleset contournable par le role write refuse' 'ruleset' {
+        $global:rulesetDetails = @{ 42 = ($global:goodRuleset -replace '"actor_id":5', '"actor_id":4') }
+    }
+    Assert-Refused 'releases immuables non activees (404) refusees' 'Immutable releases' {
+        $global:immutableJson = ''
+    }
+    Assert-Refused 'releases immuables enabled=false refusees' 'Immutable releases' {
+        $global:immutableJson = '{"enabled":false,"enforced_by_owner":false}'
+    }
+    Assert-Refused 'tous les problemes listes ensemble' 'au moins 2 relecteurs.*Immutable releases' {
+        $global:envJson = $global:oneReviewerEnv
+        $global:immutableJson = ''
+    }
+    Assert 'reglages GitHub refuses : aucun secret envoye' { @(Get-Sets).Count -eq 0 }
+
+    # Variantes acceptees : ruleset d'organisation sur ~ALL sans bypass_actors
+    # (non renvoye a un jeton sans droit d'ecriture sur le ruleset), equipe
+    # parmi les relecteurs.
+    Set-GoodRepo
+    $global:rulesetsJson = '[{"id":43,"name":"org","target":"tag","enforcement":"active","source_type":"Organization"}]'
+    $global:rulesetDetails = @{ 43 = '{"id":43,"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["~ALL"],"exclude":[]}},"rules":[{"type":"creation"},{"type":"update"},{"type":"deletion"},{"type":"non_fast_forward"}]}' }
+    $global:envJson = $global:goodEnv -replace '\{"type":"User","reviewer":\{"login":"relecteur-b"\}\}', '{"type":"Team","reviewer":{"slug":"mainteneurs"}}'
+    $ok = $true
+    try { Assert-GitHubReady 'ciphera-dev/deploy-hub' *> $null } catch { $ok = $false; Write-Host $_.Exception.Message }
+    Assert 'ruleset d''organisation ~ALL et equipe acceptes' { $ok }
+    Set-GoodRepo
+
+    # -CheckOnly : verifie les reglages, rien d'autre (ni minisign, ni secret).
+    $global:calls.Clear()
+    Use-Mode CheckOnly
+    $ok = $true
+    try { Invoke-Main *> $null } catch { $ok = $false; Write-Host $_.Exception.Message }
+    Assert 'controle seul : reglages conformes acceptes' { $ok }
+    Assert 'controle seul : aucun appel a minisign ni secret envoye' {
+        @($global:calls | Where-Object { $_.Tool -eq 'minisign' }).Count -eq 0 -and @(Get-Sets).Count -eq 0
+    }
+    Assert 'controle seul : ruleset et releases immuables lus' {
+        @($global:calls | Where-Object { $_.Tool -eq 'gh' -and ($_.Args -join ' ') -match '/rulesets/42\?includes_parents=true' }).Count -eq 1 -and
+        @($global:calls | Where-Object { $_.Tool -eq 'gh' -and ($_.Args -join ' ') -match '/immutable-releases' }).Count -eq 1
+    }
+    $global:immutableJson = ''
+    Use-Mode CheckOnly
+    Assert-Throws 'controle seul : reglage manquant refuse' 'Immutable releases' { Invoke-Main }
+    Set-GoodRepo
 
     # --- premiere cle : envoi interrompu puis reprise ------------------------------
     $global:calls.Clear()
@@ -263,7 +374,7 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item function:global:Read-Host, function:global:minisign, function:global:gh -ErrorAction SilentlyContinue
+    Remove-Item function:global:Read-Host, function:global:minisign, function:global:gh, function:global:Set-GoodRepo -ErrorAction SilentlyContinue
 }
 
 if ($failures -ne 0) { Write-Host "$failures echec(s)"; exit 1 }
