@@ -446,6 +446,16 @@ jobs:
           persist-credentials: false
       - run: find install -type f -name '*.sh' -print0 | xargs -0 -r shellcheck
 
+  # Affichage de install.sh : choix du mode, sortie simple hors terminal
+  # (lue par les autres tests), mode riche et pseudo-terminal (sans root).
+  install-display:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: bash install/tests/display.sh
+
   # Scripts de publication (install.sh publie, signature, site Pages) et
   # script de creation de la cle de production (bouchons, aucune vraie cle).
   release-scripts:

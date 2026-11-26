@@ -177,7 +177,8 @@ main() {
 			docker network ls -q --filter "$MANAGED" | xargs -r docker network rm >/dev/null 2>&1 || true
 		fi
 		rm -rf /etc/ciphera /etc/ciphera-agent /etc/ciphera-updater /etc/ciphera-egress /var/lib/ciphera /var/lib/ciphera-proxy /var/lib/ciphera-agent \
-			/var/lib/ciphera-buildkit /var/lib/ciphera-updater /var/backups/ciphera /run/ciphera /run/ciphera-agent
+			/var/lib/ciphera-buildkit /var/lib/ciphera-updater /var/backups/ciphera /run/ciphera /run/ciphera-agent \
+			/var/log/ciphera-install.log
 		# Plages de ciphera-build retirees par usermod (verrou de shadow) avant
 		# la suppression du compte.
 		if id -u ciphera-build >/dev/null 2>&1; then
@@ -198,7 +199,7 @@ main() {
 		fi
 		say "secrets, donnees (volumes Docker et etat de BuildKit compris) et comptes (plages de ciphera-build comprises) supprimes"
 	else
-		say "conserves : /etc/ciphera et /etc/ciphera-agent (secrets), /etc/ciphera-updater, /etc/ciphera-egress, /var/lib/ciphera* (dont l'etat de BuildKit), sauvegardes /var/backups/ciphera, volume Docker de PostgreSQL, comptes (--purge pour tout supprimer)"
+		say "conserves : /etc/ciphera et /etc/ciphera-agent (secrets), /etc/ciphera-updater, /etc/ciphera-egress, /var/lib/ciphera* (dont l'etat de BuildKit), sauvegardes /var/backups/ciphera, volume Docker de PostgreSQL, comptes, journal /var/log/ciphera-install.log (--purge pour tout supprimer)"
 	fi
 	# Desinstallation incomplete : code non nul.
 	[ "$leftover" = no ] || exit 1

@@ -22,6 +22,20 @@ Le script :
 4. installe les binaires et les unités systemd ;
 5. affiche l'URL de l'assistant d'installation avec un jeton à usage unique (`https://<IP>:8443/setup#token=…`), valable 24 heures. Passé ce délai, et tant qu'aucun compte n'existe, `sudo ciphera admin setup-token` en génère un nouveau et réimprime l'URL.
 
+### Affichage et journal d'installation
+
+Dans un terminal, l'installeur affiche le logo Ciphera puis cinq étapes (vérification du système, téléchargement et vérification des signatures, configuration du système, installation de Ciphera, démarrage des services), chacune avec un indicateur animé puis une coche verte, ou une croix rouge en cas d'échec. Les avertissements restent affichés sous leur étape ; à la fin, l'adresse de l'assistant est mise en valeur avec sa durée de validité et l'empreinte du certificat.
+
+Les sorties détaillées des commandes vont dans `/var/log/ciphera-install.log` (root, mode 0600, recréé à chaque lancement). En cas d'échec, l'installeur affiche l'erreur et les dernières lignes de ce journal. Le jeton de l'assistant n'y est jamais écrit. `uninstall.sh --purge` le supprime.
+
+Hors terminal (CI, redirection vers un fichier, `| tee`), avec `TERM=dumb` ou avec la variable `NO_COLOR` (non vide), la sortie reste du texte simple, ligne par ligne, sans couleur ni animation, et aucun journal n'est écrit : tout reste dans la sortie. `sudo` ne transmet pas `NO_COLOR` par défaut ; il faut la passer après `sudo` :
+
+```sh
+curl -fsSL https://get.ciphera.ch/install.sh | sudo NO_COLOR=1 sh
+```
+
+Avec une locale qui n'est pas UTF-8, le logo est remplacé par « CIPHERA » en ASCII.
+
 Mode prudent : télécharger `install.sh` et `install.sh.minisig`, vérifier la signature avec la clé publique (`install/ciphera.pub`), lire le script, puis le lancer. La vérification complète d'une release (minisign, cosign, attestation SLSA) est décrite dans [docs/security/release-signing.md](../security/release-signing.md).
 
 `/etc/ciphera/ciphera.env` appartient à root (`root:ciphera`, mode 0640) : les commandes `sudo ciphera admin …` refusent un fichier qui n'appartient pas à root ou qui est modifiable par le groupe ou les autres (corriger avec `chown root:ciphera /etc/ciphera/ciphera.env && chmod 0640 /etc/ciphera/ciphera.env`).

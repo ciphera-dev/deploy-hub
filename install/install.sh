@@ -85,18 +85,326 @@ MISE_VERSION='2026.10.14'
 MISE_SHA256_AMD64='0f95d528ad0b8c54f7022be2ff22a36be149123ff9b27bdaa216d349a9f59c17'
 MISE_SHA256_ARM64='8f7fa64c3d08ba515aac501f18f6f43c00c381793185380fd1a92c411c00cdde'
 
+# --- affichage ----------------------------------------------------------------
+# Deux modes (docs/operations/installation.md) :
+# - simple (hors terminal : CI, journaux, `| tee`) : messages `ciphera : ...`
+#   ligne par ligne et sorties des commandes telles quelles, aucune sequence
+#   d'echappement ;
+# - riche (sorties standard et d'erreur sur un terminal, TERM ni vide ni
+#   dumb, NO_COLOR absent ou vide) : logo, une ligne par etape (spinner, puis
+#   coche ou croix), avertissements sous l'etape ; tout le reste (say, warn,
+#   die, sorties des commandes) va dans INSTALL_LOG (root 0600). Le jeton de
+#   setup n'y est jamais ecrit : seul ui_finish l'affiche, a l'ecran.
+# Logo et symboles en ASCII hors locale UTF-8. Ecran : descripteurs 3
+# (sortie standard) et 4 (erreurs), sauves par ui_start.
+INSTALL_LOG=/var/log/ciphera-install.log
+STEP_TOTAL=5
+ui_want=plain
+ui_mode=plain
+ui_utf8=no
+ui_active=no
+ui_paused=no
+ui_label=
+ui_spin_pid=
+ui_warnings=
+ui_warn_count=0
+
 say() {
 	printf 'ciphera : %s\n' "$*"
 }
 
 warn() {
 	printf 'ciphera : attention : %s\n' "$*" >&2
+	[ "$ui_mode" = rich ] || return 0
+	ui_warn_count=$((ui_warn_count + 1))
+	if [ "$ui_active" = yes ]; then
+		ui_warnings="$ui_warnings$*
+"
+	else
+		ui_show_warning "$*"
+	fi
 }
 
 die() {
 	printf 'ciphera : erreur : %s\n' "$*" >&2
+	if [ "$ui_mode" = rich ]; then
+		ui_fail "$*"
+	fi
 	exit 1
 }
+
+# Texte accentue en UTF-8, ASCII sinon.
+ui_t() { # <texte UTF-8> <texte ASCII>
+	if [ "$ui_utf8" = yes ]; then
+		printf '%s' "$1"
+	else
+		printf '%s' "$2"
+	fi
+}
+
+# Mode voulu (ui_want), locale (ui_utf8) et couleurs. Bleu Ciphera #2f7fe0
+# (--brand-grad-b) : 24 bits si le terminal l'annonce, sinon couleur 33 des
+# 256 (la plus proche).
+ui_choose_mode() { # <sortie standard sur un terminal : yes|no> <sortie d'erreur : yes|no>
+	ui_want=plain
+	ui_utf8=no
+	case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+	*[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) ui_utf8=yes ;;
+	esac
+	[ "$1" = yes ] && [ "$2" = yes ] || return 0
+	[ "${TERM:-dumb}" != dumb ] || return 0
+	[ -z "${NO_COLOR:-}" ] || return 0
+	ui_want=rich
+	ui_esc=$(printf '\033')
+	case "${COLORTERM:-}" in
+	truecolor | 24bit) c_blue="${ui_esc}[38;2;47;127;224m" ;;
+	*) c_blue="${ui_esc}[38;5;33m" ;;
+	esac
+	c_green="${ui_esc}[32m"
+	c_red="${ui_esc}[31m"
+	c_yellow="${ui_esc}[33m"
+	c_bold="${ui_esc}[1m"
+	c_dim="${ui_esc}[2m"
+	c_reset="${ui_esc}[0m"
+	c_eol="${ui_esc}[K"
+	c_hide="${ui_esc}[?25l"
+	c_show="${ui_esc}[?25h"
+	if [ "$ui_utf8" = yes ]; then
+		ui_ok='✔'
+		ui_ko='✖'
+		ui_frames='⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏'
+	else
+		ui_ok='+'
+		ui_ko='x'
+		ui_frames='- \ | /'
+	fi
+}
+
+ui_detect() {
+	ui_t1=no
+	ui_t2=no
+	if [ -t 1 ]; then ui_t1=yes; fi
+	if [ -t 2 ]; then ui_t2=yes; fi
+	ui_choose_mode "$ui_t1" "$ui_t2"
+}
+
+# Mode riche : journal neuf (cree par mktemp, 0600, puis renomme : un lien
+# deja present a ce chemin est remplace, jamais suivi), ecran sauve sur les
+# descripteurs 3 et 4, puis logo. Journal impossible : mode simple.
+ui_start() { # <version>
+	[ "$ui_want" = rich ] || return 0
+	if ! ui_new=$(umask 077 && mktemp "${INSTALL_LOG%/*}/.ciphera-install.XXXXXX" 2>/dev/null); then
+		warn "journal $INSTALL_LOG impossible a creer : affichage simple"
+		return 0
+	fi
+	if ! mv -fT "$ui_new" "$INSTALL_LOG" 2>/dev/null; then
+		rm -f "$ui_new"
+		warn "journal $INSTALL_LOG impossible a creer : affichage simple"
+		return 0
+	fi
+	exec 3>&1 4>&2
+	exec >>"$INSTALL_LOG" 2>&1
+	ui_mode=rich
+	trap 'ui_cleanup "$?"' EXIT
+	trap 'exit 1' HUP INT TERM
+	printf "Journal de l'installation de Ciphera %s (%s). Le jeton de setup n'y est jamais ecrit.\n" \
+		"$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+	ui_logo "$1"
+}
+
+ui_logo() { # <version>
+	printf '\n' >&3
+	if [ "$ui_utf8" = yes ]; then
+		while IFS= read -r ui_line; do
+			printf '  %s%s%s%s\n' "$c_bold" "$c_blue" "$ui_line" "$c_reset" >&3
+		done <<'EOF'
+██████╗ ██╗ ██████╗  ██╗  ██╗ ████████╗ ██████╗   █████╗
+██╔════╝ ██║ ██╔══██╗ ██║  ██║ ██╔═════╝ ██╔══██╗  ╚══███╗
+██║      ██║ ██████╔╝ ███████║ ██║ ████╗ ██████╔╝   ██╗╚██╗
+██║      ██║ ██╔═══╝  ██╔══██║ ██║ ╚═══╝ ██╔══██╗  ██╔╝ ╚██╗
+╚██████╗ ██║ ██║      ██║  ██║ ████████╗ ██║  ██║ ██╔╝   ╚██╗
+ ╚═════╝ ╚═╝ ╚═╝      ╚═╝  ╚═╝ ╚═══════╝ ╚═╝  ╚═╝ ╚═╝     ╚═╝
+EOF
+	else
+		printf '  %s%sCIPHERA%s\n' "$c_bold" "$c_blue" "$c_reset" >&3
+	fi
+	printf '\n  %sInstallation de Ciphera %s%s\n\n' "$c_dim" "$1" "$c_reset" >&3
+}
+
+# Etape <numero>/STEP_TOTAL. Mode simple : une ligne `ciphera : [n/N] ...`.
+ui_step_begin() { # <numero> <libelle UTF-8> <libelle ASCII>
+	if [ "$ui_mode" != rich ]; then
+		say "[$1/$STEP_TOTAL] $3"
+		return 0
+	fi
+	ui_label="[$1/$STEP_TOTAL] $(ui_t "$2" "$3")"
+	ui_active=yes
+	ui_warnings=
+	printf '\n== [%s/%s] %s ==\n' "$1" "$STEP_TOTAL" "$3"
+	printf '%s' "$c_hide" >&3
+	ui_spin_start
+}
+
+ui_step_end() {
+	[ "$ui_mode" = rich ] || return 0
+	ui_spin_stop
+	printf '\r  %s%s%s %s%s\n' "$c_green" "$ui_ok" "$c_reset" "$ui_label" "$c_eol" >&3
+	ui_flush_warnings
+	ui_active=no
+}
+
+# Spinner : processus d'arriere-plan qui ne redessine que la ligne de
+# l'etape et s'arrete seul si l'installeur disparait (aucun orphelin, meme
+# apres un SIGKILL) ; arrete par ui_spin_stop (fin d'etape, question, echec,
+# trap EXIT). Il ne garde pas le verrou de l'updater (descripteur 9).
+ui_spin_start() {
+	ui_parent=$$
+	(
+		trap - EXIT HUP INT TERM
+		while :; do
+			for ui_f in $ui_frames; do
+				kill -0 "$ui_parent" 2>/dev/null || exit 0
+				printf '\r  %s%s%s %s%s' "$c_blue" "$ui_f" "$c_reset" "$ui_label" "$c_eol" >&3
+				sleep 0.1 2>/dev/null || sleep 1
+			done
+		done
+	) 4>&- 9>&- </dev/null &
+	ui_spin_pid=$!
+}
+
+ui_spin_stop() {
+	[ -n "$ui_spin_pid" ] || return 0
+	kill "$ui_spin_pid" 2>/dev/null || true
+	wait "$ui_spin_pid" 2>/dev/null || true
+	ui_spin_pid=
+}
+
+# Question interactive : spinner suspendu, ligne effacee, curseur visible.
+ui_pause() {
+	[ "$ui_mode" = rich ] && [ -n "$ui_spin_pid" ] || return 0
+	ui_spin_stop
+	printf '\r%s%s' "$c_eol" "$c_show" >&3
+	ui_paused=yes
+}
+
+ui_resume() {
+	[ "$ui_paused" = yes ] || return 0
+	ui_paused=no
+	printf '\r%s%s' "$c_eol" "$c_hide" >&3
+	ui_spin_start
+}
+
+ui_show_warning() { # <message>
+	printf '      %s!%s %s\n' "$c_yellow" "$c_reset" "$1" >&3
+}
+
+ui_flush_warnings() {
+	[ -n "$ui_warnings" ] || return 0
+	printf '%s' "$ui_warnings" | while IFS= read -r ui_w; do
+		ui_show_warning "$ui_w"
+	done
+	ui_warnings=
+}
+
+# Fin du journal a l'ecran, caracteres de controle retires (pas de sequence
+# d'echappement venue d'une sortie de commande).
+ui_log_tail() {
+	printf "\n  Journal d'installation (%s) : %s\n" "$(ui_t 'dernières lignes' 'dernieres lignes')" \
+		"$INSTALL_LOG" >&4
+	tail -n 15 "$INSTALL_LOG" 2>/dev/null | LC_ALL=C tr -d '\000-\010\013-\037\177' |
+		while IFS= read -r ui_l; do
+			printf '    %s|%s %s\n' "$c_dim" "$c_reset" "$ui_l"
+		done >&4
+	printf '\n' >&4
+}
+
+# Echec (die) : croix sur l'etape, avertissements, erreur, fin du journal.
+ui_fail() { # <message>
+	ui_spin_stop
+	if [ "$ui_active" = yes ]; then
+		printf '\r  %s%s%s %s%s\n' "$c_red" "$ui_ko" "$c_reset" "$ui_label" "$c_eol" >&3
+		ui_flush_warnings
+		ui_active=no
+	fi
+	printf '\n  %s%sciphera : erreur : %s%s\n' "$c_bold" "$c_red" "$1" "$c_reset" >&4
+	ui_log_tail
+	printf '%s' "$c_show" >&3
+}
+
+# Trap EXIT du mode riche : spinner arrete, curseur reaffiche ; une etape
+# encore ouverte (interruption, commande en echec hors die) est marquee.
+ui_cleanup() { # <code de sortie>
+	[ "$ui_mode" = rich ] || return 0
+	ui_spin_stop
+	if [ "$ui_active" = yes ]; then
+		printf 'ciphera : erreur : installation interrompue (code %s)\n' "$1"
+		printf '\r  %s%s%s %s%s\n' "$c_red" "$ui_ko" "$c_reset" "$ui_label" "$c_eol" >&3
+		ui_flush_warnings
+		ui_active=no
+		printf '\n  %s%sciphera : erreur : installation interrompue (code %s)%s\n' \
+			"$c_bold" "$c_red" "$1" "$c_reset" >&4
+		ui_log_tail
+	fi
+	printf '%s' "$c_show" >&3
+}
+
+# Sortie d'erreur d'une commande gardee dans <fichier> : telle quelle en mode
+# simple, en avertissements visibles en mode riche.
+ui_relay_stderr() { # <fichier>
+	[ -s "$1" ] || return 0
+	if [ "$ui_mode" = rich ]; then
+		while IFS= read -r ui_l; do
+			warn "$ui_l"
+		done <"$1"
+	else
+		cat "$1" >&2
+	fi
+}
+
+# Fin de l'installation. Mode simple : message et rapport de `ciphera init`
+# inchanges. Mode riche : « Installation terminee », adresse de l'assistant
+# mise en valeur avec ses explications ; rien du rapport dans le journal.
+ui_finish() { # <version> <rapport de ciphera init, peut etre vide> <IP du panneau, peut etre vide>
+	say "Ciphera $1 est installe et demarre."
+	if [ "$ui_mode" != rich ]; then
+		if [ -n "$2" ]; then
+			printf '\n%s\n' "$2"
+		fi
+		return 0
+	fi
+	if [ -n "$2" ]; then
+		say "adresse de l'assistant affichee a l'ecran seulement (jamais journalisee)"
+	fi
+	printf '\n  %s%s%s %s%s\n' "$c_bold" "$c_green" "$ui_ok" \
+		"$(ui_t "Installation terminée : Ciphera $1 est installé et démarré." \
+			"Installation terminee : Ciphera $1 est installe et demarre.")" "$c_reset" >&3
+	if [ -n "$2" ]; then
+		printf '\n' >&3
+		printf '%s\n' "$2" | while IFS= read -r ui_l; do
+			case "$ui_l" in
+			https://*) printf '\n      %s%s%s%s\n\n' "$c_bold" "$c_blue" "$ui_l" "$c_reset" ;;
+			'Empreinte SHA-256 :'*) printf '  %s%s%s\n' "$c_bold" "$ui_l" "$c_reset" ;;
+			*) printf '  %s\n' "$ui_l" ;;
+			esac
+		done >&3
+	elif [ -n "$3" ]; then
+		ui_host=$3
+		case "$3" in
+		*:*) ui_host="[$3]" ;;
+		esac
+		printf '\n  Panneau : %s%shttps://%s:%s%s\n' "$c_bold" "$c_blue" \
+			"$ui_host" "${PANEL_PORT:-8443}" "$c_reset" >&3
+		printf '  %s\n' "$(ui_t "Instance déjà initialisée ; tant qu'aucun compte n'existe, nouveau lien de l'assistant : sudo ciphera admin setup-token" \
+			"Instance deja initialisee ; tant qu'aucun compte n'existe, nouveau lien de l'assistant : sudo ciphera admin setup-token")" >&3
+	fi
+	if [ "$ui_warn_count" -gt 0 ]; then
+		printf '\n  %s!%s %s\n' "$c_yellow" "$c_reset" \
+			"$(ui_t "$ui_warn_count avertissement(s) affiché(s) plus haut." "$ui_warn_count avertissement(s) affiche(s) plus haut.")" >&3
+	fi
+	printf "\n  %sJournal d'installation : %s%s\n\n" "$c_dim" "$INSTALL_LOG" "$c_reset" >&3
+	printf '%s' "$c_show" >&3
+}
+# --- fin de l'affichage -------------------------------------------------------
 
 usage() {
 	cat <<'EOF'
@@ -531,9 +839,11 @@ setup_docker() {
 		return 0
 	fi
 	if can_prompt; then
+		ui_pause
 		printf 'Docker Engine est absent. Installer le paquet de la distribution ? [o/N] ' >/dev/tty
 		answer=
 		read -r answer </dev/tty || answer=
+		ui_resume
 		case "$answer" in
 		o | O | oui | y | Y | yes)
 			install_docker_engine
@@ -973,10 +1283,15 @@ init_instance() {
 	fi
 	[ -n "$ip_addr" ] || die "adresse IP non detectee : relancer avec --public-ip"
 	check_ip "$ip_addr"
-	init_report=$("$BIN_DIR/ciphera" init --config-dir "$CONFIG_DIR" \
+	# Sortie standard (adresse et jeton) gardee en memoire, jamais dans le
+	# journal ; sortie d'erreur (avertissements, cause d'un echec) relayee.
+	if ! init_report=$("$BIN_DIR/ciphera" init --config-dir "$CONFIG_DIR" \
 		--public-ip "$ip_addr" --panel-port "$PANEL_PORT" --owner ciphera \
-		--agent-owner ciphera-agent --postgres-owner ciphera-postgres) ||
+		--agent-owner ciphera-agent --postgres-owner ciphera-postgres 2>"$tmp/init.err"); then
+		ui_relay_stderr "$tmp/init.err"
 		die "ciphera init a echoue"
+	fi
+	ui_relay_stderr "$tmp/init.err"
 }
 
 # Surcharges du service (/etc/ciphera/ciphera.env), lues par systemd pour
@@ -1120,22 +1435,30 @@ main() {
 		tools_manifest "$manifest_target"
 		exit 0
 	fi
+	ui_detect
 	resolve_sources
 	need_root
+	ui_start "$version"
+
+	ui_step_begin 1 'Vérification du système' 'Verification du systeme'
 	detect_platform
 	require_tools
 	check_existing_install
 	preflight_checks
+	ui_step_end
 
 	tmp=$(mktemp -d)
-	trap 'rm -rf "$tmp"' EXIT
+	trap 'ui_cleanup "$?"; rm -rf "$tmp"' EXIT
 	trap 'exit 1' HUP INT TERM
 
+	ui_step_begin 2 'Téléchargement et vérification des signatures' 'Telechargement et verification des signatures'
 	ensure_minisign
 	download_and_verify
 	download_build_tools
+	ui_step_end
 
 	# Tout est verifie : installation.
+	ui_step_begin 3 'Configuration du système' 'Configuration du systeme'
 	hold_update_lock
 	for u in $USERS; do
 		ensure_user "$u"
@@ -1151,16 +1474,26 @@ main() {
 	fi
 	remove_legacy_buildkit_volume
 	check_docker_init
+	ui_step_end
+
+	ui_step_begin 4 'Installation de Ciphera' 'Installation de Ciphera'
 	install_files
 	init_instance
 	harden_config_dir
 	protect_env_file
-	start_services
+	ui_step_end
 
-	say "Ciphera $version est installe et demarre."
-	if [ -n "$init_report" ]; then
-		printf '\n%s\n' "$init_report"
+	ui_step_begin 5 'Démarrage des services' 'Demarrage des services'
+	start_services
+	ui_step_end
+
+	# Instance deja initialisee (pas de rapport) : adresse du panneau
+	# rappelee en mode riche.
+	panel_ip=
+	if [ "$ui_mode" = rich ] && [ -z "$init_report" ]; then
+		panel_ip=${public_ip:-$(detect_ip || true)}
 	fi
+	ui_finish "$version" "$init_report" "$panel_ip"
 	if [ -n "$env_notice" ]; then
 		warn "$env_notice"
 	fi
