@@ -219,7 +219,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 - fait : Relecture finale (4 zones) et une vague de corrections : cycle systemd au démarrage, renouvellement des certificats, updater piloté par l'archive avec registre des unités, santé réelle avant succès, réinstallation sûre, commandes admin, limites du panneau, rotation des logs, routes persistées, 2FA après rechargement ; e-mails de déploiement et de certificats (file de tâches, idempotence, 2 budgets de 10/h, récapitulatif) ; sources Git hors GitHub déplacées en v0.2 dans le spec
 - résultat : relectures propres ; CI et Release (test) vertes jusqu'à 77fd3ca ; résiduels dans problemes.md
 
-## 2026-11-24 03:26 — Session v0.1-sdd — claude-code (orchestrateur) — Task 35 : Préparation de la publication (signature de production, cosign, SLSA, site get.ciphera.dev)
+## 2026-11-24 03:26 — Session v0.1-sdd — claude-code (orchestrateur) — Task 35 : Préparation de la publication (signature de production, cosign, SLSA, site get.ciphera[.]dev)
 - fait : release.yml signé et approuvé (environnements release et github-pages), script de clé scripts/release/new-signing-key.ps1, docs/operations/release.md et docs/security/release-signing.md ; relecture propre après 2 tours
 - résultat : CI, CodeQL et Release (test) verts sur 38b4e2b ; mineurs reportés dans le registre SDD
 
@@ -461,3 +461,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 15:27 — Session v0.1-sdd — claude-code (orchestrateur) — Task R40 : install.sh / uninstall.sh durcis
 - fait : script publié sans mode test, plafonds curl, compte ciphera existant vérifié, désinstallation ciblée, gardes des tests root
 - résultat : TERMINÉ (relecture approuvée, 2 tours)
+
+## 2026-11-26 15:47 — Session v0.1-sdd — claude-code (orchestrateur) — Task R43 : Hygiène du dépôt avant publication
+- fait : données d'exemple réservées, masques du hook mémoire, CDN des prototypes, EXIF, CODEOWNERS @ciphera-dev/maintainers
+- résultat : TERMINÉ (relecture approuvée après 2 tours de correction)
