@@ -59,7 +59,9 @@ async fn invalid_token_no_argon2() {
         Req {
             cookie: Some(&login.token()),
             csrf: Some(&login.csrf()),
-            body: Some(json!({ "email": "nora@example.com", "role": "viewer" })),
+            body: Some(
+                json!({ "email": "nora@example.com", "role": "viewer", "password": PASSWORD }),
+            ),
             ..Req::default()
         },
     )

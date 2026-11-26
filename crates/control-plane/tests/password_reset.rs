@@ -424,7 +424,7 @@ async fn reset_revokes_sessions() {
         &owner,
         "POST",
         &format!("/api/team/members/{nora_id}/reset-link"),
-        None,
+        Some(json!({ "password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 201, "{}", r.raw);
@@ -524,7 +524,14 @@ async fn admin_reset_link_respects_roles() {
     assert_eq!(r.status, 403, "Equipe : Admin requis");
     let r = as_user(&state, &admin, "POST", &path(Uuid::new_v4()), None).await;
     assert_eq!(r.status, 404, "{}", r.raw);
-    let r = as_user(&state, &admin, "POST", &path(dev_id), None).await;
+    let r = as_user(
+        &state,
+        &admin,
+        "POST",
+        &path(dev_id),
+        Some(json!({ "password": PASSWORD })),
+    )
+    .await;
     assert_eq!(r.status, 201, "{}", r.raw);
     let r = as_user(&state, &admin, "POST", &path(admin_id), None).await;
     assert_eq!(r.status, 403, "jamais pour son propre compte : {}", r.raw);
@@ -534,7 +541,14 @@ async fn admin_reset_link_respects_roles() {
     let owner = session(&state, "owner@example.com").await;
     let r = as_user(&state, &owner, "POST", &path(owner_id), None).await;
     assert_eq!(r.status, 403, "jamais pour son propre compte");
-    let r = as_user(&state, &owner, "POST", &path(other_admin), None).await;
+    let r = as_user(
+        &state,
+        &owner,
+        "POST",
+        &path(other_admin),
+        Some(json!({ "password": PASSWORD })),
+    )
+    .await;
     assert_eq!(r.status, 201, "{}", r.raw);
     let r = call(
         &state,
@@ -604,7 +618,7 @@ async fn owner_reset_link_admin_201() {
         &owner,
         "POST",
         &format!("/api/team/members/{admin_id}/reset-link"),
-        None,
+        Some(json!({ "password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 201, "{}", r.raw);
@@ -868,7 +882,7 @@ async fn invitation_is_emailed_when_mail_available() {
         &owner,
         "POST",
         "/api/team/invitations",
-        Some(json!({ "email": "nora@example.com", "role": "viewer" })),
+        Some(json!({ "email": "nora@example.com", "role": "viewer", "password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 201, "{}", r.raw);
@@ -1060,9 +1074,12 @@ async fn reset_mfa_rank_rules() {
     let r = as_user(&state, &admin, "POST", &path(dev_id), ok.clone()).await;
     assert_eq!(r.status, 204, "{}", r.raw);
     assert_eq!(factor_rows(&state, dev_id).await, 0);
+    // L'auteur a lui-meme un second facteur : le mot de passe seul ne suffit
+    // plus (step-up), rien n'est supprime (succes avec code : team_step_up.rs).
     let r = as_user(&state, &owner, "POST", &path(other_admin), ok).await;
-    assert_eq!(r.status, 204, "{}", r.raw);
-    assert_eq!(factor_rows(&state, other_admin).await, 0);
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), "second_factor_required");
+    assert_eq!(factor_rows(&state, other_admin).await, 3);
     let r = call(
         &state,
         "POST",
@@ -1081,7 +1098,7 @@ async fn reset_mfa_rank_rules() {
     .fetch_all(&state.db)
     .await
     .unwrap();
-    assert_eq!(audit.len(), 2);
+    assert_eq!(audit.len(), 1);
     assert!(audit.iter().all(|d| !d.contains(PASSWORD)));
 }
 

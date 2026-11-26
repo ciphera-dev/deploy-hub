@@ -5104,7 +5104,7 @@
         "tags": [
           "team"
         ],
-        "summary": "Invite un membre : renvoie un lien a usage unique valable 72 heures.",
+        "summary": "Invite un membre : renvoie un lien a usage unique valable 72 heures.\nConfirmation renforcee : mot de passe de l'invitant, plus le code de son\nsecond facteur s'il en a un ; les autres proprietaires sont prevenus.",
         "operationId": "create_invitation",
         "parameters": [
           {
@@ -5142,16 +5142,19 @@
             }
           },
           "401": {
-            "description": "Pas de session complete"
+            "description": "Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code`"
           },
           "403": {
             "description": "`forbidden` (Equipe : Admin requis, ou role au-dessus du sien) ou jeton CSRF invalide"
           },
           "409": {
-            "description": "`email_taken` : un compte existe deja pour cet e-mail"
+            "description": "`email_taken` (un compte existe deja pour cet e-mail) ou `second_factor_unavailable`"
           },
           "422": {
-            "description": "E-mail, nom ou role invalide"
+            "description": "E-mail, nom, role ou mot de passe invalide"
+          },
+          "429": {
+            "description": "Trop de tentatives ; en-tete Retry-After"
           }
         },
         "security": [
@@ -5254,7 +5257,7 @@
         "tags": [
           "team"
         ],
-        "summary": "Retire un membre : compte, sessions, facteurs et jetons supprimes, flux de\nlogs ouverts fermes, deploy hooks qu'il a crees supprimes.",
+        "summary": "Retire un membre : compte, sessions, facteurs et jetons supprimes, flux de\nlogs ouverts fermes, deploy hooks qu'il a crees supprimes. Confirmation\nrenforcee ; les autres proprietaires sont prevenus.",
         "operationId": "remove_member",
         "parameters": [
           {
@@ -5279,6 +5282,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepUpConfirmation"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Membre retire",
@@ -5291,7 +5304,7 @@
             }
           },
           "401": {
-            "description": "Pas de session complete"
+            "description": "Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code`"
           },
           "403": {
             "description": "`forbidden` (rang insuffisant), `self_forbidden` (soi-meme) ou jeton CSRF invalide"
@@ -5300,7 +5313,13 @@
             "description": "Membre introuvable"
           },
           "409": {
-            "description": "`last_owner` : il doit rester un proprietaire"
+            "description": "`last_owner` (il doit rester un proprietaire) ou `second_factor_unavailable`"
+          },
+          "422": {
+            "description": "Requete invalide"
+          },
+          "429": {
+            "description": "Trop de tentatives ; en-tete Retry-After"
           }
         },
         "security": [
@@ -5314,7 +5333,7 @@
         "tags": [
           "team"
         ],
-        "summary": "Change le role d'un membre. Il faut pouvoir gerer le membre et accorder\nle nouveau role ; les sessions du membre sont gardees, son role est relu\na chaque requete.",
+        "summary": "Change le role d'un membre. Il faut pouvoir gerer le membre et accorder\nle nouveau role ; les sessions du membre sont gardees, son role est relu\na chaque requete. Confirmation renforcee (mot de passe, plus le code du\nsecond facteur si le compte en a un) ; les autres proprietaires sont\nprevenus.",
         "operationId": "update_member",
         "parameters": [
           {
@@ -5354,7 +5373,7 @@
             "description": "Role change"
           },
           "401": {
-            "description": "Pas de session complete"
+            "description": "Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code`"
           },
           "403": {
             "description": "`forbidden` (rang insuffisant), `self_forbidden` (soi-meme) ou jeton CSRF invalide"
@@ -5363,10 +5382,13 @@
             "description": "Membre introuvable"
           },
           "409": {
-            "description": "`last_owner` : il doit rester un proprietaire"
+            "description": "`last_owner` (il doit rester un proprietaire), `account_pending` ou `second_factor_unavailable`"
           },
           "422": {
-            "description": "Role invalide"
+            "description": "Role ou requete invalide"
+          },
+          "429": {
+            "description": "Trop de tentatives ; en-tete Retry-After"
           }
         },
         "security": [
@@ -5382,7 +5404,7 @@
         "tags": [
           "team"
         ],
-        "summary": "Genere un lien de reinitialisation pour un membre (a lui transmettre).",
+        "summary": "Genere un lien de reinitialisation pour un membre (a lui transmettre).\nConfirmation renforcee (mot de passe, plus le code du second facteur si le\ncompte en a un) ; les autres proprietaires sont prevenus.",
         "operationId": "member_reset_link",
         "parameters": [
           {
@@ -5407,6 +5429,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepUpConfirmation"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "201": {
             "description": "Lien cree (un lien encore inutilise est remplace)",
@@ -5419,13 +5451,22 @@
             }
           },
           "401": {
-            "description": "Pas de session complete"
+            "description": "Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code`"
           },
           "403": {
             "description": "`forbidden` (Equipe : Admin requis, ou compte de rang egal ou superieur au sien) ; `use_password_change` (son propre compte : utiliser `POST /api/me/password`) ; ou jeton CSRF invalide"
           },
           "404": {
             "description": "Compte introuvable"
+          },
+          "409": {
+            "description": "`account_pending` ou `second_factor_unavailable`"
+          },
+          "422": {
+            "description": "Requete invalide"
+          },
+          "429": {
+            "description": "Trop de tentatives ; en-tete Retry-After"
           }
         },
         "security": [
@@ -5441,7 +5482,7 @@
         "tags": [
           "team"
         ],
-        "summary": "Remet a zero le second facteur d'un membre (TOTP, passkeys, codes de\nsecours) et revoque ses sessions.",
+        "summary": "Remet a zero le second facteur d'un membre (TOTP, passkeys, codes de\nsecours) et revoque ses sessions. Confirmation renforcee de l'auteur ;\nles autres proprietaires sont prevenus.",
         "operationId": "member_reset_mfa",
         "parameters": [
           {
@@ -5481,13 +5522,16 @@
             "description": "Second facteur supprime, sessions du membre revoquees"
           },
           "401": {
-            "description": "Pas de session complete, ou `invalid_credentials` (mot de passe de l'auteur)"
+            "description": "Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code`"
           },
           "403": {
             "description": "`forbidden` (Equipe : Admin requis, ou compte de rang egal ou superieur au sien) ; `use_profile` (son propre compte : utiliser le profil) ; ou jeton CSRF invalide"
           },
           "404": {
             "description": "Compte introuvable"
+          },
+          "409": {
+            "description": "`second_factor_unavailable`"
           },
           "422": {
             "description": "Requete invalide"
@@ -6189,9 +6233,19 @@
         "description": "Corps de `POST /api/team/invitations`.",
         "required": [
           "email",
-          "role"
+          "role",
+          "password"
         ],
         "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Code du second facteur (application d'authentification ou code de\nsecours) : exige si le compte de l'invitant en a un.",
+            "maxLength": 64
+          },
           "email": {
             "type": "string"
           },
@@ -6201,6 +6255,12 @@
               "null"
             ],
             "description": "Nom propose a l'invite (modifiable a l'acceptation)."
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "Mot de passe de l'invitant (confirmation renforcee).",
+            "maxLength": 1024
           },
           "role": {
             "type": "string",
@@ -8511,10 +8571,19 @@
           "password"
         ],
         "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Code du second facteur de l'auteur (application d'authentification ou\ncode de secours) : exige si son compte en a un.",
+            "maxLength": 64
+          },
           "password": {
             "type": "string",
             "format": "password",
-            "description": "Mot de passe de l'auteur (re-authentification).",
+            "description": "Mot de passe de l'auteur (confirmation renforcee).",
             "maxLength": 1024
           }
         },
@@ -9001,6 +9070,31 @@
           "cancelled"
         ]
       },
+      "StepUpConfirmation": {
+        "type": "object",
+        "description": "Corps de `DELETE /api/team/members/{id}` et de\n`POST /api/team/members/{id}/reset-link` : confirmation renforcee.",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Code du second facteur (application d'authentification ou code de\nsecours) : exige si le compte de l'auteur en a un.",
+            "maxLength": 64
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "Mot de passe de l'auteur.",
+            "maxLength": 1024
+          }
+        },
+        "additionalProperties": false
+      },
       "SystemVersion": {
         "type": "object",
         "description": "Reponse de `GET /api/system/version`.",
@@ -9377,9 +9471,25 @@
         "type": "object",
         "description": "Corps de `PATCH /api/team/members/{id}`.",
         "required": [
-          "role"
+          "role",
+          "password"
         ],
         "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Code du second facteur (application d'authentification ou code de\nsecours) : exige si le compte de l'auteur en a un.",
+            "maxLength": 64
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "Mot de passe de l'auteur (confirmation renforcee).",
+            "maxLength": 1024
+          },
           "role": {
             "type": "string",
             "description": "Nouveau role : `owner`, `admin`, `ops`, `developer` ou `viewer`."

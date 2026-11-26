@@ -1586,6 +1586,7 @@ async fn removed_member_sessions_and_ws_closed() {
         Req {
             cookie: Some(&owner),
             csrf: Some(&csrf),
+            body: Some(json!({ "password": PASSWORD })),
             ..Req::default()
         },
     )

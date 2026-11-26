@@ -134,19 +134,25 @@ pub fn reset_token_info() {}
 pub fn reset_password() {}
 
 /// Genere un lien de reinitialisation pour un membre (a lui transmettre).
+/// Confirmation renforcee (mot de passe, plus le code du second facteur si le
+/// compte en a un) ; les autres proprietaires sont prevenus.
 #[utoipa::path(
     post,
     path = "/api/team/members/{id}/reset-link",
     tag = "team",
+    request_body = crate::team::StepUpConfirmation,
     params(
         ("id" = String, Path, description = "Identifiant du compte"),
         ("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)"),
     ),
     responses(
         (status = 201, description = "Lien cree (un lien encore inutilise est remplace)", body = ResetLink),
-        (status = 401, description = "Pas de session complete"),
+        (status = 401, description = "Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code`"),
         (status = 403, description = "`forbidden` (Equipe : Admin requis, ou compte de rang egal ou superieur au sien) ; `use_password_change` (son propre compte : utiliser `POST /api/me/password`) ; ou jeton CSRF invalide"),
         (status = 404, description = "Compte introuvable"),
+        (status = 409, description = "`account_pending` ou `second_factor_unavailable`"),
+        (status = 422, description = "Requete invalide"),
+        (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),
     )
 )]
 #[allow(dead_code)]
@@ -156,21 +162,28 @@ pub fn member_reset_link() {}
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResetMfa {
-    /// Mot de passe de l'auteur (re-authentification).
+    /// Mot de passe de l'auteur (confirmation renforcee).
     #[schema(value_type = String, format = Password, max_length = 1024)]
     pub password: Zeroizing<String>,
+    /// Code du second facteur de l'auteur (application d'authentification ou
+    /// code de secours) : exige si son compte en a un.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = Password, max_length = 64)]
+    pub code: Option<Zeroizing<String>>,
 }
 
 impl fmt::Debug for ResetMfa {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ResetMfa")
             .field("password", &"***")
+            .field("code", &self.code.as_ref().map(|_| "***"))
             .finish()
     }
 }
 
 /// Remet a zero le second facteur d'un membre (TOTP, passkeys, codes de
-/// secours) et revoque ses sessions.
+/// secours) et revoque ses sessions. Confirmation renforcee de l'auteur ;
+/// les autres proprietaires sont prevenus.
 #[utoipa::path(
     post,
     path = "/api/team/members/{id}/reset-mfa",
@@ -182,9 +195,10 @@ impl fmt::Debug for ResetMfa {
     ),
     responses(
         (status = 204, description = "Second facteur supprime, sessions du membre revoquees"),
-        (status = 401, description = "Pas de session complete, ou `invalid_credentials` (mot de passe de l'auteur)"),
+        (status = 401, description = "Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code`"),
         (status = 403, description = "`forbidden` (Equipe : Admin requis, ou compte de rang egal ou superieur au sien) ; `use_profile` (son propre compte : utiliser le profil) ; ou jeton CSRF invalide"),
         (status = 404, description = "Compte introuvable"),
+        (status = 409, description = "`second_factor_unavailable`"),
         (status = 422, description = "Requete invalide"),
         (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),
     )

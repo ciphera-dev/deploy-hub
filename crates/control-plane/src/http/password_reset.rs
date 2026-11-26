@@ -12,8 +12,12 @@
 //! - `POST /api/team/members/{id}/reset-link` : lien genere par un
 //!   administrateur (jamais pour un role au-dessus du sien), a transmettre ;
 //! - `POST /api/team/members/{id}/reset-mfa` : remise a zero du second
-//!   facteur d'un membre (memes regles de rang, mot de passe de l'auteur
-//!   exige), sessions du membre revoquees.
+//!   facteur d'un membre (memes regles de rang), sessions du membre revoquees.
+//!
+//! Ces deux routes exigent la confirmation renforcee de l'auteur
+//! (`auth::step_up` : mot de passe, plus le code de son second facteur s'il
+//! en a un), code consomme dans la transaction de l'action ; les autres
+//! proprietaires sont prevenus (`team::record`).
 //!
 //! Lien a usage unique valable 30 minutes. Le jeton (32 octets aleatoires)
 //! n'est jamais stocke, journalise ni ecrit dans l'audit : la base n'en garde
@@ -25,6 +29,7 @@
 use api_types::password::{
     ForgotPassword, PasswordResetStatus, ResetLink, ResetMfa, ResetPassword, ResetTokenInfo,
 };
+use api_types::team::StepUpConfirmation;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{StatusCode, header};
@@ -38,10 +43,10 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::auth::session::{self, SessionToken};
+use crate::auth::step_up::{self, StepUp};
 use crate::auth::{internal, password, rate_limit};
 use crate::authz::{Require, Role, forbidden, lvl, res};
 use crate::http::client_ip::ClientIp;
-use crate::http::me::{Reauth, reauthenticate};
 use crate::mail;
 use crate::state::AppState;
 
@@ -453,6 +458,7 @@ async fn member_link(
     ClientIp(ip): ClientIp,
     auth: Require<res::Team, lvl::Admin>,
     id: Result<Path<Uuid>, PathRejection>,
+    body: Result<Json<StepUpConfirmation>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Path(id) = id.map_err(|_| member_not_found())?;
     // Jamais pour son propre compte (le flux « mot de passe oublie » existe).
@@ -484,18 +490,36 @@ async fn member_link(
     if super::team::is_pending(&mut tx, id).await? {
         return Err(super::team::account_pending());
     }
+    // Step-up apres les controles (une demande refusee ne coute aucun essai),
+    // sans verrou tenu sur le compte de l'auteur ; un echec annule tout.
+    let Json(input) = body.map_err(|_| invalid("Requête invalide."))?;
+    let proof = match step_up::verify(
+        &state,
+        &auth.user,
+        ip,
+        input.password,
+        input.code,
+        "team.member.reset_link.failure",
+    )
+    .await?
+    {
+        StepUp::Verified(proof) => proof,
+        StepUp::Limited(response) => return Ok(response),
+    };
     let issued = issue(&mut tx, &email, state.clock.unix_secs(), 0.0, Origin::Admin)
         .await
         .map_err(|e| internal("creation du lien de reinitialisation", e))?
         .ok_or_else(member_not_found)?;
-    audit(
+    proof.commit(&mut tx).await?;
+    super::team::record(
         &mut tx,
-        Some(auth.user.id),
+        &state,
+        auth.user.id,
         "team.member.reset_link",
+        "user",
         json!({ "user_id": issued.user_id, "ip": ip.to_string() }),
     )
-    .await
-    .map_err(|e| internal("audit du lien de reinitialisation", e))?;
+    .await?;
     tx.commit()
         .await
         .map_err(|e| internal("transaction de reinitialisation", e))?;
@@ -539,19 +563,20 @@ async fn member_reset_mfa(
     if !Role::parse(&role).is_some_and(|role| auth.role.can_manage(role)) {
         return Err(forbidden());
     }
-    let ip = ip.to_string();
-    let attempt = match reauthenticate(
+    let proof = match step_up::verify(
         &state,
         &auth.user,
-        &ip,
+        ip,
         input.password,
+        input.code,
         "team.member.reset_mfa.failure",
     )
     .await?
     {
-        Reauth::Verified(attempt, _) => attempt,
-        Reauth::Limited(response) => return Ok(response),
+        StepUp::Verified(proof) => proof,
+        StepUp::Limited(response) => return Ok(response),
     };
+    let ip = ip.to_string();
     let mut tx = state
         .db
         .begin()
@@ -601,13 +626,14 @@ async fn member_reset_mfa(
     rate_limit::clear_mfa(&mut tx, id)
         .await
         .map_err(|e| internal("remise a zero du second facteur", e))?;
-    rate_limit::mark_mfa_success(&mut tx, attempt)
-        .await
-        .map_err(|e| internal("enregistrement de la tentative", e))?;
-    audit(
+    // Code de l'auteur consomme avec la remise a zero : rejoue, il annule tout.
+    proof.commit(&mut tx).await?;
+    super::team::record(
         &mut tx,
-        Some(auth.user.id),
+        &state,
+        auth.user.id,
         "team.member.reset_mfa",
+        "user",
         json!({
             "user_id": id,
             "totp": removed[0],
@@ -617,8 +643,7 @@ async fn member_reset_mfa(
             "ip": ip,
         }),
     )
-    .await
-    .map_err(|e| internal("audit de la remise a zero du second facteur", e))?;
+    .await?;
     tx.commit()
         .await
         .map_err(|e| internal("transaction de remise a zero du second facteur", e))?;

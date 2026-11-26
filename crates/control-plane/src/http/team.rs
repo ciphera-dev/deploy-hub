@@ -17,8 +17,20 @@
 //! flux de logs ouverts se ferment (`access.notify()` apres la validation).
 //! Changement de role : les sessions sont gardees, le role est relu a chaque
 //! requete. Chaque action ecrit une ligne d'audit, sans e-mail ni jeton.
+//!
+//! Confirmation renforcee (`auth::step_up` : mot de passe, plus le code du
+//! second facteur si le compte en a un) pour le changement de role et le
+//! retrait, comme pour l'invitation, le lien de reinitialisation et la remise
+//! a zero du second facteur d'un membre : apres un premier controle de rang
+//! hors transaction (une demande refusee ne coute aucun essai), avant les
+//! verrous (le step-up ecrit ses tentatives sur une autre connexion) ; le
+//! code est consomme dans la transaction de l'action, apres le second
+//! controle sous verrou. Chacune de ces actions previent les autres
+//! proprietaires ([`record`] : notification `TeamChange` si SMTP est actif).
 
-use api_types::team::{PendingInvitation, RemovedMember, TeamMember, UpdateMemberRole};
+use api_types::team::{
+    PendingInvitation, RemovedMember, StepUpConfirmation, TeamMember, UpdateMemberRole,
+};
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{StatusCode, header};
@@ -31,7 +43,9 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::auth::internal;
+use crate::auth::step_up::{self, StepUp};
 use crate::authz::{Require, Role, forbidden, lvl, res};
+use crate::domain::notifications::{self, Event};
 use crate::http::client_ip::ClientIp;
 use crate::http::invitations::audit;
 use crate::state::AppState;
@@ -93,6 +107,51 @@ pub(crate) async fn is_pending(conn: &mut PgConnection, id: Uuid) -> Result<bool
 
 fn invalid(message: &str) -> ApiError {
     ApiError::new(422, "validation_failed", message)
+}
+
+/// Audit d'un changement d'equipe privilegie et avis aux autres
+/// proprietaires (notification mise en file si SMTP est actif), dans la
+/// transaction de l'action. Le detail ne porte ni jeton, ni e-mail, ni secret.
+pub(crate) async fn record(
+    conn: &mut PgConnection,
+    state: &AppState,
+    actor: Uuid,
+    action: &str,
+    target: &str,
+    detail: serde_json::Value,
+) -> Result<(), ApiError> {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO audit_events (id, actor_id, action, target, detail) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(actor)
+    .bind(action)
+    .bind(target)
+    .bind(detail)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| internal("audit du changement d'equipe", e))?;
+    notifications::enqueue(conn, state, Event::TeamChange { audit_id: id })
+        .await
+        .map_err(|e| internal("avis aux proprietaires", e))
+}
+
+/// Premier controle de rang, hors transaction et sans verrou, avant le
+/// step-up : role actuel de la cible (`can_manage`). Refait sous verrou
+/// ensuite ([`lock_and_check`]).
+async fn precheck(state: &AppState, actor: Role, target_id: Uuid) -> Result<Role, ApiError> {
+    let target: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
+        .bind(target_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| internal("lecture du membre", e))?;
+    let target = target.ok_or_else(member_not_found)?;
+    let target = Role::parse(&target).ok_or_else(forbidden)?;
+    if !actor.can_manage(target) {
+        return Err(forbidden());
+    }
+    Ok(target)
 }
 
 /// `GET /api/team/members`
@@ -187,11 +246,38 @@ async fn update_member(
     body: Result<Json<UpdateMemberRole>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Path(id) = id.map_err(|_| member_not_found())?;
-    let Json(input) = body.map_err(|_| invalid("Requête invalide."))?;
-    let new_role = Role::parse(&input.role).ok_or_else(|| invalid("Rôle invalide."))?;
     if id == auth.user.id {
         return Err(self_forbidden());
     }
+    // Refus de rang avant le step-up : aucun essai consomme.
+    precheck(&state, auth.role, id).await?;
+    let Json(input) = body.map_err(|_| invalid("Requête invalide."))?;
+    let new_role = Role::parse(&input.role).ok_or_else(|| invalid("Rôle invalide."))?;
+    if !auth.role.can_grant(new_role) {
+        return Err(forbidden());
+    }
+    let mut conn = state
+        .db
+        .acquire()
+        .await
+        .map_err(|e| internal("connexion a la base", e))?;
+    if is_pending(&mut conn, id).await? {
+        return Err(account_pending());
+    }
+    drop(conn);
+    let proof = match step_up::verify(
+        &state,
+        &auth.user,
+        ip,
+        input.password,
+        input.code,
+        "team.member.role_changed.failure",
+    )
+    .await?
+    {
+        StepUp::Verified(proof) => proof,
+        StepUp::Limited(response) => return Ok(response),
+    };
     let mut tx = state
         .db
         .begin()
@@ -216,8 +302,11 @@ async fn update_member(
         .execute(&mut *tx)
         .await
         .map_err(|e| internal("changement de role", e))?;
-    audit(
+    // Code consomme avec le changement : rejoue, il annule tout.
+    proof.commit(&mut tx).await?;
+    record(
         &mut tx,
+        &state,
         auth.user.id,
         "team.member.role_changed",
         "user",
@@ -228,8 +317,7 @@ async fn update_member(
             "ip": ip.to_string(),
         }),
     )
-    .await
-    .map_err(|e| internal("audit du changement de role", e))?;
+    .await?;
     tx.commit()
         .await
         .map_err(|e| internal("transaction de changement de role", e))?;
@@ -244,11 +332,28 @@ async fn remove_member(
     ClientIp(ip): ClientIp,
     auth: Require<res::Team, lvl::Admin>,
     id: Result<Path<Uuid>, PathRejection>,
+    body: Result<Json<StepUpConfirmation>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Path(id) = id.map_err(|_| member_not_found())?;
     if id == auth.user.id {
         return Err(self_forbidden());
     }
+    // Refus de rang avant le step-up : aucun essai consomme.
+    precheck(&state, auth.role, id).await?;
+    let Json(input) = body.map_err(|_| invalid("Requête invalide."))?;
+    let proof = match step_up::verify(
+        &state,
+        &auth.user,
+        ip,
+        input.password,
+        input.code,
+        "team.member.removed.failure",
+    )
+    .await?
+    {
+        StepUp::Verified(proof) => proof,
+        StepUp::Limited(response) => return Ok(response),
+    };
     let mut tx = state
         .db
         .begin()
@@ -278,8 +383,10 @@ async fn remove_member(
         .execute(&mut *tx)
         .await
         .map_err(|e| internal("suppression du membre", e))?;
-    audit(
+    proof.commit(&mut tx).await?;
+    record(
         &mut tx,
+        &state,
         auth.user.id,
         "team.member.removed",
         "user",
@@ -291,8 +398,7 @@ async fn remove_member(
             "ip": ip.to_string(),
         }),
     )
-    .await
-    .map_err(|e| internal("audit du retrait", e))?;
+    .await?;
     tx.commit()
         .await
         .map_err(|e| internal("transaction de retrait", e))?;

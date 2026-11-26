@@ -946,7 +946,7 @@ async fn delete_org_requires_reauth_and_phrase() {
         &owner,
         "POST",
         "/api/team/invitations",
-        Some(json!({ "email": "new@example.com", "role": "developer" })),
+        Some(json!({ "email": "new@example.com", "role": "developer", "password": PASSWORD })),
     )
     .await;
     assert!(r.status < 300, "{}", r.raw);

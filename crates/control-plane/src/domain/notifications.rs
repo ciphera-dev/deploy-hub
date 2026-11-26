@@ -1,7 +1,10 @@
 //! Notifications e-mail du Profil › Notifications : deploiement reussi ou en
 //! echec, emission ou renouvellement de certificat en echec, certificat
 //! proche de l'expiration, CA de l'instance a moins d'un an de son
-//! expiration (proprietaire seul, [`check_ca_expiry`]).
+//! expiration (proprietaire seul, [`check_ca_expiry`]), changement d'equipe
+//! privilegie (invitation, role, retrait, lien de reinitialisation ou remise
+//! a zero du second facteur d'un membre : [`Event::TeamChange`], aux autres
+//! proprietaires que l'auteur, preference « Equipe »).
 //!
 //! - **Mise en file a la transition** : [`enqueue`] est appele dans la
 //!   transaction qui change le statut (deploiement, certificat). Rien n'est
@@ -103,6 +106,12 @@ pub enum Event {
     CaExpiring {
         expires_at: i64,
     },
+    /// Changement d'equipe privilegie, decrit par la ligne d'audit
+    /// `audit_id` (action, auteur, cible) : proprietaires seulement, sauf
+    /// l'auteur.
+    TeamChange {
+        audit_id: Uuid,
+    },
 }
 
 impl Event {
@@ -120,6 +129,7 @@ impl Event {
             } => format!("cert:{domain_id}:expiring:{expires_at}"),
             Event::Digest { user_id } => format!("digest:{user_id}"),
             Event::CaExpiring { expires_at } => format!("ca:expiring:{expires_at}"),
+            Event::TeamChange { audit_id } => format!("team:{audit_id}"),
         }
     }
 
@@ -270,11 +280,13 @@ struct Notice {
     expires_at: Option<i64>,
     /// Reserve au proprietaire de l'instance.
     owner_only: bool,
+    /// Compte jamais destinataire (l'auteur d'un changement d'equipe).
+    exclude: Option<Uuid>,
 }
 
 impl Notice {
-    fn allows(&self, role: &str) -> bool {
-        if self.owner_only && role != "owner" {
+    fn allows(&self, id: Uuid, role: &str) -> bool {
+        if (self.owner_only && role != "owner") || self.exclude == Some(id) {
             return false;
         }
         Role::parse(role).is_some_and(|role| authz::allowed(role, self.resource, self.level))
@@ -291,6 +303,7 @@ struct Recipient {
     deploy_succeeded: Option<bool>,
     deploy_failed: Option<bool>,
     certificates: Option<bool>,
+    team: Option<bool>,
 }
 
 impl Recipient {
@@ -302,6 +315,7 @@ impl Recipient {
             Event::CertFailed { .. } | Event::CertExpiring { .. } | Event::CaExpiring { .. } => {
                 self.certificates.unwrap_or(d.certificates)
             }
+            Event::TeamChange { .. } => self.team.unwrap_or(d.team),
             Event::Digest { .. } => true,
         };
         wanted && self.email_enabled.unwrap_or(d.email_enabled)
@@ -310,7 +324,7 @@ impl Recipient {
 
 /// Comptes et preferences (filtre et ordre ajoutes par l'appelant).
 const RECIPIENTS: &str = "SELECT u.id, u.email, u.role, u.timezone, p.email_enabled, \
-     p.deploy_succeeded, p.deploy_failed, p.certificates \
+     p.deploy_succeeded, p.deploy_failed, p.certificates, p.team \
      FROM users u LEFT JOIN notification_prefs p ON p.user_id = u.id";
 
 /// Verrou de la transaction sur les envois du compte (plafond exact).
@@ -468,7 +482,7 @@ pub async fn handle_within(
     // Cause de l'arret avant le dernier destinataire.
     let mut stopped: Option<&str> = None;
     for r in recipients {
-        if !notice.allows(&r.role) || !r.wants(&event) {
+        if !notice.allows(r.id, &r.role) || !r.wants(&event) {
             continue;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -611,7 +625,7 @@ async fn digest(
         else {
             continue;
         };
-        if !notice.allows(&r.role) || !r.wants(&event) {
+        if !notice.allows(r.id, &r.role) || !r.wants(&event) {
             continue;
         }
         if matches!(event, Event::DeploySucceeded { .. }) {
@@ -769,9 +783,11 @@ async fn notice(db: &PgPool, event: &Event) -> sqlx::Result<Option<Notice>> {
                 level: Level::Read,
                 expires_at: None,
                 owner_only: false,
+                exclude: None,
             }))
         }
         Event::Digest { .. } => Ok(None),
+        Event::TeamChange { audit_id } => team_notice(db, *audit_id).await,
         Event::CaExpiring { expires_at } => Ok(Some(Notice {
             subject: "La CA de l'instance Ciphera expire bientôt".into(),
             body: "La CA de l'instance (certificats des agents, du lien et de l'accès direct \
@@ -784,6 +800,7 @@ async fn notice(db: &PgPool, event: &Event) -> sqlx::Result<Option<Notice>> {
             level: Level::Admin,
             expires_at: Some(*expires_at),
             owner_only: true,
+            exclude: None,
         })),
         Event::CertFailed { domain_id, .. } | Event::CertExpiring { domain_id, .. } => {
             let row: Option<(String, bool, Option<Uuid>, Option<i64>)> = sqlx::query_as(
@@ -851,9 +868,135 @@ async fn notice(db: &PgPool, event: &Event) -> sqlx::Result<Option<Notice>> {
                 level,
                 expires_at,
                 owner_only: false,
+                exclude: None,
             }))
         }
     }
+}
+
+/// Nom affiche d'un role.
+fn role_label(role: &str) -> &str {
+    match role {
+        "owner" => "Propriétaire",
+        "admin" => "Administrateur",
+        "developer" => "Développeur",
+        "ops" => "Ops",
+        "viewer" => "Lecteur",
+        other => other,
+    }
+}
+
+/// « Nom (e-mail) » du compte `id`, s'il existe encore.
+async fn account(db: &PgPool, id: Option<Uuid>) -> sqlx::Result<Option<String>> {
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT name, email FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.map(|(name, email)| {
+        if name.trim().is_empty() {
+            email
+        } else {
+            format!("{name} ({email})")
+        }
+    }))
+}
+
+/// Avis d'un changement d'equipe, lu dans sa ligne d'audit (ni jeton, ni
+/// lien, ni secret : l'audit n'en porte pas). `None` si la ligne n'existe
+/// plus ou si l'action n'est pas un changement d'equipe.
+async fn team_notice(db: &PgPool, audit_id: Uuid) -> sqlx::Result<Option<Notice>> {
+    let row: Option<(String, serde_json::Value, Option<Uuid>)> =
+        sqlx::query_as("SELECT action, detail, actor_id FROM audit_events WHERE id = $1")
+            .bind(audit_id)
+            .fetch_optional(db)
+            .await?;
+    let Some((action, detail, actor_id)) = row else {
+        return Ok(None);
+    };
+    let actor = account(db, actor_id)
+        .await?
+        .unwrap_or_else(|| "Un compte supprimé depuis".to_string());
+    let field = |key: &str| detail[key].as_str().unwrap_or("").to_string();
+    let member_id = detail["user_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok());
+    let member = move || async move {
+        account(db, member_id)
+            .await
+            .map(|m| m.unwrap_or_else(|| "un membre (compte supprimé depuis)".to_string()))
+    };
+    let (subject, what) = match action.as_str() {
+        "team.invitation.created" => {
+            let invited: Option<String> = match detail["invitation_id"]
+                .as_str()
+                .and_then(|id| Uuid::parse_str(id).ok())
+            {
+                Some(id) => {
+                    sqlx::query_scalar("SELECT email FROM invitations WHERE id = $1")
+                        .bind(id)
+                        .fetch_optional(db)
+                        .await?
+                }
+                None => None,
+            };
+            let to = invited.map(|e| format!(" pour {e}")).unwrap_or_default();
+            (
+                "Équipe Ciphera : invitation créée",
+                format!(
+                    "{actor} a créé une invitation au rôle {}{to}.",
+                    role_label(&field("role"))
+                ),
+            )
+        }
+        "team.member.role_changed" => (
+            "Équipe Ciphera : rôle d'un membre modifié",
+            format!(
+                "{actor} a changé le rôle de {} : {} → {}.",
+                member().await?,
+                role_label(&field("from")),
+                role_label(&field("to"))
+            ),
+        ),
+        "team.member.removed" => (
+            "Équipe Ciphera : membre retiré",
+            format!(
+                "{actor} a retiré un membre ({}) de l'organisation.",
+                role_label(&field("role"))
+            ),
+        ),
+        "team.member.reset_link" => (
+            "Équipe Ciphera : lien de réinitialisation créé",
+            format!(
+                "{actor} a créé un lien de réinitialisation du mot de passe de {}.",
+                member().await?
+            ),
+        ),
+        "team.member.reset_mfa" => (
+            "Équipe Ciphera : second facteur d'un membre remis à zéro",
+            format!(
+                "{actor} a remis à zéro le second facteur de {}.",
+                member().await?
+            ),
+        ),
+        _ => return Ok(None),
+    };
+    Ok(Some(Notice {
+        subject: subject.to_string(),
+        body: format!(
+            "{what}\nSi vous n'êtes pas au courant de ce changement, vérifiez l'équipe et \
+             le journal d'audit dans le panneau :"
+        ),
+        path: "/settings/team".into(),
+        resource: Resource::Team,
+        level: Level::Admin,
+        expires_at: None,
+        owner_only: true,
+        exclude: actor_id,
+    }))
 }
 
 /// Date d'expiration dans le fuseau du destinataire (UTC a defaut).
@@ -911,6 +1054,7 @@ mod tests {
                 expires_at: 1,
             },
             Event::CaExpiring { expires_at: 1 },
+            Event::TeamChange { audit_id: id },
         ];
         let keys: std::collections::HashSet<_> = events.iter().map(Event::key).collect();
         assert_eq!(keys.len(), events.len());
@@ -932,6 +1076,7 @@ Bcc: x@example.com"
             level: Level::Read,
             expires_at: None,
             owner_only: false,
+            exclude: None,
         };
         let mail = compose(
             &notice,

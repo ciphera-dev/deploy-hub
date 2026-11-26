@@ -189,6 +189,7 @@ use utoipa::OpenApi;
         invitations::RegisterRequest,
         team::TeamMember,
         team::UpdateMemberRole,
+        team::StepUpConfirmation,
         team::RemovedMember,
         team::PendingInvitation,
         password::PasswordResetStatus,
@@ -701,6 +702,34 @@ mod tests {
                 .unwrap();
         assert!(!format!("{del:?}").contains("test-password-value"));
         assert!(serde_json::from_str::<settings::UpdateOrgSecurity>(r#"{"x":1}"#).is_err());
+    }
+
+    #[test]
+    fn team_step_up_bodies_debug_hide_secrets() {
+        let secret = r#""password":"test-password-value","code":"123456""#;
+        let invite: invitations::CreateInvitation = serde_json::from_str(&format!(
+            r#"{{"email":"a@example.com","role":"viewer",{secret}}}"#
+        ))
+        .unwrap();
+        let role: team::UpdateMemberRole =
+            serde_json::from_str(&format!(r#"{{"role":"viewer",{secret}}}"#)).unwrap();
+        let confirm: team::StepUpConfirmation =
+            serde_json::from_str(&format!("{{{secret}}}")).unwrap();
+        let mfa: password::ResetMfa = serde_json::from_str(&format!("{{{secret}}}")).unwrap();
+        for debug in [
+            format!("{invite:?}"),
+            format!("{role:?}"),
+            format!("{confirm:?}"),
+            format!("{mfa:?}"),
+        ] {
+            assert!(
+                !debug.contains("test-password-value") && !debug.contains("123456"),
+                "{debug}"
+            );
+        }
+        // Le mot de passe est obligatoire.
+        assert!(serde_json::from_str::<team::StepUpConfirmation>("{}").is_err());
+        assert!(serde_json::from_str::<team::UpdateMemberRole>(r#"{"role":"viewer"}"#).is_err());
     }
 
     #[test]

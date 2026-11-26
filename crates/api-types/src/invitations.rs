@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 use zeroize::Zeroizing;
 
 /// Corps de `POST /api/team/invitations`.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 pub struct CreateInvitation {
     pub email: String,
     /// Nom propose a l'invite (modifiable a l'acceptation).
@@ -17,6 +17,26 @@ pub struct CreateInvitation {
     /// `owner`, `admin`, `ops`, `developer` ou `viewer` ; jamais au-dessus du
     /// role de l'invitant.
     pub role: String,
+    /// Mot de passe de l'invitant (confirmation renforcee).
+    #[schema(value_type = String, format = Password, max_length = 1024)]
+    pub password: Zeroizing<String>,
+    /// Code du second facteur (application d'authentification ou code de
+    /// secours) : exige si le compte de l'invitant en a un.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = Password, max_length = 64)]
+    pub code: Option<Zeroizing<String>>,
+}
+
+impl fmt::Debug for CreateInvitation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateInvitation")
+            .field("email", &self.email)
+            .field("name", &self.name)
+            .field("role", &self.role)
+            .field("password", &"***")
+            .field("code", &self.code.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 /// Reponse 201 de `POST /api/team/invitations`.
@@ -90,6 +110,8 @@ impl fmt::Debug for RegisterRequest {
 }
 
 /// Invite un membre : renvoie un lien a usage unique valable 72 heures.
+/// Confirmation renforcee : mot de passe de l'invitant, plus le code de son
+/// second facteur s'il en a un ; les autres proprietaires sont prevenus.
 #[utoipa::path(
     post,
     path = "/api/team/invitations",
@@ -98,10 +120,11 @@ impl fmt::Debug for RegisterRequest {
     params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
     responses(
         (status = 201, description = "Invitation creee (une invitation en attente pour cet e-mail est remplacee)", body = InvitationLink),
-        (status = 401, description = "Pas de session complete"),
+        (status = 401, description = "Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code`"),
         (status = 403, description = "`forbidden` (Equipe : Admin requis, ou role au-dessus du sien) ou jeton CSRF invalide"),
-        (status = 409, description = "`email_taken` : un compte existe deja pour cet e-mail"),
-        (status = 422, description = "E-mail, nom ou role invalide"),
+        (status = 409, description = "`email_taken` (un compte existe deja pour cet e-mail) ou `second_factor_unavailable`"),
+        (status = 422, description = "E-mail, nom, role ou mot de passe invalide"),
+        (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),
     )
 )]
 #[allow(dead_code)]

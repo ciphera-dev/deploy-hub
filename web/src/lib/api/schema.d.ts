@@ -1486,7 +1486,11 @@ export interface paths {
          */
         get: operations["list_invitations"];
         put?: never;
-        /** Invite un membre : renvoie un lien a usage unique valable 72 heures. */
+        /**
+         * Invite un membre : renvoie un lien a usage unique valable 72 heures.
+         *     Confirmation renforcee : mot de passe de l'invitant, plus le code de son
+         *     second facteur s'il en a un ; les autres proprietaires sont prevenus.
+         */
         post: operations["create_invitation"];
         delete?: never;
         options?: never;
@@ -1543,7 +1547,8 @@ export interface paths {
         post?: never;
         /**
          * Retire un membre : compte, sessions, facteurs et jetons supprimes, flux de
-         *     logs ouverts fermes, deploy hooks qu'il a crees supprimes.
+         *     logs ouverts fermes, deploy hooks qu'il a crees supprimes. Confirmation
+         *     renforcee ; les autres proprietaires sont prevenus.
          */
         delete: operations["remove_member"];
         options?: never;
@@ -1551,7 +1556,9 @@ export interface paths {
         /**
          * Change le role d'un membre. Il faut pouvoir gerer le membre et accorder
          *     le nouveau role ; les sessions du membre sont gardees, son role est relu
-         *     a chaque requete.
+         *     a chaque requete. Confirmation renforcee (mot de passe, plus le code du
+         *     second facteur si le compte en a un) ; les autres proprietaires sont
+         *     prevenus.
          */
         patch: operations["update_member"];
         trace?: never;
@@ -1565,7 +1572,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Genere un lien de reinitialisation pour un membre (a lui transmettre). */
+        /**
+         * Genere un lien de reinitialisation pour un membre (a lui transmettre).
+         *     Confirmation renforcee (mot de passe, plus le code du second facteur si le
+         *     compte en a un) ; les autres proprietaires sont prevenus.
+         */
         post: operations["member_reset_link"];
         delete?: never;
         options?: never;
@@ -1584,7 +1595,8 @@ export interface paths {
         put?: never;
         /**
          * Remet a zero le second facteur d'un membre (TOTP, passkeys, codes de
-         *     secours) et revoque ses sessions.
+         *     secours) et revoque ses sessions. Confirmation renforcee de l'auteur ;
+         *     les autres proprietaires sont prevenus.
          */
         post: operations["member_reset_mfa"];
         delete?: never;
@@ -1833,9 +1845,20 @@ export interface components {
         };
         /** @description Corps de `POST /api/team/invitations`. */
         CreateInvitation: {
+            /**
+             * Format: password
+             * @description Code du second facteur (application d'authentification ou code de
+             *     secours) : exige si le compte de l'invitant en a un.
+             */
+            code?: string | null;
             email: string;
             /** @description Nom propose a l'invite (modifiable a l'acceptation). */
             name?: string | null;
+            /**
+             * Format: password
+             * @description Mot de passe de l'invitant (confirmation renforcee).
+             */
+            password: string;
             /**
              * @description `owner`, `admin`, `ops`, `developer` ou `viewer` ; jamais au-dessus du
              *     role de l'invitant.
@@ -2824,7 +2847,13 @@ export interface components {
         ResetMfa: {
             /**
              * Format: password
-             * @description Mot de passe de l'auteur (re-authentification).
+             * @description Code du second facteur de l'auteur (application d'authentification ou
+             *     code de secours) : exige si son compte en a un.
+             */
+            code?: string | null;
+            /**
+             * Format: password
+             * @description Mot de passe de l'auteur (confirmation renforcee).
              */
             password: string;
         };
@@ -3010,6 +3039,23 @@ export interface components {
          * @enum {string}
          */
         StepStatus: "running" | "succeeded" | "failed" | "cancelled";
+        /**
+         * @description Corps de `DELETE /api/team/members/{id}` et de
+         *     `POST /api/team/members/{id}/reset-link` : confirmation renforcee.
+         */
+        StepUpConfirmation: {
+            /**
+             * Format: password
+             * @description Code du second facteur (application d'authentification ou code de
+             *     secours) : exige si le compte de l'auteur en a un.
+             */
+            code?: string | null;
+            /**
+             * Format: password
+             * @description Mot de passe de l'auteur.
+             */
+            password: string;
+        };
         /** @description Reponse de `GET /api/system/version`. */
         SystemVersion: {
             /** @description Notes de version de `latest` (https), si publiees. */
@@ -3156,6 +3202,17 @@ export interface components {
         };
         /** @description Corps de `PATCH /api/team/members/{id}`. */
         UpdateMemberRole: {
+            /**
+             * Format: password
+             * @description Code du second facteur (application d'authentification ou code de
+             *     secours) : exige si le compte de l'auteur en a un.
+             */
+            code?: string | null;
+            /**
+             * Format: password
+             * @description Mot de passe de l'auteur (confirmation renforcee).
+             */
+            password: string;
             /** @description Nouveau role : `owner`, `admin`, `ops`, `developer` ou `viewer`. */
             role: string;
         };
@@ -7825,7 +7882,7 @@ export interface operations {
                     "application/json": components["schemas"]["InvitationLink"];
                 };
             };
-            /** @description Pas de session complete */
+            /** @description Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code` */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7839,15 +7896,22 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `email_taken` : un compte existe deja pour cet e-mail */
+            /** @description `email_taken` (un compte existe deja pour cet e-mail) ou `second_factor_unavailable` */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description E-mail, nom ou role invalide */
+            /** @description E-mail, nom, role ou mot de passe invalide */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives ; en-tete Retry-After */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7947,7 +8011,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepUpConfirmation"];
+            };
+        };
         responses: {
             /** @description Membre retire */
             200: {
@@ -7958,7 +8026,7 @@ export interface operations {
                     "application/json": components["schemas"]["RemovedMember"];
                 };
             };
-            /** @description Pas de session complete */
+            /** @description Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code` */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7979,8 +8047,22 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `last_owner` : il doit rester un proprietaire */
+            /** @description `last_owner` (il doit rester un proprietaire) ou `second_factor_unavailable` */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requete invalide */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives ; en-tete Retry-After */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8014,7 +8096,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Pas de session complete */
+            /** @description Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code` */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8035,15 +8117,22 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `last_owner` : il doit rester un proprietaire */
+            /** @description `last_owner` (il doit rester un proprietaire), `account_pending` ou `second_factor_unavailable` */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Role invalide */
+            /** @description Role ou requete invalide */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives ; en-tete Retry-After */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8064,7 +8153,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepUpConfirmation"];
+            };
+        };
         responses: {
             /** @description Lien cree (un lien encore inutilise est remplace) */
             201: {
@@ -8075,7 +8168,7 @@ export interface operations {
                     "application/json": components["schemas"]["ResetLink"];
                 };
             };
-            /** @description Pas de session complete */
+            /** @description Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code` */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8091,6 +8184,27 @@ export interface operations {
             };
             /** @description Compte introuvable */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `account_pending` ou `second_factor_unavailable` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requete invalide */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives ; en-tete Retry-After */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8124,7 +8238,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Pas de session complete, ou `invalid_credentials` (mot de passe de l'auteur) */
+            /** @description Pas de session complete, `invalid_credentials` (mot de passe), `second_factor_required` (code du second facteur absent) ou `invalid_code` */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8140,6 +8254,13 @@ export interface operations {
             };
             /** @description Compte introuvable */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `second_factor_unavailable` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

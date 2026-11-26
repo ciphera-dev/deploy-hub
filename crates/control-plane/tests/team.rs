@@ -70,7 +70,7 @@ async fn set_role(state: &AppState, by: &(String, String), id: Uuid, role: &str)
         by,
         "PATCH",
         &format!("/api/team/members/{id}"),
-        Some(json!({ "role": role })),
+        Some(json!({ "role": role, "password": PASSWORD })),
     )
     .await
 }
@@ -81,7 +81,7 @@ async fn remove(state: &AppState, by: &(String, String), id: Uuid) -> Reply {
         by,
         "DELETE",
         &format!("/api/team/members/{id}"),
-        None,
+        Some(json!({ "password": PASSWORD })),
     )
     .await
 }
@@ -425,7 +425,7 @@ async fn list_and_cancel_invitation() {
             &owner,
             "POST",
             "/api/team/invitations",
-            Some(json!({ "email": email, "role": role, "name": "Invite" })),
+            Some(json!({ "email": email, "role": role, "name": "Invite", "password": PASSWORD })),
         )
         .await;
         assert_eq!(r.status, 201, "{}", r.raw);
@@ -490,7 +490,7 @@ async fn admin_cannot_cancel_owner_invitation() {
         &owner,
         "POST",
         "/api/team/invitations",
-        Some(json!({ "email": "boss@example.com", "role": "owner" })),
+        Some(json!({ "email": "boss@example.com", "role": "owner", "password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 201, "{}", r.raw);
@@ -573,7 +573,7 @@ async fn removed_member_invitations_deleted() {
             by,
             "POST",
             "/api/team/invitations",
-            Some(json!({ "email": email, "role": "viewer" })),
+            Some(json!({ "email": email, "role": "viewer", "password": PASSWORD })),
         )
         .await;
         assert_eq!(r.status, 201, "{}", r.raw);
@@ -620,7 +620,7 @@ async fn cancel_invitation_rereads_actor_role() {
         &owner,
         "POST",
         "/api/team/invitations",
-        Some(json!({ "email": "v@example.com", "role": "viewer" })),
+        Some(json!({ "email": "v@example.com", "role": "viewer", "password": PASSWORD })),
     )
     .await;
     assert_eq!(r.status, 201, "{}", r.raw);

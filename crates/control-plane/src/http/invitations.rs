@@ -1,6 +1,8 @@
 //! Creation de comptes hors assistant d'installation :
 //! - `POST /api/team/invitations` : lien a usage unique valable 72 heures
-//!   (Equipe : Admin requis ; jamais un role au-dessus de celui de l'invitant) ;
+//!   (Equipe : Admin requis ; jamais un role au-dessus de celui de l'invitant ;
+//!   confirmation renforcee `auth::step_up`, code consomme dans la
+//!   transaction de l'invitation ; autres proprietaires prevenus) ;
 //! - `GET /api/auth/invitations/{token}`, `POST .../accept` : ecran
 //!   d'acceptation ; le compte est cree avec le role invite, sans session (la
 //!   connexion suit et applique la double authentification) ;
@@ -36,6 +38,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::auth::session::{self, SessionToken};
+use crate::auth::step_up::{self, StepUp};
 use crate::auth::{internal, password, rate_limit};
 use crate::authz::{Require, Role, forbidden, lvl, res};
 use crate::http::client_ip::ClientIp;
@@ -228,6 +231,21 @@ async fn create(
         .execute(&mut *tx)
         .await
         .map_err(|e| internal("remplacement de l'invitation", e))?;
+    // Step-up apres les controles ci-dessus (une demande refusee ne coute
+    // aucun essai) ; un echec annule la transaction : rien n'est modifie.
+    let proof = match step_up::verify(
+        &state,
+        &auth.user,
+        ip,
+        input.password,
+        input.code,
+        "team.invitation.created.failure",
+    )
+    .await?
+    {
+        StepUp::Verified(proof) => proof,
+        StepUp::Limited(response) => return Ok(response),
+    };
     sqlx::query(
         "INSERT INTO invitations (id, token_hash, email, name, role, invited_by, created_at, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7), to_timestamp($7) + make_interval(secs => $8))",
@@ -243,16 +261,17 @@ async fn create(
     .execute(&mut *tx)
     .await
     .map_err(|e| internal("creation de l'invitation", e))?;
+    proof.commit(&mut tx).await?;
     // Ni jeton ni e-mail dans l'audit.
-    audit(
+    super::team::record(
         &mut tx,
+        &state,
         auth.user.id,
         "team.invitation.created",
         "invitation",
         json!({ "invitation_id": invitation_id, "role": role.as_str(), "ip": ip.to_string() }),
     )
-    .await
-    .map_err(|e| internal("audit d'invitation", e))?;
+    .await?;
     tx.commit()
         .await
         .map_err(|e| internal("transaction d'invitation", e))?;

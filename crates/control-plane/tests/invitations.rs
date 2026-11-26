@@ -48,7 +48,12 @@ async fn session(state: &AppState, email: &str) -> (String, String) {
     (r.token(), r.csrf())
 }
 
-async fn invite(state: &AppState, by: &(String, String), body: Value) -> Reply {
+/// Invitation avec confirmation renforcee (mot de passe de l'invitant, sauf
+/// si le corps en porte deja un).
+async fn invite(state: &AppState, by: &(String, String), mut body: Value) -> Reply {
+    if body.get("password").is_none() {
+        body["password"] = json!(PASSWORD);
+    }
     call(
         state,
         "POST",
