@@ -1,8 +1,8 @@
 # Fichiers sensibles : toute modification demande la relecture du proprietaire du depot.
-/.agents/hooks/ @ciphera-dev
-/.claude/settings.json @ciphera-dev
-/.codex/hooks.json @ciphera-dev
-/.github/ @ciphera-dev
-/install/ @ciphera-dev
-/scripts/release/ @ciphera-dev
-/.github/CODEOWNERS @ciphera-dev
+/.agents/hooks/ @ciphera-dev/maintainers
+/.claude/settings.json @ciphera-dev/maintainers
+/.codex/hooks.json @ciphera-dev/maintainers
+/.github/ @ciphera-dev/maintainers
+/install/ @ciphera-dev/maintainers
+/scripts/release/ @ciphera-dev/maintainers
+/.github/CODEOWNERS @ciphera-dev/maintainers
