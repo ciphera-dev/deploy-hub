@@ -14,9 +14,10 @@ use shared::ids::ServerId;
 pub const KEY_FILE: &str = "agent.key";
 pub const CERT_FILE: &str = "agent.crt";
 pub const CA_FILE: &str = "ca.crt";
-/// Nombre maximal de CA dans `ca.crt` (courante et suivante, avec de la
-/// marge).
-pub const MAX_TRUSTED_CAS: usize = 4;
+/// Nombre maximal de CA dans un jeu `TrustedCas` : la courante et, pendant
+/// une rotation, la suivante. Aucune racine de plus ne peut s'y glisser a
+/// cote de deux CA valides.
+pub const MAX_TRUSTED_CAS: usize = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentConfig {
@@ -546,6 +547,39 @@ mod tests {
                 .check_trusted(next.cert_pem(), &link_next)
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    /// Au plus deux CA (courante et suivante pendant une rotation) : une
+    /// troisieme racine, meme a cote de deux CA valides, fait refuser le jeu.
+    #[test]
+    fn trusted_cas_are_at_most_two() {
+        let old = pki::Ca::generate("Ciphera CA").unwrap();
+        let next = pki::Ca::generate("Ciphera CA 2").unwrap();
+        let rogue = pki::Ca::generate("Ciphera CA 3").unwrap();
+        let key = pki::AgentKey::generate().unwrap();
+        let cert = old
+            .issue_agent_cert(ServerId::new(), key.public_key_der())
+            .unwrap();
+        let identity = Identity::from_pem(
+            cert.cert_pem.as_bytes(),
+            key.key_pem().as_bytes(),
+            old.cert_pem().as_bytes(),
+        )
+        .unwrap();
+        let mut link = old.issue_server_cert(&["localhost".into()]).unwrap();
+        let _ = link.key_pem.take();
+        let link = pki::der_from_pem(&link.cert_pem).unwrap();
+
+        let three = format!("{}{}{}", old.cert_pem(), next.cert_pem(), rogue.cert_pem());
+        assert_eq!(
+            identity.check_trusted(&three, &link).unwrap_err(),
+            "trop de CA"
+        );
+        let two = format!("{}{}", old.cert_pem(), next.cert_pem());
+        assert_eq!(
+            identity.check_trusted(&two, &link).unwrap().unwrap().len(),
+            2
         );
     }
 
