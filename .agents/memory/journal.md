@@ -445,3 +445,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-25 19:29 — Session v0.1-sdd — claude-code (orchestrateur) — Task R39 : Profil release et dépendances non maintenues
 - fait : overflow-checks en release, arithmétique ACME saturante, avis acceptés et documentés
 - résultat : TERMINÉ (relecture approuvée)
+
+## 2026-11-26 14:50 — Session v0.1-sdd — claude-code (orchestrateur) — Task R50 : Domaine généré en HTTPS
+- fait : ACME pour le domaine sslip.io, repli HTTP, reprise quotidienne, certificats retirés
+- résultat : TERMINÉ (relecture approuvée, 1 tour)
