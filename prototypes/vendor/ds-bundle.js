@@ -22794,7 +22794,7 @@ try { (() => {
     const [tab, setTab] = React.useState('info');
     const [p, setP] = React.useState({
       name: 'Alex Martin',
-      address: 'Rue de l'Exemple 1, 1000 Lausanne, CH',
+      address: '1 rue Exemple, 1000 Lausanne, CH',
       phone: '+41 00 000 00 00',
       company: 'Ciphera SAS',
       email: 'alex@example.com',

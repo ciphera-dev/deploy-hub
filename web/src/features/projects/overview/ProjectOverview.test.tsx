@@ -46,7 +46,7 @@ it("rendu à partir des fixtures de ProjectOverview.jsx : production, indicateur
   mount(`/projects/${WEB.id}`);
   const prod = await screen.findByRole("region", { name: "Production" }, { timeout: 5000 });
   expect(within(prod).getByText("Actuel")).toBeInTheDocument();
-  expect(within(prod).getByRole("link", { name: /app\.example.com/ })).toHaveAttribute("href", "https://app.example.com");
+  expect(within(prod).getByRole("link", { name: /app\.example\.com/ })).toHaveAttribute("href", "https://app.example.com");
   expect(within(prod).getByText("Déploiement manuel · #4818")).toBeInTheDocument();
   expect(within(prod).getByText("a3f91c2")).toBeInTheDocument();
   expect(within(prod).getByText("main")).toBeInTheDocument();

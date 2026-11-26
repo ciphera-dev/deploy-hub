@@ -38,6 +38,11 @@ class RedactTests(unittest.TestCase):
         self.assertEqual(len(key), 56)
         self.assertMasked(key)
 
+    def test_minisign_secret_key_line(self):
+        key = "RW" + "Qb0" * 50
+        self.assertGreater(len(key), 100)
+        self.assertMasked(key, prefix="")
+
     def test_minisign_untrusted_comment(self):
         out = mh.redact("untrusted comment: minisign public key 1A2B3C\nautre ligne")
         self.assertNotIn("1A2B3C", out)
@@ -63,6 +68,16 @@ class InjectionTests(unittest.TestCase):
             with mock.patch.object(mh, "load", side_effect=AssertionError("ne doit rien écrire")):
                 with self.assertRaises(SystemExit):
                     mh.cli(args)
+
+    def test_note_subject_secret_never_reaches_graph(self):
+        g = {"nodes": {}, "edges": [], "_seen": set()}
+        saved = []
+        secret = "sk_" + "live_" + "abcdef0123456789"
+        with mock.patch.object(mh, "load", return_value=g), mock.patch.object(mh, "save", side_effect=saved.append),                 mock.patch("sys.stdout", new_callable=io.StringIO):
+            mh.cli(["note", secret, "un fait banal"])
+        dump = repr(saved) + repr(g)
+        self.assertNotIn(secret, dump)
+        self.assertIn("<redacted>", dump)
 
     def test_hook_does_not_log_injected_shell_command(self):
         saved = {}

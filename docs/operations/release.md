@@ -32,12 +32,12 @@ Dans cet ordre :
    - Règles à cocher : **Restrict creations**, **Restrict updates**, **Restrict deletions**, **Block force pushes**.
    - Cliquer *Create*.
 6. **Environnement `release` et releases immuables.** L'environnement `release` existe déjà : il a été créé à la publication du dépôt. Aller dans Settings → Environments → `release` :
-   - *Required reviewers* : coché, avec **au moins deux relecteurs** (deux comptes distincts, dont aucun n'est celui de celui qui pousse les tags).
+   - *Required reviewers* : coché, avec **au moins deux relecteurs** (deux comptes distincts, dont aucun n'est celui qui pousse les tags).
      Le contrôle compte les entrées de la liste : une équipe compte pour **un seul** relecteur, quel que soit son nombre de membres. Ajouter deux comptes (ou une équipe et un compte), pas une seule équipe.
    - **Prevent self-review** : coché. Celui qui a poussé le tag ne peut pas approuver seul la signature : l'autre relecteur doit le faire.
    - *Save protection rules*.
    - *Deployment branches and tags* : *Selected branches and tags*, avec une seule règle, de type **Tag**, motif `v*`. Aucune branche.
-   - *Environment secrets* : vide avant l'étape 7.
+   - *Environment secrets* : vide avant l'étape 8.
 
    S'il manque, le créer à l'identique : *New environment* → `release`, avec les mêmes réglages.
 
@@ -50,8 +50,8 @@ Dans cet ordre :
    ```
 
    Le script lit par `gh api` l'environnement `release` (au moins 2 relecteurs, une équipe comptant pour un, *Prevent self-review*, tags `v*` seulement), le ruleset des tags (étape 5 : actif, motif `v*`, les quatre restrictions, contournement par *Repository admin* seulement) et les releases immuables. Il liste tout ce qui manque et échoue tant qu'un réglage n'est pas en place ; l'étape 7 fait le même contrôle avant tout envoi. gh doit être connecté avec un compte administrateur du dépôt : sinon les rulesets, leur liste de contournement et le réglage des releases immuables ne sont pas lisibles (HTTP 403), et le script le dit. Un ruleset d'organisation dont la liste de contournement n'est pas lisible est accepté avec un avertissement ; celle-ci se vérifie alors dans les réglages de l'organisation.
-6 bis. **Équipe des relecteurs du code (CODEOWNERS).** `.github/CODEOWNERS` désigne l'équipe `ciphera-dev/maintainers` ; GitHub n'accepte ni une organisation seule ni un compte inexistant. Dans l'organisation `ciphera-dev` → Teams → *New team* → nom `maintainers`, avec le propriétaire comme membre. Donner à cette équipe l'accès **Write** au dépôt `deploy-hub` (Settings → Collaborators and teams). Facultatif : cocher *Require review from Code Owners* dans le ruleset de la branche `main`. Avec un seul mainteneur, cette option bloque les PR fusionnées par leur auteur : c'est le choix du propriétaire.
-7. **Créer la clé de production.** Dans votre propre terminal PowerShell 7, à la racine du dépôt. Il faut minisign (`winget install jedisct1.minisign`) et gh connecté (`gh auth login`).
+7. **Équipe des relecteurs du code (CODEOWNERS).** `.github/CODEOWNERS` désigne l'équipe `ciphera-dev/maintainers` ; GitHub n'accepte ni une organisation seule ni un compte inexistant. Dans l'organisation `ciphera-dev` → Teams → *New team* → nom `maintainers`, avec le propriétaire comme membre. Donner à cette équipe l'accès **Write** au dépôt `deploy-hub` (Settings → Collaborators and teams). Facultatif : cocher *Require review from Code Owners* dans le ruleset de la branche `main`. Avec un seul mainteneur, cette option bloque les PR fusionnées par leur auteur : c'est le choix du propriétaire.
+8. **Créer la clé de production.** Dans votre propre terminal PowerShell 7, à la racine du dépôt. Il faut minisign (`winget install jedisct1.minisign`) et gh connecté (`gh auth login`).
 
    ```powershell
    pwsh scripts/release/new-signing-key.ps1
@@ -68,8 +68,8 @@ Dans cet ordre :
    - *Échec avant l'écriture de `install/ciphera.pub`* : la paire est effacée, rien n'a été envoyé. Relancer la même commande.
    - *Échec pendant l'envoi* : la clé publique est écrite, la clé secrète reste dans le dossier affiché, et le message liste les secrets déjà envoyés. Reprendre avec `pwsh scripts/release/new-signing-key.ps1 -Activate -SecretKeyFile '<dossier>/ciphera-release.key'`. Cette commande vérifie la clé contre `install/ciphera.pub` puis renvoie les deux secrets.
    - Tant que la clé et le mot de passe envoyés ne vont pas ensemble, `sign-release` échoue et rien n'est publié.
-8. **Mettre la clé à l'abri.** Faire deux copies hors ligne de la clé secrète et ranger le mot de passe dans un gestionnaire. Supprimer ensuite le dossier local.
-9. **Commiter et pousser la clé publique.** `git add install/ciphera.pub`, commit, push sur `main`. Attendre que CI et Release (test) soient verts.
+9. **Mettre la clé à l'abri.** Faire deux copies hors ligne de la clé secrète et ranger le mot de passe dans un gestionnaire. Supprimer ensuite le dossier local.
+10. **Commiter et pousser la clé publique.** `git add install/ciphera.pub`, commit, push sur `main`. Attendre que CI et Release (test) soient verts.
 
 ## Publier une version
 

@@ -51,7 +51,9 @@ SECRET_SHAPES = re.compile(
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
     r"|sk_(?:live|test)_\w+|glpat-[\w-]{10,}|AGE-SECRET-KEY-[A-Z0-9]+"
     # clé minisign : « RW » + 54 caractères base64 (56 au total) ; ligne d'en-tête des fichiers .pub / .minisig / .key
-    r"|(?<![A-Za-z0-9+/])RW[A-Za-z0-9+/]{54}(?![A-Za-z0-9+/])|untrusted comment:[^\r\n]*)"
+    r"|(?<![A-Za-z0-9+/])RW[A-Za-z0-9+/]{54}(?![A-Za-z0-9+/])|untrusted comment:[^\r\n]*"
+    # clé secrète minisign : « RW » + base64 bien plus long (clé chiffrée, environ 150 caractères)
+    r"|(?<![A-Za-z0-9+/])RW[A-Za-z0-9+/]{100,}={0,2})"
 )
 URL_CREDS = re.compile(r"(//[^/\s:@]+):[^@\s/]+@")
 # une note est une donnée : on refuse ce qui ressemble à une consigne adressée à un agent
@@ -470,10 +472,11 @@ def cli(args):
                 print(f"  {e['src']} -[{e['rel']}]-> {e['dst']}")
     elif cmd == "note" and len(args) >= 3:
         text = redact(" ".join(args[2:]))
-        if refuse_injection(text) or refuse_injection(args[1]):
+        subject = redact(args[1])
+        if refuse_injection(text) or refuse_injection(subject):
             sys.exit("refusé : une note décrit un fait du projet, pas une consigne pour un agent")
         g = load()
-        nid = node(g, f"concept:{args[1]}", "concept")
+        nid = node(g, f"concept:{subject}", "concept")
         facts = g["nodes"][nid].setdefault("facts", [])
         if any(f.split(" ", 1)[-1] == text for f in facts):
             print("déjà noté")
@@ -523,7 +526,7 @@ def hook(ev, agent):
                 fid = node(g, f"{k}:{rel}", k, path=rel)
                 edge(g, sess, "TOUCHED", fid)
                 link_imports(g, fid, rel)
-                log.setdefault("paths", []).append(rel)
+                log.setdefault("paths", []).append(redact(rel))
         elif tool in SHELL_TOOLS:
             cmd = inp.get("command", "")
             line = redact(" ".join(cmd) if isinstance(cmd, list) else str(cmd))[:300]
@@ -531,10 +534,10 @@ def hook(ev, agent):
         elif tool in AGENT_TOOLS and (inp.get("subagent_type") or inp.get("agent_type")):
             who = inp.get("subagent_type") or inp.get("agent_type")
             edge(g, sess, "INVOKED", node(g, f"agent:{who}", "agent"))
-            log["agent_invoked"] = who
+            log["agent_invoked"] = redact(str(who))
         elif tool == "Skill" and inp.get("skill"):
             edge(g, sess, "INVOKED", node(g, f"skill:{inp['skill']}", "skill"))
-            log["skill"] = inp["skill"]
+            log["skill"] = redact(str(inp["skill"]))
     elif name in ("Stop", "SubagentStop", "PreCompact", "SessionEnd"):
         g["nodes"][sess]["last_event"] = name
         # nom seul : le chemin absolu contient le nom d'utilisateur et graph.json peut être versionné
