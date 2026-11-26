@@ -1,0 +1,229 @@
+name: Refresh latest.json
+
+# Re-signature mensuelle de releases/latest.json (derniere version, lue par
+# le plan de controle et `ciphera-cli updater --latest`) : la signature porte
+# une echeance de 120 jours ; au-dela, le panneau avertit qu'il ne peut plus
+# garantir que Ciphera est a jour. Ce workflow ne signe que latest.json, et
+# jamais une autre version que celle de la derniere release publiee.
+#
+# - schedule (et lancement manuel depuis une branche) : job `dispatch`, sans
+#   secret, qui relance ce workflow sur le tag de la derniere release
+#   publiee (workflow_dispatch, GITHUB_TOKEN : actions: write) ;
+# - lancement sur un tag v* : la re-signature passe par l'environnement
+#   protege `release` (approbation, tags v* seulement), puis le site est
+#   reconstruit par install/pages-site.sh avec les fichiers signes de cette
+#   release et deploye dans l'environnement protege `github-pages`.
+#   Scripts et workflow sont ceux du commit du tag.
+# docs/security/release-signing.md.
+
+on:
+  schedule:
+    - cron: "17 6 3 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-latest-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # minisign : meme binaire epingle que release.yml (release 0.12 de
+  # jedisct1/minisign, archive verifiee par SHA-256).
+  MINISIGN_VERSION: "0.12"
+  MINISIGN_SHA256: 9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
+
+jobs:
+  dispatch:
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Relance sur le tag de la derniere release publiee
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          tag=$(gh release view --json tagName --jq .tagName)
+          case "$tag" in
+          v[0-9]*.[0-9]*.[0-9]*) ;;
+          *) echo "::error::tag invalide : $tag"; exit 1 ;;
+          esac
+          case "$tag" in *[!v0-9.]* | *.*.*.*) echo "::error::tag invalide : $tag"; exit 1 ;; esac
+          gh workflow run refresh-latest.yml --ref "$tag"
+          echo "re-signature de latest.json demandee pour $tag"
+
+  # Seul job qui lit la cle minisign de production (environnement `release`,
+  # approbation). Ne signe que latest.json (install/sign-latest.sh refuse un
+  # latest.json d'une autre version).
+  sign:
+    if: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Le tag est un commit de main et la derniere release publiee
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::le tag $TAG ($GITHUB_SHA) n'est pas un commit de main"
+            exit 1
+          }
+          published=$(gh release view --json tagName --jq .tagName)
+          if [ "$published" != "$TAG" ]; then
+            echo "::error::derniere release publiee : $published, ce run : $TAG ; rien n'est signe"
+            exit 1
+          fi
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+      - name: minisign (version epinglee, SHA-256 verifie)
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          f="minisign-$MINISIGN_VERSION-linux.tar.gz"
+          curl -fsSLO "https://github.com/jedisct1/minisign/releases/download/$MINISIGN_VERSION/$f"
+          echo "$MINISIGN_SHA256  $f" | sha256sum -c -
+          tar -xzf "$f" minisign-linux/x86_64/minisign
+          install -D -m 0755 minisign-linux/x86_64/minisign minisign-bin/minisign
+          rm -rf "$f" minisign-linux
+          echo "$RUNNER_TEMP/minisign-bin" >> "$GITHUB_PATH"
+          minisign-bin/minisign -v
+      - name: Cles de confiance de production (jamais la cle de test)
+        run: |
+          keys() { sed -e 's/\r$//' -e '/^untrusted comment:/d' "$1" | tr -d ' \t' | sed '/^$/d'; }
+          if keys install/ciphera.pub | grep -qxF "$(keys install/tests/ciphera-test.pub)"; then
+            echo "::error::install/ciphera.pub contient la cle de TEST"
+            exit 1
+          fi
+      - name: latest.json de la release (version inchangee)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          mkdir latest
+          gh release download "$TAG" --pattern latest.json --dir latest
+          [ "$(cat latest/latest.json)" = "{\"version\":\"$TAG\"}" ] || {
+            echo "::error::latest.json de la release $TAG ne vaut pas {\"version\":\"$TAG\"}"
+            exit 1
+          }
+      - name: latest.json re-signe (nouvelle echeance)
+        env:
+          TAG: ${{ github.ref_name }}
+          MINISIGN_KEY: ${{ secrets.CIPHERA_MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.CIPHERA_MINISIGN_PASSWORD }}
+        run: |
+          set -eu
+          if [ -z "$MINISIGN_KEY" ] || [ -z "$MINISIGN_PASSWORD" ]; then
+            echo "::error::secrets CIPHERA_MINISIGN_SECRET_KEY / CIPHERA_MINISIGN_PASSWORD absents de l'environnement release"
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/minisign.key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_KEY" | tr -d '\r' > "$key"
+          sh install/sign-latest.sh "$TAG" "$key" install/ciphera.pub latest
+          # Exactement deux fichiers transmis au job du site.
+          [ "$(find latest -mindepth 1 | sort | tr '\n' ' ')" = "latest/latest.json latest/latest.json.minisig " ]
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: latest
+          path: latest/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Site reconstruit comme dans release.yml : fichiers signes de la release
+  # (GitHub Release, immuable), latest.json et sa signature remplaces par
+  # ceux du job sign ; pages-site.sh reverifie tout (check-latest.sh).
+  pages-site:
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Fichiers de la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.sign.outputs.version }}
+        run: gh release download "$VERSION" --dir dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: latest
+          path: ${{ runner.temp }}/latest
+      - name: latest.json re-signe a la place de celui de la release
+        run: |
+          set -eu
+          for f in latest.json latest.json.minisig; do
+            install -m 0644 "$RUNNER_TEMP/latest/$f" "dist/$f"
+          done
+      - name: minisign (version epinglee, SHA-256 verifie)
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          f="minisign-$MINISIGN_VERSION-linux.tar.gz"
+          curl -fsSLO "https://github.com/jedisct1/minisign/releases/download/$MINISIGN_VERSION/$f"
+          echo "$MINISIGN_SHA256  $f" | sha256sum -c -
+          tar -xzf "$f" minisign-linux/x86_64/minisign
+          install -D -m 0755 minisign-linux/x86_64/minisign minisign-bin/minisign
+          rm -rf "$f" minisign-linux
+          echo "$RUNNER_TEMP/minisign-bin" >> "$GITHUB_PATH"
+          minisign-bin/minisign -v
+      - name: Site (fichiers signes de la release, latest.json re-signe)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.sign.outputs.version }}
+        run: >-
+          sh install/pages-site.sh "$REPO" install/ciphera.pub install/ciphera.retired.pub
+          dist "$VERSION" "$RUNNER_TEMP/site"
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/site
+
+  pages-deploy:
+    needs: [sign, pages-site]
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Release de ce run = derniere release publiee
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.sign.outputs.version }}
+        run: |
+          published=$(gh release view --json tagName --jq .tagName)
+          if [ "$published" != "$VERSION" ]; then
+            echo "::error::derniere release publiee : $published, ce run : $VERSION ; site non deploye"
+            exit 1
+          fi
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

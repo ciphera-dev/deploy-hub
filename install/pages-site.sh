@@ -4,7 +4,12 @@
 # de CE run (<dist>, version <version>) :
 #   /install.sh (+ .minisig, .sha256)  copies exactes des fichiers signes
 #   /ciphera.pub                       cles publiques minisign de confiance
-#   /releases/latest.json              derniere version
+#   /releases/latest.json (+ .minisig) derniere version, signee (version et
+#                                      echeance dans le commentaire de
+#                                      confiance) ; verifiee par
+#                                      check-latest.sh (cle de <cles
+#                                      publiques>, version <version>, echeance
+#                                      non passee), sinon rien n'est construit
 #   /releases/<version>/...            assets de cette release, plus ceux des
 #                                      4 releases publiees precedentes
 #                                      (chemins lus par install.sh et
@@ -133,6 +138,8 @@ mkdir "$cur"
 cp "$dist"/* "$cur/"
 verify "$pub" "$cur" || die "release $latest : signature ou empreinte invalide, site non construit"
 keep_signed "$cur" "$latest"
+sh "$here/check-latest.sh" "$pub" "$dist" "$latest" >/dev/null ||
+	die "latest.json de $latest : signature, version ou echeance invalide, site non construit"
 
 tags=$(gh release list --repo "$repo" --exclude-drafts --exclude-pre-releases \
 	--limit "$((keep_older + 1))" --json tagName --jq '.[].tagName')
@@ -155,7 +162,12 @@ for f in install.sh install.sh.minisig install.sh.sha256; do
 	cp "$dist/$f" "$out/$f"
 	cmp -s "$dist/$f" "$out/$f" || die "copie de $f alteree"
 done
-cp "$dist/latest.json" "$out/releases/latest.json"
+# latest.json et sa signature, hors des dossiers de release (keep_signed ne
+# les touche pas) : lus par le plan de controle et ciphera-cli updater.
+for f in latest.json latest.json.minisig; do
+	cp "$dist/$f" "$out/releases/$f"
+	cmp -s "$dist/$f" "$out/releases/$f" || die "copie de $f alteree"
+done
 cp "$pub" "$out/ciphera.pub"
 printf '%s\n' "$domain" >"$out/CNAME"
 

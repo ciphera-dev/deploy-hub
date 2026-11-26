@@ -5,6 +5,10 @@
 #   - install.sh du depot (sans cle) refuse de s'executer hors mode test ;
 #   - install/sign-release.sh : SHA256SUMS, signatures minisign, latest.json,
 #     cle chiffree (mot de passe sur l'entree standard) ou non ;
+#   - install/sign-latest.sh et check-latest.sh : latest.json signe (version
+#     et echeance de 120 jours dans le commentaire de confiance), puis
+#     verifie ; re-signature sans changer la version (refresh-latest.yml) ;
+#     fichier altere, version differente ou echeance passee refuses ;
 #   - plusieurs cles de confiance (rotation) : n'importe laquelle verifie,
 #     une cle inconnue est refusee (install.sh publie, verify-any.sh) ;
 #   - install/pages-site.sh : site get.ciphera.ch construit depuis les
@@ -195,7 +199,7 @@ printf 'archive arm64\n' >"dist/ciphera-$version-aarch64-unknown-linux-musl.tar.
 for d in dist-enc dist-wrong dist-next dist-unknown dist-other; do cp -r dist "$d"; done
 
 sh "$root/install/sign-release.sh" "$version" plain.key plain.pub dist "release de test" >/dev/null
-for f in SHA256SUMS SHA256SUMS.minisig install.sh install.sh.minisig install.sh.sha256 latest.json; do
+for f in SHA256SUMS SHA256SUMS.minisig install.sh install.sh.minisig install.sh.sha256 latest.json latest.json.minisig; do
 	check "sign-release : $f" test -s "dist/$f"
 done
 check "sign-release : SHA256SUMS = les deux archives" test "$(wc -l <dist/SHA256SUMS)" -eq 2
@@ -204,6 +208,57 @@ check "sign-release : signature verifiee" minisign -Vq -p plain.pub -m dist/SHA2
 check "sign-release : commentaire de confiance" \
 	grep -q "trusted comment: ciphera $version SHA256SUMS (release de test)" dist/SHA256SUMS.minisig
 check "sign-release : latest.json" grep -qx "{\"version\":\"$version\"}" dist/latest.json
+
+# --- sign-latest.sh / check-latest.sh -------------------------------------------
+check "latest : signature verifiee (minisign)" minisign -Vq -p plain.pub -m dist/latest.json
+check "latest : check-latest accepte le fichier de la release" \
+	sh "$root/install/check-latest.sh" plain.pub dist "$version"
+comment=$(sed -n '3s/^trusted comment: //p' dist/latest.json.minisig)
+issued=$(printf '%s' "$comment" | sed -n 's/.* issued=\([0-9]*\) .*/\1/p')
+check "latest : commentaire de confiance (version, date, echeance a 120 jours)" \
+	test "$comment" = "ciphera-latest version=$version issued=$issued expires=$((issued + 10368000))"
+check "latest : date de signature recente" test $(($(date -u +%s) - issued)) -lt 600
+check "latest : version differente refusee" \
+	fails_with "contenu inattendu" sh "$root/install/check-latest.sh" plain.pub dist v9.9.9
+check "latest : autre cle refusee" \
+	fails_with "aucune cle" sh "$root/install/check-latest.sh" other.pub dist "$version"
+# Re-signature (refresh-latest.yml) : meme version, nouvelle signature.
+mkdir latest-refresh
+cp dist/latest.json latest-refresh/
+sh "$root/install/sign-latest.sh" "$version" plain.key plain.pub latest-refresh >/dev/null
+check "latest : re-signature sans changer la version" \
+	bash -c "cmp -s dist/latest.json latest-refresh/latest.json && sh '$root/install/check-latest.sh' plain.pub latest-refresh '$version' >/dev/null"
+# Jamais une autre version : latest.json present d'une autre version.
+mkdir latest-other
+printf '{"version":"v9.9.9"}\n' >latest-other/latest.json
+check "latest : re-signature d'une autre version refusee" \
+	fails_with "version jamais changee" sh "$root/install/sign-latest.sh" "$version" plain.key plain.pub latest-other
+check "latest : rien n'est signe apres un refus" test ! -e latest-other/latest.json.minisig
+# Version annoncee modifiee apres la signature.
+cp -r latest-refresh latest-tampered
+printf '{"version":"v9.9.9"}\n' >latest-tampered/latest.json
+check "latest : fichier altere refuse" \
+	fails_with "aucune cle" sh "$root/install/check-latest.sh" plain.pub latest-tampered v9.9.9
+# Signature valide, commentaire d'une autre version (ou mal forme, ou echu).
+latest_signed() { # <dossier> <commentaire>
+	mkdir -p "$1"
+	printf '{"version":"%s"}\n' "$version" >"$1/latest.json"
+	minisign -S -s plain.key -m "$1/latest.json" -t "$2" </dev/null >/dev/null 2>&1
+}
+now=$(date -u +%s)
+latest_signed latest-mismatch "ciphera-latest version=v9.9.9 issued=$now expires=$((now + 3600))"
+check "latest : version du commentaire differente refusee" \
+	fails_with "commentaire de confiance mal forme" sh "$root/install/check-latest.sh" plain.pub latest-mismatch "$version"
+latest_signed latest-plain "timestamp:$now file:latest.json"
+check "latest : commentaire par defaut de minisign refuse" \
+	fails_with "commentaire de confiance mal forme" sh "$root/install/check-latest.sh" plain.pub latest-plain "$version"
+old_ts=$((now - 200 * 86400))
+latest_signed latest-expired "ciphera-latest version=$version issued=$old_ts expires=$((old_ts + 10368000))"
+check "latest : echeance passee refusee a la publication" \
+	fails_with "echeance passee" sh "$root/install/check-latest.sh" plain.pub latest-expired "$version"
+latest_signed latest-long "ciphera-latest version=$version issued=$now expires=$((now + 10368001))"
+check "latest : echeance au-dela de 120 jours refusee" \
+	fails_with "echeance invalide" sh "$root/install/check-latest.sh" plain.pub latest-long "$version"
 
 MINISIGN_PASSWORD='mot de passe solide' \
 	sh "$root/install/sign-release.sh" "$version" enc.key enc.pub dist-enc release >/dev/null
@@ -330,6 +385,8 @@ check "site : install.sh.minisig" cmp -s site/install.sh.minisig dist/install.sh
 check "site : install.sh.sha256" cmp -s site/install.sh.sha256 dist/install.sh.sha256
 check "site : signature verifiee" minisign -Vq -p plain.pub -m site/install.sh -x site/install.sh.minisig
 check "site : releases/latest.json" cmp -s site/releases/latest.json dist/latest.json
+check "site : releases/latest.json.minisig" cmp -s site/releases/latest.json.minisig dist/latest.json.minisig
+check "site : latest.json du site verifie" sh "$root/install/check-latest.sh" plain.pub site/releases "$version"
 check "site : archives de la release" \
 	cmp -s "site/releases/$version/ciphera-$version-x86_64-unknown-linux-musl.tar.gz" \
 	"dist/ciphera-$version-x86_64-unknown-linux-musl.tar.gz"
@@ -389,6 +446,15 @@ cp -r dist dist-tampered
 printf 'x' >>"dist-tampered/ciphera-$version-x86_64-unknown-linux-musl.tar.gz"
 check "site : release du run alteree refusee" fails_with "$version" pages retired.pub dist-tampered "$version" site2
 check "site : version invalide refusee" fails_with "tag invalide" pages retired.pub dist 'v1;rm' site3
+# latest.json echu (refresh-latest.yml en retard) : le site n'est pas construit.
+cp -r dist dist-latest-expired
+cp latest-expired/latest.json latest-expired/latest.json.minisig dist-latest-expired/
+check "site : latest.json echu refuse" \
+	fails_with "latest.json de $version" pages retired.pub dist-latest-expired "$version" site7
+cp -r dist dist-latest-nosig
+rm dist-latest-nosig/latest.json.minisig
+check "site : latest.json sans signature refuse" \
+	fails_with "latest.json de $version" pages retired.pub dist-latest-nosig "$version" site8
 GH_STUB_TAGS='v1;rm' check "site : tag publie invalide refuse" fails_with "tag invalide" pages retired.pub dist "$version" site4
 GH_STUB_LATEST=v9.9.10 check "site : run plus ancien que la derniere release refuse" \
 	fails_with "derniere release publiee est v9.9.10" pages retired.pub dist "$version" site6

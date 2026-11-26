@@ -5,7 +5,11 @@
 #   install.sh.sha256   empreinte de install.sh (publiee a cote sur le site)
 #   SHA256SUMS          empreintes des archives
 #   SHA256SUMS.minisig  signature minisign de SHA256SUMS
-#   latest.json         derniere version (GET /api/system/version)
+#   latest.json         derniere version (GET /api/system/version,
+#                       ciphera-cli updater --latest)
+#   latest.json.minisig signature minisign de latest.json (sign-latest.sh :
+#                       version et echeance de 120 jours dans le commentaire
+#                       de confiance)
 # puis verifie tout avec les cles de confiance de <cles publiques> : une cle
 # secrete qui ne correspond a aucune cle publiee n'aboutit a rien.
 #
@@ -59,7 +63,7 @@ sh "$here/release-script.sh" "$pub" "$here/install.sh" "$dist/install.sh"
 )
 msign "$dist/SHA256SUMS" "ciphera $version SHA256SUMS ($label)"
 msign "$dist/install.sh" "ciphera $version install.sh ($label)"
-printf '{"version":"%s"}\n' "$version" >"$dist/latest.json"
+sh "$here/sign-latest.sh" "$version" "$key" "$pub" "$dist" >/dev/null
 
 # Une cle de confiance doit verifier les deux signatures (rotation : la cle
 # de signature est l'une des cles de <cles publiques>).
