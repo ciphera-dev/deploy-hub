@@ -428,3 +428,33 @@ fn init_refuses_a_world_writable_tls_dir() {
     assert!(!tmp.path().join("setup_token").exists());
     assert!(!tmp.path().join("ca").exists());
 }
+
+/// Cle des demandes de mise a jour : 32 octets aleatoires bruts, propres a
+/// chaque instance, sans lien avec l'identite age ; lisible par
+/// `shared::update::load_key` ; jamais reecrite par une seconde init.
+#[test]
+fn init_writes_the_update_hmac_key() {
+    let (a, b) = (TempDir::new(), TempDir::new());
+    init::run(&opts(a.path())).unwrap();
+    init::run(&opts(b.path())).unwrap();
+    let path = a.path().join(shared::update::KEY_FILE);
+    let ka = fs::read(&path).unwrap();
+    let kb = fs::read(b.path().join(shared::update::KEY_FILE)).unwrap();
+    assert_eq!(ka.len(), 32);
+    assert_ne!(ka, kb);
+    assert_eq!(&*shared::update::load_key(&path).unwrap(), &ka[..]);
+    assert!(
+        !read(a.path(), "age.key")
+            .as_bytes()
+            .windows(32)
+            .any(|w| w == ka)
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "sans --owner : 0600 (0640 root:ciphera sinon)");
+    }
+    assert!(init::run(&opts(a.path())).is_err());
+    assert_eq!(fs::read(&path).unwrap(), ka, "jamais reecrite");
+}

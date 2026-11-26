@@ -5,7 +5,8 @@
 //!
 //! Ordre des operations (rien ne change sur la machine avant l'etape 5) :
 //! 1. demande lue puis retiree (consommee une seule fois) ; HMAC (cle
-//!    derivee de l'identite de l'instance) et fraicheur verifies ; toute
+//!    `/etc/ciphera/update-hmac.key`, creee `root:ciphera 0640` si elle
+//!    manque ; jamais l'identite age `age.key`) et fraicheur verifies ; toute
 //!    version inferieure ou egale a la version installee est refusee. Un
 //!    retour en arriere ne passe que par `--allow-downgrade`, en ligne de
 //!    commande (root) : jamais par une demande ;
@@ -18,7 +19,8 @@
 //!    version a pu tourner. Au demarrage de la machine,
 //!    `ciphera-updater-recover.service` (`ciphera-cli updater --recover`,
 //!    avant les services de Ciphera) fait cette reprise seule ;
-//! 4. telechargement et verification : `SHA256SUMS` signe minisign (cle
+//! 4. telechargement (borne en taille et en duree : [`ARCHIVE_LIMIT`],
+//!    [`METADATA_LIMIT`]) et verification : `SHA256SUMS` signe minisign (cle
 //!    integree, `install/ciphera.pub`), SHA-256 de l'archive, contenu de
 //!    l'archive, puis outils tiers (railpack, buildctl, mise) d'apres le
 //!    manifeste `tools.manifest` de la nouvelle release (empreintes
@@ -66,8 +68,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use shared::secretbox::SecretBox;
-use shared::update::{MAX_REQUEST_BYTES, REQUEST_FILE, UpdateRequest, Version, request_key};
+use shared::update::{
+    KEY_FILE, KeyError, MAX_REQUEST_BYTES, REQUEST_FILE, RequestKey, UpdateRequest, Version,
+};
 
 /// Binaires de la release (`bin/` de l'archive), installes dans `bin_dir`.
 pub const BINARIES: [&str; 4] = ["ciphera", "ciphera-agent", "ciphera-proxy", "ciphera-cli"];
@@ -118,6 +121,29 @@ pub const HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
 /// Fenetre pendant laquelle les services relances doivent rester actifs,
 /// sans redemarrage automatique (service qui plante en boucle).
 pub const SETTLE_WINDOW: Duration = Duration::from_secs(15);
+
+/// Bornes d'un telechargement : au-dela de `max_bytes` octets ou de
+/// `max_time` (nouveaux essais compris), il est abandonne et le fichier
+/// partiel retire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limit {
+    pub max_bytes: u64,
+    pub max_time: Duration,
+}
+
+/// Archives : release (`ciphera-<v>-<cible>.tar.gz`) et outils tiers.
+pub const ARCHIVE_LIMIT: Limit = Limit {
+    max_bytes: 512 * 1024 * 1024,
+    max_time: Duration::from_secs(10 * 60),
+};
+/// Metadonnees : `SHA256SUMS` et sa signature minisign.
+pub const METADATA_LIMIT: Limit = Limit {
+    max_bytes: 1024 * 1024,
+    max_time: Duration::from_secs(2 * 60),
+};
+/// Groupe du compte de service, a qui la cle des demandes est donnee en
+/// lecture (`root:ciphera 0640`).
+const SERVICE_GROUP: &str = "ciphera";
 
 /// Nom d'unite systemd de Ciphera accepte dans une archive :
 /// `ciphera[-<mot>]*.{service,socket,path,timer}`, minuscules, chiffres et
@@ -267,7 +293,8 @@ pub struct Paths {
     pub unit_dir: PathBuf,
     /// Dossiers des sockets (`/etc/tmpfiles.d/ciphera.conf`).
     pub tmpfiles: PathBuf,
-    /// Configuration de l'instance, dont `age.key` (`/etc/ciphera`).
+    /// Configuration de l'instance (`/etc/ciphera`) : l'updater n'y lit
+    /// que la cle des demandes (`update-hmac.key`) et `db_password`.
     pub config_dir: PathBuf,
     /// Demande du plan de controle (`/var/lib/ciphera/update-request.json`).
     pub request: PathBuf,
@@ -399,8 +426,10 @@ impl Sources {
 
 /// Appels au systeme, remplaces par un systeme simule dans les tests.
 pub trait System: Sync {
-    /// Telecharge `url` (https) dans `dest`.
-    fn download(&self, url: &str, dest: &Path) -> io::Result<()>;
+    /// Telecharge `url` (https) dans `dest`, sans jamais ecrire plus de
+    /// `limit.max_bytes` octets ni depasser `limit.max_time` : au-dela,
+    /// echec (le fichier partiel peut rester, l'appelant le retire).
+    fn download(&self, url: &str, dest: &Path, limit: Limit) -> io::Result<()>;
     /// Sauvegarde de la base (sortie de `pg_dump` compressee zstd) dans `dest`.
     fn pg_dump(&self, dest: &Path) -> io::Result<()>;
     /// Derniere migration appliquee (`_sqlx_migrations`).
@@ -548,7 +577,14 @@ pub fn run(
             version,
             allow_downgrade,
             restore_db,
-        } => (Some(version), allow_downgrade, restore_db),
+        } => {
+            // Cle des demandes creee si elle manque (le panneau en a besoin
+            // pour les prochaines) ; inutile a cette mise a jour.
+            if let Err(e) = request_key(paths) {
+                eprintln!("attention : {e}");
+            }
+            (Some(version), allow_downgrade, restore_db)
+        }
         Mode::Request => (read_request(sys, paths)?, false, None),
         Mode::Recover => (None, false, None),
     };
@@ -578,6 +614,9 @@ pub fn run(
 
     // 3. Reprise d'une mise a jour interrompue. Au demarrage (Recover), les
     // services ne tournent pas encore : ni arret ni redemarrage.
+    // Sauvegarde decompressee laissee par une execution interrompue
+    // (arret brutal pendant une restauration) : effacee.
+    scrub_restore_sql(&paths.state_dir.join(RESTORE_SQL));
     let mut recovered = false;
     if paths.state_dir.join(JOURNAL).exists() {
         eprintln!("mise a jour interrompue detectee : retour a la version precedente");
@@ -779,28 +818,107 @@ pub fn dump_complete(tail: &str) -> bool {
     false
 }
 
+/// Sauvegarde decompressee et verifiee (`<state_dir>/restore.sql`, root
+/// 0600), en clair : a la destruction de cette garde, quelle que soit
+/// l'issue de la restauration (reussie, en echec, retour arriere
+/// incomplet), le fichier est reecrit a zero puis retire, et son chemin
+/// journalise ([`scrub_restore_sql`]).
+struct RestoreSql(PathBuf);
+
+impl RestoreSql {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for RestoreSql {
+    fn drop(&mut self) {
+        scrub_restore_sql(&self.0);
+    }
+}
+
+/// Reecrit `sql` a zero (donnees sur disque), puis le retire ; journalise
+/// son chemin. Ouvert sans suivre de lien : un lien est seulement retire.
+/// Absent : rien.
+fn scrub_restore_sql(sql: &Path) {
+    let meta = match fs::symlink_metadata(sql) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+        Err(e) => {
+            eprintln!(
+                "attention : sauvegarde decompressee {} : {e}",
+                sql.display()
+            );
+            return;
+        }
+    };
+    if meta.is_file()
+        && let Err(e) = zero_file(sql)
+    {
+        eprintln!(
+            "attention : sauvegarde decompressee {} non reecrite a zero : {e}",
+            sql.display()
+        );
+    }
+    match fs::remove_file(sql) {
+        Ok(()) => eprintln!("sauvegarde decompressee effacee : {}", sql.display()),
+        Err(e) => eprintln!(
+            "attention : sauvegarde decompressee {} non retiree : {e}",
+            sql.display()
+        ),
+    }
+}
+
+/// Remplace tout le contenu de `path` par des zeros, sur place.
+fn zero_file(path: &Path) -> io::Result<()> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
+        opts.custom_flags(flags.bits() as i32);
+    }
+    let mut file = opts.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(io::Error::other("pas un fichier ordinaire"));
+    }
+    let zeros = vec![0u8; 64 * 1024];
+    let mut left = meta.len();
+    while left > 0 {
+        let n = left.min(zeros.len() as u64) as usize;
+        file.write_all(&zeros[..n])?;
+        left -= n as u64;
+    }
+    file.sync_all()
+}
+
 /// Verifie `dump` en le decompressant dans `<state_dir>/restore.sql` (root
 /// 0600), puis le rejoue ; rien n'est touche si la verification echoue.
-fn prepare_restore(paths: &Paths, dump: &Path) -> Result<PathBuf, UpdateError> {
-    let sql = paths.state_dir.join(RESTORE_SQL);
-    let _ = fs::remove_file(&sql);
+fn prepare_restore(paths: &Paths, dump: &Path) -> Result<RestoreSql, UpdateError> {
+    let path = paths.state_dir.join(RESTORE_SQL);
+    scrub_restore_sql(&path);
+    let invalid = |e: io::Error| {
+        UpdateError::Io(format!(
+            "sauvegarde {} invalide, base non restauree : {e}",
+            dump.display()
+        ))
+    };
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        opts.mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
-    let result = opts
-        .open(&sql)
-        .and_then(|mut f| decode_dump(dump, &mut f).and_then(|()| f.sync_all()));
-    if let Err(e) = result {
-        let _ = fs::remove_file(&sql);
-        return Err(UpdateError::Io(format!(
-            "sauvegarde {} invalide, base non restauree : {e}",
-            dump.display()
-        )));
-    }
+    let mut file = opts.open(&path).map_err(invalid)?;
+    // Garde des la creation : un fichier partiel est efface aussi.
+    let sql = RestoreSql(path);
+    let written = decode_dump(dump, &mut file).and_then(|()| file.sync_all());
+    drop(file);
+    written.map_err(invalid)?;
     Ok(sql)
 }
 
@@ -880,15 +998,11 @@ fn install(
     // 7. Base de la version visee (retour arriere), puis redemarrage et
     // healthcheck (le journal note `started` avant les renommages).
     if let Some(g) = given {
+        // `sql` est efface a la fin de la fermeture, quelle que soit l'issue.
         let restored = prepare_restore(paths, &g.path).and_then(|sql| {
-            let r = sys
-                .stop_services()
-                .and_then(|()| sys.restore_db(&sql))
-                .map_err(|e| {
-                    UpdateError::Io(format!("restauration de {} : {e}", g.path.display()))
-                });
-            let _ = fs::remove_file(&sql);
-            r
+            sys.stop_services()
+                .and_then(|()| sys.restore_db(sql.path()))
+                .map_err(|e| UpdateError::Io(format!("restauration de {} : {e}", g.path.display())))
         });
         if let Err(e) = restored {
             restore(sys, paths, true)?;
@@ -1078,8 +1192,49 @@ fn check_newer(from: Version, to: Version, allow_downgrade: bool) -> Result<(), 
     }
 }
 
-/// Lit puis retire la demande ; `None` sans demande.
+/// Groupe `name` dans `<root>/etc/group` (`nom:x:gid:membres`).
+fn group_id(paths: &Paths, name: &str) -> Option<u32> {
+    let text = fs::read_to_string(paths.root.join("etc/group")).ok()?;
+    text.lines().find_map(|line| {
+        let mut f = line.split(':');
+        (f.next()? == name).then_some(())?;
+        f.nth(1)?.parse().ok()
+    })
+}
+
+/// Cle des demandes (`<config_dir>/update-hmac.key`), creee si elle manque
+/// (`root:ciphera 0640`, voir [`shared::update::ensure_key`]). Jamais
+/// derivee de l'identite age de l'instance.
+fn request_key(paths: &Paths) -> Result<RequestKey, UpdateError> {
+    let path = paths.config_dir.join(KEY_FILE);
+    let group = group_id(paths, SERVICE_GROUP);
+    let (key, created) = shared::update::ensure_key(&path, group).map_err(|e| {
+        UpdateError::Io(match e {
+            KeyError::Refused(_) => format!(
+                "{e} ({}) : le retirer, il sera recree a la prochaine execution",
+                path.display()
+            ),
+            _ => format!("{e} ({})", path.display()),
+        })
+    })?;
+    if created {
+        match group {
+            Some(_) => eprintln!("cle des demandes de mise a jour creee : {}", path.display()),
+            None => eprintln!(
+                "attention : cle des demandes de mise a jour creee ({}) sans le groupe \
+                 {SERVICE_GROUP}, introuvable : le panneau ne pourra pas la lire",
+                path.display()
+            ),
+        }
+    }
+    Ok(key)
+}
+
+/// Lit puis retire la demande ; `None` sans demande. La cle des demandes
+/// est creee si elle manque, meme sans demande : lancer l'updater
+/// (`systemctl start ciphera-updater.service`) suffit a la poser.
 fn read_request(sys: &dyn System, paths: &Paths) -> Result<Option<Version>, UpdateError> {
+    let key = request_key(paths);
     let bytes = match open_request(&paths.request) {
         Ok(mut file) => {
             let mut buf = Vec::new();
@@ -1094,7 +1249,13 @@ fn read_request(sys: &dyn System, paths: &Paths) -> Result<Option<Version>, Upda
             }
             buf
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // Sans demande, une cle illisible n'empeche pas la reprise.
+            if let Err(e) = key {
+                eprintln!("attention : {e}");
+            }
+            return Ok(None);
+        }
         Err(_) => {
             let _ = fs::remove_file(&paths.request);
             return Err(UpdateError::Ignored(
@@ -1102,9 +1263,7 @@ fn read_request(sys: &dyn System, paths: &Paths) -> Result<Option<Version>, Upda
             ));
         }
     };
-    let secrets = SecretBox::load(&paths.config_dir.join("age.key"))
-        .map_err(|e| UpdateError::Io(format!("cle de l'instance : {e}")))?;
-    let key = request_key(&secrets);
+    let key = key?;
     UpdateRequest::from_json(&bytes)
         .and_then(|req| req.verify(&*key, sys.now()))
         .map(Some)
@@ -1614,12 +1773,13 @@ fn sync_dirs<'a>(dirs: impl Iterator<Item = &'a Path>) {
 /// `live` : services en marche (arretes avant, relances apres) ; sinon
 /// demarrage de la machine, avant les services. Le journal reste si un
 /// fichier ou la base n'a pas pu etre remis : la prochaine execution
-/// reessaie.
+/// reessaie. La sauvegarde decompressee (`restore.sql`) est effacee en
+/// sortie dans tous les cas ([`RestoreSql`]).
 fn restore(sys: &dyn System, paths: &Paths, live: bool) -> Result<(), UpdateError> {
     let path = paths.state_dir.join(JOURNAL);
     let journal = read_journal(paths)?;
     // Sauvegarde verifiee avant de toucher a quoi que ce soit.
-    let sql = if journal.started {
+    let sql: Option<RestoreSql> = if journal.started {
         Some(prepare_restore(paths, &journal.dump).map_err(|e| {
             UpdateError::Io(format!(
                 "{e} ; rien n'est modifie, journal garde ({}) : restaurer la base a la main",
@@ -1633,9 +1793,6 @@ fn restore(sys: &dyn System, paths: &Paths, live: bool) -> Result<(), UpdateErro
         && sql.is_some()
         && let Err(e) = sys.stop_services()
     {
-        if let Some(sql) = &sql {
-            let _ = fs::remove_file(sql);
-        }
         return Err(UpdateError::Io(format!(
             "arret des services impossible ({e}) : base non restauree, journal garde \
              (relancer `systemctl start ciphera-updater.service`)"
@@ -1677,9 +1834,9 @@ fn restore(sys: &dyn System, paths: &Paths, live: bool) -> Result<(), UpdateErro
             "retour arriere incomplet : relancer `systemctl start ciphera-updater.service`".into(),
         ));
     }
-    if let Some(sql) = &sql {
-        let restored = sys.restore_db(sql);
-        let _ = fs::remove_file(sql);
+    if let Some(sql) = sql {
+        let restored = sys.restore_db(sql.path());
+        drop(sql);
         if let Err(e) = restored {
             return Err(UpdateError::Io(format!(
                 "restauration de la base depuis {} en echec : {e} (le journal est garde : \
@@ -1743,6 +1900,47 @@ mod tests {
         assert_eq!(mode(&root), 0o700, "dossier existant modifie");
         create_dirs(&leaf, 0o700).unwrap();
         assert_eq!(mode(&leaf), 0o751, "dossier existant modifie");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// La sauvegarde decompressee est reecrite a zero avant d'etre retiree :
+    /// un second nom (lien dur) du meme fichier ne montre plus que des zeros.
+    #[test]
+    fn restore_sql_is_zeroed_then_removed() {
+        let root = std::env::temp_dir().join(format!("ciphera-scrub-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let sql = root.join(RESTORE_SQL);
+        let data = b"INSERT INTO secrets VALUES ('donnee');\n".repeat(5000);
+        fs::write(&sql, &data).unwrap();
+        let other = root.join("autre-nom");
+        fs::hard_link(&sql, &other).unwrap();
+        drop(RestoreSql(sql.clone()));
+        assert!(!sql.exists(), "restore.sql retire");
+        let left = fs::read(&other).unwrap();
+        assert_eq!(left.len(), data.len());
+        assert!(left.iter().all(|b| *b == 0), "contenu reecrit a zero");
+        // Absent : rien a faire, aucune erreur.
+        scrub_restore_sql(&sql);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn service_group_is_read_from_etc_group() {
+        let root = std::env::temp_dir().join(format!("ciphera-group-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("etc")).unwrap();
+        let paths = Paths::under(&root);
+        assert_eq!(group_id(&paths, "ciphera"), None);
+        fs::write(
+            root.join("etc/group"),
+            "root:x:0:\nciphera-agent:x:997:\nciphera:x:998:\nautre:x:abc:\n",
+        )
+        .unwrap();
+        assert_eq!(group_id(&paths, "ciphera"), Some(998));
+        assert_eq!(group_id(&paths, "ciphera-agent"), Some(997));
+        assert_eq!(group_id(&paths, "autre"), None);
+        assert_eq!(group_id(&paths, "cipher"), None);
         let _ = fs::remove_dir_all(&root);
     }
 

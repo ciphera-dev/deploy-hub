@@ -81,7 +81,7 @@ pub fn get_system_version() {}
         (status = 403, description = "Proprietaire seulement, ou jeton CSRF absent ou invalide"),
         (status = 422, description = "`not_newer` (version inferieure ou egale a l'installee) ou requete invalide"),
         (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),
-        (status = 503, description = "`updates_unavailable` : dossier de donnees different de celui surveille par l'updater (/var/lib/ciphera)"),
+        (status = 503, description = "`updates_unavailable` : dossier de donnees different de celui surveille par l'updater (/var/lib/ciphera), ou cle des demandes de mise a jour (update-hmac.key) absente"),
     )
 )]
 #[allow(dead_code)]

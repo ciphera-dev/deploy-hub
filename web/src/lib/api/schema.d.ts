@@ -7715,7 +7715,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description `updates_unavailable` : dossier de donnees different de celui surveille par l'updater (/var/lib/ciphera) */
+            /** @description `updates_unavailable` : dossier de donnees different de celui surveille par l'updater (/var/lib/ciphera), ou cle des demandes de mise a jour (update-hmac.key) absente */
             503: {
                 headers: {
                     [name: string]: unknown;

@@ -1,5 +1,6 @@
 # Applique une mise a jour signee de Ciphera (ciphera-cli updater) : HMAC de
-# la demande (cle d'instance), version strictement superieure a
+# la demande (cle /etc/ciphera/update-hmac.key, creee root:ciphera 0640 si
+# elle manque ; jamais age.key), version strictement superieure a
 # l'installee, verrou flock (/run/ciphera/update.lock), minisign + SHA-256
 # de la release et des outils tiers, pg_dump vers /var/backups/ciphera,
 # remplacement des binaires, des unites de l'archive (activees ou
@@ -12,8 +13,8 @@
 # les ecritures faites pendant la mise a jour sont perdues.
 #
 # Root, car il remplace les binaires et les unites, relance les services
-# et lit la cle d'instance (/etc/ciphera : root, groupe ciphera ; fichiers
-# du compte ciphera). Ecritures
+# et lit (ou cree) la cle des demandes dans /etc/ciphera (root, groupe
+# ciphera ; fichiers du compte ciphera). Ecritures
 # limitees aux dossiers de Ciphera ; capacites limitees a la lecture et a
 # l'ecriture de fichiers d'autres comptes (systemd-tmpfiles compris).
 [Unit]
@@ -44,6 +45,8 @@ ReadWritePaths=-/var/lib/ciphera -/var/backups/ciphera -/run/ciphera
 ReadWritePaths=-/run/ciphera-agent -/var/lib/ciphera-buildkit
 # Profil AppArmor de buildkitd, remplace s'il est installe.
 ReadWritePaths=-/etc/apparmor.d
+# Cle des demandes (update-hmac.key), creee si elle manque.
+ReadWritePaths=/etc/ciphera
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

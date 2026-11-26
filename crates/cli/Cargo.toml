@@ -15,7 +15,8 @@ name = "ciphera-cli"
 path = "src/main.rs"
 
 [dependencies]
-# Updater (`ciphera-cli updater`) : demande signee (HMAC, cle d'instance),
+# Updater (`ciphera-cli updater`) : demande signee (HMAC, cle propre
+# `update-hmac.key` ; jamais l'identite age, feature `age` absente),
 # verification minisign + SHA-256, archives tar.gz lues sans `unpack`,
 # sauvegarde pg_dump compressee zstd.
 shared = { path = "../shared", features = ["update"] }

@@ -21,7 +21,7 @@ Hors périmètre v0.1 : nœuds distants enrôlés (le lien QUIC existe mais seul
 
 | Actif | Où | Pourquoi il compte |
 |---|---|---|
-| Identité age de l'instance | `/etc/ciphera/age.key` (0600, compte `ciphera`) | Déchiffre tous les secrets en base (`secrets.rs`, `shared::secretbox`) et dérive la clé HMAC des demandes de mise à jour (`shared::update`) |
+| Identité age de l'instance | `/etc/ciphera/age.key` (0600, compte `ciphera`) | Déchiffre tous les secrets en base (`secrets.rs`, `shared::secretbox`) ; jamais lue par l'updater |
 | Clé de la CA d'instance | `/etc/ciphera/ca/ca.key` (root 0600, masquée au plan de contrôle ; dossier `ca/` root:ciphera 0750) | Signe le certificat du panneau, du lien QUIC et des agents (`crates/pki`) : qui la détient peut se faire passer pour un agent ; lue par le seul signataire root `ciphera-certsign` (D-PKI-4) |
 | Clés TLS | `tls/panel.key`, `tls/link.key` ; clés ACME et certificats du proxy chiffrés dans son état | Confidentialité du panneau et des apps |
 | Clé privée de l'agent | `agent.key` dans l'état de l'agent (générée côté agent, la CA ne reçoit que la clé publique) | Authentifie l'agent auprès du plan de contrôle |
@@ -81,7 +81,7 @@ GitHub ──webhook signé / API──> [plan de contrôle]
 
 ### 3.5 Plan de contrôle → updater root (oneshot)
 
-- Le plan de contrôle (non root) dépose `update-request.json` dans `/var/lib/ciphera` ; `ciphera-updater.path` lance l'unité `oneshot` root. La demande est signée HMAC-SHA256 avec une clé dérivée de `age.key` (`shared/src/update.rs`) ; seul le propriétaire peut la créer (`POST /api/system/update`, `owner_only`).
+- Le plan de contrôle (non root) dépose `update-request.json` dans `/var/lib/ciphera` ; `ciphera-updater.path` lance l'unité `oneshot` root. La demande est signée HMAC-SHA256 avec une clé propre, `/etc/ciphera/update-hmac.key` (32 octets aléatoires, `root:ciphera 0640`, `shared/src/update.rs`) : le plan de contrôle la lit, l'updater la vérifie et la crée si elle manque ; l'updater ne lit jamais `age.key`. Seul le propriétaire peut créer une demande (`POST /api/system/update`, `owner_only`). Téléchargements de l'updater bornés en taille, comptée par l'updater (512 Mio par archive, 1 Mio pour `SHA256SUMS` et sa signature), et en durée ; la sauvegarde décompressée d'un retour arrière (`restore.sql`) est réécrite à zéro puis supprimée en fin de retour arrière, réussi ou non.
 - Le HMAC ne prouve que l'origine : un processus `ciphera` compromis détient la clé. L'updater refuse donc toute version inférieure ou égale à l'installée (sauf `--allow-downgrade` lancé par root) et n'installe qu'une release dont `SHA256SUMS` est signé minisign, archive lue entrée par entrée sans lien ni chemin sortant, outils tiers vérifiés par SHA-256 (`cli/src/updater/release.rs`).
 - Sous-processus de l'updater : chemins absolus pris dans les seuls dossiers système (jamais `/usr/local`), environnement vidé (`PATH` système seul, plus `PGPASSWORD` pour `docker exec`), arguments fixes, aucun shell (`clean_command`, `cli/src/updater/host.rs`). Le mot de passe de la base est lu sans suivre de lien, sur un fichier ordinaire à un seul lien, 0600, au propriétaire attendu (`read_password` : root, le propriétaire du dossier ou, dossier à root, le compte `ciphera`). Verrou `update.lock` en 0600 (un autre compte ne peut pas le tenir), dossiers créés avec un mode explicite quel que soit le umask. Restauration de la base dans une transaction validée par le seul `COMMIT` écrit après toute la sauvegarde : un client `docker` tué ne valide jamais une restauration partielle.
 - L'unité est bornée : `ProtectSystem=strict` avec une liste fermée de `ReadWritePaths`, capacités limitées aux droits de fichiers, `NoNewPrivileges`.
@@ -108,7 +108,7 @@ Le plan de contrôle et le proxy ne lancent aucun sous-processus.
 | minisign (releases) | hors instance (mainteneurs) | seule la clé publique est sur l'hôte | Changement de clé = nouvelle version de l'updater |
 | Sessions | 32 octets `SysRng` | empreinte SHA-256 en base | 12 h (30 j avec « rester connecté ») ; tournée à la connexion et après MFA ; révocables par l'utilisateur (`/api/me/sessions`) |
 | Jeton CSRF | HMAC-SHA256 dont la clé est le jeton de session | jamais stocké | Suit la session |
-| Clé HMAC des demandes de mise à jour | dérivée de `age.key` (étiquette `ciphera/update-request/v1`) | jamais stockée | Suit `age.key` |
+| Clé HMAC des demandes de mise à jour | 32 octets aléatoires, `ciphera init` ou l'updater si elle manque | `/etc/ciphera/update-hmac.key`, `root:ciphera 0640` (lue par le plan de contrôle et l'updater, jamais dérivée de `age.key`) | Supprimer le fichier : l'updater en recrée une à son prochain passage (`systemctl start ciphera-updater.service`) ; les demandes en attente sont alors ignorées |
 | GitHub App (clé privée, secret de webhook) | manifeste GitHub (`connectors/github/manifest.rs`) | scellés age en base | Déconnexion de l'App ; rotation côté GitHub |
 | Deploy hooks `dh_…` | aléatoires, montrés une fois | empreinte en base | Suppression du hook |
 | Jeton de setup | `ciphera init` ou `sudo ciphera admin setup-token` (tant qu'aucun compte n'existe), usage unique, 24 h | `/etc/ciphera/setup_token` | Assistant verrouillé dès qu'un compte existe ; expiré : 401 `setup_token_expired` |

@@ -10,25 +10,25 @@
 //! de l'environnement de l'updater (`LD_PRELOAD`, `PATH`…) ne passe.
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use shared::update::Version;
 
-use super::{SERVICES, System, UnitChange};
+use super::{Limit, SERVICES, System, UnitChange};
 
 /// Conteneur PostgreSQL de l'instance (lance par l'agent).
 const POSTGRES_CONTAINER: &str = "ciphera-postgres";
-/// Taille maximale d'un telechargement.
-const MAX_DOWNLOAD_BYTES: &str = "536870912";
-/// Connexion, duree d'un essai et duree totale avec les nouveaux essais
-/// (secondes) : un serveur bloque ne garde pas le verrou jusqu'au delai de
-/// l'unite.
+/// Delai de connexion (secondes). Taille et duree totale d'un
+/// telechargement, nouveaux essais compris : [`Limit`] donnee par l'appelant
+/// ([`super::ARCHIVE_LIMIT`], [`super::METADATA_LIMIT`]) ; un serveur bloque
+/// ou sans fin ne garde pas le verrou jusqu'au delai de l'unite.
 const CONNECT_TIMEOUT: &str = "15";
-const DOWNLOAD_TIMEOUT: &str = "300";
-const RETRY_MAX_TIME: &str = "600";
+/// Essais d'un telechargement en echec, et pause entre deux.
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// Attente du conteneur PostgreSQL avant une restauration (demarrage de
 /// la machine : Docker le relance de lui-meme).
 const POSTGRES_WAIT: Duration = Duration::from_secs(180);
@@ -188,7 +188,6 @@ fn uid_in_passwd(passwd: &str, name: &str) -> Option<u32> {
 /// a root, le compte ciphera ([`trusted_owner`]) ; ni
 /// groupe ni autres n'y ont acces, 4 Kio au plus.
 pub fn read_password(path: &Path) -> io::Result<String> {
-    use std::io::Read;
     let refused = |why: &str| io::Error::other(format!("{} : {why}", path.display()));
     let mut opts = fs::OpenOptions::new();
     opts.read(true);
@@ -306,6 +305,79 @@ impl Host {
     }
 }
 
+/// Copie `input` dans `out`, `max` octets au plus : des que la limite est
+/// depassee, abandon (`FileTooLarge`), sans rien lire ni ecrire de plus.
+/// Renvoie le nombre d'octets copies.
+pub fn copy_capped(input: &mut impl Read, out: &mut impl Write, max: u64) -> io::Result<u64> {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = match input.read(&mut buf) {
+            Ok(0) => return Ok(total),
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        total = total.saturating_add(n as u64);
+        if total > max {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                format!("taille maximale depassee ({max} octets)"),
+            ));
+        }
+        out.write_all(&buf[..n])?;
+    }
+}
+
+impl Host {
+    /// Un essai : `curl` ecrit sur sa sortie, copiee dans `dest` par
+    /// [`copy_capped`] (la taille est bornee ici, meme sans longueur
+    /// annoncee par le serveur et quelle que soit la version de curl) ;
+    /// curl est arrete des que la limite est depassee. `--max-time` borne
+    /// la duree de l'essai.
+    fn fetch_once(&self, url: &str, dest: &Path, max_bytes: u64, left: Duration) -> io::Result<()> {
+        let mut out = fs::File::create(dest)?;
+        let max_time = left.as_secs().max(1).to_string();
+        let max_size = max_bytes.to_string();
+        let mut cmd = clean_command("curl");
+        cmd.args([
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--tlsv1.2",
+            "-fsSL",
+            "--connect-timeout",
+            CONNECT_TIMEOUT,
+            "--max-time",
+            &max_time,
+            "--max-filesize",
+            &max_size,
+        ]);
+        if let Some(ca) = &self.test_ca_bundle {
+            cmd.arg("--cacert").arg(ca);
+        }
+        let mut child = cmd
+            .arg(url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| io::Error::other(format!("curl : {e}")))?;
+        let copied = match child.stdout.take() {
+            Some(mut stdout) => {
+                copy_capped(&mut stdout, &mut out, max_bytes).and_then(|_| out.sync_all())
+            }
+            None => Err(io::Error::other("sortie de curl indisponible")),
+        };
+        if copied.is_err() {
+            let _ = child.kill();
+        }
+        let s = child.wait();
+        copied?;
+        status("curl", s)
+    }
+}
+
 fn status(what: &str, s: io::Result<std::process::ExitStatus>) -> io::Result<()> {
     match s {
         Ok(s) if s.success() => Ok(()),
@@ -325,37 +397,39 @@ fn systemctl(args: &[&str]) -> io::Result<()> {
 }
 
 impl System for Host {
-    fn download(&self, url: &str, dest: &Path) -> io::Result<()> {
+    /// Jusqu'a [`DOWNLOAD_ATTEMPTS`] essais dans `limit.max_time` ; un
+    /// depassement de taille n'est jamais reessaye.
+    fn download(&self, url: &str, dest: &Path, limit: Limit) -> io::Result<()> {
         if !url.starts_with("https://") {
             return Err(io::Error::other("URL https exigee"));
         }
-        let mut cmd = clean_command("curl");
-        cmd.args([
-            "--proto",
-            "=https",
-            "--tlsv1.2",
-            "-fsSL",
-            "--retry",
-            "3",
-            "--retry-max-time",
-            RETRY_MAX_TIME,
-            "--connect-timeout",
-            CONNECT_TIMEOUT,
-            "--max-time",
-            DOWNLOAD_TIMEOUT,
-            "--max-filesize",
-            MAX_DOWNLOAD_BYTES,
-        ]);
-        if let Some(ca) = &self.test_ca_bundle {
-            cmd.arg("--cacert").arg(ca);
+        let deadline = Instant::now() + limit.max_time;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let left = deadline.saturating_duration_since(Instant::now());
+            let result = if left.as_secs() == 0 {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "duree maximale du telechargement depassee",
+                ))
+            } else {
+                self.fetch_once(url, dest, limit.max_bytes, left)
+            };
+            let Err(e) = result else {
+                return Ok(());
+            };
+            let _ = fs::remove_file(dest);
+            let left = deadline.saturating_duration_since(Instant::now());
+            if e.kind() == io::ErrorKind::FileTooLarge
+                || attempt >= DOWNLOAD_ATTEMPTS
+                || left <= RETRY_DELAY
+            {
+                return Err(e);
+            }
+            eprintln!("telechargement en echec ({e}) : nouvel essai");
+            std::thread::sleep(RETRY_DELAY);
         }
-        let s = cmd
-            .arg("-o")
-            .arg(dest)
-            .arg(url)
-            .stdin(Stdio::null())
-            .status();
-        status("curl", s)
     }
 
     fn pg_dump(&self, dest: &Path) -> io::Result<()> {
@@ -669,6 +743,38 @@ NRestarts=2
         assert!(!trusted_owner(998, 0, None), "compte ciphera absent");
         assert_eq!(uid_in_passwd("ciphera:x:0:0::/:/bin/sh\n", "ciphera"), None);
         assert_eq!(uid_in_passwd(accounts, "absent"), None);
+    }
+
+    /// Source sans fin (serveur qui envoie sans s'arreter) : la copie
+    /// s'arrete juste apres la limite, sans ecrire au-dela.
+    struct Endless(u64);
+
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.0 += buf.len() as u64;
+            buf.fill(b'a');
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn download_over_cap_aborts() {
+        let max = 1024 * 1024 + 7;
+        let mut src = Endless(0);
+        let mut out = Vec::new();
+        let e = copy_capped(&mut src, &mut out, max).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::FileTooLarge);
+        assert!(out.len() as u64 <= max, "ecrit au-dela de la limite");
+        assert!(src.0 <= max + 64 * 1024, "lu bien au-dela de la limite");
+
+        // A la limite exacte : accepte, tout copie.
+        let data = vec![7u8; 4096];
+        let mut out = Vec::new();
+        assert_eq!(copy_capped(&mut &data[..], &mut out, 4096).unwrap(), 4096);
+        assert_eq!(out, data);
+        let mut out = Vec::new();
+        let e = copy_capped(&mut &data[..], &mut out, 4095).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::FileTooLarge);
     }
 }
 

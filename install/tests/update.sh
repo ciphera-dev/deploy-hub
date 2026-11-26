@@ -7,8 +7,10 @@
 #
 # Pour chaque distribution, apres une installation de la release v_A par
 # install.sh (releases de test signees par une cle jetable, servies en
-# HTTPS local) :
-#   - (a) demande au HMAC faux (autre cle) : ignoree, rien ne change ;
+# HTTPS local), cle des demandes /etc/ciphera/update-hmac.key retiree
+# (installation anterieure a cette cle) :
+#   - (a) demande au HMAC faux (autre cle) : ignoree, rien ne change ; la
+#     cle des demandes est recreee par l'updater (root:ciphera 0640) ;
 #   - (b) demande valide pour la version installee : refusee ;
 #   - (c) release signee par une autre cle : echec avant toute
 #     modification, aucune sauvegarde ;
@@ -242,17 +244,18 @@ manual() { # <fichier> <arguments...>
 }
 
 # Demande signee deposee comme le plan de controle : HMAC-SHA256 sous la
-# cle derivee de l'identite age (HMAC de "ciphera/update-request/v1"), JSON
-# ecrit par le compte ciphera puis renomme. <cle> : "instance" ou "autre".
+# cle des demandes (/etc/ciphera/update-hmac.key, 32 octets bruts, lue par
+# le compte ciphera comme le panneau), JSON ecrit par le compte ciphera puis
+# renomme. <cle> : "instance" ou "autre".
 request() { # <version> <instance|autre>
 	podman exec -e "V=$1" -e "WHICH=$2" "$cid" sh -c '
 		set -eu
 		if [ "$WHICH" = instance ]; then
-			id=$(grep -v "^#" /etc/ciphera/age.key | head -n 1)
+			k=$(runuser -u ciphera -- od -An -v -tx1 /etc/ciphera/update-hmac.key | tr -d " \n")
+			[ "${#k}" = 64 ]
 		else
-			id=AGE-SECRET-KEY-1AUTRECLEDETESTQUINESTPASCELLEDELINSTANCE
+			k=0101010101010101010101010101010101010101010101010101010101010101
 		fi
-		k=$(printf %s "ciphera/update-request/v1" | openssl dgst -sha256 -mac HMAC -macopt "key:$id" -r | cut -d" " -f1)
 		ts=$(date +%s)
 		mac=$(printf "ciphera-update-request\n%s\n%s" "$V" "$ts" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$k" -r | cut -d" " -f1)
 		printf "{\"version\":\"%s\",\"requested_at\":%s,\"hmac\":\"%s\"}" "$V" "$ts" "$mac" |
@@ -339,11 +342,18 @@ run_distro() {
 		podman exec -i "$cid" sh -c 'cat >/etc/systemd/system/ciphera-updater.service.d/test.conf && systemctl daemon-reload'
 	local sums_a
 	sums_a=$(bin_sums)
+	check "cle des demandes posee par ciphera init (root:ciphera 0640, 32 octets)" \
+		in_ctr 'test "$(stat -c %a:%U:%G:%s /etc/ciphera/update-hmac.key)" = 640:root:ciphera:32'
+	# Installation anterieure a la cle des demandes : l'updater la recree.
+	in_ctr 'rm -f /etc/ciphera/update-hmac.key'
 
 	# (a) HMAC faux.
 	request "$v_b" autre
 	check "(a) updater lance par l'unite .path" wait_updater
 	check "(a) demande au HMAC faux ignoree" log_has 'HMAC de la demande invalide'
+	check "(a) cle des demandes recreee par l'updater (root:ciphera 0640, 32 octets)" \
+		in_ctr 'test "$(stat -c %a:%U:%G:%s /etc/ciphera/update-hmac.key)" = 640:root:ciphera:32'
+	check "(a) creation de la cle journalisee" log_has 'cle des demandes de mise a jour creee'
 	check "(a) rien ne change" test "$(bin_sums)" = "$sums_a"
 	check "(a) version inchangee" test "$(installed)" = "$v_a"
 	check "(a) aucune sauvegarde" test "$(backups)" = 0

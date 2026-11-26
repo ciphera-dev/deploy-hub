@@ -286,6 +286,13 @@ fn updater_is_a_hardened_root_oneshot() {
         vec!["/usr/local/bin/ciphera-cli updater"]
     );
     assert_hardened_root(&svc);
+    // Cle des demandes (update-hmac.key) creee par l'updater si elle manque.
+    assert!(
+        values(&svc, "ReadWritePaths")
+            .iter()
+            .any(|v| v.split_whitespace().any(|p| p == "/etc/ciphera")),
+        "/etc/ciphera non inscriptible : cle des demandes jamais creee"
+    );
 }
 
 fn assert_hardened_root(svc: &str) {

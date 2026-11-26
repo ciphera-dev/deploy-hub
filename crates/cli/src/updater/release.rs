@@ -15,8 +15,8 @@ use sha2::{Digest, Sha256};
 use shared::update::Version;
 
 use super::{
-    APPARMOR_PROFILE, APPARMOR_PROFILE_ABI3, BINARIES, REQUIRED_UNITS, Sources, System, TMPFILES,
-    is_unit_name,
+    APPARMOR_PROFILE, APPARMOR_PROFILE_ABI3, ARCHIVE_LIMIT, BINARIES, Limit, METADATA_LIMIT,
+    REQUIRED_UNITS, Sources, System, TMPFILES, is_unit_name,
 };
 
 /// Nombre maximal d'unites systemd dans une archive.
@@ -97,9 +97,28 @@ fn read_small(path: &Path) -> Result<String, String> {
     Ok(s)
 }
 
-fn get(sys: &dyn System, url: &str, dest: &Path) -> Result<(), String> {
-    sys.download(url, dest)
+/// Telecharge `url` dans `dest`, borne par `limit` ; la taille est
+/// reverifiee sur le fichier obtenu, retire au-dela.
+fn get(sys: &dyn System, url: &str, dest: &Path, limit: Limit) -> Result<(), String> {
+    let fetched = sys
+        .download(url, dest, limit)
         .map_err(|e| format!("telechargement impossible : {url} ({e})"))
+        .and_then(|()| {
+            let len = fs::symlink_metadata(dest)
+                .map_err(|e| format!("telechargement impossible : {url} ({e})"))?
+                .len();
+            if len > limit.max_bytes {
+                return Err(format!(
+                    "telechargement abandonne : {url} depasse la taille maximale ({} octets)",
+                    limit.max_bytes
+                ));
+            }
+            Ok(())
+        });
+    if fetched.is_err() {
+        let _ = fs::remove_file(dest);
+    }
+    fetched
 }
 
 /// Signature minisign de `data` par l'une des cles de confiance (plusieurs
@@ -132,11 +151,17 @@ pub(super) fn fetch(
     fs::create_dir_all(&dl).map_err(|e| e.to_string())?;
 
     // Signature minisign de SHA256SUMS.
-    get(sys, &format!("{base}/SHA256SUMS"), &dl.join("SHA256SUMS"))?;
+    get(
+        sys,
+        &format!("{base}/SHA256SUMS"),
+        &dl.join("SHA256SUMS"),
+        METADATA_LIMIT,
+    )?;
     get(
         sys,
         &format!("{base}/SHA256SUMS.minisig"),
         &dl.join("SHA256SUMS.minisig"),
+        METADATA_LIMIT,
     )?;
     let sums = read_small(&dl.join("SHA256SUMS"))?;
     let sig = read_small(&dl.join("SHA256SUMS.minisig"))?;
@@ -161,7 +186,12 @@ pub(super) fn fetch(
         return Err("empreinte SHA-256 mal formee".into());
     }
     let archive_path = dl.join(&archive);
-    get(sys, &format!("{base}/{archive}"), &archive_path)?;
+    get(
+        sys,
+        &format!("{base}/{archive}"),
+        &archive_path,
+        ARCHIVE_LIMIT,
+    )?;
     if sha256_hex(&archive_path).map_err(|e| e.to_string())? != sum {
         return Err(format!("SHA-256 de {archive} incorrect"));
     }
@@ -196,6 +226,7 @@ pub(super) fn fetch(
             sys,
             &format!("{}/{}", sources.tools_base_url, tool.path),
             &downloaded,
+            ARCHIVE_LIMIT,
         )?;
         if sha256_hex(&downloaded).map_err(|e| e.to_string())? != tool.sha256 {
             return Err(format!("SHA-256 de {file} incorrect"));

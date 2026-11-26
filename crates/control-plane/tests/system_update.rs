@@ -12,7 +12,7 @@ use control_plane::auth::password;
 use control_plane::state::AppState;
 use serde_json::{Value, json};
 use shared::config::Config;
-use shared::update::{REQUEST_FILE, UpdateRequest, request_key};
+use shared::update::{KEY_FILE, REQUEST_FILE, UpdateRequest, load_key};
 use uuid::Uuid;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -178,9 +178,14 @@ async fn bad_latest_answer_is_ignored() {
 #[tokio::test]
 async fn update_request_is_owner_only_reauthenticated_and_signed() {
     let tmp = TempDir::new();
-    let (mut state, _db) = common::state_in(&tmp.0, &tmp.0).await;
+    let config = TempDir::new();
+    let (mut state, _db) = common::state_in(&config.0, &tmp.0).await;
     // Dossier surveille par l'unite .path = dossier de donnees des tests.
     state.update_request_dir = tmp.0.clone();
+    // Cle des demandes posee par `ciphera init` (ou l'updater).
+    let key_path = config.0.join(KEY_FILE);
+    let (key, created) = shared::update::ensure_key(&key_path, None).unwrap();
+    assert!(created);
     let file = tmp.0.join(REQUEST_FILE);
     let body = |version: &str, pw: &str| Some(json!({ "version": version, "password": pw }));
 
@@ -262,18 +267,14 @@ async fn update_request_is_owner_only_reauthenticated_and_signed() {
         "{notice}"
     );
 
-    // Demande signee avec la cle de l'instance, ecrite sans fichier temporaire restant.
+    // Demande signee avec update-hmac.key (jamais l'identite age), ecrite
+    // sans fichier temporaire restant.
     let req = UpdateRequest::from_json(&std::fs::read(&file).unwrap()).unwrap();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    assert_eq!(
-        req.verify(&*request_key(&state.secrets), now)
-            .unwrap()
-            .to_string(),
-        "v99.0.0"
-    );
+    assert_eq!(req.verify(&key[..], now).unwrap().to_string(), "v99.0.0");
     let leftovers: Vec<_> = std::fs::read_dir(&tmp.0)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -327,4 +328,43 @@ async fn update_request_refused_when_the_data_dir_is_not_watched() {
         r.raw
     );
     assert!(!tmp.0.join(REQUEST_FILE).exists());
+}
+
+/// Cle des demandes absente (installation anterieure, avant que l'updater ne
+/// la cree) : 503 explicite, sans re-authentification ni demande deposee.
+#[tokio::test]
+async fn update_request_without_hmac_key_is_unavailable() {
+    let tmp = TempDir::new();
+    let config = TempDir::new();
+    let (mut state, _db) = common::state_in(&config.0, &tmp.0).await;
+    state.update_request_dir = tmp.0.clone();
+    let owner = login(&state, "owner").await;
+    // Mot de passe faux : la cle manque d'abord, aucun essai consomme.
+    let r = send(
+        &state,
+        &owner,
+        "POST",
+        "/api/system/update",
+        Some(json!({ "version": "v99.0.0", "password": "faux" })),
+    )
+    .await;
+    assert_eq!(r.status, 503, "{}", r.raw);
+    assert_eq!(r.code(), "updates_unavailable");
+    assert!(r.raw.contains("update-hmac.key"), "{}", r.raw);
+    assert!(!tmp.0.join(REQUEST_FILE).exists());
+
+    // Cle posee : la demande passe, signee avec elle.
+    let (key, _) = shared::update::ensure_key(&config.0.join(KEY_FILE), None).unwrap();
+    let r = send(
+        &state,
+        &owner,
+        "POST",
+        "/api/system/update",
+        Some(json!({ "version": "v99.0.0", "password": PASSWORD })),
+    )
+    .await;
+    assert_eq!(r.status, 202, "{}", r.raw);
+    let req = UpdateRequest::from_json(&std::fs::read(tmp.0.join(REQUEST_FILE)).unwrap()).unwrap();
+    assert_eq!(*load_key(&config.0.join(KEY_FILE)).unwrap(), *key);
+    assert!(req.verify(&key[..], req.requested_at).is_ok());
 }

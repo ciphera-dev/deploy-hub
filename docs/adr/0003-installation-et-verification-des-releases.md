@@ -42,6 +42,11 @@ curl -fsSL https://get.ciphera.ch/install.sh | sh
 - shellcheck en CI.
 - Test de bout en bout dans des conteneurs Debian, Ubuntu et Fedora (amd64/arm64). Le script doit installer quand tout est valide, et refuser d'installer avec un checksum altéré ou une signature invalide.
 
+**Note (mises à jour, audit 2026-11-24) :** `ciphera-cli updater` applique les mêmes vérifications aux mises à jour.
+- Téléchargements bornés : 512 Mio et 10 min pour une archive (release, outils tiers), 1 Mio et 2 min pour `SHA256SUMS` et sa signature. La taille est comptée par l'updater lui-même, pas seulement annoncée par le serveur : au-delà, abandon avant toute modification.
+- Les demandes du panneau sont signées par HMAC avec une clé propre, `/etc/ciphera/update-hmac.key` : 32 octets aléatoires, `root:ciphera 0640`, créés par `ciphera init` ou, s'ils manquent, par l'updater. Le plan de contrôle signe avec, l'updater vérifie avec ; l'updater ne lit jamais l'identité age `age.key`.
+- La sauvegarde décompressée utilisée par un retour arrière (`/var/lib/ciphera-updater/restore.sql`) est réécrite à zéro puis supprimée à la fin du retour arrière, qu'il ait réussi ou échoué ; son chemin est journalisé.
+
 ## Conséquences
 
 - (+) Installation en une commande ; une altération est détectée avant toute exécution.

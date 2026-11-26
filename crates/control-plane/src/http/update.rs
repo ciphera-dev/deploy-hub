@@ -10,7 +10,10 @@
 //!   re-authentification par mot de passe) : refuse une version inferieure
 //!   ou egale a la version installee, puis ecrit de facon atomique
 //!   `<data_dir>/update-request.json` (version, date, HMAC avec la cle
-//!   derivee de l'identite de l'instance). Le fichier appartient au compte
+//!   `<config_dir>/update-hmac.key`, `root:ciphera 0640`, propre aux
+//!   demandes : ni l'identite age ni aucun autre secret). Cle absente
+//!   (installation anterieure) : 503 `updates_unavailable`, l'updater la cree
+//!   a son prochain passage. Le fichier appartient au compte
 //!   `ciphera` (0600, dossier 0700) : seuls `ciphera` et root le lisent.
 //!   `ciphera-updater.path` declenche alors l'updater (root), qui reverifie
 //!   tout (HMAC, version, minisign, SHA-256) avant d'installer. Le fichier
@@ -34,7 +37,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 use shared::error::ApiError;
-use shared::update::{REQUEST_FILE, UpdateRequest, Version, request_key};
+use shared::update::{KEY_FILE, KeyError, REQUEST_FILE, UpdateRequest, Version, load_key};
 
 use crate::auth::{internal, rate_limit};
 use crate::http::client_ip::ClientIp;
@@ -223,6 +226,21 @@ async fn request_update(
             ),
         ));
     }
+    // Cle des demandes lue avant la re-authentification : sans elle, rien
+    // n'est demande ni consomme.
+    let key_path = state.cfg.config_dir.join(KEY_FILE);
+    let key = tokio::task::spawn_blocking(move || load_key(&key_path))
+        .await
+        .map_err(|e| internal("cle des demandes de mise a jour", e))?
+        .map_err(|e| match e {
+            KeyError::Missing => ApiError::new(
+                503,
+                "updates_unavailable",
+                "Ciphera : clé des demandes de mise à jour absente (/etc/ciphera/update-hmac.key). \
+                 La créer avec sudo systemctl start ciphera-updater.service, puis réessayer.",
+            ),
+            other => internal("cle des demandes de mise a jour", other),
+        })?;
     let ip = ip.to_string();
     let attempt = match reauthenticate(
         &state,
@@ -252,11 +270,8 @@ async fn request_update(
         json!({ "ip": ip, "from": current.to_string(), "to": version.to_string() }),
     )
     .await?;
-    let request = UpdateRequest::sign(
-        version,
-        state.clock.unix_secs() as u64,
-        &*request_key(&state.secrets),
-    );
+    let request = UpdateRequest::sign(version, state.clock.unix_secs() as u64, &key[..]);
+    drop(key);
     let dir = state.cfg.data_dir.clone();
     tokio::task::spawn_blocking(move || write_request(&dir, &request))
         .await

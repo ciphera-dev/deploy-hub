@@ -122,22 +122,6 @@ impl SecretBox {
             .map_err(|_| SecretError("chiffrement impossible"))
     }
 
-    /// Cle de 32 octets propre a l'usage `label`, derivee de l'identite de
-    /// l'instance (HMAC-SHA256 de `label` sous la cle secrete age) : la meme
-    /// identite donne toujours la meme cle, un autre `label` une autre cle.
-    #[cfg(feature = "update")]
-    pub fn derive_key(&self, label: &[u8]) -> Zeroizing<[u8; 32]> {
-        use age::secrecy::ExposeSecret;
-        use hmac::{Hmac, KeyInit, Mac};
-        let secret = self.identity.to_string();
-        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.expose_secret().as_bytes())
-            .expect("HMAC accepte toute cle");
-        mac.update(label);
-        let mut key = Zeroizing::new([0u8; 32]);
-        key.copy_from_slice(&mac.finalize().into_bytes());
-        key
-    }
-
     /// Dechiffre ; le clair est efface de la memoire a sa destruction.
     pub fn open(&self, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, SecretError> {
         age::decrypt(&self.identity, sealed)

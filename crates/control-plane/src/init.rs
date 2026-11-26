@@ -2,7 +2,8 @@
 //! imprime l'URL de setup avec l'empreinte du certificat du panneau.
 //!
 //! Fichiers ecrits (tous en 0600, dossiers en 0700) :
-//! `db_password`, `age.key`, `ca/ca.{crt,key}`, `tls/panel.{crt,key}`,
+//! `db_password`, `age.key`, `update-hmac.key` (cle des demandes de mise a
+//! jour, 32 octets aleatoires), `ca/ca.{crt,key}`, `tls/panel.{crt,key}`,
 //! `tls/link.{crt,key}` (lien QUIC des agents), `agents/local.crt` (copie
 //! publique du certificat de l'agent local), `setup_token`, et
 //! `postgres/db_password` : copie du mot de passe de la base lue par le
@@ -15,9 +16,12 @@
 //! signataire root (`ciphera admin sign-requests`, `agents::signer`) ;
 //! `ca/` (0750) et `ca/ca.crt` (0640) restent a root, groupe du service :
 //! le service lit le certificat mais ne peut ni remplacer ni supprimer la
-//! cle ou le certificat. Le dossier de configuration lui-meme, s'il est cree
-//! par l'init, reste a root, groupe du service, 0750 : le service le
-//! traverse mais ne peut pas y renommer `ca/` (ni ses autres dossiers).
+//! cle ou le certificat. De meme `update-hmac.key` (root, groupe du service,
+//! 0640) : le plan de controle signe les demandes de mise a jour avec,
+//! l'updater (root) les verifie, sans jamais lire `age.key`. Le dossier de
+//! configuration lui-meme, s'il est cree par l'init, reste a root, groupe du
+//! service, 0750 : le service le traverse mais ne peut pas y renommer `ca/`
+//! (ni ses autres dossiers).
 //!
 //! Enrolement de l'agent local, dans `<agent_dir>` : la paire de cles est
 //! generee cote agent (`agent.key`), la CA ne recoit que la cle publique et
@@ -46,6 +50,7 @@ use crate::setup_token;
 /// Fichiers geres par l'init, relatifs a `config_dir`.
 const DB_PASSWORD: &str = "db_password";
 const AGE_KEY: &str = "age.key";
+const UPDATE_KEY: &str = shared::update::KEY_FILE;
 const CA_CRT: &str = "ca/ca.crt";
 const CA_KEY: &str = "ca/ca.key";
 const PANEL_CRT: &str = "tls/panel.crt";
@@ -58,9 +63,10 @@ const LOCAL_AGENT_CRT: &str = crate::agents::servers::LOCAL_AGENT_CERT;
 /// l'agent : `ciphera_agent::infra::DEFAULT_POSTGRES_PASSWORD_FILE`).
 const PG_DIR: &str = "postgres";
 const PG_PASSWORD: &str = "postgres/db_password";
-const ALL_FILES: [&str; 10] = [
+const ALL_FILES: [&str; 11] = [
     DB_PASSWORD,
     AGE_KEY,
+    UPDATE_KEY,
     CA_CRT,
     CA_KEY,
     PANEL_CRT,
@@ -191,6 +197,7 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
     );
     let identity = age::x25519::Identity::generate();
     let age_key = Zeroizing::new(format!("{}\n", identity.to_string().expose_secret()));
+    let update_key = random::<{ shared::update::KEY_BYTES }>()?;
 
     let ca = pki::Ca::generate("Ciphera CA").map_err(|e| InitError::Crypto(e.to_string()))?;
     let sans = [opts.public_ip.to_string(), "localhost".to_string()];
@@ -216,9 +223,10 @@ pub fn run(opts: &InitOptions) -> Result<InitReport, InitError> {
         ensure_dir(&dir.join(sub))?;
     }
     ensure_dir(agent_dir)?;
-    let files: [(&str, &[u8]); 10] = [
+    let files: [(&str, &[u8]); 11] = [
         (DB_PASSWORD, db_password.as_bytes()),
         (AGE_KEY, age_key.as_bytes()),
+        (UPDATE_KEY, &update_key[..]),
         (CA_CRT, ca.cert_pem().as_bytes()),
         (CA_KEY, ca_key.as_bytes()),
         (PANEL_CRT, panel.cert_pem.as_bytes()),
@@ -319,20 +327,26 @@ enum Owner {
 }
 
 /// Proprietaire d'un fichier du dossier de configuration : le compte du
-/// service, sauf le dossier de la CA (root, signataire separe).
+/// service, sauf le dossier de la CA (root, signataire separe) et la cle des
+/// demandes de mise a jour (root, lue par le groupe du service).
 fn config_owner(rel: &str) -> Owner {
     match rel {
         CA_KEY => Owner::Root,
-        CA_CRT => Owner::RootShared,
+        CA_CRT | UPDATE_KEY => Owner::RootShared,
         _ => Owner::Instance,
     }
 }
 
-/// Dossier de la CA et son certificat, et le dossier de configuration s'il
-/// est cree par l'init : a root, groupe du service, avec ces droits (le
-/// service traverse les dossiers et lit le certificat, rien d'autre).
+/// Dossier de la CA, son certificat, la cle des demandes de mise a jour, et
+/// le dossier de configuration s'il est cree par l'init : a root, groupe du
+/// service, avec ces droits (le service traverse les dossiers et lit le
+/// certificat et la cle, rien d'autre).
 pub fn shared_targets(dir: &Path, config_dir_created: bool) -> Vec<(PathBuf, u32)> {
-    let mut targets = vec![(dir.join(CA_DIR), 0o750), (dir.join(CA_CRT), 0o640)];
+    let mut targets = vec![
+        (dir.join(CA_DIR), 0o750),
+        (dir.join(CA_CRT), 0o640),
+        (dir.join(UPDATE_KEY), shared::update::KEY_MODE),
+    ];
     if config_dir_created {
         targets.push((dir.to_path_buf(), 0o750));
     }
@@ -600,7 +614,11 @@ mod tests {
     fn ca_stays_with_root() {
         assert_eq!(config_owner(CA_KEY), Owner::Root);
         assert_eq!(config_owner(CA_CRT), Owner::RootShared);
-        for rel in ALL_FILES.iter().filter(|r| **r != CA_KEY && **r != CA_CRT) {
+        assert_eq!(config_owner(UPDATE_KEY), Owner::RootShared);
+        for rel in ALL_FILES
+            .iter()
+            .filter(|r| ![CA_KEY, CA_CRT, UPDATE_KEY].contains(*r))
+        {
             assert_eq!(config_owner(rel), Owner::Instance, "{rel}");
         }
         let dir = Path::new("/etc/ciphera");
@@ -608,7 +626,11 @@ mod tests {
         assert!(!targets.contains(&dir.join("ca")), "ca/ reste a root");
         assert_eq!(
             shared_targets(dir, false),
-            [(dir.join("ca"), 0o750), (dir.join("ca/ca.crt"), 0o640)]
+            [
+                (dir.join("ca"), 0o750),
+                (dir.join("ca/ca.crt"), 0o640),
+                (dir.join("update-hmac.key"), 0o640)
+            ]
         );
     }
 

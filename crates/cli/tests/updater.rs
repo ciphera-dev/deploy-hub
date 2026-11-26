@@ -14,10 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ciphera_cli::updater::{self, Mode, Outcome, Paths, Sources, System, UpdateError};
+use ciphera_cli::updater::{self, Limit, Mode, Outcome, Paths, Sources, System, UpdateError};
 use sha2::{Digest, Sha256};
-use shared::secretbox::SecretBox;
-use shared::update::{UpdateRequest, Version, request_key};
+use shared::update::{KEY_FILE, UpdateRequest, Version};
 
 const TARGET: &str = "x86_64-unknown-linux-musl";
 const BASE: &str = "https://releases.test";
@@ -225,6 +224,11 @@ struct Mock {
     disabled: Vec<String>,
     /// Version majeure d'`apparmor_parser` (4 par `Mock::new`).
     apparmor_major: Option<u32>,
+    /// Bornes demandees pour chaque telechargement.
+    limits: Mutex<Vec<(String, Limit)>>,
+    /// Fichier remplace par un dossier non vide au premier redemarrage :
+    /// le retour arriere ne peut pas le remettre (retour incomplet).
+    block_restore_of: Option<PathBuf>,
 }
 
 /// Base simulee : schema (numero de migration) et donnees.
@@ -365,8 +369,11 @@ impl Mock {
 }
 
 impl System for Mock {
-    fn download(&self, url: &str, dest: &Path) -> std::io::Result<()> {
+    /// Sert le fichier tel quel, sans appliquer la borne : l'updater
+    /// reverifie la taille du fichier obtenu.
+    fn download(&self, url: &str, dest: &Path, limit: Limit) -> std::io::Result<()> {
         self.events.lock().unwrap().push(format!("download {url}"));
+        self.limits.lock().unwrap().push((url.to_string(), limit));
         let data = self.files.lock().unwrap().get(url).cloned();
         match data {
             Some(d) => std::fs::write(dest, d),
@@ -469,6 +476,12 @@ impl System for Mock {
                 std::fs::write(&path, bad)?;
             }
         }
+        if let Some(path) = &self.block_restore_of
+            && self.count("restart") == 1
+        {
+            std::fs::remove_file(path)?;
+            std::fs::create_dir_all(path.join("bloque"))?;
+        }
         if self.crash_on_restart && self.count("restart") == 1 {
             panic!("arret brutal simule");
         }
@@ -546,7 +559,8 @@ struct Env {
     paths: Paths,
     sources: Sources,
     files: HashMap<String, Vec<u8>>,
-    secrets: SecretBox,
+    /// Cle des demandes (`<config_dir>/update-hmac.key`).
+    key: [u8; 32],
 }
 
 /// Ciphera v0.1.0 installe ; releases v0.0.9, v0.1.0 et v0.2.0 publiees.
@@ -574,17 +588,10 @@ fn env() -> Env {
     write_tool(&tmp.0.join("usr/sbin/nft"));
     std::fs::create_dir_all(tmp.0.join("var/run")).unwrap();
     std::fs::write(tmp.0.join("var/run/docker.sock"), b"").unwrap();
-    let (secrets, identity) = SecretBox::generate();
-    std::fs::write(paths.config_dir.join("age.key"), identity.as_bytes()).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            paths.config_dir.join("age.key"),
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
-    }
+    // Cle des demandes, comme `ciphera init` la pose (0600 sans le groupe
+    // ciphera, introuvable ici).
+    let key: [u8; 32] = std::array::from_fn(|i| (i as u8).wrapping_mul(37).wrapping_add(11));
+    write_key(&paths, &key);
 
     let good = keys();
     let mut files = HashMap::new();
@@ -602,7 +609,18 @@ fn env() -> Env {
         paths,
         sources,
         files,
-        secrets,
+        key,
+    }
+}
+
+/// Ecrit la cle des demandes de l'instance (0600).
+fn write_key(paths: &Paths, key: &[u8]) {
+    let path = paths.config_dir.join(KEY_FILE);
+    std::fs::write(&path, key).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 }
 
@@ -668,12 +686,7 @@ fn downgrade(version: &str, restore_db: Option<PathBuf>) -> Mode {
 #[test]
 fn request_with_bad_hmac_ignored() {
     let env = env();
-    let other = SecretBox::generate().0;
-    env.write_request(&UpdateRequest::sign(
-        v("v0.2.0"),
-        NOW,
-        &*request_key(&other),
-    ));
+    env.write_request(&UpdateRequest::sign(v("v0.2.0"), NOW, &[9u8; 32]));
     let sys = Mock::new(&env, true);
 
     let r = updater::run(Mode::Request, &sys, &env.paths, &env.sources);
@@ -684,14 +697,14 @@ fn request_with_bad_hmac_ignored() {
     env.assert_untouched();
 
     // Perimee (signee avec la bonne cle) : ignoree aussi.
-    let key = request_key(&env.secrets);
-    env.write_request(&UpdateRequest::sign(v("v0.2.0"), NOW - 3600, &*key));
+    let key = env.key;
+    env.write_request(&UpdateRequest::sign(v("v0.2.0"), NOW - 3600, &key));
     let r = updater::run(Mode::Request, &sys, &env.paths, &env.sources);
     assert!(matches!(r, Err(UpdateError::Ignored(_))), "{r:?}");
     assert!(sys.events().is_empty());
 
     // La meme demande, bien signee et fraiche, passe.
-    env.write_request(&UpdateRequest::sign(v("v0.2.0"), NOW, &*key));
+    env.write_request(&UpdateRequest::sign(v("v0.2.0"), NOW, &key));
     let r = updater::run(Mode::Request, &sys, &env.paths, &env.sources);
     assert_eq!(
         r.unwrap(),
@@ -705,10 +718,10 @@ fn request_with_bad_hmac_ignored() {
 #[test]
 fn request_for_older_or_same_version_refused() {
     let env = env();
-    let key = request_key(&env.secrets);
+    let key = env.key;
     let sys = Mock::new(&env, true);
     for version in ["v0.1.0", "v0.0.9"] {
-        env.write_request(&UpdateRequest::sign(v(version), NOW, &*key));
+        env.write_request(&UpdateRequest::sign(v(version), NOW, &key));
         let r = updater::run(Mode::Request, &sys, &env.paths, &env.sources);
         assert!(
             matches!(r, Err(UpdateError::Refused(_))),
@@ -1401,9 +1414,9 @@ fn request_must_be_a_regular_file() {
     assert!(matches!(r, Err(UpdateError::Ignored(_))), "{r:?}");
     assert!(!env.paths.request.exists());
 
-    let key = request_key(&env.secrets);
+    let key = env.key;
     let elsewhere = env._tmp.0.join("ailleurs.json");
-    let req = UpdateRequest::sign(v("v0.2.0"), NOW, &*key);
+    let req = UpdateRequest::sign(v("v0.2.0"), NOW, &key);
     std::fs::write(&elsewhere, req.to_json()).unwrap();
     std::os::unix::fs::symlink(&elsewhere, &env.paths.request).unwrap();
     let r = updater::run(Mode::Request, &*sys, &env.paths, &env.sources);
@@ -1917,4 +1930,162 @@ fn archive_without_a_required_unit_is_refused() {
         "{r:?}"
     );
     env.assert_untouched();
+}
+
+/// Cle des demandes : le fichier `update-hmac.key`, jamais l'identite age.
+/// Un `age.key` illisible (contenu et droits invalides) ne change rien.
+#[test]
+fn hmac_key_file_used_not_age() {
+    let env = env();
+    let age_key = env.paths.config_dir.join("age.key");
+    std::fs::write(&age_key, b"pas une identite age\n").unwrap();
+    let sys = Mock::new(&env, true);
+
+    // Signee avec une autre cle : ignoree.
+    env.write_request(&UpdateRequest::sign(v("v0.2.0"), NOW, &[3u8; 32]));
+    let r = updater::run(Mode::Request, &sys, &env.paths, &env.sources);
+    assert!(matches!(r, Err(UpdateError::Ignored(_))), "{r:?}");
+    env.assert_untouched();
+
+    // Signee avec update-hmac.key : acceptee, age.key jamais lu ni modifie.
+    env.write_request(&UpdateRequest::sign(v("v0.2.0"), NOW, &env.key));
+    let r = updater::run(Mode::Request, &sys, &env.paths, &env.sources);
+    assert_eq!(
+        r.unwrap(),
+        Outcome::Updated {
+            from: v("v0.1.0"),
+            to: v("v0.2.0")
+        }
+    );
+    assert_eq!(std::fs::read(&age_key).unwrap(), b"pas une identite age\n");
+
+    // Sans age.key du tout : meme chose (l'updater n'en depend plus).
+    let env = self::env();
+    let sys = Mock::new(&env, true);
+    assert!(!env.paths.config_dir.join("age.key").exists());
+    env.write_request(&UpdateRequest::sign(v("v0.2.0"), NOW, &env.key));
+    let r = updater::run(Mode::Request, &sys, &env.paths, &env.sources);
+    assert!(matches!(r, Ok(Outcome::Updated { .. })), "{r:?}");
+
+    // Ni le code de l'updater ni la CLI n'ouvrent l'identite age.
+    for (name, src) in [
+        ("updater.rs", include_str!("../src/updater.rs")),
+        ("main.rs", include_str!("../src/main.rs")),
+    ] {
+        assert!(!src.contains("SecretBox"), "{name} : SecretBox");
+        assert!(!src.contains("join(\"age.key\")"), "{name} : age.key");
+    }
+}
+
+/// Cle absente (installation anterieure) : creee par l'updater, meme sans
+/// demande ; une demande signee avec elle passe ensuite.
+#[test]
+fn missing_hmac_key_created_by_updater() {
+    let env = env();
+    let path = env.paths.config_dir.join(KEY_FILE);
+    std::fs::remove_file(&path).unwrap();
+    #[cfg(unix)]
+    let gid = {
+        use std::os::unix::fs::MetadataExt;
+        let gid = std::fs::metadata(&env.paths.config_dir).unwrap().gid();
+        std::fs::create_dir_all(env._tmp.0.join("etc")).unwrap();
+        std::fs::write(
+            env._tmp.0.join("etc/group"),
+            format!("root:x:0:\nciphera:x:{gid}:\n"),
+        )
+        .unwrap();
+        gid
+    };
+    let sys = Mock::new(&env, true);
+
+    let r = updater::run(Mode::Request, &sys, &env.paths, &env.sources);
+    assert_eq!(r.unwrap(), Outcome::NoRequest);
+    let key = std::fs::read(&path).unwrap();
+    assert_eq!(key.len(), 32);
+    assert_ne!(key, env.key);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.mode() & 0o7777, 0o640, "root:ciphera 0640");
+        assert_eq!(meta.gid(), gid);
+    }
+
+    // Jamais remplacee ensuite ; une demande signee avec elle passe.
+    let key: [u8; 32] = key.try_into().unwrap();
+    env.write_request(&UpdateRequest::sign(v("v0.2.0"), NOW, &key));
+    let r = updater::run(Mode::Request, &sys, &env.paths, &env.sources);
+    assert!(matches!(r, Ok(Outcome::Updated { .. })), "{r:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), key);
+
+    // Cle illisible (mauvaise taille) : jamais remplacee, demande refusee.
+    std::fs::write(&path, b"courte").unwrap();
+    env.write_request(&UpdateRequest::sign(v("v0.2.0"), NOW, &key));
+    let r = updater::run(Mode::Request, &sys, &env.paths, &env.sources);
+    assert!(matches!(r, Err(UpdateError::Io(_))), "{r:?}");
+    assert!(!env.paths.request.exists(), "demande consommee");
+    assert_eq!(std::fs::read(&path).unwrap(), b"courte");
+}
+
+/// Telechargements bornes : metadonnees a 1 Mio, archives a 512 Mio ; un
+/// fichier au-dela est abandonne avant toute modification.
+#[test]
+fn oversized_metadata_download_aborts() {
+    let env = env();
+    let sys = Mock::new(&env, true);
+    let r = updater::run(manual("v0.2.0"), &sys, &env.paths, &env.sources);
+    assert!(matches!(r, Ok(Outcome::Updated { .. })), "{r:?}");
+    let limits = sys.limits.lock().unwrap().clone();
+    assert_eq!(limits.len(), 6, "{limits:?}");
+    for (url, limit) in &limits {
+        let expected = if url.contains("/SHA256SUMS") {
+            updater::METADATA_LIMIT
+        } else {
+            updater::ARCHIVE_LIMIT
+        };
+        assert_eq!(*limit, expected, "{url}");
+    }
+    assert_eq!(updater::METADATA_LIMIT.max_bytes, 1024 * 1024);
+    assert_eq!(updater::ARCHIVE_LIMIT.max_bytes, 512 * 1024 * 1024);
+    assert!(updater::METADATA_LIMIT.max_time <= Duration::from_secs(5 * 60));
+    assert!(updater::ARCHIVE_LIMIT.max_time <= Duration::from_secs(15 * 60));
+
+    let env = self::env();
+    let sys = Mock::new(&env, true);
+    let sums = format!("{BASE}/releases/v0.2.0/SHA256SUMS");
+    sys.files
+        .lock()
+        .unwrap()
+        .insert(sums, vec![b'a'; 1024 * 1024 + 1]);
+    let r = updater::run(manual("v0.2.0"), &sys, &env.paths, &env.sources);
+    match r {
+        Err(UpdateError::Verification(m)) => assert!(m.contains("taille maximale"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(sys.count("pg_dump"), 0);
+    assert!(env.backups().is_empty());
+    env.assert_untouched();
+}
+
+/// Retour arriere incomplet (un fichier ne peut pas etre remis) : la
+/// sauvegarde decompressee `restore.sql` est quand meme effacee, le journal
+/// garde pour la prochaine execution.
+#[test]
+fn restore_sql_removed_after_partial_rollback() {
+    let env = env();
+    let sys = Mock {
+        block_restore_of: Some(env.paths.bin_dir.join("ciphera-proxy")),
+        ..Mock::new(&env, false)
+    };
+    let r = updater::run(manual("v0.2.0"), &sys, &env.paths, &env.sources);
+    match r {
+        Err(UpdateError::Io(m)) => assert!(m.contains("incomplet"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(env.journal().exists(), "journal garde");
+    assert_eq!(sys.count("restore_db"), 0, "base non restauree");
+    assert!(
+        !env.paths.state_dir.join("restore.sql").exists(),
+        "restore.sql laisse sur disque"
+    );
 }

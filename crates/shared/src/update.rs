@@ -1,22 +1,28 @@
 //! Demande de mise a jour de Ciphera, deposee par le plan de controle
 //! (`POST /api/system/update`) et lue par l'updater (`ciphera-cli updater`,
-//! root) : `<data_dir>/update-request.json`, signee par HMAC-SHA256 avec une
-//! cle derivee de l'identite age de l'instance (`age.key`).
+//! root) : `<data_dir>/update-request.json`, signee par HMAC-SHA256 avec la
+//! cle propre aux demandes, `/etc/ciphera/update-hmac.key` ([`KEY_FILE`]) :
+//! 32 octets aleatoires, `root:ciphera 0640`, crees par `ciphera init` ou, si
+//! elle manque, par l'updater ([`ensure_key`]). Le plan de controle la lit
+//! pour signer, l'updater pour verifier ; l'updater ne lit jamais l'identite
+//! age de l'instance (`age.key`).
 //!
-//! Le HMAC prouve que la demande vient d'un detenteur de la cle d'instance,
-//! pas qu'elle est sans danger : un processus `ciphera` compromis la detient.
+//! Le HMAC prouve que la demande vient d'un detenteur de cette cle, pas
+//! qu'elle est sans danger : un processus `ciphera` compromis la detient.
 //! L'updater refuse donc toute version inferieure ou egale a la version
 //! installee (seul `--allow-downgrade`, lance par root, l'autorise) et ne
 //! fait confiance qu'aux releases signees minisign.
 
 use std::fmt;
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::path::Path;
 use std::str::FromStr;
 
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-
-use crate::secretbox::SecretBox;
+use zeroize::Zeroizing;
 
 /// Dossier des demandes, surveille par `ciphera-updater.path` : le dossier
 /// de donnees par defaut du plan de controle (`CIPHERA_DATA_DIR`). Avec un
@@ -31,8 +37,14 @@ pub const MAX_REQUEST_BYTES: u64 = 4096;
 pub const MAX_AGE_SECS: u64 = 15 * 60;
 /// Avance d'horloge toleree sur `requested_at` (secondes).
 pub const MAX_SKEW_SECS: u64 = 5 * 60;
-/// Usage de la cle derivee de l'identite de l'instance.
-const KEY_LABEL: &[u8] = b"ciphera/update-request/v1";
+/// Cle HMAC des demandes, dans le dossier de configuration de l'instance
+/// (`/etc/ciphera`).
+pub const KEY_FILE: &str = "update-hmac.key";
+/// Taille de la cle : octets aleatoires bruts, rien d'autre dans le fichier.
+pub const KEY_BYTES: usize = 32;
+/// Droits de la cle : lue par root (updater) et par le groupe du service
+/// (plan de controle), modifiable par root seul.
+pub const KEY_MODE: u32 = 0o640;
 
 /// Version `vX.Y.Z` d'une release (meme forme que `install.sh --version`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -128,9 +140,151 @@ impl fmt::Display for RequestError {
 
 impl std::error::Error for RequestError {}
 
-/// Cle HMAC des demandes, derivee de l'identite de l'instance.
-pub fn request_key(secrets: &SecretBox) -> zeroize::Zeroizing<[u8; 32]> {
-    secrets.derive_key(KEY_LABEL)
+/// Cle HMAC des demandes, effacee de la memoire a sa destruction.
+pub type RequestKey = Zeroizing<[u8; KEY_BYTES]>;
+
+#[derive(Debug)]
+pub enum KeyError {
+    /// Fichier absent.
+    Missing,
+    /// Fichier present mais refuse (lien, droits, proprietaire, taille).
+    Refused(&'static str),
+    /// Lecture, creation ou generateur aleatoire en echec.
+    Io(io::Error),
+}
+
+impl fmt::Display for KeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing => f.write_str("cle des demandes de mise a jour absente"),
+            Self::Refused(why) => write!(f, "cle des demandes de mise a jour refusee : {why}"),
+            Self::Io(e) => write!(f, "cle des demandes de mise a jour illisible : {e}"),
+        }
+    }
+}
+
+impl std::error::Error for KeyError {}
+
+/// Ouvre sans suivre de lien symbolique ni bloquer sur un tube nomme.
+fn open_key(path: &Path) -> io::Result<File> {
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
+        opts.custom_flags(flags.bits() as i32);
+    }
+    opts.open(path)
+}
+
+/// Controles sur le descripteur ouvert (`fstat`) : fichier ordinaire a un
+/// seul lien, exactement [`KEY_BYTES`] octets, proprietaire accepte par
+/// [`key_owner_ok`], ni ecriture par le groupe ni acces pour les autres.
+fn check_key_file(file: &File) -> Result<(), KeyError> {
+    let meta = file.metadata().map_err(KeyError::Io)?;
+    if !meta.is_file() {
+        return Err(KeyError::Refused("fichier ordinaire attendu"));
+    }
+    if meta.len() != KEY_BYTES as u64 {
+        return Err(KeyError::Refused("32 octets attendus"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.nlink() != 1 {
+            return Err(KeyError::Refused("lien dur refuse"));
+        }
+        if !key_owner_ok(meta.uid(), rustix::process::geteuid().as_raw()) {
+            return Err(KeyError::Refused("proprietaire inattendu (root attendu)"));
+        }
+        if meta.mode() & 0o7037 != 0 {
+            return Err(KeyError::Refused(
+                "droits trop larges (root:ciphera 0640 attendu)",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Proprietaire accepte : root, ou l'utilisateur courant (tests, instance
+/// lancee sans root). Pour root (updater), root seulement.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn key_owner_ok(owner_uid: u32, euid: u32) -> bool {
+    owner_uid == 0 || owner_uid == euid
+}
+
+/// Lit la cle des demandes (`<config_dir>/update-hmac.key`) sans suivre de
+/// lien, apres les controles de [`check_key_file`].
+pub fn load_key(path: &Path) -> Result<RequestKey, KeyError> {
+    let mut file = match open_key(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(KeyError::Missing),
+        Err(e) => return Err(KeyError::Io(e)),
+    };
+    check_key_file(&file)?;
+    let mut key = Zeroizing::new([0u8; KEY_BYTES]);
+    file.read_exact(&mut key[..]).map_err(KeyError::Io)?;
+    Ok(key)
+}
+
+/// Cle des demandes, creee si elle manque : [`KEY_BYTES`] octets
+/// aleatoires dans un fichier cree en 0600 (`O_EXCL` : jamais ecrase ;
+/// `O_NOFOLLOW` : aucun lien suivi), puis, avec `group`, donne a ce groupe
+/// en [`KEY_MODE`] par son descripteur (`fchown`, `fchmod`) ; sans `group`,
+/// il reste en 0600. Renvoie la cle et `true` si elle vient d'etre creee.
+/// Un fichier deja present est lu par [`load_key`], jamais remplace.
+pub fn ensure_key(path: &Path, group: Option<u32>) -> Result<(RequestKey, bool), KeyError> {
+    match load_key(path) {
+        Err(KeyError::Missing) => {}
+        other => return other.map(|k| (k, false)),
+    }
+    let mut key = Zeroizing::new([0u8; KEY_BYTES]);
+    getrandom::fill(&mut key[..])
+        .map_err(|_| KeyError::Io(io::Error::other("generateur aleatoire indisponible")))?;
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let mut file = match opts.open(path) {
+        Ok(f) => f,
+        // Creee entre-temps par un autre processus : c'est celle-la.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            return load_key(path).map(|k| (k, false));
+        }
+        Err(e) => return Err(KeyError::Io(e)),
+    };
+    let written = file
+        .write_all(&key[..])
+        .and_then(|()| share_key(&file, group))
+        .and_then(|()| file.sync_all());
+    if let Err(e) = written {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(KeyError::Io(e));
+    }
+    Ok((key, true))
+}
+
+/// Groupe `group` et droits [`KEY_MODE`] (0600 sans groupe), par le
+/// descripteur ouvert.
+#[cfg(unix)]
+fn share_key(file: &File, group: Option<u32>) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(gid) = group else {
+        return file.set_permissions(fs::Permissions::from_mode(0o600));
+    };
+    std::os::unix::fs::fchown(file, None, Some(gid))?;
+    file.set_permissions(fs::Permissions::from_mode(KEY_MODE))
+}
+
+#[cfg(not(unix))]
+fn share_key(_file: &File, _group: Option<u32>) -> io::Result<()> {
+    Ok(())
 }
 
 fn mac(key: &[u8], version: &str, requested_at: u64) -> Hmac<Sha256> {
@@ -256,11 +410,120 @@ mod tests {
         assert_eq!(REQUEST_DIR, crate::config::Config::DEFAULT_DATA_DIR);
     }
 
+    /// Dossier temporaire supprime a la fin du test.
+    struct Tmp(std::path::PathBuf);
+
+    impl Tmp {
+        fn new(tag: &str) -> Tmp {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "ciphera-update-key-{tag}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Tmp(dir)
+        }
+    }
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
-    fn request_key_depends_on_the_instance_identity() {
-        let a = SecretBox::from_identity(age::x25519::Identity::generate());
-        let b = SecretBox::from_identity(age::x25519::Identity::generate());
-        assert_eq!(*request_key(&a), *request_key(&a));
-        assert_ne!(*request_key(&a), *request_key(&b));
+    fn missing_key_is_created_once_then_reused() {
+        let tmp = Tmp::new("create");
+        let path = tmp.0.join(KEY_FILE);
+        assert!(matches!(load_key(&path), Err(KeyError::Missing)));
+        let (key, created) = ensure_key(&path, None).unwrap();
+        assert!(created);
+        assert_eq!(fs::read(&path).unwrap(), key[..]);
+        assert_ne!(*key, [0u8; KEY_BYTES], "cle aleatoire");
+        // Deja presente : lue, jamais remplacee.
+        let (again, created) = ensure_key(&path, None).unwrap();
+        assert!(!created);
+        assert_eq!(*again, *key);
+        assert_eq!(*load_key(&path).unwrap(), *key);
+        // Une autre instance a une autre cle.
+        let other = tmp.0.join("autre.key");
+        assert_ne!(*ensure_key(&other, None).unwrap().0, *key);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+            assert_eq!(mode, 0o600, "sans groupe : 0600");
+        }
+    }
+
+    #[test]
+    fn key_of_the_wrong_size_is_refused_and_kept() {
+        let tmp = Tmp::new("size");
+        let path = tmp.0.join(KEY_FILE);
+        for bad in [&b""[..], &[1u8; 31][..], &[1u8; 33][..]] {
+            fs::write(&path, bad).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            assert!(matches!(load_key(&path), Err(KeyError::Refused(_))));
+            assert!(matches!(ensure_key(&path, None), Err(KeyError::Refused(_))));
+            assert_eq!(fs::read(&path).unwrap(), bad, "jamais remplacee");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn key_rights_are_checked_and_group_is_set_by_descriptor() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let tmp = Tmp::new("rights");
+        let path = tmp.0.join(KEY_FILE);
+        // Groupe donne (le sien : possible sans root) : 0640.
+        let gid = rustix::process::getegid().as_raw();
+        let (key, created) = ensure_key(&path, Some(gid)).unwrap();
+        assert!(created);
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o7777, KEY_MODE);
+        assert_eq!(meta.gid(), gid);
+        assert_eq!(*load_key(&path).unwrap(), *key);
+        // Ecriture par le groupe, acces pour les autres, bits speciaux :
+        // refuses.
+        for mode in [0o660, 0o644, 0o604, 0o650, 0o4640] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(
+                matches!(load_key(&path), Err(KeyError::Refused(_))),
+                "{mode:o}"
+            );
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        // Lien symbolique ou lien dur : refuses.
+        let link = tmp.0.join("lien.key");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(load_key(&link).is_err());
+        assert!(ensure_key(&link, None).is_err());
+        let hard = tmp.0.join("dur.key");
+        fs::hard_link(&path, &hard).unwrap();
+        assert!(matches!(load_key(&path), Err(KeyError::Refused(_))));
+        fs::remove_file(&hard).unwrap();
+        assert!(load_key(&path).is_ok());
+        // Lien casse a la place de la cle : jamais suivi pour creer.
+        let dangling = tmp.0.join("casse.key");
+        std::os::unix::fs::symlink(tmp.0.join("cible"), &dangling).unwrap();
+        assert!(ensure_key(&dangling, None).is_err());
+        assert!(!tmp.0.join("cible").exists());
+    }
+
+    #[test]
+    fn key_owner_rules() {
+        assert!(key_owner_ok(0, 0));
+        assert!(key_owner_ok(0, 1000));
+        assert!(key_owner_ok(1000, 1000));
+        // L'updater (root) refuse une cle d'un autre compte.
+        assert!(!key_owner_ok(1000, 0));
+        assert!(!key_owner_ok(1001, 1000));
     }
 }
