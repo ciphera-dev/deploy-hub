@@ -497,3 +497,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 23:31 — Session v0.1-sdd — claude-code (orchestrateur) — Task readme : README refait, code de conduite, remerciements
 - fait : README sur le modèle de Dokploy/Coolify, CODE_OF_CONDUCT.md, docs/operations/installation.md et builds.md, remerciements Kimi et Claude Code (exception AGENTS.md) ; H11-2 nettoyé en local
 - résultat : Relu par l'orchestrateur ; ai-traces strict sans signalement
+
+## 2026-11-27 00:33 — Session v0.1-sdd — claude-code (orchestrateur) — Task R58 : Affichage soigné de l'installeur
+- fait : Logo bleu, 5 étapes animées, journal sûr /var/log/ciphera/install.log, sortie simple hors terminal
+- résultat : Relecture approuvée après 2 tours
