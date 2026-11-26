@@ -173,7 +173,8 @@ test("parcours complet : setup, TOTP, GitHub, déploiement, HTTPS, rollback", as
     await page.getByLabel("Mot de passe", { exact: true }).fill(ADMIN.password);
     await page.getByRole("button", { name: "Se connecter" }).click();
     await expect(page.getByLabel("Chiffre 1")).toBeVisible();
-    const { code } = await freshCode(totpSecret, lastStep);
+    const { code, step } = await freshCode(totpSecret, lastStep);
+    lastStep = step;
     for (const [i, digit] of [...code].entries()) await page.getByLabel(`Chiffre ${i + 1}`).fill(digit);
     await expect(nav).toBeVisible({ timeout: MINUTE });
   });
@@ -184,7 +185,14 @@ test("parcours complet : setup, TOTP, GitHub, déploiement, HTTPS, rollback", as
     const dialog = page.getByRole("dialog", { name: "Inviter un membre" });
     await dialog.getByLabel("E-mail").fill("lecteur@ciphera-e2e.org");
     await dialog.getByRole("radio", { name: "Lecteur" }).click();
-    await dialog.getByRole("button", { name: "Envoyer l'invitation" }).click();
+    // Creer une invitation exige un step-up : mot de passe et code TOTP frais (jamais reutilise).
+    await dialog.getByLabel("Votre mot de passe").fill(ADMIN.password);
+    const stepUp = await freshCode(totpSecret, lastStep);
+    lastStep = stepUp.step;
+    await dialog.getByLabel("Code de vérification (application ou code de secours)").fill(stepUp.code);
+    const send = dialog.getByRole("button", { name: "Envoyer l'invitation" });
+    await expect(send).toBeEnabled({ timeout: 15_000 });
+    await send.click();
     const link = page.getByRole("dialog", { name: "Invitation créée" });
     await expect(link.getByLabel("Lien", { exact: true })).toContainText("/invite/");
     // Le lien s'ouvre sur la page d'invitation, puis perd son jeton sans quitter la page.
