@@ -20,7 +20,7 @@ const GROUPS: [string, [EventKey, IconName, string, string][]][] = [
     ],
   ],
   ["Infrastructure", [["certificates", "Globe", "Certificats", "Expiration et renouvellement"]]],
-  ["Organisation", [["team", "Users", "Équipe", "Invitations, changements de rôle"]]],
+  ["Organisation", [["team", "Users", "Équipe", "Invitations, changements de rôle ; les avis de sécurité aux propriétaires partent toujours"]]],
 ];
 const EVENTS = GROUPS.flatMap(([, rows]) => rows.map(([key]) => key));
 

@@ -60,6 +60,11 @@ function mount() {
 
 const type = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 const save = () => fireEvent.click(screen.getByRole("button", { name: "Enregistrer" }));
+/** Confirmation renforcee : mot de passe du compte saisi dans la fenetre, puis « Confirmer ». */
+async function confirm(password = "mot-de-passe-du-compte") {
+  fireEvent.change(await screen.findByLabelText("Votre mot de passe"), { target: { value: password } });
+  fireEvent.click(screen.getByRole("button", { name: "Confirmer" }));
+}
 
 it("mot de passe en ecriture seule : jamais affiche, conserve si le champ reste vide", async () => {
   mount();
@@ -70,6 +75,7 @@ it("mot de passe en ecriture seule : jamais affiche, conserve si le champ reste 
 
   type("Serveur SMTP", "mail.example.org");
   save();
+  await confirm();
   await waitFor(() => expect(putBodies).toHaveLength(1));
   expect(putBodies[0]).not.toHaveProperty("password");
   expect(putBodies[0]).toMatchObject({ host: "mail.example.org", port: 587, tls: "starttls", enabled: true });
@@ -83,6 +89,7 @@ it("nouveau mot de passe et SSL/TLS : envoyes, le champ est vide ensuite", async
   expect(screen.getByLabelText("Port")).toHaveValue("465");
   type("Mot de passe SMTP", "nouveau-test-secret");
   save();
+  await confirm();
   await waitFor(() => expect(putBodies).toHaveLength(1));
   expect(putBodies[0]).toMatchObject({ tls: "tls", port: 465, password: "nouveau-test-secret" });
   await waitFor(() => expect(screen.getByLabelText("Mot de passe SMTP")).toHaveValue(""));
@@ -100,7 +107,40 @@ it("refus du serveur : message affiche", async () => {
   mount();
   await screen.findByLabelText("Serveur SMTP");
   save();
+  await confirm();
   expect(await screen.findByRole("alert")).toHaveTextContent("Serveur SMTP : nom d'hôte invalide.");
+});
+
+it("enregistrement confirme par le mot de passe du compte, envoye avec les reglages", async () => {
+  mount();
+  await screen.findByLabelText("Serveur SMTP");
+  save();
+  expect(await screen.findByRole("dialog")).toHaveTextContent("Confirmer les réglages SMTP");
+  expect(putBodies).toHaveLength(0);
+  expect(screen.getByRole("button", { name: "Confirmer" })).toBeDisabled();
+  await confirm("compte-test");
+  await waitFor(() => expect(putBodies).toHaveLength(1));
+  expect(putBodies[0]).toMatchObject({ host: "smtp.example.com", current_password: "compte-test" });
+  expect(putBodies[0]).not.toHaveProperty("code");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+it("second facteur demande par le serveur : champ du code ajoute, rien n'est enregistre", async () => {
+  putReply = () => HttpResponse.json({ error: { code: "second_factor_required", message: "Saisissez le code de votre second facteur." } }, { status: 401 });
+  mount();
+  await screen.findByLabelText("Serveur SMTP");
+  save();
+  await confirm();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Saisissez le code de votre second facteur.");
+  expect(screen.getByLabelText("Code de vérification (application ou code de secours)")).toBeInTheDocument();
+  expect(screen.getByLabelText("Votre mot de passe")).toHaveValue("");
+  putReply = null;
+  fireEvent.change(screen.getByLabelText("Votre mot de passe"), { target: { value: "compte-test" } });
+  fireEvent.change(screen.getByLabelText("Code de vérification (application ou code de secours)"), { target: { value: "123456" } });
+  fireEvent.click(screen.getByRole("button", { name: "Confirmer" }));
+  await waitFor(() => expect(putBodies).toHaveLength(2));
+  expect(putBodies[1]).toMatchObject({ current_password: "compte-test", code: "123456" });
+  expect(await screen.findByText("Paramètres enregistrés")).toBeInTheDocument();
 });
 
 it("lecture refusee : etat d'acces refuse, pas de chargement sans fin", async () => {

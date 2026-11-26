@@ -69,21 +69,16 @@ export async function fetchNotifications(): Promise<NotificationSettings> {
   return unwrap(await api.GET("/api/settings/notifications"));
 }
 
-export type SaveResult = { ok: true; settings: NotificationSettings } | { ok: false; message: string };
+/** Reglages SMTP sans la confirmation renforcee (ajoutee par [`saveNotifications`]). */
+export type SmtpUpdate = Omit<NotificationUpdate, "current_password" | "code">;
 
-/** Enregistre les reglages ; sans `password`, le mot de passe enregistre est conserve. */
-export async function saveNotifications(body: NotificationUpdate): Promise<SaveResult> {
-  let result;
-  try {
-    result = await api.PUT("/api/settings/notifications", { body });
-  } catch {
-    return { ok: false, message: "Serveur injoignable. Réessayez." };
-  }
-  if (result.data) return { ok: true, settings: result.data };
-  const message = (result.error as { error?: { message?: unknown } } | undefined)?.error?.message;
-  if (result.response.status === 422 && typeof message === "string") return { ok: false, message };
-  if (result.response.status === 403) return { ok: false, message: "Accès refusé : réservé aux administrateurs." };
-  return { ok: false, message: "Enregistrement impossible pour le moment. Réessayez." };
+/**
+ * Enregistre les reglages (proprietaire, confirmation renforcee : mot de passe du compte et code du
+ * second facteur s'il en a un) ; sans `password`, le mot de passe SMTP enregistre est conserve.
+ */
+export function saveNotifications(body: SmtpUpdate, stepUp: StepUp): Promise<Result<NotificationSettings>> {
+  const confirm = { current_password: stepUp.password, ...(stepUp.code ? { code: stepUp.code } : {}) };
+  return settle(() => api.PUT("/api/settings/notifications", { body: { ...body, ...confirm } }));
 }
 
 export async function fetchGeneral(): Promise<GeneralSettings> {

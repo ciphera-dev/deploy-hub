@@ -5,7 +5,8 @@ import { Button, Icon, Switch, useToast } from "@/design-system";
 import { FormError } from "@/features/auth/ui";
 import { ApiError } from "@/lib/api/errors";
 
-import { fetchNotifications, NOTIFICATIONS_QUERY_KEY, saveNotifications, type NotificationSettings, type NotificationUpdate } from "../api";
+import { fetchNotifications, NOTIFICATIONS_QUERY_KEY, saveNotifications, type NotificationSettings, type NotificationUpdate, type SmtpUpdate } from "../api";
+import { StepUpModal } from "../StepUpModal";
 import { Card, Input, Row, SECTION_FORM_ID } from "../ui";
 
 /** Chiffrement (selecteur de Connectors.jsx, carte SMTP) : STARTTLS ou SSL/TLS, jamais en clair. */
@@ -56,21 +57,20 @@ function SmtpForm({ initial, readOnly }: { initial: NotificationSettings; readOn
   const { flash } = useToast();
   const [saved, setSaved] = useState(initial);
   const [s, setDraft] = useState(() => draftOf(initial));
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [pending, setPending] = useState<SmtpUpdate | null>(null);
   const u = <K extends keyof Draft>(k: K, v: Draft[K]) => {
     setDraft((x) => ({ ...x, [k]: v }));
-    setErr("");
   };
 
   const port = Number(s.port);
   const valid = s.host.trim() !== "" && /^\d{1,5}$/.test(s.port) && port >= 1 && port <= 65535 && s.from_address.trim() !== "" && s.from_name.trim() !== "";
 
-  const submit = async (e: FormEvent) => {
+  // Enregistrement confirme par le step-up (mot de passe du compte, code du second facteur) : ces
+  // reglages decident si les avis de securite aux proprietaires partent.
+  const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (readOnly || !valid || busy) return;
-    setBusy(true);
-    const body: NotificationUpdate = {
+    if (readOnly || !valid || pending) return;
+    setPending({
       enabled: s.enabled,
       host: s.host.trim(),
       port,
@@ -80,16 +80,13 @@ function SmtpForm({ initial, readOnly }: { initial: NotificationSettings; readOn
       from_name: s.from_name.trim(),
       // Champ vide : le mot de passe enregistre est conserve.
       ...(s.password ? { password: s.password } : {}),
-    };
-    const result = await saveNotifications(body);
-    setBusy(false);
-    if (!result.ok) {
-      setErr(result.message);
-      return;
-    }
-    setSaved(result.settings);
+    });
+  };
+  const done = (settings: NotificationSettings) => {
+    setPending(null);
+    setSaved(settings);
     setDraft((x) => ({ ...x, password: "" }));
-    queryClient.setQueryData(NOTIFICATIONS_QUERY_KEY, result.settings);
+    queryClient.setQueryData(NOTIFICATIONS_QUERY_KEY, settings);
     flash("Paramètres enregistrés");
   };
 
@@ -100,7 +97,7 @@ function SmtpForm({ initial, readOnly }: { initial: NotificationSettings; readOn
       : ["Info", "var(--text-muted)", <>Aucun e-mail n'est envoyé : activez l'envoi et enregistrez un serveur SMTP. Les invitations et réinitialisations restent possibles par lien à copier.</>];
 
   return (
-    <form id={SECTION_FORM_ID} onSubmit={(e) => void submit(e)} noValidate style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <form id={SECTION_FORM_ID} onSubmit={submit} noValidate style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Card title="Notifications" desc="Où l'équipe est prévenue des événements importants.">
         <Row t="E-mail" d="Invitations d'équipe et liens de réinitialisation du mot de passe." first>
           <Switch checked={s.enabled} onChange={(v) => u("enabled", v)} disabled={readOnly} ariaLabel="Envoi des e-mails" />
@@ -142,7 +139,17 @@ function SmtpForm({ initial, readOnly }: { initial: NotificationSettings; readOn
         </Row>
       </Card>
 
-      {err && <FormError>{err}</FormError>}
+      {pending && (
+        <StepUpModal
+          title="Confirmer les réglages SMTP"
+          description="Ces réglages décident si les avis de sécurité partent. Confirmez avec votre mot de passe."
+          action="Confirmer"
+          icon="Check"
+          run={(stepUp) => saveNotifications(pending, stepUp)}
+          onClose={() => setPending(null)}
+          onDone={done}
+        />
+      )}
       {readOnly ? (
         <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, font: "400 12px/1.4 var(--font-sans)", color: "var(--text-muted)" }}>
           <Icon name="Lock" size={13} />
@@ -150,7 +157,7 @@ function SmtpForm({ initial, readOnly }: { initial: NotificationSettings; readOn
         </div>
       ) : (
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <Button type="submit" variant="inverse" icon={busy ? "Loader" : undefined} disabled={!valid || busy} aria-busy={busy || undefined}>
+          <Button type="submit" variant="inverse" disabled={!valid || !!pending}>
             Enregistrer
           </Button>
         </div>

@@ -3,7 +3,6 @@ import { useState, type CSSProperties } from "react";
 
 import { Avatar, Badge, Button, CopyButton, Icon, Menu, Modal, TextField, useToast, type IconName, type MenuItem } from "@/design-system";
 import { fetchMe, ME_QUERY_KEY, MFA_PENDING } from "@/features/auth/api";
-import { asksForCode, hasSecondFactor } from "@/features/auth/step-up";
 import { FormError } from "@/features/auth/ui";
 
 import {
@@ -17,13 +16,11 @@ import {
   resetMemberMfa,
   TEAM_INVITATIONS_QUERY_KEY,
   TEAM_MEMBERS_QUERY_KEY,
-  type Failure,
   type PendingInvitation,
-  type Result,
-  type StepUp,
   type TeamMember,
   type TeamRole,
 } from "../api";
+import { StepUpModal, useStepUp } from "../StepUpModal";
 import { SectionState } from "../ui";
 
 // Team.jsx#MembersTab : memes cartes, memes colonnes (sans « Projets », que l'API ne porte pas encore).
@@ -107,72 +104,6 @@ const plural = (n: number, one: string, many: string) => `${n} ${n > 1 ? many : 
 
 /** Le serveur peut repondre par un chemin (`/invite/<jeton>`) : le lien affiche est absolu. */
 const absolute = (link: string) => (link.startsWith("/") ? window.location.origin + link : link);
-
-/**
- * Confirmation renforcee (features/auth/step-up, comme la suppression de l'organisation et les
- * deploy hooks) : mot de passe de l'auteur, plus le code de son second facteur s'il en a un ou si
- * le serveur le demande. Champs vides apres un refus.
- */
-function useStepUp() {
-  const client = useQueryClient();
-  const [password, setPassword] = useState("");
-  const [code, setCode] = useState("");
-  const [needsCode, setNeedsCode] = useState(() => hasSecondFactor(client));
-  const trimmed = code.trim();
-  return {
-    ready: !!password && (!needsCode || !!trimmed),
-    value: (): StepUp => (needsCode && trimmed ? { password, code: trimmed } : { password }),
-    refused: (failure: Failure) => {
-      setPassword("");
-      setCode("");
-      if (asksForCode(failure.code)) setNeedsCode(true);
-    },
-    fields: (onEdit: () => void) => (
-      <>
-        <TextField label="Votre mot de passe" type="password" autoComplete="current-password" value={password} onChange={(v) => { setPassword(v); onEdit(); }} />
-        {needsCode && <TextField label="Code de vérification (application ou code de secours)" autoComplete="one-time-code" value={code} onChange={(v) => { setCode(v); onEdit(); }} />}
-      </>
-    ),
-  };
-}
-
-/** Action d'equipe privilegiee confirmee par le step-up ; `onDone` recoit la reponse du serveur. */
-function StepUpModal<T>({ title, description, action, icon, run, onClose, onDone }: { title: string; description: string; action: string; icon: IconName; run: (stepUp: StepUp) => Promise<Result<T>>; onClose: () => void; onDone: (data: T) => void }) {
-  const stepUp = useStepUp();
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const go = async () => {
-    if (!stepUp.ready || busy) return;
-    setBusy(true);
-    const result = await run(stepUp.value());
-    setBusy(false);
-    if (!result.ok) {
-      setErr(result.message);
-      stepUp.refused(result);
-      return;
-    }
-    onDone(result.data);
-  };
-  return (
-    <Modal
-      title={title}
-      description={description}
-      width={460}
-      onClose={onClose}
-      footer={
-        <>
-          <Button onClick={onClose}>Annuler</Button>
-          <Button variant="inverse" icon={busy ? "Loader" : icon} disabled={!stepUp.ready || busy} onClick={() => void go()}>
-            {action}
-          </Button>
-        </>
-      }
-    >
-      {stepUp.fields(() => setErr(""))}
-      {err && <FormError>{err}</FormError>}
-    </Modal>
-  );
-}
 
 /** Lien a copier : affiche une seule fois (le serveur ne le redonne jamais). */
 function LinkModal({ title, description, link, onClose }: { title: string; description: string; link: string; onClose: () => void }) {
