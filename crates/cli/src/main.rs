@@ -197,7 +197,9 @@ fn run_updater(mode: Mode) -> ExitCode {
             );
         }
         // Autorite de test pour curl : environnement de l'unite (root), en
-        // mode test seulement (comme les autres surcharges de Sources).
+        // mode test d'un build de test seulement (fonctionnalite
+        // `install-test`, comme les autres surcharges de Sources).
+        #[cfg(feature = "install-test")]
         let test_ca_bundle = (std::env::var("CIPHERA_INSTALL_TEST").as_deref() == Ok("1"))
             .then(|| std::env::var_os("CURL_CA_BUNDLE"))
             .flatten()
@@ -208,6 +210,7 @@ fn run_updater(mode: Mode) -> ExitCode {
             db_name: cfg.db_name,
             tmpfiles: paths.tmpfiles.clone(),
             health_url: format!("http://127.0.0.1:{}/api/health", cfg.panel_local_port),
+            #[cfg(feature = "install-test")]
             test_ca_bundle,
             cli: paths.bin_dir.join("ciphera-cli"),
             apparmor_profile: paths.apparmor_dir.join(updater::APPARMOR_PROFILE),

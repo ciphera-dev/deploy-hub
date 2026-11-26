@@ -108,6 +108,8 @@ jobs:
           "$RUNNER_TEMP/zig/bin/pip" install --require-hashes -r "$RUNNER_TEMP/zig-requirements.txt"
           echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
           cargo install cargo-zigbuild --locked --version 0.24.1
+      # Binaires livres : ciphera-cli sans la fonctionnalite install-test
+      # (aucun mode test), seuls binaires des archives signees et publiees.
       - name: Binaires musl statiques
         run: >-
           cargo zigbuild --release --locked
@@ -122,6 +124,33 @@ jobs:
           for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
             sh install/package.sh "$VERSION" "$t" "target/$t/release" dist
           done
+      # Bloquant : aucun binaire des archives a signer ne porte le mode test
+      # (ADR 0003). Sortie de strings dans un fichier : `strings | grep -q`
+      # avec pipefail echouerait sur SIGPIPE et masquerait une fuite.
+      - name: Aucun mode test dans les binaires livres (strings)
+        run: |
+          set -eu
+          check="$RUNNER_TEMP/shipped-check"
+          found=0
+          for a in dist/ciphera-*.tar.gz; do
+            rm -rf "$check"
+            mkdir -p "$check"
+            tar -xzf "$a" -C "$check"
+            n=0
+            for b in "$check"/*/bin/*; do
+              [ -f "$b" ] || continue
+              n=$((n + 1))
+              strings -a "$b" > "$check.strings"
+              if grep -E 'CIPHERA_INSTALL_TEST|CIPHERA_TEST_' "$check.strings"; then
+                echo "::error::$(basename "$a") : $(basename "$b") contient le mode test"
+                exit 1
+              fi
+            done
+            [ "$n" -eq 4 ] || { echo "::error::$(basename "$a") : 4 binaires attendus, $n verifies"; exit 1; }
+            found=$((found + 1))
+          done
+          [ "$found" -eq 2 ] || { echo "::error::2 archives attendues, $found verifiees"; exit 1; }
+          rm -rf "$check" "$check.strings"
       - name: Empreintes des archives
         id: sums
         run: |
@@ -135,6 +164,29 @@ jobs:
         with:
           name: archives
           path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+      # Variante de test de ciphera-cli (fonctionnalite install-test) pour
+      # install-e2e : artefact interne, hors des archives, jamais signe ni
+      # publie, absent de SHA256SUMS. Construite apres les archives (meme
+      # dossier cible).
+      - name: ciphera-cli de test (x86_64, jamais publie)
+        run: |
+          set -eu
+          cargo zigbuild --release --locked --target x86_64-unknown-linux-musl \
+            -p ciphera-cli --features install-test
+          mkdir -p "$RUNNER_TEMP/cli-test"
+          cp target/x86_64-unknown-linux-musl/release/ciphera-cli "$RUNNER_TEMP/cli-test/ciphera-cli"
+          strings -a "$RUNNER_TEMP/cli-test/ciphera-cli" > "$RUNNER_TEMP/cli-test.strings"
+          grep -q CIPHERA_INSTALL_TEST "$RUNNER_TEMP/cli-test.strings" || {
+            echo "::error::ciphera-cli de test sans mode test"
+            exit 1
+          }
+          rm -f "$RUNNER_TEMP/cli-test.strings"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ciphera-cli-test
+          path: ${{ runner.temp }}/cli-test/ciphera-cli
           if-no-files-found: error
           retention-days: 7
 
@@ -227,6 +279,40 @@ jobs:
           name="ciphera-$VERSION-x86_64-unknown-linux-musl"
           mkdir -p "$RUNNER_TEMP/bin"
           tar -xzf "dist/$name.tar.gz" -C "$RUNNER_TEMP/bin" --strip-components=2 "$name/bin"
+      # CLI livre (celui de l'archive) : version, et aucun mode test meme
+      # avec CIPHERA_INSTALL_TEST=1 (refus avant toute action de l'updater).
+      - name: ciphera-cli livre (version, mode test absent)
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -eu
+          bin="$RUNNER_TEMP/bin"
+          for b in ciphera ciphera-cli; do
+            out=$("$bin/$b" --version)
+            [ "$out" = "$b ${VERSION#v}" ] || { echo "::error::$b --version : $out"; exit 1; }
+          done
+          if out=$(sudo env CIPHERA_INSTALL_TEST=1 CIPHERA_RELEASE_BASE_URL=https://localhost:9443/test \
+            "$bin/ciphera-cli" updater 2>&1); then
+            printf '%s\n' "$out"
+            echo "::error::ciphera-cli livre accepte CIPHERA_RELEASE_BASE_URL"
+            exit 1
+          fi
+          printf '%s\n' "$out"
+          case "$out" in
+          *'CIPHERA_RELEASE_BASE_URL est reservee aux tests'*) ;;
+          *)
+            echo "::error::ciphera-cli livre : refus de CIPHERA_RELEASE_BASE_URL attendu"
+            exit 1
+            ;;
+          esac
+      # Tests de bout en bout : plan de controle, agent et proxy livres
+      # (archive), ciphera-cli de test (mode test des scripts).
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ciphera-cli-test
+          path: ${{ runner.temp }}/cli-test
+      - name: ciphera-cli de test a la place du CLI livre
+        run: install -m 0755 "$RUNNER_TEMP/cli-test/ciphera-cli" "$RUNNER_TEMP/bin/ciphera-cli"
       # Podman rootful : conteneurs systemd (Debian, Ubuntu, Fedora).
       - name: install.sh de bout en bout
         run: sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 CIPHERA_TEST_BIN_DIR="$RUNNER_TEMP/bin" bash install/tests/run.sh debian ubuntu fedora

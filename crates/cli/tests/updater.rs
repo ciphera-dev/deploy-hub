@@ -1437,17 +1437,21 @@ fn request_must_be_a_regular_file() {
     env.assert_untouched();
 }
 
+/// Environnement simule : `get` de [`Sources::from_env`].
+fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+    move |name: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.to_string())
+    }
+}
+
+const TEST_PUBKEY: &str = "RWTpqw9Q/wWqBSNQaYthtbYw0wq6wcvcDgqOZn0bpg07oQkfBitVXECh";
+
 #[test]
 fn test_sources_refused_outside_test_mode() {
-    let get = |pairs: &'static [(&'static str, &'static str)]| {
-        move |name: &str| {
-            pairs
-                .iter()
-                .find(|(k, _)| *k == name)
-                .map(|(_, v)| v.to_string())
-        }
-    };
-    let s = Sources::from_env(get(&[]), TARGET).unwrap();
+    let s = Sources::from_env(env_of(&[]), TARGET).unwrap();
     assert_eq!(s.release_base_url, "https://get.ciphera.ch");
     assert_eq!(s.tools_base_url, "https://github.com");
     assert_eq!(s.pubkeys, updater::embedded_pubkeys());
@@ -1461,25 +1465,37 @@ fn test_sources_refused_outside_test_mode() {
     for env in [
         &[("CIPHERA_RELEASE_BASE_URL", "https://evil.test")][..],
         &[("CIPHERA_TOOLS_BASE_URL", "https://evil.test")][..],
-        &[(
-            "CIPHERA_TEST_MINISIGN_PUBKEY",
-            "RWTpqw9Q/wWqBSNQaYthtbYw0wq6wcvcDgqOZn0bpg07oQkfBitVXECh",
-        )][..],
     ] {
-        assert!(Sources::from_env(get(env), TARGET).is_err(), "{env:?}");
+        assert!(Sources::from_env(env_of(env), TARGET).is_err(), "{env:?}");
     }
+}
+
+/// Build de test : surcharges acceptees avec `CIPHERA_INSTALL_TEST=1`
+/// seulement.
+#[cfg(feature = "install-test")]
+#[test]
+fn test_sources_accepted_in_test_mode() {
+    assert!(
+        Sources::from_env(
+            env_of(&[("CIPHERA_TEST_MINISIGN_PUBKEY", TEST_PUBKEY)]),
+            TARGET
+        )
+        .is_err()
+    );
     let s = Sources::from_env(
-        get(&[
+        env_of(&[
             ("CIPHERA_INSTALL_TEST", "1"),
             ("CIPHERA_RELEASE_BASE_URL", "https://localhost:9443/good"),
+            ("CIPHERA_TEST_MINISIGN_PUBKEY", TEST_PUBKEY),
         ]),
         TARGET,
     )
     .unwrap();
     assert_eq!(s.release_base_url, "https://localhost:9443/good");
+    assert_eq!(s.pubkeys, [TEST_PUBKEY]);
     assert!(
         Sources::from_env(
-            get(&[
+            env_of(&[
                 ("CIPHERA_INSTALL_TEST", "1"),
                 ("CIPHERA_RELEASE_BASE_URL", "http://localhost:9443"),
             ]),
@@ -1487,6 +1503,42 @@ fn test_sources_refused_outside_test_mode() {
         )
         .is_err()
     );
+}
+
+/// Binaire livre (sans la fonctionnalite `install-test`) : ni
+/// `CIPHERA_INSTALL_TEST` ni `CIPHERA_TEST_*` ne sont lus. Les origines de
+/// test restent refusees, la cle de test est ignoree (cles integrees).
+#[cfg(not(feature = "install-test"))]
+#[test]
+fn test_vars_ignored_without_feature() {
+    for env in [
+        &[
+            ("CIPHERA_INSTALL_TEST", "1"),
+            ("CIPHERA_RELEASE_BASE_URL", "https://localhost:9443/good"),
+        ][..],
+        &[
+            ("CIPHERA_INSTALL_TEST", "1"),
+            ("CIPHERA_TOOLS_BASE_URL", "https://localhost:9443/tools"),
+        ][..],
+    ] {
+        let e = Sources::from_env(env_of(env), TARGET).unwrap_err();
+        assert!(!e.contains("CIPHERA_INSTALL_TEST"), "{e}");
+    }
+    for env in [
+        &[("CIPHERA_TEST_MINISIGN_PUBKEY", TEST_PUBKEY)][..],
+        &[
+            ("CIPHERA_INSTALL_TEST", "1"),
+            ("CIPHERA_TEST_MINISIGN_PUBKEY", TEST_PUBKEY),
+        ][..],
+        &[
+            ("CIPHERA_INSTALL_TEST", "1"),
+            ("CIPHERA_TEST_MINISIGN_PUBKEY", "invalide"),
+        ][..],
+    ] {
+        let s = Sources::from_env(env_of(env), TARGET).unwrap();
+        assert_eq!(s.pubkeys, updater::embedded_pubkeys(), "{env:?}");
+        assert_eq!(s.release_base_url, "https://get.ciphera.ch");
+    }
 }
 
 /// La configuration de l'updater (`/etc/ciphera-updater/updater.env`, root)

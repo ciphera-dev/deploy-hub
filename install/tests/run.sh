@@ -34,7 +34,9 @@
 # fois depuis GitHub sur l'hote). minisign est pris sur l'hote s'il
 # existe, sinon dans un conteneur Debian.
 # CIPHERA_TEST_BIN_DIR : dossier des binaires musl (ciphera, ciphera-agent,
-# ciphera-proxy, ciphera-cli) ; defaut target/<cible musl>/release.
+# ciphera-proxy, ciphera-cli) ; defaut target/<cible musl>/release. En CI,
+# ciphera-cli est le build de test (`--features install-test`), comme pour
+# update.sh ; ce script ne lance pas l'updater.
 #
 # Les cles minisign sont jetables (une paire par execution) ; la base
 # PostgreSQL de la distribution n'est qu'une fixture de test, jointe par son

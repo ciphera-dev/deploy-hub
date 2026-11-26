@@ -378,17 +378,59 @@ pub fn host_target() -> Option<&'static str> {
     }
 }
 
+/// Mode test (`CIPHERA_INSTALL_TEST=1`) : lu seulement dans un build de
+/// test (fonctionnalite `install-test`).
+#[cfg(feature = "install-test")]
+fn test_mode(get: &impl Fn(&str) -> Option<String>) -> bool {
+    get("CIPHERA_INSTALL_TEST").as_deref() == Some("1")
+}
+
+/// Binaire livre : aucun mode test.
+#[cfg(not(feature = "install-test"))]
+fn test_mode(_: &impl Fn(&str) -> Option<String>) -> bool {
+    false
+}
+
+/// Cle de test (`CIPHERA_TEST_MINISIGN_PUBKEY`), mode test exige.
+#[cfg(feature = "install-test")]
+fn test_pubkey(
+    get: &impl Fn(&str) -> Option<String>,
+    test: bool,
+) -> Result<Option<String>, String> {
+    match get("CIPHERA_TEST_MINISIGN_PUBKEY").filter(|v| !v.is_empty()) {
+        None => Ok(None),
+        Some(_) if !test => Err("CIPHERA_TEST_MINISIGN_PUBKEY est reservee aux tests \
+                                 (CIPHERA_INSTALL_TEST=1) : refusee"
+            .into()),
+        Some(k)
+            if k.starts_with("RW")
+                && k.len() == 56
+                && k.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)) =>
+        {
+            Ok(Some(k))
+        }
+        Some(_) => Err("CIPHERA_TEST_MINISIGN_PUBKEY invalide".into()),
+    }
+}
+
+/// Binaire livre : seulement les cles integrees.
+#[cfg(not(feature = "install-test"))]
+fn test_pubkey(_: &impl Fn(&str) -> Option<String>, _: bool) -> Result<Option<String>, String> {
+    Ok(None)
+}
+
 impl Sources {
-    /// Origines et cle par defaut ; surcharges de test (memes variables
-    /// qu'`install.sh`) refusees sans `CIPHERA_INSTALL_TEST=1`.
+    /// Origines et cle par defaut. Surcharges de test (memes variables
+    /// qu'`install.sh`) : origines refusees hors mode test ; mode test et
+    /// cle de test lus seulement dans un build de test (fonctionnalite
+    /// `install-test`), jamais dans le binaire livre.
     pub fn from_env(get: impl Fn(&str) -> Option<String>, target: &str) -> Result<Sources, String> {
-        let test = get("CIPHERA_INSTALL_TEST").as_deref() == Some("1");
+        let test = test_mode(&get);
         let url = |name: &str, default: &str| -> Result<String, String> {
             match get(name).filter(|v| !v.is_empty() && v != default) {
                 None => Ok(default.to_string()),
-                Some(_) if !test => Err(format!(
-                    "{name} est reservee aux tests (CIPHERA_INSTALL_TEST=1) : refusee"
-                )),
+                Some(_) if !test => Err(format!("{name} est reservee aux tests : refusee")),
                 Some(v) if !v.starts_with("https://") => {
                     Err(format!("{name} doit commencer par https://"))
                 }
@@ -398,22 +440,9 @@ impl Sources {
                 Some(v) => Ok(v.trim_end_matches('/').to_string()),
             }
         };
-        let pubkeys = match get("CIPHERA_TEST_MINISIGN_PUBKEY").filter(|v| !v.is_empty()) {
+        let pubkeys = match test_pubkey(&get, test)? {
+            Some(k) => vec![k],
             None => embedded_pubkeys(),
-            Some(_) if !test => {
-                return Err("CIPHERA_TEST_MINISIGN_PUBKEY est reservee aux tests \
-                     (CIPHERA_INSTALL_TEST=1) : refusee"
-                    .into());
-            }
-            Some(k)
-                if k.starts_with("RW")
-                    && k.len() == 56
-                    && k.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)) =>
-            {
-                vec![k]
-            }
-            Some(_) => return Err("CIPHERA_TEST_MINISIGN_PUBKEY invalide".into()),
         };
         Ok(Sources {
             release_base_url: url("CIPHERA_RELEASE_BASE_URL", DEFAULT_BASE_URL)?,

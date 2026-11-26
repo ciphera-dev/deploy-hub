@@ -14,8 +14,9 @@
 #
 # Exige : root, systemd, Docker, minisign, openssl, python3, git, curl, tar,
 # sha256sum, ss, update-ca-certificates. CIPHERA_TEST_BIN_DIR : binaires musl
-# (defaut target/<cible musl>/release). web/dist doit avoir ete construit
-# avant les binaires (interface embarquee).
+# (defaut target/<cible musl>/release), ciphera-cli construit avec
+# `--features install-test` (job CI e2e-golden-path). web/dist doit avoir
+# ete construit avant les binaires (interface embarquee).
 #
 # Reseau de test (aucune requete vers github.com apres install.sh, qui y
 # telecharge les outils de build) :

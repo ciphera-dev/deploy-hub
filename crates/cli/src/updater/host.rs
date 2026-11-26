@@ -70,8 +70,10 @@ pub struct Host {
     /// `http://127.0.0.1:<port local>/api/health` : ecoute locale du
     /// panneau, ouverte meme quand un domaine du panneau ferme 8443.
     pub health_url: String,
-    /// Autorite de certification de test (`--cacert`), seulement avec
+    /// Autorite de certification de test (`--cacert`), seulement dans un
+    /// build de test (fonctionnalite `install-test`) avec
     /// `CIPHERA_INSTALL_TEST=1` dans l'environnement de l'unite (root).
+    #[cfg(feature = "install-test")]
     pub test_ca_bundle: Option<PathBuf>,
     /// `ciphera-cli` installe (etape de post-installation).
     pub cli: PathBuf,
@@ -360,6 +362,7 @@ impl Host {
             "--max-filesize",
             &max_size,
         ]);
+        #[cfg(feature = "install-test")]
         if let Some(ca) = &self.test_ca_bundle {
             cmd.arg("--cacert").arg(ca);
         }
@@ -870,6 +873,7 @@ echo x >> '{}'
             db_name: "ciphera".into(),
             tmpfiles: dir.join("tmpfiles.conf"),
             health_url: "http://127.0.0.1:1/api/health".into(),
+            #[cfg(feature = "install-test")]
             test_ca_bundle: None,
             cli: dir.join("ciphera-cli"),
             apparmor_profile: dir.join("apparmor"),

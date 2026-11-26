@@ -43,6 +43,8 @@ jobs:
           persist-credentials: false
       - run: rustup show
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Build de test de ciphera-cli (mode test des tests de bout en bout).
+      - run: cargo clippy -p ciphera-cli --all-targets --features install-test -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -71,6 +73,9 @@ jobs:
       # pilotage) et du client du proxy dans l'agent (#[cfg(unix)]).
       # Pingora compile zlib-ng avec cmake (present sur ubuntu-latest).
       - run: cargo test --workspace
+      # ciphera-cli dans ses deux configurations : livre (ci-dessus, sans mode
+      # test) et build de test des tests de bout en bout.
+      - run: cargo test -p ciphera-cli --features install-test
       # Tests Linux-only marques #[ignore] (ceux de l'agent : job agent-docker ;
       # emission ACME contre Pebble : job acme-pebble)
       - run: cargo test --workspace --exclude ciphera-agent -- --ignored --skip _via_pebble
@@ -211,9 +216,11 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
+      # ciphera-cli en build de test : mode test des scripts d'install/tests.
       - run: >-
           cargo build --release --locked --target x86_64-unknown-linux-musl
           -p control-plane -p ciphera-agent -p ciphera-proxy -p ciphera-cli
+          --features ciphera-cli/install-test
       # Outil du test (demarre le buildkitd d'un projet) : exemple, jamais
       # livre ; target/x86_64-unknown-linux-musl/release/examples/buildkitd_up
       - run: >-
@@ -252,9 +259,11 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
+      # ciphera-cli en build de test : mode test des scripts d'install/tests.
       - run: >-
           cargo build --release --locked --target x86_64-unknown-linux-musl
           -p control-plane -p ciphera-agent -p ciphera-proxy -p ciphera-cli
+          --features ciphera-cli/install-test
       # Avant setup.sh, qui detourne github.com vers le GitHub simule.
       - run: npx playwright install --with-deps chromium
         working-directory: web

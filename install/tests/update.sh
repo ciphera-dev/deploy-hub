@@ -42,7 +42,9 @@
 # Exige : Linux, podman, tar, sha256sum, curl. minisign est pris sur l'hote
 # s'il existe, sinon dans un conteneur Debian.
 # CIPHERA_TEST_BIN_DIR : dossier des binaires musl ; defaut
-# target/<cible musl>/release.
+# target/<cible musl>/release. ciphera-cli doit etre le build de test
+# (`--features install-test`) : le binaire livre ne lit ni
+# CIPHERA_INSTALL_TEST ni CIPHERA_TEST_*.
 
 # Les commandes entre apostrophes sont evaluees dans le conteneur.
 # shellcheck disable=SC2016
@@ -79,6 +81,8 @@ bin_dir=${CIPHERA_TEST_BIN_DIR:-$root/target/$target/release}
 for b in ciphera ciphera-agent ciphera-proxy ciphera-cli; do
 	[ -f "$bin_dir/$b" ] || die "binaire absent : $bin_dir/$b"
 done
+grep -qaF CIPHERA_INSTALL_TEST "$bin_dir/ciphera-cli" ||
+	die "$bin_dir/ciphera-cli sans mode test : le construire avec -p ciphera-cli --features install-test"
 v_a=$(sed -n "s/^DEFAULT_VERSION='\(v[0-9.]*\)'\$/\1/p" "$installer")
 [ -n "$v_a" ] || die "DEFAULT_VERSION introuvable dans install.sh"
 # Versions suivantes de test : patch + 1, + 2, + 3.

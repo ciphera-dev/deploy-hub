@@ -15,7 +15,8 @@
 # Exige : root, systemd, Docker, minisign, openssl, python3, curl, tar,
 # sha256sum. CIPHERA_TEST_BIN_DIR : binaires musl, dont
 # examples/buildkitd_up (defaut
-# target/<cible musl>/release).
+# target/<cible musl>/release) ; ciphera-cli construit avec
+# `--features install-test` (job CI install-docker).
 #
 # Verifie : (a) installation, agent actif, ciphera-postgres et
 # ciphera-buildkitd-<projet> (un par projet, a la demande, etat et socket

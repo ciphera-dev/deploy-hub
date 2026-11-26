@@ -14,6 +14,12 @@ path = "src/lib.rs"
 name = "ciphera-cli"
 path = "src/main.rs"
 
+[features]
+# Mode test des tests de bout en bout (install/tests) : `CIPHERA_INSTALL_TEST`,
+# `CIPHERA_TEST_*` et l'autorite de test de curl ne sont lus qu'avec cette
+# fonctionnalite. Jamais dans le binaire livre (release.yml le verifie).
+install-test = []
+
 [dependencies]
 # Updater (`ciphera-cli updater`) : demande signee (HMAC, cle propre
 # `update-hmac.key` ; jamais l'identite age, feature `age` absente),

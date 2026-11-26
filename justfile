@@ -17,10 +17,12 @@ build:
 
 test:
     cargo test --workspace
+    cargo test -p ciphera-cli --features install-test
 
 lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy -p ciphera-cli --all-targets --features install-test -- -D warnings
 
 audit:
     cargo audit
