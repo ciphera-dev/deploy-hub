@@ -17,7 +17,7 @@
 
 <header class="top">
   <div class="wrap top-in">
-    <a class="brand" href="/" aria-label="Ciphera, accueil"><img src="/assets/brand/logo.svg" alt="Ciphera" width="112" height="15"></a>
+    <a class="brand" href="/" aria-label="Ciphera, accueil"><img src="/assets/brand/logo.svg" alt="Ciphera" width="114" height="15"></a>
     <nav aria-label="Navigation principale">
       <ul class="nav">
         <li><a href="#fonctionnalites">Fonctionnalités</a></li>
@@ -71,7 +71,7 @@
       </button>
     </div>
     <p class="sr-only" id="copy-status" role="status"></p>
-    <p class="meta">Version publiée : @@VERSION@@ · <a href="/install.sh.minisig">script signé</a></p>
+    <p class="meta">Version publiée : <span class="v">@@VERSION@@</span> · <a href="/install.sh.minisig">script signé</a></p>
   </div>
 
   <figure class="stage">
@@ -85,7 +85,7 @@
 
 <section class="stack" aria-labelledby="titre-stack">
   <h2 class="sr-only" id="titre-stack">Construit avec</h2>
-  <div class="marquee">
+  <div class="marquee" id="bandeau">
     <div class="track">
       <ul class="chips">
         <li><img src="/assets/icons/rust.svg" alt="" width="20" height="20">Rust</li>
@@ -109,6 +109,7 @@
       </ul>
     </div>
   </div>
+  <p class="marquee-ctl"><button class="link-mono" type="button" data-marquee="bandeau" aria-pressed="false" hidden>Mettre en pause le défilement</button></p>
 </section>
 
 <section class="section" id="fonctionnement" aria-labelledby="titre-fonct">
@@ -229,7 +230,7 @@
         </ul>
       </div>
       <div class="card" id="verifier">
-        <p class="label">Version publiée : @@VERSION@@</p>
+        <p class="label">Version publiée : <span class="v">@@VERSION@@</span></p>
         <h3>Vérifier avant d'installer</h3>
         <p>Téléchargez le script et sa signature, vérifiez-la avec les clés publiques, lisez le script, puis lancez-le.</p>
         <ul class="files">
@@ -330,9 +331,9 @@
   <div class="wrap">
     <div class="foot-in">
       <div class="foot-brand">
-        <img src="/assets/brand/logo.svg" alt="Ciphera" width="112" height="15">
+        <img src="/assets/brand/logo.svg" alt="Ciphera" width="114" height="15">
         <p>Le PaaS auto-hébergé, léger et sûr, écrit en Rust. Open source sous licence AGPL-3.0.</p>
-        <p class="label">Version publiée : @@VERSION@@</p>
+        <p class="label">Version publiée : <span class="v">@@VERSION@@</span></p>
       </div>
       <nav aria-labelledby="pied-projet">
         <h2 id="pied-projet">Projet</h2>

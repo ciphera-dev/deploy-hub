@@ -48,6 +48,32 @@
   --gutter: 24px;
 }
 
+/* Geist et Geist Mono (OFL-1.1, assets/fonts/OFL.txt), sous-ensemble latin,
+   graisses utilisees seulement ; copies de @fontsource 5.3.0 (CREDITS.md). */
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/geist-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/assets/fonts/geist-latin-500-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/geist-mono-latin-400-normal.woff2") format("woff2");
+}
+
 *,
 *::before,
 *::after {
@@ -66,7 +92,6 @@ body {
   color: var(--text-body);
   font: 400 16px/1.6 var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
 }
 
 img,
@@ -170,6 +195,10 @@ p {
   color: var(--text-subtle);
 }
 
+.v {
+  text-transform: none;
+}
+
 .link-mono {
   color: var(--text-muted);
   font: 400 12px/1.15 var(--font-mono);
@@ -179,6 +208,13 @@ p {
   text-decoration-thickness: 1px;
   text-underline-offset: 4px;
   text-decoration-color: var(--gray-600);
+}
+
+button.link-mono {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
 }
 
 .link-mono:hover {
@@ -213,7 +249,7 @@ p {
 }
 
 .brand img {
-  width: 112px;
+  width: 114px;
   height: auto;
 }
 
@@ -476,7 +512,7 @@ p {
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 600px;
+  max-width: 660px;
   margin: 40px auto 0;
   padding: 6px 6px 6px 16px;
   border: 1px solid var(--border-strong);
@@ -487,7 +523,7 @@ p {
 }
 
 .cmd-quiet {
-  max-width: 470px;
+  max-width: 600px;
   margin-top: 28px;
   border-color: var(--border-default);
   background: rgba(16, 16, 16, 0.6);
@@ -504,20 +540,15 @@ p {
 .cmd code {
   flex: 1;
   min-width: 0;
-  overflow-x: auto;
   color: var(--text-body);
   font-size: 13px;
-  white-space: nowrap;
-  scrollbar-width: none;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .cmd-quiet code {
   color: var(--text-muted);
   font-size: 12.5px;
-}
-
-.cmd code::-webkit-scrollbar {
-  display: none;
 }
 
 .copy {
@@ -634,28 +665,55 @@ p {
   padding: 56px 0 0;
 }
 
+/* Sans JavaScript : liste statique centree. Avec la classe anim (site.js) :
+   defilement continu, pause au survol, au focus et par le bouton. */
 .marquee {
   overflow: hidden;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px;
+  margin: 0;
+  padding: 0 var(--gutter);
+  list-style: none;
+}
+
+.chips.dup {
+  display: none;
+}
+
+.marquee.anim {
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
   mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
 }
 
-.track {
+.marquee.anim .track {
   display: flex;
   width: max-content;
   animation: defile 40s linear infinite;
 }
 
-.marquee:hover .track {
+.marquee.anim .chips {
+  flex-wrap: nowrap;
+  padding: 0 8px;
+}
+
+.marquee.anim .chips.dup {
+  display: flex;
+}
+
+.marquee.anim:hover .track,
+.stack:focus-within .track,
+.marquee.paused .track {
   animation-play-state: paused;
 }
 
-.chips {
-  display: flex;
-  gap: 16px;
-  margin: 0;
-  padding: 0 8px;
-  list-style: none;
+.marquee-ctl {
+  margin-top: 16px;
+  text-align: center;
 }
 
 .chips li {
@@ -1050,7 +1108,7 @@ p {
 }
 
 .foot-brand img {
-  width: 112px;
+  width: 114px;
   height: auto;
 }
 
@@ -1264,6 +1322,18 @@ p {
   }
 }
 
+@media (max-width: 480px) {
+  .cmd {
+    align-items: flex-start;
+    padding: 10px 8px 10px 14px;
+    border-radius: var(--radius-xl);
+  }
+
+  .cmd .prompt {
+    line-height: 1.5;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -1276,22 +1346,4 @@ p {
     animation: none !important;
   }
 
-  .marquee {
-    -webkit-mask-image: none;
-    mask-image: none;
-  }
-
-  .track {
-    width: auto;
-  }
-
-  .chips {
-    flex-wrap: wrap;
-    justify-content: center;
-    padding: 0 var(--gutter);
-  }
-
-  .chips.dup {
-    display: none;
-  }
 }

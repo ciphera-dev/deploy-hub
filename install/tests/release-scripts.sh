@@ -461,8 +461,16 @@ check "site : aucun fichier de la page d'accueil sous /releases/" \
 	test -z "$(find site/releases \( -name '*.css' -o -name '*.js' -o -name '*.webp' -o -name '*.svg' -o -name '*.html' -o -name assets \) -print)"
 check "site : capture du panneau < 400 Ko" test "$(wc -c <site/assets/dashboard.webp)" -lt 409600
 check "site : capture du panneau sans EXIF ni XMP" bash -c "! grep -aq -e EXIF -e 'XMP ' site/assets/dashboard.webp"
+check "site : polices Geist et licence OFL publiees" \
+	test -f site/assets/fonts/geist-latin-400-normal.woff2 -a -f site/assets/fonts/OFL.txt
+# CSS et JS publies : aucune ressource ni URL externe (url() vers /assets/
+# seulement, ni @import, ni http(s)://, ni fetch, ni XMLHttpRequest).
+for f in site/assets/*.css site/assets/*.js; do
+	check "site : ${f#site/} : aucune URL externe" bash -c "! grep -Eiq '@import|https?:|//[a-z0-9]|fetch[[:space:]]*\(|XMLHttpRequest|sendBeacon|WebSocket' '$f'"
+	check "site : ${f#site/} : url() locales seulement" bash -c "! grep -Eo 'url\([^)]*\)' '$f' | grep -Ev '^url\(\"/assets/[a-z0-9/._-]+\"\)\$'"
+done
 for p in index.html 404.html; do
-	check "site : $p : version publiee injectee" grep -q "Version publiée : $version" "site/$p"
+	check "site : $p : version publiee injectee" grep -qF "Version publiée : <span class=\"v\">$version</span>" "site/$p"
 	check "site : $p : aucun marqueur de gabarit restant" bash -c "! grep -q '@@' site/$p"
 	check "site : $p : CSP stricte" grep -q "Content-Security-Policy\" content=\"default-src 'none'; script-src 'self'; style-src 'self'" "site/$p"
 	# Toute URL absolue est une page du depot, le site lui-meme (commande
@@ -488,6 +496,19 @@ for u in 'https://github.com/ciphera-dev/deploy-hub"' 'deploy-hub/releases"' 'de
 done
 check "site : index.html : commande d'installation" grep -q 'curl -fsSL https://get.ciphera.ch/install.sh | sudo sh' site/index.html
 check "site : 404.html : contact" grep -q 'mailto:info@ciphera.ch' site/404.html
+
+# Liste blanche des fichiers du site : un fichier d'un autre type ou un nom
+# cache dans install/site/assets arrete la construction.
+for bad in annexe.html .cache.css; do
+	rm -rf badrepo
+	mkdir -p badrepo/web/src/assets/brand badrepo/web/public
+	cp -R "$root/install" badrepo/install
+	cp "$root/web/src/assets/brand/logo.svg" badrepo/web/src/assets/brand/
+	cp "$root/web/public/favicon.svg" badrepo/web/public/
+	printf 'x\n' >"badrepo/install/site/assets/$bad"
+	check "site : fichier $bad dans install/site/assets refuse" fails_with "fichier non autorise" \
+		env PATH="$work/bin:$PATH" sh badrepo/install/pages-site.sh ciphera-dev/deploy-hub plain.pub retired.pub dist "$version" "site-bad-$bad"
+done
 
 pages absent.pub dist "$version" site-noretired >/dev/null 2>&1
 check "site : sans cles retirees, release de cle retiree ignoree" test ! -e "site-noretired/releases/$ret"

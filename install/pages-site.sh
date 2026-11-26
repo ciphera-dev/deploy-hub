@@ -18,8 +18,9 @@
 #                                      gabarits de install/site/ (version,
 #                                      depot et domaine injectes)
 #   /assets/...                        fichiers statiques de ces pages
-#                                      (install/site/assets/, plus le logo et
-#                                      le favicon officiels de web/)
+#                                      (install/site/assets/ : css, js, webp,
+#                                      png, svg, woff2, txt seulement ; plus
+#                                      le logo et le favicon officiels de web/)
 #   /CNAME                             get.ciphera.ch
 # Chaque release est verifiee (minisign de SHA256SUMS et de install.sh, puis
 # SHA-256). Celle du run : par une cle de <cles publiques> (ensemble de
@@ -190,9 +191,13 @@ done
 if [ ! -d "$site/assets" ] || [ -L "$site/assets" ]; then
 	die "dossier du site absent : $site/assets"
 fi
-# Uniquement des fichiers et dossiers ordinaires (aucun lien publie).
-odd=$(find "$site/assets" ! -type f ! -type d)
-[ -z "$odd" ] || die "entree non ordinaire dans $site/assets : $odd"
+# Liste blanche : dossiers et fichiers ordinaires aux extensions prevues
+# (txt : licence des polices, exigee a cote des fichiers), aucun nom cache,
+# aucun lien. Toute autre entree arrete tout.
+bad=$(find "$site/assets" -mindepth 1 \( -name '.*' -o ! \( -type d -o \( -type f \( \
+	-name '*.css' -o -name '*.js' -o -name '*.webp' -o -name '*.png' -o -name '*.svg' -o \
+	-name '*.woff2' -o -name '*.txt' \) \) \) \) -print)
+[ -z "$bad" ] || die "fichier non autorise dans $site/assets : $bad"
 [ ! -e "$out/assets" ] || die "$out/assets existe deja"
 cp -R "$site/assets" "$out/assets"
 mkdir "$out/assets/brand"

@@ -22,6 +22,22 @@ Source : [Simple Icons](https://simpleicons.org), dossier `icons/` (branche `dev
 
 Les fichiers SVG de Simple Icons sont publiés sous [CC0 1.0](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md). CC0 ne couvre pas le droit des marques : chaque marque appartient à son propriétaire. Leur présence indique seulement une technologie utilisée par Ciphera (voir la section « Architecture » du README) ou un système pris en charge par l'installeur ; elle ne signifie ni partenariat, ni parrainage, ni approbation.
 
+## Polices (`assets/fonts/`)
+
+Geist et Geist Mono, les polices du design system, copiées sans modification depuis les paquets npm déjà installés pour le panneau (`web/node_modules/@fontsource/geist` et `@fontsource/geist-mono`, version 5.3.0, dossier `files/`) : sous-ensemble latin seulement (suffit au français), graisses utilisées par le site seulement. Chargées par `@font-face` local (`font-display: swap`), aucune requête tierce. Licence : SIL Open Font License 1.1, copiée dans `assets/fonts/OFL.txt` (avec les deux mentions de copyright des paquets) et publiée à côté des fichiers.
+
+| Fichier | Police | SHA-256 |
+|---|---|---|
+| `geist-latin-400-normal.woff2` | Geist 400 | `ead637fd0b6b887d829b3ce3f25fdc242b1de0cfb69c0d97987933675d1315ba` |
+| `geist-latin-500-normal.woff2` | Geist 500 | `6145bf6706dbc1b6686f04f871489cf724951f00b752745896ccdcac07639a53` |
+| `geist-mono-latin-400-normal.woff2` | Geist Mono 400 | `3f98383b122fe015a48536cd4a1cda855a201718923ffe74931a01597107b9b5` |
+
+Après une mise à jour de `@fontsource/geist*` dans `web/`, recopier les mêmes fichiers et mettre à jour ce tableau.
+
+## Fichiers publiés
+
+`pages-site.sh` ne publie de `assets/` que des dossiers et fichiers ordinaires aux extensions `css`, `js`, `webp`, `png`, `svg`, `woff2` et `txt` (licence des polices), sans nom caché ni lien ; tout autre fichier arrête la construction du site.
+
 ## Icônes de l'interface (dans `index.html`)
 
 Tracés des icônes [Lucide](https://lucide.dev) (rocket, hammer, globe, lock-keyhole, activity, users, mail, wrench, file-signature, network, key-round, shield-check, copy, check), tirés du paquet `lucide-react` 1.77.0 déjà utilisé par le panneau, insérés en SVG en ligne. Licence ISC, © Lucide Icons and Contributors.

@@ -1,6 +1,6 @@
-// Bouton « Copier » des commandes d'installation. La page fonctionne sans
-// JavaScript : le bouton reste masque (attribut hidden) tant que ce script
-// ne l'active pas, et seulement si l'API presse-papiers est disponible.
+// Bouton « Copier » des commandes d'installation et bandeau defilant. La
+// page fonctionne sans JavaScript : les boutons restent masques (attribut
+// hidden) et le bandeau reste statique tant que ce script ne les active pas.
 "use strict";
 (function () {
   if (!navigator.clipboard || !window.isSecureContext) return;
@@ -27,6 +27,24 @@
           if (status) status.textContent = "Copie impossible : sélectionnez la commande à la main.";
         },
       );
+    });
+  });
+})();
+
+// Bandeau des technologies : defilement seulement avec JavaScript et sans
+// preference « moins d'animations » ; bouton pause/reprise accessible.
+(function () {
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  var buttons = document.querySelectorAll("button[data-marquee]");
+  Array.prototype.forEach.call(buttons, function (button) {
+    var marquee = document.getElementById(button.getAttribute("data-marquee"));
+    if (!marquee) return;
+    marquee.classList.add("anim");
+    button.hidden = false;
+    button.addEventListener("click", function () {
+      var paused = marquee.classList.toggle("paused");
+      button.setAttribute("aria-pressed", paused ? "true" : "false");
+      button.textContent = paused ? "Reprendre le défilement" : "Mettre en pause le défilement";
     });
   });
 })();
