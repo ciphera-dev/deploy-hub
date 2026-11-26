@@ -29,6 +29,9 @@ die() {
 	exit 1
 }
 
+[ "${CIPHERA_DESTRUCTIVE_HOST_TEST:-}" = 1 ] ||
+	die "lance des conteneurs en root sur la machine : relancer avec CIPHERA_DESTRUCTIVE_HOST_TEST=1 (machine jetable seulement)"
+
 command -v podman >/dev/null || die "podman requis"
 
 cleanup() {

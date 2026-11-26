@@ -55,6 +55,9 @@ die() {
 	exit 1
 }
 
+[ "${CIPHERA_DESTRUCTIVE_HOST_TEST:-}" = 1 ] ||
+	die "lance des conteneurs en root sur la machine : relancer avec CIPHERA_DESTRUCTIVE_HOST_TEST=1 (machine jetable seulement)"
+
 [ "$#" -gt 0 ] || die "usage : update.sh debian [ubuntu] [fedora]"
 for d in "$@"; do
 	case "$d" in

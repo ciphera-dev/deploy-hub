@@ -772,12 +772,15 @@ fi
 
 # --- (b) desinstallation sans --purge ----------------------------------------------
 printf '== (b) desinstallation\n'
-# Conteneur d'application d'un utilisateur (memes etiquettes que l'agent, sans
-# role) : cree (sans demarrer) a partir de l'image de PostgreSQL deja presente.
+# Conteneur d'application d'un utilisateur (etiquette geree, sans role) : cree
+# sans demarrer, a partir de l'image de PostgreSQL deja presente, et sans
+# etiquette de deploiement (le balayage des restes de l'agent ne vise que les
+# conteneurs d'un deploiement : il ne le supprime donc pas apres la
+# reinstallation, et le controle (d) prouve bien que uninstall l'a conserve).
 pg_image=$(docker inspect -f '{{.Image}}' ciphera-postgres)
 check "(b) conteneur d'application de test cree" \
-	docker create --name ciphera-d-r40test --label dev.ciphera.managed=true --label dev.ciphera.role= \
-	--label dev.ciphera.deployment=00000000-0000-4000-8000-000000000040 "$pg_image"
+	docker create --name ciphera-d-r40test --label dev.ciphera.managed=true --label dev.ciphera.role= "$pg_image"
+# Verifie en (c) aussi : il survit a la reinstallation.
 
 check "(b) uninstall.sh" sh -c "sh '$root/install/uninstall.sh' >/dev/null"
 containers_removed() {
@@ -824,6 +827,8 @@ same_subid_lines() {
 		[ -n "$subgid_line" ] && [ "$(grep '^ciphera-build:' /etc/subgid)" = "$subgid_line" ]
 }
 check "(c) plages de sous-uids et sous-gids de ciphera-build conservees (aucun doublon)" same_subid_lines
+
+check "(c) conteneur d'application conserve apres la reinstallation" docker inspect ciphera-d-r40test
 
 # --- (d) purge -------------------------------------------------------------------
 printf '== (d) purge\n'

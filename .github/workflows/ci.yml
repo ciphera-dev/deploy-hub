@@ -384,7 +384,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - run: sudo bash install/tests/units-boot.sh debian ubuntu fedora
+      - run: sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 bash install/tests/units-boot.sh debian ubuntu fedora
 
   # Profil AppArmor de buildkitd : variante choisie par install.sh
   # (`apparmor_variant`, d'apres la version d'apparmor_parser) et analyse sans

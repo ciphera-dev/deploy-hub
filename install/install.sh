@@ -345,22 +345,27 @@ regular_file() {
 
 # Plafonds de telechargement : temps total (s) et taille (octets), pour que
 # ni un serveur lent ni une reponse sans fin ne bloque ou ne remplisse le
-# disque. Petits fichiers (SHA256SUMS, signatures) et archives.
+# disque. Petits fichiers (SHA256SUMS, signatures) et archives. TOTAL : duree
+# maximale cumulee des essais (--retry-max-time).
 FETCH_SMALL_TIME=30
 FETCH_SMALL_MAX=1048576
+FETCH_SMALL_TOTAL=120
 FETCH_ARCHIVE_TIME=600
 FETCH_ARCHIVE_MAX=536870912
+FETCH_ARCHIVE_TOTAL=1800
 
 # fetch <url> <sortie> [archive] : « archive » releve les plafonds.
 fetch() {
 	_ftime=$FETCH_SMALL_TIME
 	_fmax=$FETCH_SMALL_MAX
+	_ftotal=$FETCH_SMALL_TOTAL
 	if [ "${3:-}" = archive ]; then
 		_ftime=$FETCH_ARCHIVE_TIME
 		_fmax=$FETCH_ARCHIVE_MAX
+		_ftotal=$FETCH_ARCHIVE_TOTAL
 	fi
 	curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-		--max-time "$_ftime" --max-filesize "$_fmax" -o "$2" "$1" ||
+		--max-time "$_ftime" --retry-max-time "$_ftotal" --max-filesize "$_fmax" -o "$2" "$1" ||
 		die "telechargement impossible : $1"
 }
 
@@ -1035,8 +1040,9 @@ harden_config_dir() {
 	if [ -L "$CONFIG_DIR" ] || [ ! -d "$CONFIG_DIR" ]; then
 		die "$CONFIG_DIR n'est pas un dossier (lien symbolique ?) : a corriger avant de relancer install.sh"
 	fi
-	chmod 0750 "$CONFIG_DIR" && chown root:ciphera "$CONFIG_DIR" ||
+	if ! { chmod 0750 "$CONFIG_DIR" && chown root:ciphera "$CONFIG_DIR"; }; then
 		die "$CONFIG_DIR : droits root:ciphera 0750 non appliques"
+	fi
 }
 
 # Cle de la CA absente, ou a root sans droit pour le groupe ni les autres.

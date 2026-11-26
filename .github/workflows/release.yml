@@ -229,11 +229,11 @@ jobs:
           tar -xzf "dist/$name.tar.gz" -C "$RUNNER_TEMP/bin" --strip-components=2 "$name/bin"
       # Podman rootful : conteneurs systemd (Debian, Ubuntu, Fedora).
       - name: install.sh de bout en bout
-        run: sudo CIPHERA_TEST_BIN_DIR="$RUNNER_TEMP/bin" bash install/tests/run.sh debian ubuntu fedora
+        run: sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 CIPHERA_TEST_BIN_DIR="$RUNNER_TEMP/bin" bash install/tests/run.sh debian ubuntu fedora
       # Mise a jour de bout en bout (ciphera-cli updater, unites .path et
       # .service, HMAC, minisign + SHA-256, pg_dump, retour arriere) : Debian.
       - name: Mise a jour de bout en bout
-        run: sudo CIPHERA_TEST_BIN_DIR="$RUNNER_TEMP/bin" bash install/tests/update.sh debian
+        run: sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 CIPHERA_TEST_BIN_DIR="$RUNNER_TEMP/bin" bash install/tests/update.sh debian
 
   # L'archive aarch64 est executee avant d'etre signee : `ciphera --version`
   # sous qemu (binfmt), dans un conteneur arm64. Images epinglees par digest

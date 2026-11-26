@@ -140,9 +140,10 @@ main() {
 		else
 			leftover=yes
 			printf 'ciphera : erreur : conteneurs Ciphera restants (relancer uninstall.sh) :\n' >&2
-			for cid in $(target_container_ids 2>/dev/null); do
-				docker ps -a --filter "id=$cid" --format '  {{.ID}} {{.Names}} {{.Status}}' >&2 || true
-			done
+			target_container_ids 2>/dev/null |
+				while IFS= read -r cid; do
+					docker ps -a --filter "id=$cid" --format '  {{.ID}} {{.Names}} {{.Status}}' >&2 || true
+				done
 		fi
 	fi
 	# Filtrage de la sortie des conteneurs (charge par ciphera-agent.service
