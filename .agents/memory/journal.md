@@ -449,3 +449,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 14:50 — Session v0.1-sdd — claude-code (orchestrateur) — Task R50 : Domaine généré en HTTPS
 - fait : ACME pour le domaine sslip.io, repli HTTP, reprise quotidienne, certificats retirés
 - résultat : TERMINÉ (relecture approuvée, 1 tour)
+
+## 2026-11-26 15:02 — Session v0.1-sdd — claude-code (orchestrateur) — Task R49 : Rotation de la CA de l'instance
+- fait : rotate-ca / --finish, confiance double, TrustedCas, migration 0041, /etc/ciphera root:ciphera 0750
+- résultat : TERMINÉ (relecture approuvée, 3 tours)
