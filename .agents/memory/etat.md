@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-26 16:23
+# État courant — mis à jour le 2026-11-26 16:44
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R41 : Updater root durci — statut : TERMINÉ (TERMINÉ (relecture approuvée, 2 tours))
+Task R52 : Mode test retiré du binaire livré — statut : TERMINÉ (TERMINÉ (relecture approuvée, 1 petit tour))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R52 : Mode test retiré du binaire livré
 - Task R41 : Updater root durci
 - Task R54 : rsa 0.10.0, garde-fous Pingora
 - Task R43 : Hygiène du dépôt avant publication
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R42 : Chaîne de release
 - Task R49 : Rotation de la CA de l'instance
 - Task R50 : Domaine généré en HTTPS
-- Task R39 : Profil release et dépendances non maintenues
 
 ## Prochaine étape exacte
-R52 (mode test retiré du binaire livré), puis R53, R44
+R53, puis R44 (clôture de l'audit)
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -33,11 +33,9 @@ R52 (mode test retiré du binaire livré), puis R53, R44
 
 ## Fichiers clés touchés dans cette tâche
 - `crates/cli`
-- `crates/shared`
-- `crates/control-plane`
-- `deploy/systemd`
-- `install/tests/update.sh`
-- `docs`
+- `.github/workflows`
+- `install/tests`
+- `docs/adr`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

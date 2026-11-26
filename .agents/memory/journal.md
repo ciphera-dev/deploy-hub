@@ -473,3 +473,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 16:23 — Session v0.1-sdd — claude-code (orchestrateur) — Task R41 : Updater root durci
 - fait : téléchargements bornés, clé HMAC update-hmac.key atomique, restore.sql effacé, CA en lecture seule pour l'updater
 - résultat : TERMINÉ (relecture approuvée, 2 tours)
+
+## 2026-11-26 16:44 — Session v0.1-sdd — claude-code (orchestrateur) — Task R52 : Mode test retiré du binaire livré
+- fait : feature install-test, CLI livré et ciphera-cli-test séparés, contrôle strings bloquant fail-closed, tests dans les deux configurations
+- résultat : TERMINÉ (relecture approuvée, 1 petit tour)

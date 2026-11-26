@@ -216,3 +216,6 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 - Cause : `ubuntu-latest` est désormais Ubuntu 26.04, dont `sha256sum` est uutils 0.10.0 ; son `sha256sum -c` ne relit pas ses propres lignes échappées (`\hash  x\y`). GNU coreutils (Debian 12, Ubuntu 24.04) les relit.
 - Résolu : `sign-release.sh` refuse les noms d'archive hors `[A-Za-z0-9._+-]` (les archives de production n'en ont jamais) ; le test écrit les lignes espace/échappée à la main et re-signe `SHA256SUMS` avec minisign, la couverture de `pages-site.sh` est gardée (sous uutils, la release est refusée en entier, plus strict) ; job `release-scripts` épinglé sur `ubuntu-24.04` comme `release.yml`.
 - À surveiller : les autres jobs de ci.yml restent sur `ubuntu-latest` (26.04) ; tout écart coreutils/uutils dans un script shell peut y apparaître.
+
+## 2026-11-26 — D-INST-1 (binaire) : Résolu par R52
+- Le mode test de `ciphera-cli` n'existe que dans les builds `--features install-test` ; contrôle `strings` bloquant (échec fermé) sur les binaires des archives signées.
