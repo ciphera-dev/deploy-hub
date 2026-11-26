@@ -453,3 +453,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 15:02 — Session v0.1-sdd — claude-code (orchestrateur) — Task R49 : Rotation de la CA de l'instance
 - fait : rotate-ca / --finish, confiance double, TrustedCas, migration 0041, /etc/ciphera root:ciphera 0750
 - résultat : TERMINÉ (relecture approuvée, 3 tours)
+
+## 2026-11-26 15:10 — Session v0.1-sdd — claude-code (orchestrateur) — Task R42 : Chaîne de release
+- fait : site limité à la liste signée, design-to-dev figé, Assert-GitHubReady + -CheckOnly (2 relecteurs, prevent self-review, ruleset de tags, releases immuables), archives comparées avant signature
+- résultat : TERMINÉ (relecture approuvée, 2 tours ; N1 mineur laissé)

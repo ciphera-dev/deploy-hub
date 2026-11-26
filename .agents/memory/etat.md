@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-26 15:02
+# État courant — mis à jour le 2026-11-26 15:10
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R49 : Rotation de la CA de l'instance — statut : TERMINÉ (TERMINÉ (relecture approuvée, 3 tours))
+Task R42 : Chaîne de release — statut : TERMINÉ (TERMINÉ (relecture approuvée, 2 tours ; N1 mineur laissé))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R42 : Chaîne de release
 - Task R49 : Rotation de la CA de l'instance
 - Task R50 : Domaine généré en HTTPS
 - Task R39 : Profil release et dépendances non maintenues
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R51 : Nom du panneau caché, HSTS des sous-domaines
 - Task R38 : Hooks de déploiement, expiration, plafonds de domaines
 - Task R4 : Réglages SMTP réservés au propriétaire
-- Task R48 : Signataire de la CA séparé (root)
 
 ## Prochaine étape exacte
-R41, R42 en cours ; puis R40, R52-R54, R43, R44
+R40, R41 en cours ; correctif matrice ; puis R52-R54, R43, R44
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,13 +32,11 @@ R41, R42 en cours ; puis R40, R52-R54, R43, R44
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `crates/control-plane/src/agents`
-- `crates/control-plane/src/cli`
-- `crates/agent/src`
-- `crates/pki`
-- `install`
-- `deploy/systemd`
-- `docs/operations/certificats.md`
+- `install/pages-site.sh`
+- `scripts/release`
+- `.github/workflows`
+- `.github/tools/ai-traces`
+- `docs/operations/release.md`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
