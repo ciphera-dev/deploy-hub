@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-26 15:10
+# État courant — mis à jour le 2026-11-26 15:27
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R42 : Chaîne de release — statut : TERMINÉ (TERMINÉ (relecture approuvée, 2 tours ; N1 mineur laissé))
+Task R40 : install.sh / uninstall.sh durcis — statut : TERMINÉ (TERMINÉ (relecture approuvée, 2 tours))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R40 : install.sh / uninstall.sh durcis
 - Task R42 : Chaîne de release
 - Task R49 : Rotation de la CA de l'instance
 - Task R50 : Domaine généré en HTTPS
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R37 : Setup, step-up, organisation, audit
 - Task R51 : Nom du panneau caché, HSTS des sous-domaines
 - Task R38 : Hooks de déploiement, expiration, plafonds de domaines
-- Task R4 : Réglages SMTP réservés au propriétaire
 
 ## Prochaine étape exacte
-R40, R41 en cours ; correctif matrice ; puis R52-R54, R43, R44
+R41 en cours ; puis R52 (après R41), R53, R54, R43, R44
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,11 +32,8 @@ R40, R41 en cours ; correctif matrice ; puis R52-R54, R43, R44
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `install/pages-site.sh`
-- `scripts/release`
+- `install`
 - `.github/workflows`
-- `.github/tools/ai-traces`
-- `docs/operations/release.md`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

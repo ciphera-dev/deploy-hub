@@ -457,3 +457,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 15:10 — Session v0.1-sdd — claude-code (orchestrateur) — Task R42 : Chaîne de release
 - fait : site limité à la liste signée, design-to-dev figé, Assert-GitHubReady + -CheckOnly (2 relecteurs, prevent self-review, ruleset de tags, releases immuables), archives comparées avant signature
 - résultat : TERMINÉ (relecture approuvée, 2 tours ; N1 mineur laissé)
+
+## 2026-11-26 15:27 — Session v0.1-sdd — claude-code (orchestrateur) — Task R40 : install.sh / uninstall.sh durcis
+- fait : script publié sans mode test, plafonds curl, compte ciphera existant vérifié, désinstallation ciblée, gardes des tests root
+- résultat : TERMINÉ (relecture approuvée, 2 tours)
