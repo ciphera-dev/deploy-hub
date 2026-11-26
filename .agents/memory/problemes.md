@@ -205,3 +205,8 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 - Résolu (af16080) : aucun appel quand le propriétaire est déjà le bon, seul root change un propriétaire, erreur claire sinon ; journaux warn pour une réponse ignorée, une demande abandonnée, un passage sans demande ; tests `only_root_changes_an_owner`, `service_paths_never_call_fchown_directly` ; install-docker vérifie l'absence de status=31/SYS et le message « certificat tls/link.crt renouvele ».
 - Leçon : tout appel système d'un chemin du service doit être compatible avec son filtre seccomp ; un code cfg(unix) n'est vraiment vérifié qu'au premier passage de la CI Linux.
 - Laissé : `SystemCallErrorNumber=EPERM` (erreur au lieu d'un arrêt) non adopté, choix de posture.
+
+## 2026-11-26 — CI rouge (install-docker) : contrôles de masquage de la clé de la CA après rotate-ca
+- Symptôme : « (a) rotate-ca : cle de la CA suivante masquee au service redemarre » et « cles de la CA masquees au service redemarre » en échec, 9 ms après `rotate-ca` / `--finish`.
+- Cause : course dans le test, pas un défaut de masquage. ciphera.service est `Type=simple` : `systemctl restart` rend la main dès le fork, avant que systemd-executor monte l'espace de noms (`InaccessiblePaths`) et lance le binaire ; `/proc/<pid>/root` montrait encore la racine de l'hôte.
+- Résolu : `ca_key_masked` attend un MainPID nouveau, actif, dont l'exécutable est déjà `/usr/local/bin/ciphera`, puis exige une clé non vide sur l'hôte et vide dans l'espace du service ; diagnostic complet (pid, stat, InaccessiblePaths, mountinfo, journal) en cas d'échec. Le contrôle échoue toujours si la clé est lisible par le service.
