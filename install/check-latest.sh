@@ -7,6 +7,7 @@
 #   - commentaire de confiance exactement
 #     `ciphera-latest version=<version> issued=<n> expires=<n>`, echeance
 #     apres la signature, au plus 120 jours plus tard, et pas encore passee ;
+#     date de signature au plus 1 jour dans le futur (decalage d'horloge) ;
 #   - latest.json vaut exactement {"version":"<version>"}.
 # Meme regle que shared::latest (plan de controle, ciphera-cli updater),
 # l'echeance en plus : un fichier echu n'est jamais publie.
@@ -56,5 +57,7 @@ done
 [ "$expires" -gt "$issued" ] && [ $((expires - issued)) -le "$validity" ] ||
 	die "latest.json : echeance invalide : $comment"
 now=$(date -u +%s)
+[ "$issued" -le $((now + 86400)) ] ||
+	die "latest.json : date de signature dans le futur ($comment) : horloge du signataire"
 [ "$now" -lt "$expires" ] || die "latest.json : echeance passee ($comment) : re-signer (refresh-latest.yml)"
 printf '%s\n' "$comment"

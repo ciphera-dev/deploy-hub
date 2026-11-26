@@ -28,6 +28,10 @@ use crate::update::Version;
 pub const MAX_LATEST_BYTES: usize = 4096;
 /// Duree de validite d'une signature de `latest.json` (120 jours).
 pub const VALIDITY_SECS: u64 = 120 * 24 * 3600;
+/// Avance toleree de `issued` sur l'horloge locale (decalage d'horloge) :
+/// au-dela, le fichier est refuse (une date de signature dans le futur
+/// repousserait l'echeance).
+pub const MAX_ISSUED_SKEW_SECS: u64 = 24 * 3600;
 /// Premier mot du commentaire de confiance.
 const COMMENT_TAG: &str = "ciphera-latest";
 
@@ -74,6 +78,8 @@ pub enum LatestError {
     Signature,
     /// Commentaire de confiance absent ou mal forme.
     Comment,
+    /// Date de signature trop loin dans le futur ([`MAX_ISSUED_SKEW_SECS`]).
+    IssuedInFuture,
     /// JSON illisible, trop long ou version mal formee.
     Json,
     /// Version du JSON differente de celle du commentaire signe.
@@ -88,6 +94,9 @@ impl fmt::Display for LatestError {
                 "latest.json : signature minisign invalide (aucune cle de confiance)"
             }
             Self::Comment => "latest.json : commentaire de confiance mal forme",
+            Self::IssuedInFuture => {
+                "latest.json : date de signature dans le futur (horloge du signataire ou locale)"
+            }
             Self::Json => "latest.json : contenu invalide",
             Self::VersionMismatch => {
                 "latest.json : version differente de celle du commentaire signe"
@@ -145,18 +154,24 @@ fn parse_comment(comment: &str) -> Result<(Version, u64, u64), LatestError> {
 
 /// Verifie `json` (contenu exact de `latest.json`) avec `sig` (contenu de
 /// `latest.json.minisig`) et l'une des cles `pubkeys` (base64, `RW…`). Une
-/// cle mal formee est une erreur, jamais ignoree.
+/// cle mal formee est une erreur, jamais ignoree. `now` (secondes Unix) :
+/// une date de signature plus de [`MAX_ISSUED_SKEW_SECS`] apres `now` est
+/// refusee.
 pub fn verify_latest(
     pubkeys: &[String],
     json: &[u8],
     sig: &str,
+    now: u64,
 ) -> Result<SignedLatest, LatestError> {
     let keys = pubkeys
         .iter()
         .map(|k| minisign_verify::PublicKey::from_base64(k))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| LatestError::Key)?;
-    if json.len() > MAX_LATEST_BYTES || sig.len() > MAX_LATEST_BYTES {
+    if sig.len() > MAX_LATEST_BYTES {
+        return Err(LatestError::Signature);
+    }
+    if json.len() > MAX_LATEST_BYTES {
         return Err(LatestError::Json);
     }
     let sig = minisign_verify::Signature::decode(sig).map_err(|_| LatestError::Signature)?;
@@ -166,6 +181,9 @@ pub fn verify_latest(
         return Err(LatestError::Signature);
     }
     let (signed_version, issued, expires) = parse_comment(sig.trusted_comment())?;
+    if issued > now.saturating_add(MAX_ISSUED_SKEW_SECS) {
+        return Err(LatestError::IssuedInFuture);
+    }
     let parsed: LatestJson = serde_json::from_slice(json).map_err(|_| LatestError::Json)?;
     let version = parse_version(&parsed.version).ok_or(LatestError::Json)?;
     if version != signed_version {
@@ -205,6 +223,8 @@ mod tests {
             "ciphera-latest version=v1.2.3 issued=200 expires=100",
             "ciphera-latest version=v1.2.3 issued=100 expires=10368101",
             "ciphera-latest version=v1.2.3 issued=100 expires=200\t",
+            "ciphera-latest version=v1.2.3 issued=99999999999999999999 expires=100000000000000000000",
+            "ciphera-latest version=v1.2.3 issued=18446744073709551616 expires=18446744073709551617",
             "timestamp:100\tfile:latest.json",
         ] {
             assert_eq!(parse_comment(bad), Err(LatestError::Comment), "{bad:?}");

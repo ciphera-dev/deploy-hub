@@ -225,15 +225,25 @@ check "latest : autre cle refusee" \
 # Re-signature (refresh-latest.yml) : meme version, nouvelle signature.
 mkdir latest-refresh
 cp dist/latest.json latest-refresh/
-sh "$root/install/sign-latest.sh" "$version" plain.key plain.pub latest-refresh >/dev/null
+sh "$root/install/sign-latest.sh" "$version" plain.key plain.pub latest-refresh dist/SHA256SUMS >/dev/null
 check "latest : re-signature sans changer la version" \
 	bash -c "cmp -s dist/latest.json latest-refresh/latest.json && sh '$root/install/check-latest.sh' plain.pub latest-refresh '$version' >/dev/null"
 # Jamais une autre version : latest.json present d'une autre version.
 mkdir latest-other
 printf '{"version":"v9.9.9"}\n' >latest-other/latest.json
 check "latest : re-signature d'une autre version refusee" \
-	fails_with "version jamais changee" sh "$root/install/sign-latest.sh" "$version" plain.key plain.pub latest-other
+	fails_with "version jamais changee" sh "$root/install/sign-latest.sh" "$version" plain.key plain.pub latest-other dist/SHA256SUMS
 check "latest : rien n'est signe apres un refus" test ! -e latest-other/latest.json.minisig
+# Rotation activee apres la release (secret = cle suivante, ensemble de
+# confiance a deux cles) : la release a ete signee par la cle courante, la
+# re-signature par une autre cle est refusee.
+mkdir latest-rotated
+cp dist/latest.json latest-rotated/
+check "latest : re-signature par une autre cle que celle de la release refusee" \
+	fails_with "publier la release suivante" sh "$root/install/sign-latest.sh" "$version" next.key set.pub latest-rotated dist/SHA256SUMS
+check "latest : aucune signature laissee apres le refus de rotation" test ! -e latest-rotated/latest.json.minisig
+check "latest : meme ensemble, cle de la release : accepte" \
+	sh "$root/install/sign-latest.sh" "$version" plain.key set.pub latest-rotated dist/SHA256SUMS
 # Version annoncee modifiee apres la signature.
 cp -r latest-refresh latest-tampered
 printf '{"version":"v9.9.9"}\n' >latest-tampered/latest.json
@@ -259,6 +269,10 @@ check "latest : echeance passee refusee a la publication" \
 latest_signed latest-long "ciphera-latest version=$version issued=$now expires=$((now + 10368001))"
 check "latest : echeance au-dela de 120 jours refusee" \
 	fails_with "echeance invalide" sh "$root/install/check-latest.sh" plain.pub latest-long "$version"
+future_ts=$((now + 2 * 86400))
+latest_signed latest-future "ciphera-latest version=$version issued=$future_ts expires=$((future_ts + 10368000))"
+check "latest : date de signature a plus d'un jour dans le futur refusee" \
+	fails_with "date de signature dans le futur" sh "$root/install/check-latest.sh" plain.pub latest-future "$version"
 
 MINISIGN_PASSWORD='mot de passe solide' \
 	sh "$root/install/sign-release.sh" "$version" enc.key enc.pub dist-enc release >/dev/null

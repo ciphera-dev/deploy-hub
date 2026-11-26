@@ -4,7 +4,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 
-import { LATEST_EXPIRED_MESSAGE, UpdateStatus } from "./UpdateStatus";
+import { isNewer, LATEST_EXPIRED_MESSAGE, UpdateStatus } from "./UpdateStatus";
 
 let version: Record<string, unknown>;
 
@@ -37,6 +37,20 @@ it("latest.json valide : aucune alerte", async () => {
   expect(await screen.findByText("v0.2.0 : à jour")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Notes de version" })).toHaveAttribute("href", "https://get.ciphera.ch/releases/v0.2.0/CHANGELOG.md");
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("latest.json plus ancien que la version installee : jamais « disponible »", async () => {
+  version = { current: "v0.10.0", latest: "v0.9.0" };
+  mount();
+  expect(await screen.findByText("À jour (dernière publiée : v0.9.0)")).toBeInTheDocument();
+  expect(screen.queryByText(/disponible/)).toBeNull();
+});
+
+it("comparaison numerique des versions (anti-retrogradation)", () => {
+  expect(isNewer("v0.10.0", "v0.9.9")).toBe(true);
+  expect(isNewer("v1.0.0", "v1.0.0")).toBe(false);
+  expect(isNewer("v0.9.0", "v0.10.0")).toBe(false);
+  expect(isNewer("latest", "v0.1.0")).toBe(false);
 });
 
 it("verification desactivee ou latest.json refuse (signature invalide) : « Non vérifiée »", async () => {

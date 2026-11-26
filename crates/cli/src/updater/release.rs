@@ -138,6 +138,13 @@ fn verify_any(pubkeys: &[String], data: &[u8], sig: &str) -> Result<(), String> 
     }
 }
 
+/// Echec de [`fetch_latest`] : telechargement (reseau, taille) ou fichier
+/// refuse (signature, commentaire, version).
+pub(super) enum LatestFetch {
+    Download(String),
+    Invalid(String),
+}
+
 /// Avertissement d'un `latest.json` dont l'echeance est passee (meme sens
 /// que le message du panneau).
 pub(super) const LATEST_EXPIRED: &str = "impossible de garantir que Ciphera est a jour \
@@ -153,15 +160,16 @@ pub(super) fn fetch_latest(
     sys: &dyn System,
     dir: &Path,
     sources: &Sources,
-) -> Result<Version, String> {
+) -> Result<Version, LatestFetch> {
     let base = format!("{}/releases", sources.release_base_url);
     for f in ["latest.json", "latest.json.minisig"] {
-        get(sys, &format!("{base}/{f}"), &dir.join(f), METADATA_LIMIT)?;
+        get(sys, &format!("{base}/{f}"), &dir.join(f), METADATA_LIMIT)
+            .map_err(LatestFetch::Download)?;
     }
-    let json = read_small(&dir.join("latest.json"))?;
-    let sig = read_small(&dir.join("latest.json.minisig"))?;
-    let latest = shared::latest::verify_latest(&sources.pubkeys, json.as_bytes(), &sig)
-        .map_err(|e| e.to_string())?;
+    let json = read_small(&dir.join("latest.json")).map_err(LatestFetch::Invalid)?;
+    let sig = read_small(&dir.join("latest.json.minisig")).map_err(LatestFetch::Invalid)?;
+    let latest = shared::latest::verify_latest(&sources.pubkeys, json.as_bytes(), &sig, sys.now())
+        .map_err(|e| LatestFetch::Invalid(e.to_string()))?;
     if latest.expired(sys.now()) {
         eprintln!(
             "attention : {LATEST_EXPIRED} : latest.json signe le {}, echeance depassee ; \

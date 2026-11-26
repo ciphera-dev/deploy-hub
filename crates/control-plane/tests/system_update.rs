@@ -293,6 +293,15 @@ async fn latest_signature_required() {
         json!({ "current": current() })
     );
 
+    // Date de signature a plus d'un jour dans le futur : refusee.
+    let server = MockServer::start().await;
+    let future = signer.sign(json, &comment("v9.9.9", now() + 2 * 24 * 3600));
+    serve_latest(&server, json, &future, 1).await;
+    assert_eq!(
+        version_seen(&server, &signer).await,
+        json!({ "current": current() })
+    );
+
     // Cles integrees (production) : la cle jetable n'est pas acceptee.
     let server = MockServer::start().await;
     serve_latest(&server, json, &good, 1).await;

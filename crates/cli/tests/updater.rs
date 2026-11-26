@@ -2242,7 +2242,7 @@ fn latest_signature_required() {
         json.as_bytes().to_vec(),
     );
     let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
-    assert!(matches!(r, Err(UpdateError::Verification(_))), "{r:?}");
+    assert!(matches!(r, Err(UpdateError::Io(_))), "{r:?}");
     assert_eq!(sys.count("pg_dump") + sys.count("restart"), 0);
     env.assert_untouched();
 
@@ -2284,6 +2284,27 @@ fn latest_signature_required() {
     }
     env.assert_untouched();
     assert!(env.backups().is_empty());
+
+    // Date de signature a plus d'un jour dans le futur : refusee.
+    let sys = Mock::new(&env, true);
+    publish_latest(
+        &sys,
+        &env.signer,
+        json,
+        &latest_comment("v0.2.0", NOW + 2 * 24 * 3600),
+    );
+    let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
+    match r {
+        Err(UpdateError::Verification(m)) => assert!(m.contains("futur"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    env.assert_untouched();
+
+    // Site injoignable : erreur de telechargement, pas de verification.
+    let sys = Mock::new(&env, true);
+    let r = updater::run(Mode::Latest, &sys, &env.paths, &env.sources);
+    assert!(matches!(r, Err(UpdateError::Io(_))), "{r:?}");
+    env.assert_untouched();
 }
 
 #[test]

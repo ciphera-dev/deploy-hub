@@ -620,8 +620,10 @@ pub fn run(
                 .state_dir
                 .join(format!("latest-{}", std::process::id()));
             reset_dir(&dir)?;
-            let latest =
-                release::fetch_latest(sys, &dir, sources).map_err(UpdateError::Verification);
+            let latest = release::fetch_latest(sys, &dir, sources).map_err(|e| match e {
+                release::LatestFetch::Download(m) => UpdateError::Io(m),
+                release::LatestFetch::Invalid(m) => UpdateError::Verification(m),
+            });
             let _ = fs::remove_dir_all(&dir);
             (Some(latest?), false, None)
         }

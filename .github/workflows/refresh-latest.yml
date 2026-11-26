@@ -59,7 +59,8 @@ jobs:
 
   # Seul job qui lit la cle minisign de production (environnement `release`,
   # approbation). Ne signe que latest.json (install/sign-latest.sh refuse un
-  # latest.json d'une autre version).
+  # latest.json d'une autre version, ou une cle autre que celle qui a signe
+  # SHA256SUMS de la release).
   sign:
     if: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-24.04
@@ -119,6 +120,9 @@ jobs:
           set -eu
           mkdir latest
           gh release download "$TAG" --pattern latest.json --dir latest
+          # SHA256SUMS signe de la release : la cle qui re-signe doit etre
+          # celle qui a signe la release (sign-latest.sh, refus sinon).
+          gh release download "$TAG" --pattern SHA256SUMS --pattern SHA256SUMS.minisig --dir "$RUNNER_TEMP/release"
           [ "$(cat latest/latest.json)" = "{\"version\":\"$TAG\"}" ] || {
             echo "::error::latest.json de la release $TAG ne vaut pas {\"version\":\"$TAG\"}"
             exit 1
@@ -138,7 +142,9 @@ jobs:
           key="$RUNNER_TEMP/minisign.key"
           trap 'rm -f "$key"' EXIT
           printf '%s\n' "$MINISIGN_KEY" | tr -d '\r' > "$key"
-          sh install/sign-latest.sh "$TAG" "$key" install/ciphera.pub latest
+          # Refus si la cle active n'est pas celle de la release (rotation
+          # activee apres elle) : publier la release suivante.
+          sh install/sign-latest.sh "$TAG" "$key" install/ciphera.pub latest "$RUNNER_TEMP/release/SHA256SUMS"
           # Exactement deux fichiers transmis au job du site.
           [ "$(find latest -mindepth 1 | sort | tr '\n' ' ')" = "latest/latest.json latest/latest.json.minisig " ]
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

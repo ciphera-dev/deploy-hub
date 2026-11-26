@@ -125,11 +125,11 @@ impl LatestRelease {
         })
     }
 
-    async fn get(&self, base_url: &str) -> Option<Latest> {
+    async fn get(&self, base_url: &str, now: u64) -> Option<Latest> {
         if let Some(c) = self.cached() {
             return c.latest;
         }
-        let latest = match fetch_latest(base_url, &self.pubkeys).await {
+        let latest = match fetch_latest(base_url, &self.pubkeys, now).await {
             Ok(l) => Some(l),
             Err(e) => {
                 tracing::warn!("verification de la derniere version : {e}");
@@ -144,7 +144,7 @@ impl LatestRelease {
     }
 }
 
-async fn fetch_latest(base_url: &str, pubkeys: &[String]) -> Result<Latest, String> {
+async fn fetch_latest(base_url: &str, pubkeys: &[String], now: u64) -> Result<Latest, String> {
     let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -166,7 +166,7 @@ async fn fetch_latest(base_url: &str, pubkeys: &[String]) -> Result<Latest, Stri
     let sig = String::from_utf8(sig).map_err(|_| "latest.json.minisig : signature illisible")?;
     // Rien n'est utilise avant la verification (signature, commentaire de
     // confiance, version identique).
-    let latest = verify_latest(pubkeys, &body, &sig).map_err(|e| e.to_string())?;
+    let latest = verify_latest(pubkeys, &body, &sig, now).map_err(|e| e.to_string())?;
     // Lien affiche dans le panneau : https seulement, caracteres surs.
     let changelog_url = latest.changelog_url.filter(|u| {
         u.starts_with("https://")
@@ -202,12 +202,12 @@ async fn get_capped(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Stri
 
 /// `GET /api/system/version`
 async fn version(State(state): State<AppState>, _auth: Admin) -> Result<Response, ApiError> {
+    let now = state.clock.unix_secs() as u64;
     let latest = if state.cfg.update_check {
-        state.releases.get(&state.cfg.release_base_url).await
+        state.releases.get(&state.cfg.release_base_url, now).await
     } else {
         None
     };
-    let now = state.clock.unix_secs() as u64;
     let body = SystemVersion {
         current: current_version().to_string(),
         latest: latest.as_ref().map(|l| l.version.to_string()),

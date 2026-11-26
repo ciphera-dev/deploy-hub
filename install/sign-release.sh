@@ -63,7 +63,7 @@ sh "$here/release-script.sh" "$pub" "$here/install.sh" "$dist/install.sh"
 )
 msign "$dist/SHA256SUMS" "ciphera $version SHA256SUMS ($label)"
 msign "$dist/install.sh" "ciphera $version install.sh ($label)"
-sh "$here/sign-latest.sh" "$version" "$key" "$pub" "$dist" >/dev/null
+sh "$here/sign-latest.sh" "$version" "$key" "$pub" "$dist" "$dist/SHA256SUMS" >/dev/null
 
 # Une cle de confiance doit verifier les deux signatures (rotation : la cle
 # de signature est l'une des cles de <cles publiques>).
