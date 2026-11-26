@@ -4437,13 +4437,19 @@
             }
           },
           "401": {
-            "description": "Pas de session complete"
+            "description": "Pas de session complete, `invalid_credentials` (mot de passe du compte), `second_factor_required` (code du second facteur absent) ou `invalid_code`"
           },
           "403": {
             "description": "Proprietaire seulement, ou jeton CSRF absent ou invalide"
           },
+          "409": {
+            "description": "`second_factor_unavailable`"
+          },
           "422": {
             "description": "`validation_failed` (hote, port, mode TLS, identifiants, expediteur, mot de passe a ressaisir), `smtp_host_private` (hote local ou prive) ou `smtp_host_unresolved` (nom non resolu)"
+          },
+          "429": {
+            "description": "Trop de tentatives ; en-tete Retry-After"
           }
         },
         "security": [
@@ -6266,7 +6272,8 @@
             "type": "string",
             "description": "`owner`, `admin`, `ops`, `developer` ou `viewer` ; jamais au-dessus du\nrole de l'invitant."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "CreatedDeployHook": {
         "type": "object",
@@ -9494,7 +9501,8 @@
             "type": "string",
             "description": "Nouveau role : `owner`, `admin`, `ops`, `developer` ou `viewer`."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "UpdateNotificationSettings": {
         "type": "object",
@@ -9505,9 +9513,25 @@
           "port",
           "tls",
           "from_address",
-          "from_name"
+          "from_name",
+          "current_password"
         ],
         "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Code du second facteur du proprietaire (application d'authentification\nou code de secours) : exige si son compte en a un.",
+            "maxLength": 64
+          },
+          "current_password": {
+            "type": "string",
+            "format": "password",
+            "description": "Mot de passe du compte du proprietaire (confirmation renforcee : ces\nreglages decident si les avis de securite partent).",
+            "maxLength": 1024
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -9540,7 +9564,8 @@
           "username": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "UpdateOrgSecurity": {
         "type": "object",

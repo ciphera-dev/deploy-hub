@@ -33,6 +33,7 @@ pub struct NotificationSettings {
 
 /// Corps de `PUT /api/settings/notifications`.
 #[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateNotificationSettings {
     pub enabled: bool,
     pub host: String,
@@ -47,6 +48,15 @@ pub struct UpdateNotificationSettings {
     pub password: Option<Zeroizing<String>>,
     pub from_address: String,
     pub from_name: String,
+    /// Mot de passe du compte du proprietaire (confirmation renforcee : ces
+    /// reglages decident si les avis de securite partent).
+    #[schema(value_type = String, format = Password, max_length = 1024)]
+    pub current_password: Zeroizing<String>,
+    /// Code du second facteur du proprietaire (application d'authentification
+    /// ou code de secours) : exige si son compte en a un.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, format = Password, max_length = 64)]
+    pub code: Option<Zeroizing<String>>,
 }
 
 impl fmt::Debug for UpdateNotificationSettings {
@@ -60,6 +70,8 @@ impl fmt::Debug for UpdateNotificationSettings {
             .field("password", &self.password.as_ref().map(|_| "***"))
             .field("from_address", &self.from_address)
             .field("from_name", &self.from_name)
+            .field("current_password", &"***")
+            .field("code", &self.code.as_ref().map(|_| "***"))
             .finish()
     }
 }
@@ -87,8 +99,10 @@ pub fn get_notifications() {}
     params(("X-CSRF-Token" = Option<String>, Header, description = "Jeton CSRF de la session (obligatoire)")),
     responses(
         (status = 200, description = "Reglages enregistres", body = NotificationSettings),
-        (status = 401, description = "Pas de session complete"),
+        (status = 401, description = "Pas de session complete, `invalid_credentials` (mot de passe du compte), `second_factor_required` (code du second facteur absent) ou `invalid_code`"),
         (status = 403, description = "Proprietaire seulement, ou jeton CSRF absent ou invalide"),
+        (status = 409, description = "`second_factor_unavailable`"),
+        (status = 429, description = "Trop de tentatives ; en-tete Retry-After"),
         (status = 422, description = "`validation_failed` (hote, port, mode TLS, identifiants, expediteur, mot de passe a ressaisir), `smtp_host_private` (hote local ou prive) ou `smtp_host_unresolved` (nom non resolu)"),
     )
 )]

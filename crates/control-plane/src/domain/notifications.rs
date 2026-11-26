@@ -3,8 +3,12 @@
 //! proche de l'expiration, CA de l'instance a moins d'un an de son
 //! expiration (proprietaire seul, [`check_ca_expiry`]), changement d'equipe
 //! privilegie (invitation, role, retrait, lien de reinitialisation ou remise
-//! a zero du second facteur d'un membre : [`Event::TeamChange`], aux autres
-//! proprietaires que l'auteur, preference « Equipe »).
+//! a zero du second facteur d'un membre : [`Event::TeamChange`]). Ces avis de
+//! securite vont aux proprietaires presents au moment de l'action, sauf
+//! l'auteur (liste figee dans l'evenement : un proprietaire retire ou
+//! retrograde est prevenu), quelles que soient leurs preferences ; le plafond
+//! horaire s'applique (un compte supprime depuis, sans ligne d'envoi
+//! possible, est servi sans plafond, au moins une fois).
 //!
 //! - **Mise en file a la transition** : [`enqueue`] est appele dans la
 //!   transaction qui change le statut (deploiement, certificat). Rien n'est
@@ -107,12 +111,28 @@ pub enum Event {
         expires_at: i64,
     },
     /// Changement d'equipe privilegie, decrit par la ligne d'audit
-    /// `audit_id` (action, auteur, cible) : proprietaires seulement, sauf
-    /// l'auteur.
+    /// `audit_id` (action, auteur, cible). `recipients` : proprietaires
+    /// presents dans la transaction de l'action, avant le changement, sauf
+    /// l'auteur (seule exception a « identifiants seulement » : leur adresse,
+    /// pour prevenir aussi un compte supprime par l'action).
     TeamChange {
         audit_id: Uuid,
+        #[serde(default)]
+        recipients: Vec<Notified>,
     },
 }
+
+/// Destinataire fige d'un avis de securite.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notified {
+    pub user_id: Uuid,
+    pub email: String,
+}
+
+/// Avertissement « avis de securite perdus faute d'origine publique »,
+/// journalise une seule fois par processus.
+static NO_PUBLIC_URL_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 impl Event {
     /// Cle de l'evenement : une notification par cle et par destinataire.
@@ -129,7 +149,7 @@ impl Event {
             } => format!("cert:{domain_id}:expiring:{expires_at}"),
             Event::Digest { user_id } => format!("digest:{user_id}"),
             Event::CaExpiring { expires_at } => format!("ca:expiring:{expires_at}"),
-            Event::TeamChange { audit_id } => format!("team:{audit_id}"),
+            Event::TeamChange { audit_id, .. } => format!("team:{audit_id}"),
         }
     }
 
@@ -155,14 +175,24 @@ pub fn register(handlers: Handlers, state: AppState) -> Handlers {
 /// transition), si l'instance peut envoyer des e-mails. Un meme evenement
 /// deja en file n'est pas duplique.
 pub async fn enqueue(conn: &mut PgConnection, state: &AppState, event: Event) -> sqlx::Result<()> {
-    if state.public_url().is_none() {
-        return Ok(());
-    }
     let smtp: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM smtp_settings WHERE enabled)")
             .fetch_one(&mut *conn)
             .await?;
     if !smtp {
+        return Ok(());
+    }
+    if state.public_url().is_none() {
+        // SMTP actif mais aucune origine publique : l'envoi est impossible
+        // (`mail::ready`). Un avis de securite perdu est signale, une fois.
+        if matches!(event, Event::TeamChange { .. })
+            && !NO_PUBLIC_URL_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            tracing::warn!(
+                "avis de securite aux proprietaires non envoyes : SMTP actif mais ni domaine \
+                 du panneau confirme ni CIPHERA_PUBLIC_URL (le journal d'audit les trace)"
+            );
+        }
         return Ok(());
     }
     queue(conn, &event, None).await
@@ -303,7 +333,6 @@ struct Recipient {
     deploy_succeeded: Option<bool>,
     deploy_failed: Option<bool>,
     certificates: Option<bool>,
-    team: Option<bool>,
 }
 
 impl Recipient {
@@ -315,7 +344,8 @@ impl Recipient {
             Event::CertFailed { .. } | Event::CertExpiring { .. } | Event::CaExpiring { .. } => {
                 self.certificates.unwrap_or(d.certificates)
             }
-            Event::TeamChange { .. } => self.team.unwrap_or(d.team),
+            // Avis de securite : jamais desactivable (plafond horaire seul).
+            Event::TeamChange { .. } => return true,
             Event::Digest { .. } => true,
         };
         wanted && self.email_enabled.unwrap_or(d.email_enabled)
@@ -324,7 +354,7 @@ impl Recipient {
 
 /// Comptes et preferences (filtre et ordre ajoutes par l'appelant).
 const RECIPIENTS: &str = "SELECT u.id, u.email, u.role, u.timezone, p.email_enabled, \
-     p.deploy_succeeded, p.deploy_failed, p.certificates, p.team \
+     p.deploy_succeeded, p.deploy_failed, p.certificates \
      FROM users u LEFT JOIN notification_prefs p ON p.user_id = u.id";
 
 /// Verrou de la transaction sur les envois du compte (plafond exact).
@@ -477,26 +507,46 @@ pub async fn handle_within(
     .fetch_all(db)
     .await
     .map_err(|e| db_error("lecture des destinataires", e))?;
+    // (compte encore present, identifiant, adresse, fuseau)
+    let targets: Vec<(bool, Uuid, String, String)> = match &event {
+        // Liste figee a l'action : ni role ni preference ne l'ecartent.
+        Event::TeamChange {
+            recipients: fixed, ..
+        } => fixed
+            .iter()
+            .map(|n| match recipients.iter().find(|r| r.id == n.user_id) {
+                Some(r) => (true, n.user_id, n.email.clone(), r.timezone.clone()),
+                None => (false, n.user_id, n.email.clone(), "UTC".to_string()),
+            })
+            .collect(),
+        _ => recipients
+            .into_iter()
+            .filter(|r| notice.allows(r.id, &r.role) && r.wants(&event))
+            .map(|r| (true, r.id, r.email, r.timezone))
+            .collect(),
+    };
     let key = event.key();
     let mut failed = 0;
     // Cause de l'arret avant le dernier destinataire.
     let mut stopped: Option<&str> = None;
-    for r in recipients {
-        if !notice.allows(r.id, &r.role) || !r.wants(&event) {
-            continue;
-        }
+    for (exists, id, email, timezone) in targets {
         if tokio::time::Instant::now() >= deadline {
             stopped = Some("duree maximale de la tache atteinte");
             break;
         }
-        let now = state.clock.unix_secs();
-        let slot = reserve(db, &event, r.id, now)
-            .await
-            .map_err(|e| db_error("plafond des notifications", e))?;
-        if !matches!(slot, Slot::Send) {
-            continue;
+        // Compte supprime par l'action : aucune ligne d'envoi possible (cle
+        // etrangere), envoye sans plafond (au moins une fois).
+        if exists {
+            let now = state.clock.unix_secs();
+            let slot = reserve(db, &event, id, now)
+                .await
+                .map_err(|e| db_error("plafond des notifications", e))?;
+            if !matches!(slot, Slot::Send) {
+                continue;
+            }
         }
-        let message = compose(&notice, &link, &r.timezone, &r.email);
+        let security = matches!(event, Event::TeamChange { .. });
+        let message = compose(&notice, &link, &timezone, &email, security);
         let sent = send_before(state, mailer.clone(), message, deadline).await;
         if let Err(e) = &sent {
             tracing::warn!(error = %e, event = %key, "notification non envoyee");
@@ -515,12 +565,14 @@ pub async fn handle_within(
             "DELETE FROM notification_deliveries \
              WHERE event_key = $1 AND user_id = $2 AND status = 'pending'"
         };
-        sqlx::query(query)
-            .bind(&key)
-            .bind(r.id)
-            .execute(db)
-            .await
-            .map_err(|e| db_error("enregistrement de l'envoi", e))?;
+        if exists {
+            sqlx::query(query)
+                .bind(&key)
+                .bind(id)
+                .execute(db)
+                .await
+                .map_err(|e| db_error("enregistrement de l'envoi", e))?;
+        }
         if stopped.is_some() {
             break;
         }
@@ -625,7 +677,10 @@ async fn digest(
         else {
             continue;
         };
-        if !notice.allows(r.id, &r.role) || !r.wants(&event) {
+        // Avis de securite retenu : reserve pour ce compte d'apres la liste
+        // figee, il part meme si le compte a change de role depuis.
+        let team = matches!(event, Event::TeamChange { .. });
+        if !team && (!notice.allows(r.id, &r.role) || !r.wants(&event)) {
             continue;
         }
         if matches!(event, Event::DeploySucceeded { .. }) {
@@ -787,7 +842,7 @@ async fn notice(db: &PgPool, event: &Event) -> sqlx::Result<Option<Notice>> {
             }))
         }
         Event::Digest { .. } => Ok(None),
-        Event::TeamChange { audit_id } => team_notice(db, *audit_id).await,
+        Event::TeamChange { audit_id, .. } => team_notice(db, *audit_id).await,
         Event::CaExpiring { expires_at } => Ok(Some(Notice {
             subject: "La CA de l'instance Ciphera expire bientôt".into(),
             body: "La CA de l'instance (certificats des agents, du lien et de l'accès direct \
@@ -1017,20 +1072,25 @@ fn one_line(text: &str) -> String {
         .collect()
 }
 
-fn compose(notice: &Notice, link: &str, timezone: &str, to: &str) -> OutgoingMail {
+/// `security` : avis d'equipe, envoye quelles que soient les preferences.
+fn compose(notice: &Notice, link: &str, timezone: &str, to: &str, security: bool) -> OutgoingMail {
     let body = match notice.expires_at {
         Some(at) => notice
             .body
             .replace("{expiry}", &format_expiry(at, timezone)),
         None => notice.body.replace("{expiry}", "sa date d'expiration"),
     };
+    let footer = if security {
+        "Avis de sécurité envoyé à chaque propriétaire, quelles que soient ses \
+         préférences de notification."
+    } else {
+        "Vous recevez cet e-mail selon vos préférences de notification \
+         (Profil › Notifications)."
+    };
     OutgoingMail {
         to: to.to_string(),
         subject: one_line(&notice.subject),
-        text: format!(
-            "Bonjour,\n\n{body}\n\n{link}\n\nVous recevez cet e-mail selon vos \
-             préférences de notification (Profil › Notifications).\n"
-        ),
+        text: format!("Bonjour,\n\n{body}\n\n{link}\n\n{footer}\n"),
     }
 }
 
@@ -1054,7 +1114,13 @@ mod tests {
                 expires_at: 1,
             },
             Event::CaExpiring { expires_at: 1 },
-            Event::TeamChange { audit_id: id },
+            Event::TeamChange {
+                audit_id: id,
+                recipients: vec![Notified {
+                    user_id: id,
+                    email: "a@example.com".into(),
+                }],
+            },
         ];
         let keys: std::collections::HashSet<_> = events.iter().map(Event::key).collect();
         assert_eq!(keys.len(), events.len());
@@ -1083,6 +1149,7 @@ Bcc: x@example.com"
             "https://p.example.com/deployments/x",
             "UTC",
             "a@example.com",
+            false,
         );
         assert!(
             !mail.subject.chars().any(char::is_control),

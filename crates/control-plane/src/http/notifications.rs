@@ -1,6 +1,8 @@
 //! Parametres › Notifications : serveur SMTP de l'instance.
 //! `GET /api/settings/notifications` (Parametres : Admin requis, lecture
-//! seule) et `PUT` (proprietaire seulement).
+//! seule) et `PUT` (proprietaire seulement, confirmation renforcee
+//! `auth::step_up` : ces reglages decident si les avis de securite aux
+//! proprietaires partent ; code consomme dans la transaction).
 //!
 //! Le mot de passe SMTP est en ecriture seule : chiffre par le coffre de
 //! l'instance, jamais renvoye (seulement `password_set`), conserve quand un
@@ -19,6 +21,7 @@ use std::net::IpAddr;
 use uuid::Uuid;
 
 use crate::auth::internal;
+use crate::auth::step_up::{self, StepUp};
 use crate::http::client_ip::ClientIp;
 use crate::http::settings::{Admin, owner_only};
 use crate::http::setup::validate_email;
@@ -162,6 +165,22 @@ async fn update(
         None => None,
     };
 
+    // Step-up apres la validation (une demande invalide ne coute aucun essai)
+    // et hors transaction (aucune connexion tenue pendant Argon2).
+    let proof = match step_up::verify(
+        &state,
+        &auth.user,
+        ip,
+        input.current_password,
+        input.code,
+        "settings.notifications.updated.failure",
+    )
+    .await?
+    {
+        StepUp::Verified(proof) => proof,
+        StepUp::Limited(response) => return Ok(response),
+    };
+
     // Ancien transport (meilleur effort) : sert a prevenir les proprietaires.
     let previous = match mail::load_settings(&state.db, &state.secrets).await {
         Ok(settings) => settings,
@@ -230,6 +249,7 @@ async fn update(
             .await
             .map_err(|e| internal("enregistrement des reglages SMTP", e))?;
     }
+    proof.commit(&mut tx).await?;
     sqlx::query(
         "INSERT INTO audit_events (id, actor_id, action, target, detail) \
          VALUES ($1, $2, 'settings.notifications.updated', 'settings', $3)",

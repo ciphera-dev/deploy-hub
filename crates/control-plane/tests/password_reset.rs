@@ -58,8 +58,17 @@ async fn as_user(
     who: &(String, String),
     method: &str,
     path: &str,
-    body: Option<Value>,
+    mut body: Option<Value>,
 ) -> Reply {
+    // Reglages SMTP : confirmation renforcee (mot de passe du compte), sauf
+    // si le test en fournit une.
+    if method == "PUT"
+        && path == "/api/settings/notifications"
+        && let Some(b) = body.as_mut()
+        && b.get("current_password").is_none()
+    {
+        b["current_password"] = json!(PASSWORD);
+    }
     call(
         state,
         method,

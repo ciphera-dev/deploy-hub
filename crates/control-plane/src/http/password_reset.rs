@@ -45,7 +45,7 @@ use zeroize::Zeroizing;
 use crate::auth::session::{self, SessionToken};
 use crate::auth::step_up::{self, StepUp};
 use crate::auth::{internal, password, rate_limit};
-use crate::authz::{Require, Role, forbidden, lvl, res};
+use crate::authz::{Require, lvl, res};
 use crate::http::client_ip::ClientIp;
 use crate::mail;
 use crate::state::AppState;
@@ -469,30 +469,23 @@ async fn member_link(
             "Pour votre propre compte, changez votre mot de passe depuis le profil.",
         ));
     }
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| internal("transaction de reinitialisation", e))?;
-    let target: Option<(String, String)> =
-        sqlx::query_as("SELECT email, role FROM users WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| internal("lecture du membre", e))?;
-    let (email, role) = target.ok_or_else(member_not_found)?;
     // Memes regles de rang que la gestion des membres : un admin ne
     // reinitialise ni le proprietaire ni un autre admin ; un role inconnu en
-    // base n'est gere par personne.
-    if !Role::parse(&role).is_some_and(|role| auth.role.can_manage(role)) {
-        return Err(forbidden());
+    // base n'est gere par personne. Premier controle sans verrou, avant le
+    // step-up : une demande refusee ne coute aucun essai.
+    super::team::precheck(&state, auth.role, id).await?;
+    {
+        let mut conn = state
+            .db
+            .acquire()
+            .await
+            .map_err(|e| internal("connexion a la base", e))?;
+        if super::team::is_pending(&mut conn, id).await? {
+            return Err(super::team::account_pending());
+        }
     }
-    if super::team::is_pending(&mut tx, id).await? {
-        return Err(super::team::account_pending());
-    }
-    // Step-up apres les controles (une demande refusee ne coute aucun essai),
-    // sans verrou tenu sur le compte de l'auteur ; un echec annule tout.
     let Json(input) = body.map_err(|_| invalid("Requête invalide."))?;
+    // Step-up hors transaction (aucune connexion tenue pendant Argon2).
     let proof = match step_up::verify(
         &state,
         &auth.user,
@@ -506,6 +499,24 @@ async fn member_link(
         StepUp::Verified(proof) => proof,
         StepUp::Limited(response) => return Ok(response),
     };
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| internal("transaction de reinitialisation", e))?;
+    // Rang de l'acteur et de la cible relus sous verrou (comme Equipe) : un
+    // changement de role pendant le step-up est pris en compte, rien n'est
+    // emis si le controle echoue maintenant.
+    super::team::lock_and_check(&mut tx, auth.user.id, id).await?;
+    if super::team::is_pending(&mut tx, id).await? {
+        return Err(super::team::account_pending());
+    }
+    let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| internal("lecture du membre", e))?;
+    let recipients = super::team::owners_to_notify(&mut tx, auth.user.id).await?;
     let issued = issue(&mut tx, &email, state.clock.unix_secs(), 0.0, Origin::Admin)
         .await
         .map_err(|e| internal("creation du lien de reinitialisation", e))?
@@ -518,6 +529,7 @@ async fn member_link(
         "team.member.reset_link",
         "user",
         json!({ "user_id": issued.user_id, "ip": ip.to_string() }),
+        recipients,
     )
     .await?;
     tx.commit()
@@ -551,18 +563,9 @@ async fn member_reset_mfa(
         ));
     }
     let Json(input) = body.map_err(|_| invalid("Requête invalide."))?;
-    let target: Option<(String, String)> =
-        sqlx::query_as("SELECT email, role FROM users WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| internal("lecture du membre", e))?;
-    let (email, role) = target.ok_or_else(member_not_found)?;
     // Memes regles de rang que `reset-link` ; un role inconnu n'est gere par
-    // personne.
-    if !Role::parse(&role).is_some_and(|role| auth.role.can_manage(role)) {
-        return Err(forbidden());
-    }
+    // personne. Premier controle sans verrou, avant le step-up.
+    super::team::precheck(&state, auth.role, id).await?;
     let proof = match step_up::verify(
         &state,
         &auth.user,
@@ -582,18 +585,15 @@ async fn member_reset_mfa(
         .begin()
         .await
         .map_err(|e| internal("transaction de remise a zero du second facteur", e))?;
-    // Rang relu dans la transaction, ligne verrouillee : un changement de role
-    // survenu pendant la verification du mot de passe est pris en compte.
-    let current: Option<String> =
-        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| internal("lecture du membre", e))?;
-    let current = current.ok_or_else(member_not_found)?;
-    if !Role::parse(&current).is_some_and(|role| auth.role.can_manage(role)) {
-        return Err(forbidden());
-    }
+    // Rangs de l'acteur et de la cible relus sous verrou (comme Equipe) : un
+    // changement de role survenu pendant le step-up est pris en compte.
+    super::team::lock_and_check(&mut tx, auth.user.id, id).await?;
+    let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| internal("lecture du membre", e))?;
+    let recipients = super::team::owners_to_notify(&mut tx, auth.user.id).await?;
     let mut removed = [0_u64; 3];
     for (slot, (context, sql)) in [
         ("TOTP", "DELETE FROM user_totp WHERE user_id = $1"),
@@ -642,6 +642,7 @@ async fn member_reset_mfa(
             "sessions_revoked": revoked,
             "ip": ip,
         }),
+        recipients,
     )
     .await?;
     tx.commit()

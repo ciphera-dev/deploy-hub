@@ -192,6 +192,34 @@ async fn create(
     if !auth.role.can_grant(role) {
         return Err(forbidden());
     }
+    // Adresse deja prise (compte confirme) : refus avant le step-up, sans
+    // essai consomme (refait sous verrou ensuite).
+    let taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower($1) \
+                        AND email_verified_at IS NOT NULL)",
+    )
+    .bind(&email)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| internal("lecture des comptes", e))?;
+    if taken {
+        return Err(email_taken());
+    }
+    // Step-up hors transaction (aucune connexion tenue pendant Argon2) ; le
+    // code n'est consomme que dans la transaction de l'invitation.
+    let proof = match step_up::verify(
+        &state,
+        &auth.user,
+        ip,
+        input.password,
+        input.code,
+        "team.invitation.created.failure",
+    )
+    .await?
+    {
+        StepUp::Verified(proof) => proof,
+        StepUp::Limited(response) => return Ok(response),
+    };
 
     // Meme format que les jetons de session : 32 octets aleatoires, base64url.
     let token = SessionToken::generate().map_err(|e| internal("jeton d'invitation", e))?;
@@ -210,6 +238,18 @@ async fn create(
     .execute(&mut *tx)
     .await
     .map_err(|e| internal("verrou d'invitation", e))?;
+    // Role de l'invitant relu dans la transaction (change pendant le step-up).
+    let actor: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
+        .bind(auth.user.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| internal("lecture de l'invitant", e))?;
+    if !actor
+        .and_then(|r| Role::parse(&r))
+        .is_some_and(|actor| actor.can_grant(role))
+    {
+        return Err(forbidden());
+    }
     // Un compte d'inscription ouverte encore non confirme ne reserve pas
     // l'adresse : l'invitation le remplace.
     sqlx::query("DELETE FROM users WHERE lower(email) = lower($1) AND email_verified_at IS NULL")
@@ -231,21 +271,7 @@ async fn create(
         .execute(&mut *tx)
         .await
         .map_err(|e| internal("remplacement de l'invitation", e))?;
-    // Step-up apres les controles ci-dessus (une demande refusee ne coute
-    // aucun essai) ; un echec annule la transaction : rien n'est modifie.
-    let proof = match step_up::verify(
-        &state,
-        &auth.user,
-        ip,
-        input.password,
-        input.code,
-        "team.invitation.created.failure",
-    )
-    .await?
-    {
-        StepUp::Verified(proof) => proof,
-        StepUp::Limited(response) => return Ok(response),
-    };
+    let recipients = super::team::owners_to_notify(&mut tx, auth.user.id).await?;
     sqlx::query(
         "INSERT INTO invitations (id, token_hash, email, name, role, invited_by, created_at, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7), to_timestamp($7) + make_interval(secs => $8))",
@@ -270,6 +296,7 @@ async fn create(
         "team.invitation.created",
         "invitation",
         json!({ "invitation_id": invitation_id, "role": role.as_str(), "ip": ip.to_string() }),
+        recipients,
     )
     .await?;
     tx.commit()

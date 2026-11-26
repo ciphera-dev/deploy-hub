@@ -3218,6 +3218,18 @@ export interface components {
         };
         /** @description Corps de `PUT /api/settings/notifications`. */
         UpdateNotificationSettings: {
+            /**
+             * Format: password
+             * @description Code du second facteur du proprietaire (application d'authentification
+             *     ou code de secours) : exige si son compte en a un.
+             */
+            code?: string | null;
+            /**
+             * Format: password
+             * @description Mot de passe du compte du proprietaire (confirmation renforcee : ces
+             *     reglages decident si les avis de securite partent).
+             */
+            current_password: string;
             enabled: boolean;
             from_address: string;
             from_name: string;
@@ -7245,7 +7257,7 @@ export interface operations {
                     "application/json": components["schemas"]["NotificationSettings"];
                 };
             };
-            /** @description Pas de session complete */
+            /** @description Pas de session complete, `invalid_credentials` (mot de passe du compte), `second_factor_required` (code du second facteur absent) ou `invalid_code` */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7259,8 +7271,22 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description `second_factor_unavailable` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description `validation_failed` (hote, port, mode TLS, identifiants, expediteur, mot de passe a ressaisir), `smtp_host_private` (hote local ou prive) ou `smtp_host_unresolved` (nom non resolu) */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trop de tentatives ; en-tete Retry-After */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

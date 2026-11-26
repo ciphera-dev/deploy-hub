@@ -546,15 +546,22 @@ mod tests {
         };
         assert!(!format!("{link:?}").contains("SECRETTESTTOKEN"));
         let smtp: notifications::UpdateNotificationSettings = serde_json::from_str(
-            r#"{"enabled":true,"host":"h","port":587,"tls":"starttls","password":"smtp-test-secret","from_address":"a@b.c","from_name":"C"}"#,
+            r#"{"enabled":true,"host":"h","port":587,"tls":"starttls","password":"smtp-test-secret","from_address":"a@b.c","from_name":"C","current_password":"owner-test-secret","code":"123456"}"#,
         )
         .unwrap();
-        assert!(!format!("{smtp:?}").contains("smtp-test-secret"));
+        let dbg = format!("{smtp:?}");
+        assert!(!dbg.contains("smtp-test-secret") && !dbg.contains("owner-test-secret"));
+        assert!(!dbg.contains("123456"));
         let keep: notifications::UpdateNotificationSettings = serde_json::from_str(
-            r#"{"enabled":true,"host":"h","port":587,"tls":"tls","from_address":"a@b.c","from_name":"C"}"#,
+            r#"{"enabled":true,"host":"h","port":587,"tls":"tls","from_address":"a@b.c","from_name":"C","current_password":"p"}"#,
         )
         .unwrap();
         assert!(keep.password.is_none() && keep.username.is_empty());
+        // Corps de step-up : champ inconnu refuse.
+        assert!(serde_json::from_str::<notifications::UpdateNotificationSettings>(
+            r#"{"enabled":true,"host":"h","port":587,"tls":"tls","from_address":"a@b.c","from_name":"C","current_password":"p","otp":"1"}"#,
+        )
+        .is_err());
     }
 
     #[test]

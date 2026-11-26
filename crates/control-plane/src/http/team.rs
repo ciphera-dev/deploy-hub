@@ -45,7 +45,7 @@ use uuid::Uuid;
 use crate::auth::internal;
 use crate::auth::step_up::{self, StepUp};
 use crate::authz::{Require, Role, forbidden, lvl, res};
-use crate::domain::notifications::{self, Event};
+use crate::domain::notifications::{self, Event, Notified};
 use crate::http::client_ip::ClientIp;
 use crate::http::invitations::audit;
 use crate::state::AppState;
@@ -109,9 +109,29 @@ fn invalid(message: &str) -> ApiError {
     ApiError::new(422, "validation_failed", message)
 }
 
+/// Proprietaires a prevenir d'un changement d'equipe : tous sauf l'auteur,
+/// lus dans la transaction de l'action et avant le changement (un
+/// proprietaire retire ou retrograde par l'action est prevenu).
+pub(crate) async fn owners_to_notify(
+    conn: &mut PgConnection,
+    actor: Uuid,
+) -> Result<Vec<Notified>, ApiError> {
+    let rows: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, email FROM users WHERE role = 'owner' AND id <> $1 ORDER BY id")
+            .bind(actor)
+            .fetch_all(conn)
+            .await
+            .map_err(|e| internal("lecture des proprietaires", e))?;
+    Ok(rows
+        .into_iter()
+        .map(|(user_id, email)| Notified { user_id, email })
+        .collect())
+}
+
 /// Audit d'un changement d'equipe privilegie et avis aux autres
-/// proprietaires (notification mise en file si SMTP est actif), dans la
-/// transaction de l'action. Le detail ne porte ni jeton, ni e-mail, ni secret.
+/// proprietaires `recipients` ([`owners_to_notify`] ; notification mise en
+/// file si SMTP est actif), dans la transaction de l'action. Le detail ne
+/// porte ni jeton, ni e-mail, ni secret.
 pub(crate) async fn record(
     conn: &mut PgConnection,
     state: &AppState,
@@ -119,6 +139,7 @@ pub(crate) async fn record(
     action: &str,
     target: &str,
     detail: serde_json::Value,
+    recipients: Vec<Notified>,
 ) -> Result<(), ApiError> {
     let id = Uuid::new_v4();
     sqlx::query(
@@ -132,7 +153,11 @@ pub(crate) async fn record(
     .execute(&mut *conn)
     .await
     .map_err(|e| internal("audit du changement d'equipe", e))?;
-    notifications::enqueue(conn, state, Event::TeamChange { audit_id: id })
+    let event = Event::TeamChange {
+        audit_id: id,
+        recipients,
+    };
+    notifications::enqueue(conn, state, event)
         .await
         .map_err(|e| internal("avis aux proprietaires", e))
 }
@@ -140,7 +165,11 @@ pub(crate) async fn record(
 /// Premier controle de rang, hors transaction et sans verrou, avant le
 /// step-up : role actuel de la cible (`can_manage`). Refait sous verrou
 /// ensuite ([`lock_and_check`]).
-async fn precheck(state: &AppState, actor: Role, target_id: Uuid) -> Result<Role, ApiError> {
+pub(crate) async fn precheck(
+    state: &AppState,
+    actor: Role,
+    target_id: Uuid,
+) -> Result<Role, ApiError> {
     let target: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
         .bind(target_id)
         .fetch_optional(&state.db)
@@ -193,15 +222,15 @@ async fn list_members(
 }
 
 /// Cible lue et verrouillee dans la transaction, role de l'acteur relu.
-struct Locked {
-    actor: Role,
-    target: Role,
+pub(crate) struct Locked {
+    pub(crate) actor: Role,
+    pub(crate) target: Role,
     owners: usize,
 }
 
 /// Verrouille les proprietaires (par identifiant), relit le role de l'acteur
 /// et celui de la cible (verrouillee aussi), puis applique `can_manage`.
-async fn lock_and_check(
+pub(crate) async fn lock_and_check(
     tx: &mut PgConnection,
     actor_id: Uuid,
     target_id: Uuid,
@@ -296,6 +325,7 @@ async fn update_member(
     if locked.target == Role::Owner && new_role != Role::Owner && locked.owners < 2 {
         return Err(last_owner());
     }
+    let recipients = owners_to_notify(&mut tx, auth.user.id).await?;
     sqlx::query("UPDATE users SET role = $2 WHERE id = $1")
         .bind(id)
         .bind(new_role.as_str())
@@ -316,6 +346,7 @@ async fn update_member(
             "to": new_role.as_str(),
             "ip": ip.to_string(),
         }),
+        recipients,
     )
     .await?;
     tx.commit()
@@ -364,6 +395,7 @@ async fn remove_member(
     if locked.target == Role::Owner && locked.owners < 2 {
         return Err(last_owner());
     }
+    let recipients = owners_to_notify(&mut tx, auth.user.id).await?;
     // Les invitations encore utilisables du membre ne lui survivent pas.
     let invitations =
         sqlx::query("DELETE FROM invitations WHERE invited_by = $1 AND used_at IS NULL")
@@ -397,6 +429,7 @@ async fn remove_member(
             "deleted_invitations": invitations,
             "ip": ip.to_string(),
         }),
+        recipients,
     )
     .await?;
     tx.commit()

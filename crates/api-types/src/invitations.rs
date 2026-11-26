@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 
 /// Corps de `POST /api/team/invitations`.
 #[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateInvitation {
     pub email: String,
     /// Nom propose a l'invite (modifiable a l'acceptation).

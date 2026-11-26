@@ -740,7 +740,8 @@ async fn export_has_no_secrets() {
         Some(
             json!({ "enabled": true, "host": "smtp.example.com", "port": 587, "tls": "starttls",
                      "username": "mailer", "password": "fixture-smtp-test-password",
-                     "from_address": "ciphera@example.com", "from_name": "Ciphera" }),
+                     "from_address": "ciphera@example.com", "from_name": "Ciphera",
+                     "current_password": PASSWORD }),
         ),
     )
     .await;

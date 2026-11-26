@@ -32,6 +32,7 @@ pub struct TeamMember {
 
 /// Corps de `PATCH /api/team/members/{id}`.
 #[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateMemberRole {
     /// Nouveau role : `owner`, `admin`, `ops`, `developer` ou `viewer`.
     pub role: String,

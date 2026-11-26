@@ -150,27 +150,18 @@ async fn create(
     };
     let Json(input) = body.map_err(|_| invalid())?;
     let name = hooks::clean_name(&input.name).ok_or_else(invalid)?;
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| internal("transaction des deploy hooks", e))?;
-    project_exists(&mut tx, id).await?;
-    if let Some(at) = input.expires_at.as_deref() {
-        check_expiry(&mut tx, at).await?;
+    // Controles d'abord, sur une connexion rendue avant le step-up : une
+    // demande refusee ne coute aucun essai, et ni connexion ni transaction
+    // ne sont tenues pendant Argon2.
+    {
+        let mut conn = state
+            .db
+            .acquire()
+            .await
+            .map_err(|e| internal("connexion a la base", e))?;
+        create_checks(&mut conn, id, input.expires_at.as_deref()).await?;
     }
-    let existing = hooks::count(&mut tx, id)
-        .await
-        .map_err(|e| internal("compte des deploy hooks", e))?;
-    if existing >= hooks::MAX_PER_PROJECT {
-        return Err(ApiError::new(
-            409,
-            "too_many_hooks",
-            "20 deploy hooks au plus par projet.",
-        ));
-    }
-    // Step-up : un hook declenche des deploiements sans session. Apres les
-    // controles ci-dessus : une demande refusee ne coute aucun essai.
+    // Step-up : un hook declenche des deploiements sans session.
     let proof = match step_up::verify(
         &state,
         &auth.user,
@@ -184,6 +175,13 @@ async fn create(
         StepUp::Verified(proof) => proof,
         StepUp::Limited(response) => return Ok(response),
     };
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| internal("transaction des deploy hooks", e))?;
+    // Memes controles dans la transaction (etat change pendant le step-up).
+    create_checks(&mut tx, id, input.expires_at.as_deref()).await?;
     let token = hooks::generate().map_err(|e| internal("generateur aleatoire", e))?;
     let hook = hooks::insert(
         &mut tx,
@@ -222,6 +220,29 @@ async fn create(
     Ok(res)
 }
 
+/// Controles de la creation : projet, date d'expiration, nombre de hooks.
+async fn create_checks(
+    conn: &mut PgConnection,
+    project: Uuid,
+    expires_at: Option<&str>,
+) -> Result<(), ApiError> {
+    project_exists(&mut *conn, project).await?;
+    if let Some(at) = expires_at {
+        check_expiry(&mut *conn, at).await?;
+    }
+    let existing = hooks::count(&mut *conn, project)
+        .await
+        .map_err(|e| internal("compte des deploy hooks", e))?;
+    if existing >= hooks::MAX_PER_PROJECT {
+        return Err(ApiError::new(
+            409,
+            "too_many_hooks",
+            "20 deploy hooks au plus par projet.",
+        ));
+    }
+    Ok(())
+}
+
 /// Date d'expiration refusee : 422 ; erreur de base : 500.
 async fn check_expiry(conn: &mut PgConnection, value: &str) -> Result<(), ApiError> {
     hooks::check_expiry(conn, value).await.map_err(|e| match e {
@@ -246,19 +267,19 @@ async fn update(
     let hook = parse(&hook, hook_not_found)?;
     let Json(input) =
         body.map_err(|_| ApiError::new(422, "validation_failed", "Date d'expiration requise."))?;
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| internal("transaction des deploy hooks", e))?;
-    project_exists(&mut tx, id).await?;
-    check_expiry(&mut tx, &input.expires_at).await?;
-    let extends = hooks::lock_for_expiry(&mut tx, id, hook, &input.expires_at)
-        .await
-        .map_err(|e| internal("expiration du deploy hook", e))?
-        .ok_or_else(hook_not_found)?;
+    // Lecture d'abord, transaction annulee avant le step-up (aucune connexion
+    // ni verrou tenus pendant Argon2).
+    let extends = {
+        let mut tx = state
+            .db
+            .begin()
+            .await
+            .map_err(|e| internal("transaction des deploy hooks", e))?;
+        update_checks(&mut tx, id, hook, &input.expires_at).await?
+    };
     // Rallonger ou reactiver un hook expire redonne un secret valide : step-up
     // exige. Raccourcir reste libre.
+    let mut proof = None;
     if extends {
         let Some(password) = input.password.filter(|p| !p.is_empty()) else {
             return Err(ApiError::new(
@@ -277,9 +298,28 @@ async fn update(
         )
         .await?
         {
-            StepUp::Verified(proof) => proof.commit(&mut tx).await?,
+            StepUp::Verified(p) => proof = Some(p),
             StepUp::Limited(response) => return Ok(response),
         }
+    }
+    let mut tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|e| internal("transaction des deploy hooks", e))?;
+    // Relu sous verrou : un hook expire ou modifie pendant le step-up qui
+    // serait maintenant rallonge sans preuve est refuse.
+    let extends_now = update_checks(&mut tx, id, hook, &input.expires_at).await?;
+    match proof {
+        Some(proof) => proof.commit(&mut tx).await?,
+        None if extends_now => {
+            return Err(ApiError::new(
+                401,
+                "invalid_credentials",
+                "Saisissez votre mot de passe pour rallonger l'expiration.",
+            ));
+        }
+        None => {}
     }
     if !hooks::set_expiry(&mut tx, id, hook, &input.expires_at)
         .await
@@ -296,6 +336,22 @@ async fn update(
         .await
         .map_err(|e| internal("transaction des deploy hooks", e))?;
     Ok(Json(updated).into_response())
+}
+
+/// Controles de la nouvelle expiration ; verrouille le hook. Vrai si elle
+/// rallonge ou reactive le hook (step-up exige).
+async fn update_checks(
+    conn: &mut PgConnection,
+    project: Uuid,
+    hook: Uuid,
+    expires_at: &str,
+) -> Result<bool, ApiError> {
+    project_exists(&mut *conn, project).await?;
+    check_expiry(&mut *conn, expires_at).await?;
+    hooks::lock_for_expiry(&mut *conn, project, hook, expires_at)
+        .await
+        .map_err(|e| internal("expiration du deploy hook", e))?
+        .ok_or_else(hook_not_found)
 }
 
 /// `DELETE /api/projects/{id}/deploy-hooks/{hook}`

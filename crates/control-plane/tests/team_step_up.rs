@@ -550,3 +550,374 @@ async fn without_smtp_only_the_audit_is_written() {
     assert_eq!(audit_count(&state, "team.member.removed").await, 1);
     assert_eq!(team_notices(&state).await, 0);
 }
+
+/// Execute les taches `notify` en file ; renvoie les avis d'equipe envoyes.
+async fn deliver(state: &AppState, outbox: &Outbox) -> Vec<OutgoingMail> {
+    for _ in 0..20 {
+        let Some(job) = jobs::claim(&state.db, &state.clock, "test").await.unwrap() else {
+            break;
+        };
+        let id = job.id;
+        notifications::handle(state, job).await.unwrap();
+        jobs::complete(&state.db, &state.clock, id, "test")
+            .await
+            .unwrap();
+    }
+    outbox
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| m.subject.starts_with("Équipe Ciphera"))
+        .cloned()
+        .collect()
+}
+
+/// Avis de securite : envoye meme si le proprietaire a coupe la preference
+/// « Équipe » et tous les e-mails (plafond horaire seul).
+#[tokio::test]
+async fn team_notice_ignores_preferences() {
+    let (state, _pg, outbox) = env().await;
+    smtp(&state).await;
+    user(&state, "owner@example.com", "owner").await;
+    let owner2 = user(&state, "owner2@example.com", "owner").await;
+    sqlx::query(
+        "INSERT INTO notification_prefs \
+         (user_id, email_enabled, deploy_succeeded, deploy_failed, certificates, team) \
+         VALUES ($1, false, false, false, false, false)",
+    )
+    .bind(owner2)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let owner = session(&state, "owner@example.com").await;
+    let t = target(&state, Action::Invite, 1).await;
+    let r = act(
+        &state,
+        &owner,
+        Action::Invite,
+        &t,
+        json!({ "password": PASSWORD }),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+    let sent = deliver(&state, &outbox).await;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].to, "owner2@example.com");
+}
+
+/// Destinataires figes avant le changement : le second proprietaire d'une
+/// organisation a deux proprietaires est prevenu de son propre retrait et
+/// de sa retrogradation.
+#[tokio::test]
+async fn removed_or_demoted_owner_is_still_notified() {
+    for remove in [true, false] {
+        let (state, _pg, outbox) = env().await;
+        smtp(&state).await;
+        user(&state, "owner@example.com", "owner").await;
+        let owner2 = user(&state, "owner2@example.com", "owner").await;
+        let owner = session(&state, "owner@example.com").await;
+        let r = if remove {
+            send(
+                &state,
+                &owner,
+                "DELETE",
+                &format!("/api/team/members/{owner2}"),
+                json!({ "password": PASSWORD }),
+            )
+            .await
+        } else {
+            send(
+                &state,
+                &owner,
+                "PATCH",
+                &format!("/api/team/members/{owner2}"),
+                json!({ "password": PASSWORD, "role": "developer" }),
+            )
+            .await
+        };
+        assert!(r.status == 200 || r.status == 204, "{remove} {}", r.raw);
+        let left: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM users WHERE id = $1 AND role = 'owner'")
+                .bind(owner2)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(left, 0, "{remove}");
+        let sent = deliver(&state, &outbox).await;
+        assert_eq!(sent.len(), 1, "retrait={remove}");
+        assert_eq!(sent[0].to, "owner2@example.com");
+        assert!(
+            sent[0].text.contains("quelles que soient ses"),
+            "{}",
+            sent[0].text
+        );
+    }
+}
+
+/// Sans adresse publique : aucun avis en file (avertissement journalise),
+/// l'action et l'audit restent.
+#[tokio::test]
+async fn without_public_url_no_notice_is_queued() {
+    let (mut state, _pg, _outbox) = env().await;
+    state.cfg = Arc::new(
+        Config::from_lookup(|name| match name {
+            "CIPHERA_DATABASE_URL" => Some("postgres://u:p@127.0.0.1/c".to_string()),
+            _ => None,
+        })
+        .unwrap(),
+    );
+    smtp(&state).await;
+    user(&state, "owner@example.com", "owner").await;
+    user(&state, "owner2@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    let t = target(&state, Action::ResetLink, 1).await;
+    let r = act(
+        &state,
+        &owner,
+        Action::ResetLink,
+        &t,
+        json!({ "password": PASSWORD }),
+    )
+    .await;
+    assert_eq!(r.status, 201, "{}", r.raw);
+    assert_eq!(audit_count(&state, "team.member.reset_link").await, 1);
+    assert_eq!(team_notices(&state).await, 0);
+}
+
+/// Rangs relus sous verrou apres le step-up : la cible promue administrateur
+/// pendant la verification (transaction concurrente qui tient sa ligne) n'est
+/// plus geree par un administrateur ; rien n'est emis.
+#[tokio::test]
+async fn rank_is_rechecked_under_lock_after_step_up() {
+    for action in [Action::ResetLink, Action::ResetMfa] {
+        let (state, _pg, _outbox) = env().await;
+        user(&state, "owner@example.com", "owner").await;
+        user(&state, "admin@example.com", "admin").await;
+        let admin = session(&state, "admin@example.com").await;
+        let t = target(&state, action, 1).await;
+        // Promotion non validee : le premier controle (sans verrou) voit
+        // encore un developpeur.
+        let mut hold = state.db.begin().await.unwrap();
+        sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
+            .bind(t.0)
+            .execute(&mut *hold)
+            .await
+            .unwrap();
+        let request = {
+            let (state, admin, t) = (state.clone(), admin.clone(), t.clone());
+            tokio::spawn(async move {
+                act(&state, &admin, action, &t, json!({ "password": PASSWORD })).await
+            })
+        };
+        // La requete attend le verrou de la cible (step-up deja passe).
+        let mut waiting = false;
+        for _ in 0..400 {
+            waiting = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                 WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE '%FOR UPDATE%')",
+            )
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(waiting, "{action:?} : la requete n'a pas atteint le verrou");
+        hold.commit().await.unwrap();
+        let r = request.await.unwrap();
+        assert_eq!(r.status, 403, "{action:?} {}", r.raw);
+        assert!(!changed(&state, action, &t).await, "{action:?}");
+        assert_eq!(audit_count(&state, action.audit()).await, 0, "{action:?}");
+    }
+}
+
+/// Meme code envoye deux fois en meme temps : une seule action aboutit.
+#[tokio::test]
+async fn concurrent_replay_succeeds_once() {
+    let (state, _pg, _outbox) = env().await;
+    user(&state, "owner@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    let (owner, totp) = enrol_totp(&state, &owner).await;
+    let a = target(&state, Action::ResetLink, 1).await;
+    let b = target(&state, Action::ResetLink, 2).await;
+    away_from_step_boundary().await;
+    let code = totp_now(&totp);
+    let body = json!({ "password": PASSWORD, "code": code });
+    let (ra, rb) = tokio::join!(
+        act(&state, &owner, Action::ResetLink, &a, body.clone()),
+        act(&state, &owner, Action::ResetLink, &b, body.clone()),
+    );
+    let mut statuses = [ra.status, rb.status];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [201, 401], "{} / {}", ra.raw, rb.raw);
+    let loser = if ra.status == 401 { &ra } else { &rb };
+    assert_eq!(loser.code(), json!("invalid_code"));
+    let issued = u8::from(changed(&state, Action::ResetLink, &a).await)
+        + u8::from(changed(&state, Action::ResetLink, &b).await);
+    assert_eq!(issued, 1);
+    assert_eq!(audit_count(&state, "team.member.reset_link").await, 1);
+}
+
+fn smtp_body(password: &str, code: Option<&str>) -> Value {
+    let mut body = json!({
+        "enabled": true,
+        "host": "smtp.changed.example.com",
+        "port": 587,
+        "tls": "starttls",
+        "username": "",
+        "from_address": "ciphera@example.com",
+        "from_name": "Ciphera",
+        "current_password": password,
+    });
+    if let Some(code) = code {
+        body["code"] = json!(code);
+    }
+    body
+}
+
+/// Plafond d'essais partage entre les actions (et avec les reglages SMTP) :
+/// apres 5 mauvais mots de passe dans la session, 429 sur toute action.
+#[tokio::test]
+async fn attempt_cap_is_shared_between_actions() {
+    let (state, _pg, _outbox) = env().await;
+    user(&state, "owner@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    let actions = [
+        Action::Invite,
+        Action::ChangeRole,
+        Action::Remove,
+        Action::ResetLink,
+        Action::ResetMfa,
+    ];
+    for (n, action) in actions.into_iter().enumerate() {
+        let t = target(&state, action, n).await;
+        let r = act(
+            &state,
+            &owner,
+            action,
+            &t,
+            json!({ "password": "wrong password value" }),
+        )
+        .await;
+        assert_eq!(r.status, 401, "{action:?} {}", r.raw);
+    }
+    // Sixieme essai, bon mot de passe, sur une autre action : limite.
+    let t = target(&state, Action::ResetLink, 9).await;
+    let r = act(
+        &state,
+        &owner,
+        Action::ResetLink,
+        &t,
+        json!({ "password": PASSWORD }),
+    )
+    .await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+    assert!(!changed(&state, Action::ResetLink, &t).await);
+    let r = send(
+        &state,
+        &owner,
+        "PUT",
+        "/api/settings/notifications",
+        smtp_body(PASSWORD, None),
+    )
+    .await;
+    assert_eq!(r.status, 429, "{}", r.raw);
+}
+
+/// Reglages SMTP : meme step-up ; refus = reglages inchanges.
+#[tokio::test]
+async fn smtp_settings_require_step_up() {
+    let (state, _pg, _outbox) = env().await;
+    smtp(&state).await;
+    user(&state, "owner@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    let (owner, totp) = enrol_totp(&state, &owner).await;
+    let path = "/api/settings/notifications";
+    let mut no_confirm = smtp_body(PASSWORD, None);
+    no_confirm
+        .as_object_mut()
+        .unwrap()
+        .remove("current_password");
+    let r = send(&state, &owner, "PUT", path, no_confirm).await;
+    assert_eq!(r.status, 422, "{}", r.raw);
+    let r = send(&state, &owner, "PUT", path, smtp_body(PASSWORD, None)).await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), json!("second_factor_required"));
+    away_from_step_boundary().await;
+    let r = send(
+        &state,
+        &owner,
+        "PUT",
+        path,
+        smtp_body("wrong password value", Some(&totp_now(&totp))),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), json!("invalid_credentials"));
+    let r = send(
+        &state,
+        &owner,
+        "PUT",
+        path,
+        smtp_body(PASSWORD, Some(&wrong_code(&totp))),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.raw);
+    assert_eq!(r.code(), json!("invalid_code"));
+    let host: String = sqlx::query_scalar("SELECT host FROM smtp_settings")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(host, "smtp.example.com");
+    let mut unknown = smtp_body(PASSWORD, Some(&totp_now(&totp)));
+    unknown["extra"] = json!(true);
+    let r = send(&state, &owner, "PUT", path, unknown).await;
+    assert_eq!(r.status, 422, "champ inconnu : {}", r.raw);
+    let r = send(
+        &state,
+        &owner,
+        "PUT",
+        path,
+        smtp_body(PASSWORD, Some(&totp_now(&totp))),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    let host: String = sqlx::query_scalar("SELECT host FROM smtp_settings")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(host, "smtp.changed.example.com");
+    assert!(!r.raw.contains(PASSWORD));
+}
+
+/// Champ inconnu dans un corps de step-up : refuse (`deny_unknown_fields`).
+#[tokio::test]
+async fn step_up_bodies_reject_unknown_fields() {
+    let (state, _pg, _outbox) = env().await;
+    user(&state, "owner@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    for (n, action) in [
+        Action::Invite,
+        Action::ChangeRole,
+        Action::Remove,
+        Action::ResetLink,
+        Action::ResetMfa,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let t = target(&state, action, n).await;
+        let r = act(
+            &state,
+            &owner,
+            action,
+            &t,
+            json!({ "password": PASSWORD, "otp": "123456" }),
+        )
+        .await;
+        assert_eq!(r.status, 422, "{action:?} {}", r.raw);
+        assert!(!changed(&state, action, &t).await, "{action:?}");
+    }
+}
