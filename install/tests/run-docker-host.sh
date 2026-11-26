@@ -669,12 +669,55 @@ check "(a) ca/ non renommable par le compte ciphera" \
 # Rotation de la CA sur l'instance : nouvelle CA, agent local passe a elle de
 # lui-meme sur le lien, fin, puis lien et agent sur la seule nouvelle CA.
 ca_before=$(openssl x509 -in /etc/ciphera/ca/ca.crt -noout -fingerprint -sha256)
+# Cle <cle> de la CA masquee au service ciphera redemarre : InaccessiblePaths
+# y monte un noeud vide (0000), vu par /proc/<pid>/root (racine et espace de
+# montage du processus). ciphera.service est Type=simple : `systemctl
+# restart` (lance par rotate-ca) rend la main des le fork, avant que
+# systemd-executor ait monte l'espace de noms puis lance le binaire ;
+# jusque-la /proc/<pid>/root montre encore la racine de l'hote (vrai
+# fichier). On attend donc un MainPID nouveau (different de <pid avant>),
+# actif, dont l'executable est deja /usr/local/bin/ciphera (l'execve suit le
+# montage). Passe ce point, une cle non vide dans son espace de montage est un
+# vrai defaut : echec, avec de quoi le diagnostiquer.
+ca_key_masked() { # <cle> <MainPID avant le redemarrage>
+	local key=/etc/ciphera/ca/$1 before=$2 pid='' now i inner host
+	for i in $(seq 1 30); do
+		pid=$(systemctl show -p MainPID --value ciphera)
+		if [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != "$before" ] &&
+			[ "$(systemctl show -p ActiveState --value ciphera)" = active ] &&
+			[ "$(readlink "/proc/$pid/exe" 2>/dev/null)" = /usr/local/bin/ciphera ]; then
+			break
+		fi
+		pid=''
+		[ "$i" -lt 30 ] && sleep 1
+	done
+	host=$(stat -c %s "$key" 2>&1)
+	if [ -n "$pid" ]; then
+		inner=$(stat -c %s "/proc/$pid/root$key" 2>&1)
+		case $host in '' | *[!0-9]* | 0) ;; *) [ "$inner" = 0 ] && return 0 ;; esac
+	fi
+	{
+		now=$(systemctl show -p MainPID --value ciphera)
+		printf '    MainPID avant %s, maintenant %s (%s), executable %s\n' "$before" "$now" \
+			"$(systemctl show -p ActiveState -p SubState --value ciphera | tr '\n' ' ')" \
+			"$(readlink "/proc/$now/exe" 2>&1)"
+		[ -n "$pid" ] || printf '    service non redemarre, ou binaire non lance, en 30 s\n'
+		printf '    %s sur l hote : %s\n' "$key" "$(stat -c '%s %a %U:%G %F' "$key" 2>&1)"
+		[ -z "$pid" ] || printf '    %s dans l espace du service (pid %s) : %s\n' "$key" "$pid" \
+			"$(stat -c '%s %a %U:%G %F' "/proc/$pid/root$key" 2>&1)"
+		systemctl show -p Type -p InaccessiblePaths -p ExecMainPID -p ExecMainStartTimestamp -p NRestarts ciphera 2>&1 | sed 's/^/    /'
+		[ -z "$pid" ] || grep ' /etc/ciphera' "/proc/$pid/mountinfo" 2>&1 | sed 's/^/    mountinfo: /'
+		journalctl -u ciphera --no-pager -n 15 2>&1 | sed 's/^/    /'
+	} >&2
+	return 1
+}
+ciphera_pid=$(systemctl show -p MainPID --value ciphera)
 check "(a) rotate-ca : CA suivante creee (cle root 0600, certificat root:ciphera 0640)" \
 	sh -c 'env -i /usr/local/bin/ciphera admin rotate-ca && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca-next.key)" = 600:root:root && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca-next.crt)" = 640:root:ciphera'
 # Service redemarre par rotate-ca : la cle de la CA suivante lui est
 # masquee (fichier vide dans son espace de montage).
 check "(a) rotate-ca : cle de la CA suivante masquee au service redemarre" \
-	sh -c 'pid=$(systemctl show -p MainPID --value ciphera) && test "$pid" != 0 && test "$(stat -c %s /proc/$pid/root/etc/ciphera/ca/ca-next.key)" = 0 && test "$(stat -c %s /etc/ciphera/ca/ca-next.key)" != 0'
+	ca_key_masked ca-next.key "$ciphera_pid"
 if wait_for 180 'env -i /usr/local/bin/ciphera admin rotate-ca --status 2>&1 | grep -q "^0 serveur(s) restant(s)"'; then
 	check "(a) rotate-ca : agent local passe a la nouvelle CA" true
 else
@@ -687,9 +730,10 @@ check "(a) rotate-ca : certificat de l'agent emis par la nouvelle CA" \
 # Connexions comptees juste avant la fin : seule une reconnexion apres elle
 # fait passer la verification « agent reconnecte ».
 connected_before=$(journalctl -u ciphera --no-pager | grep -c "lien agents : agent .* connecte (" || true)
+ciphera_pid=$(systemctl show -p MainPID --value ciphera)
 check "(a) rotate-ca --finish" sh -c 'env -i /usr/local/bin/ciphera admin rotate-ca --finish'
 check "(a) rotate-ca : cles de la CA masquees au service redemarre" \
-	sh -c 'pid=$(systemctl show -p MainPID --value ciphera) && test "$pid" != 0 && test "$(stat -c %s /proc/$pid/root/etc/ciphera/ca/ca.key)" = 0'
+	ca_key_masked ca.key "$ciphera_pid"
 check "(a) rotate-ca : nouvelle CA en place, ancienne retiree" \
 	sh -c 'test ! -e /etc/ciphera/ca/ca-next.crt && test ! -e /etc/ciphera/ca/ca-next.key && test "$(openssl x509 -in /etc/ciphera/ca/ca.crt -noout -fingerprint -sha256)" != "'"$ca_before"'" && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca.key)" = 600:root:root && test "$(stat -c %a:%U:%G /etc/ciphera/ca/ca.crt)" = 640:root:ciphera'
 check "(a) rotate-ca : lien et panneau re-signes par la nouvelle CA" \
