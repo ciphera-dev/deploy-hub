@@ -12,6 +12,9 @@
 #     d'installe ;
 #   - (e) compte ciphera-build existant d'uid 1000 : refus avant tout
 #     telechargement, rien d'installe ;
+#   - (h) compte ciphera existant avec un shell de connexion, (i) compte
+#     ciphera-agent de groupe principal autre : refus avant tout
+#     telechargement, rien d'installe ;
 #   - (g) compte ciphera-postgres existant de groupe principal 0 (root) :
 #     refus avant tout telechargement, rien d'installe ;
 #   - (a) release valide : succes, `Empreinte SHA-256 :` affichee,
@@ -389,6 +392,34 @@ run_distro() {
 	check "(g) motif : root refuse pour PostgreSQL" grep -q "root refuse pour PostgreSQL" "$out"
 	check "(g) rien d'installe" nothing_installed
 	in_ctr 'userdel ciphera-postgres'
+
+	# (h) compte ciphera existant avec un shell de connexion : refuse avant
+	# tout telechargement (un compte ouvert heriterait des droits de Ciphera).
+	in_ctr 'useradd -r -M -s /bin/bash ciphera'
+	out="$work/$distro-h.log"
+	mapfile -t envs < <(test_env good)
+	if install "$out" "${envs[@]}"; then
+		check "(h) ciphera avec un shell de connexion : echec" false
+	else
+		check "(h) ciphera avec un shell de connexion : echec" true
+	fi
+	check "(h) motif : shell de connexion" grep -q "shell de connexion" "$out"
+	check "(h) rien d'installe" nothing_installed
+	in_ctr 'userdel ciphera'
+
+	# (i) compte ciphera-agent existant de groupe principal autre (users) :
+	# refuse de meme.
+	in_ctr 'useradd -r -M -g users -s /usr/sbin/nologin ciphera-agent'
+	out="$work/$distro-i.log"
+	mapfile -t envs < <(test_env good)
+	if install "$out" "${envs[@]}"; then
+		check "(i) ciphera-agent de groupe users : echec" false
+	else
+		check "(i) ciphera-agent de groupe users : echec" true
+	fi
+	check "(i) motif : groupe principal" grep -q "le groupe ciphera-agent est exige" "$out"
+	check "(i) rien d'installe" nothing_installed
+	in_ctr 'userdel ciphera-agent'
 
 	local planted
 	planted=$(plant_id_in_candidate_range)

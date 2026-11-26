@@ -54,3 +54,10 @@ curl -fsSL https://get.ciphera.ch/install.sh | sh
 - **Image Docker « tout-en-un »** : contraire au modèle « binaire + agent natif ».
 - **Checksum sans signature** : il ne protège pas si le serveur de téléchargement est compromis.
 - **Cosign seul** : il exige l'outil cosign sur la machine cible.
+
+## Note : durcissement du script d'installation
+
+- Les surcharges de test (adresses de release et d'outils, clé de test) sont dans des blocs `# >>> mode-test` / `# <<< mode-test` de `install/install.sh`. `install/release-script.sh` les retire du script publié et refuse de le produire s'il y reste une mention de `CIPHERA_INSTALL_TEST` : le script signé n'a aucun mode test.
+- Les téléchargements ont un temps maximal (30 s pour les petits fichiers, 600 s pour les archives) et une taille maximale (1 Mio, 512 Mio).
+- Un compte système déjà présent (`ciphera`, `ciphera-agent`, etc.) n'est accepté que s'il a un uid inférieur à `UID_MIN`, un shell `nologin` ou `false` et un groupe principal du même nom ; sinon l'installation s'arrête avant tout téléchargement.
+- `uninstall.sh` sans `--purge` ne retire que les conteneurs d'infrastructure (PostgreSQL, buildkitd et leurs aides) ; les conteneurs d'application des utilisateurs sont conservés et listés.

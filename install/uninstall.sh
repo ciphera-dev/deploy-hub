@@ -1,6 +1,9 @@
 #!/bin/sh
 # Desinstalle Ciphera : arrete les services, retire binaires et unites, et
-# supprime les conteneurs geres par Ciphera (etiquette dev.ciphera.managed).
+# supprime les conteneurs d'infrastructure de Ciphera (PostgreSQL, buildkitd
+# et ses aides, etiquette dev.ciphera.managed). Les conteneurs des
+# applications des utilisateurs (memes etiquettes, sans role) sont conserves
+# et listes ; seul --purge les supprime aussi.
 # Les secrets (/etc/ciphera, /etc/ciphera-agent), le reglage du filtrage de
 # sortie (/etc/ciphera-egress), les donnees
 # (/var/lib/ciphera*, dont l'etat de BuildKit /var/lib/ciphera-buildkit,
@@ -21,6 +24,12 @@ USERS='ciphera ciphera-proxy ciphera-agent ciphera-postgres ciphera-build'
 TMPFILES_DEST=/etc/tmpfiles.d/ciphera.conf
 APPARMOR_DEST=/etc/apparmor.d/ciphera-buildkitd
 MANAGED=label=dev.ciphera.managed=true
+# Conteneurs d'infrastructure : PostgreSQL (nom fixe, sans etiquette de role)
+# et les conteneurs de role buildkitd, buildkit-helper, prepare (agent :
+# infra.rs, buildkit.rs, docker.rs). Tout autre conteneur gere est une
+# application d'utilisateur.
+INFRA_POSTGRES_FILTER='name=^/ciphera-postgres$'
+INFRA_ROLES='buildkitd buildkit-helper prepare'
 # ciphera-buildkit-cache : cache de BuildKit des versions precedentes.
 VOLUMES='ciphera-postgres-data ciphera-buildkit-cache'
 
@@ -42,19 +51,34 @@ die() {
 STOP_TIMEOUT=30
 REMOVE_ATTEMPTS=6
 REMOVE_DELAY=5
+# Identifiants a supprimer : tous les conteneurs geres avec --purge, sinon
+# ceux d'infrastructure seulement (un par ligne).
+target_container_ids() {
+	if [ "$purge" = yes ]; then
+		docker ps -aq --filter "$MANAGED"
+		return
+	fi
+	_all=$(docker ps -aq --filter "$MANAGED" --filter "$INFRA_POSTGRES_FILTER") || return 1
+	for _r in $INFRA_ROLES; do
+		_one=$(docker ps -aq --filter "$MANAGED" --filter "label=dev.ciphera.role=$_r") || return 1
+		_all=$(printf '%s\n%s\n' "$_all" "$_one")
+	done
+	printf '%s\n' "$_all" | awk 'NF && !seen[$0]++'
+}
+
 remove_managed_containers() {
-	ids=$(docker ps -aq --filter "$MANAGED") || return 1
+	ids=$(target_container_ids) || return 1
 	[ -n "$ids" ] || return 0
 	# shellcheck disable=SC2086 # un identifiant par argument
 	docker stop -t "$STOP_TIMEOUT" $ids >/dev/null 2>&1 || true
 	attempt=1
 	while :; do
-		ids=$(docker ps -aq --filter "$MANAGED") || return 1
+		ids=$(target_container_ids) || return 1
 		[ -n "$ids" ] || return 0
 		if [ "$attempt" -ge "$REMOVE_ATTEMPTS" ]; then
 			# shellcheck disable=SC2086
 			docker rm -f $ids >/dev/null || true
-			[ -z "$(docker ps -aq --filter "$MANAGED")" ]
+			[ -z "$(target_container_ids)" ]
 			return
 		fi
 		# shellcheck disable=SC2086
@@ -103,11 +127,22 @@ main() {
 	if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 		have_docker=yes
 		if remove_managed_containers; then
-			say "conteneurs Ciphera supprimes"
+			if [ "$purge" = yes ]; then
+				say "conteneurs Ciphera supprimes"
+			else
+				say "conteneurs d'infrastructure de Ciphera supprimes"
+				apps=$(docker ps -a --filter "$MANAGED" --format '  {{.Names}} {{.Status}}') || apps=
+				if [ -n "$apps" ]; then
+					say "conteneurs d'application conserves (--purge les supprime aussi) :"
+					printf '%s\n' "$apps"
+				fi
+			fi
 		else
 			leftover=yes
 			printf 'ciphera : erreur : conteneurs Ciphera restants (relancer uninstall.sh) :\n' >&2
-			docker ps -a --filter "$MANAGED" --format '  {{.ID}} {{.Names}} {{.Status}}' >&2 || true
+			for cid in $(target_container_ids 2>/dev/null); do
+				docker ps -a --filter "id=$cid" --format '  {{.ID}} {{.Names}} {{.Status}}' >&2 || true
+			done
 		fi
 	fi
 	# Filtrage de la sortie des conteneurs (charge par ciphera-agent.service

@@ -4,7 +4,8 @@
 # comment » + cle ; plusieurs pendant une rotation) remplacent le marqueur
 # @CIPHERA_RELEASE_PUBKEYS@ de install.sh. Le script du depot ne porte aucune
 # cle et refuse de s'executer hors mode test ; seul le script publie (signe)
-# en porte.
+# en porte. Le bloc du mode test (marqueurs mode-test) est retire du script
+# publie.
 #
 #   install/release-script.sh <cles publiques> <install.sh du depot> <sortie>
 set -eu
@@ -43,12 +44,28 @@ marker="CIPHERA_PUBKEYS='@CIPHERA_RELEASE_PUBKEYS@'"
 	die "marqueur $marker absent ou repete dans $src"
 
 tmp="$out.tmp.$$"
+trap 'rm -f "$tmp" "$tmp.body"' EXIT
+
+# Blocs du mode test (« # >>> mode-test » ... « # <<< mode-test », eventuellement
+# indentes) : retires du script publie. Marqueurs equilibres, sans
+# imbrication, au moins un bloc.
+awk '
+	/^[ \t]*# >>> mode-test[ \t]*$/ { if (in_block) bad = 1; in_block = 1; blocks++; next }
+	/^[ \t]*# <<< mode-test[ \t]*$/ { if (!in_block) bad = 1; in_block = 0; next }
+	!in_block { print }
+	END { exit (bad || in_block || blocks < 1) ? 1 : 0 }
+' "$src" >"$tmp.body" || die "marqueurs mode-test absents ou mal formes dans $src"
+if grep -q 'CIPHERA_INSTALL_TEST' "$tmp.body"; then
+	die "CIPHERA_INSTALL_TEST subsiste hors du bloc mode-test dans $src"
+fi
+
 # Les cles ne contiennent que [A-Za-z0-9+/=] et des espaces : aucun
 # caractere special pour sed avec le separateur |.
-sed "s|^CIPHERA_PUBKEYS='@CIPHERA_RELEASE_PUBKEYS@'\$|CIPHERA_PUBKEYS='$keys'|" "$src" >"$tmp"
-[ "$(grep -c -x -F "CIPHERA_PUBKEYS='$keys'" "$tmp")" -eq 1 ] || {
-	rm -f "$tmp"
-	die "injection des cles ratee"
-}
+sed "s|^CIPHERA_PUBKEYS='@CIPHERA_RELEASE_PUBKEYS@'\$|CIPHERA_PUBKEYS='$keys'|" "$tmp.body" >"$tmp"
+rm -f "$tmp.body"
+[ "$(grep -c -x -F "CIPHERA_PUBKEYS='$keys'" "$tmp")" -eq 1 ] || die "injection des cles ratee"
+if grep -q 'CIPHERA_INSTALL_TEST' "$tmp"; then
+	die "le script publie mentionne encore CIPHERA_INSTALL_TEST"
+fi
 chmod 0644 "$tmp"
 mv -f "$tmp" "$out"

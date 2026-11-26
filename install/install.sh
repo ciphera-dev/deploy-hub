@@ -186,6 +186,12 @@ parse_args() {
 	esac
 }
 
+# >>> mode-test
+# Surcharges reservees aux tests de bout en bout (install/tests/run.sh) :
+# refusees si CIPHERA_INSTALL_TEST ne vaut pas 1. Ce bloc est retire du
+# script publie par install/release-script.sh : seul le script du depot
+# les porte.
+
 # URL de test <nom> <valeur> : mode test exige, https, caracteres surs.
 check_test_url() {
 	[ "$test_mode" = yes ] ||
@@ -199,11 +205,7 @@ check_test_url() {
 	esac
 }
 
-# Surcharges reservees aux tests de bout en bout (install/tests/run.sh) :
-# refusees si CIPHERA_INSTALL_TEST ne vaut pas 1.
-resolve_sources() {
-	base_url=$DEFAULT_BASE_URL
-	pubkeys=$CIPHERA_PUBKEYS
+apply_test_overrides() {
 	test_mode=no
 	if [ "${CIPHERA_INSTALL_TEST:-}" = 1 ]; then
 		test_mode=yes
@@ -217,7 +219,6 @@ resolve_sources() {
 
 	# Miroir des outils tiers (meme arborescence que github.com) : seule
 	# l'origine change, les empreintes epinglees restent verifiees.
-	tools_base_url=$DEFAULT_TOOLS_BASE_URL
 	if [ -n "${CIPHERA_TOOLS_BASE_URL:-}" ] && [ "$CIPHERA_TOOLS_BASE_URL" != "$DEFAULT_TOOLS_BASE_URL" ]; then
 		check_test_url CIPHERA_TOOLS_BASE_URL "$CIPHERA_TOOLS_BASE_URL"
 		tools_base_url=$CIPHERA_TOOLS_BASE_URL
@@ -231,6 +232,19 @@ resolve_sources() {
 		pubkeys=$CIPHERA_TEST_MINISIGN_PUBKEY
 		warn "MODE TEST : cle minisign de test"
 	fi
+}
+# <<< mode-test
+
+# Sources des releases et des outils : adresses et cles publiques de
+# confiance (les surcharges de test ne sont presentes que dans le depot).
+resolve_sources() {
+	base_url=$DEFAULT_BASE_URL
+	pubkeys=$CIPHERA_PUBKEYS
+	tools_base_url=$DEFAULT_TOOLS_BASE_URL
+
+	# >>> mode-test
+	apply_test_overrides
+	# <<< mode-test
 
 	# install.sh du depot (cle non injectee) : jamais d'installation.
 	[ -n "$pubkeys" ] || die "cle publique des releases absente"
@@ -329,8 +343,24 @@ regular_file() {
 	[ -f "$1" ] && [ ! -L "$1" ]
 }
 
+# Plafonds de telechargement : temps total (s) et taille (octets), pour que
+# ni un serveur lent ni une reponse sans fin ne bloque ou ne remplisse le
+# disque. Petits fichiers (SHA256SUMS, signatures) et archives.
+FETCH_SMALL_TIME=30
+FETCH_SMALL_MAX=1048576
+FETCH_ARCHIVE_TIME=600
+FETCH_ARCHIVE_MAX=536870912
+
+# fetch <url> <sortie> [archive] : « archive » releve les plafonds.
 fetch() {
-	curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$2" "$1" ||
+	_ftime=$FETCH_SMALL_TIME
+	_fmax=$FETCH_SMALL_MAX
+	if [ "${3:-}" = archive ]; then
+		_ftime=$FETCH_ARCHIVE_TIME
+		_fmax=$FETCH_ARCHIVE_MAX
+	fi
+	curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+		--max-time "$_ftime" --max-filesize "$_fmax" -o "$2" "$1" ||
 		die "telechargement impossible : $1"
 }
 
@@ -352,7 +382,7 @@ download_and_verify() {
 	awk '{ exit ($1 ~ /^[0-9a-f]+$/ && length($1) == 64) ? 0 : 1 }' "$tmp/SHA256SUMS.selected" ||
 		die "empreinte SHA-256 mal formee : rien n'est installe"
 
-	fetch "$release_url/$archive" "$tmp/$archive"
+	fetch "$release_url/$archive" "$tmp/$archive" archive
 	(cd "$tmp" && sha256sum -c --status SHA256SUMS.selected) ||
 		die "SHA-256 de $archive incorrect : rien n'est installe"
 	say "SHA-256 verifie"
@@ -421,7 +451,7 @@ download_build_tools() {
 	mkdir "$tmp/tools"
 	while read -r _name _version sum path member dest; do
 		file=${path##*/}
-		fetch "$tools_base_url/$path" "$tmp/$file"
+		fetch "$tools_base_url/$path" "$tmp/$file" archive
 		sha256_matches "$tmp/$file" "$sum" ||
 			die "SHA-256 de $file incorrect : rien n'est installe"
 		mkdir "$tmp/tools/$dest.d"
@@ -436,8 +466,34 @@ download_build_tools() {
 
 # --- installation -------------------------------------------------------------
 
+# Compte deja present : accepte seulement s'il est un compte systeme (uid
+# inferieur a UID_MIN de login.defs, 1000 a defaut), sans shell de connexion
+# (nologin ou false) et de groupe principal homonyme. Un compte humain ou
+# ouvert reutilise sous ce nom heriterait des droits de Ciphera (groupe,
+# fichiers de /etc/ciphera, secrets).
+check_account_shape() { # <compte>
+	_entry=$(getent passwd "$1" 2>/dev/null) || return 0
+	_uid=$(printf '%s\n' "$_entry" | awk -F: '{ print $3 }')
+	_shell=$(printf '%s\n' "$_entry" | awk -F: '{ print $7 }')
+	_umin=$(login_defs_min UID_MIN)
+	case "$_uid" in
+	'' | *[!0-9]*) die "le compte $1 existe deja avec un uid illisible : refuse (supprimer ce compte puis relancer install.sh)" ;;
+	esac
+	if [ "$_uid" -eq 0 ] || [ "$_uid" -ge "$_umin" ]; then
+		die "le compte $1 existe deja avec l'uid $_uid : un compte systeme (uid de 1 a $((_umin - 1))) est exige (supprimer ce compte puis relancer install.sh)"
+	fi
+	case "$_shell" in
+	*/nologin | */false) ;;
+	*) die "le compte $1 existe deja avec un shell de connexion (${_shell:-aucun}) : nologin ou false exige (supprimer ce compte puis relancer install.sh)" ;;
+	esac
+	_pgroup=$(id -gn "$1" 2>/dev/null) || die "groupe principal du compte $1 illisible : refuse"
+	[ "$_pgroup" = "$1" ] ||
+		die "le compte $1 existe deja avec le groupe principal $_pgroup : le groupe $1 est exige (supprimer ce compte puis relancer install.sh)"
+}
+
 ensure_user() {
 	if id -u "$1" >/dev/null 2>&1; then
+		check_account_shape "$1"
 		return 0
 	fi
 	nologin=$(command -v nologin || printf '/usr/sbin/nologin')
@@ -797,6 +853,9 @@ preflight_checks() {
 		check_build_account
 		check_subids
 	fi
+	for u in $USERS; do
+		check_account_shape "$u"
+	done
 }
 
 # Plage de sous-uids et de sous-gids reservee a ciphera-build (espace de

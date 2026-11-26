@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests des scripts de publication (sans conteneur ni reseau) :
-#   - install/release-script.sh : cles publiques injectees dans install.sh ;
+#   - install/release-script.sh : cles publiques injectees dans install.sh, blocs
+#     mode-test (surcharges de test) retires du script publie ;
 #   - install.sh du depot (sans cle) refuse de s'executer hors mode test ;
 #   - install/sign-release.sh : SHA256SUMS, signatures minisign, latest.json,
 #     cle chiffree (mot de passe sur l'entree standard) ou non ;
@@ -62,8 +63,28 @@ cat plain.pub next.pub >set.pub
 sh "$root/install/release-script.sh" plain.pub "$root/install/install.sh" released.sh
 check "cle injectee une fois" test "$(grep -c "^CIPHERA_PUBKEYS='$plain_key'\$" released.sh)" -eq 1
 check "plus aucun marqueur" bash -c "! grep -q '@CIPHERA_RELEASE_PUBKEYS@' released.sh"
-check "seule la ligne des cles change" \
-	test "$(diff "$root/install/install.sh" released.sh | grep -c '^[<>]')" -eq 2
+# Le script publie = le script du depot sans les blocs mode-test, cle injectee.
+awk '
+	/^[ \t]*# >>> mode-test[ \t]*$/ { in_block = 1; next }
+	/^[ \t]*# <<< mode-test[ \t]*$/ { in_block = 0; next }
+	!in_block { print }
+' "$root/install/install.sh" >expected-body.sh
+check "le depot porte un bloc mode-test" grep -q '# >>> mode-test' "$root/install/install.sh"
+check "script publie : plus aucune mention du mode test" \
+	bash -c "! grep -q -e CIPHERA_INSTALL_TEST -e 'mode-test' -e 'MODE TEST' released.sh"
+check "script publie : ignore les surcharges de test" \
+	bash -c "! grep -q -e CIPHERA_RELEASE_BASE_URL -e CIPHERA_TOOLS_BASE_URL -e CIPHERA_TEST_MINISIGN_PUBKEY released.sh"
+check "script publie : identique au depot hors bloc et cle" \
+	test "$(diff expected-body.sh released.sh | grep -c '^[<>]')" -eq 2
+check "script publie : syntaxe valide" sh -n released.sh
+cp "$root/install/install.sh" nomarker.sh
+sed -i '/# >>> mode-test/d' nomarker.sh
+check "marqueurs de mode test mal formes refuses" \
+	fails_with "mode-test" sh "$root/install/release-script.sh" plain.pub nomarker.sh x.sh
+cp "$root/install/install.sh" leak.sh
+sed -i "s|^DEFAULT_VERSION=|# CIPHERA_INSTALL_TEST fuite\nDEFAULT_VERSION=|" leak.sh
+check "mention du mode test hors bloc refusee" \
+	fails_with "CIPHERA_INSTALL_TEST subsiste" sh "$root/install/release-script.sh" plain.pub leak.sh x.sh
 printf 'untrusted comment: x\nRWpas-une-cle\n' >bad.pub
 check "cle publique invalide refusee" \
 	fails_with "cle publique invalide" sh "$root/install/release-script.sh" bad.pub "$root/install/install.sh" x.sh
@@ -89,6 +110,83 @@ if [ "$(id -u)" -ne 0 ]; then
 	check "install.sh publie (deux cles) : accepte (s'arrete a root)" \
 		fails_with "droits root requis" sh released-set.sh --non-interactive
 fi
+
+# --- uninstall.sh : conteneurs d'infrastructure seulement (docker bouchonne) ----
+# Fixture « id nom etiquettes » ; le bouchon filtre sur label=K=V et name=^/x$
+# et retire de la fixture ce que `docker rm` supprime.
+mkdir -p ubin
+cat >ubin/docker <<'DK'
+#!/bin/sh
+set -eu
+case "$1" in
+ps)
+	shift
+	filters=
+	while [ "$#" -gt 0 ]; do
+		case "$1" in --filter) filters="$filters $2"; shift 2 ;; *) shift ;; esac
+	done
+	# shellcheck disable=SC2086
+	awk -v f="$filters" '
+		BEGIN { n = split(f, fs, " ") }
+		{
+			ok = 1
+			for (i = 1; i <= n; i++) {
+				if (fs[i] ~ /^label=/) {
+					if (index("," $3 ",", "," substr(fs[i], 7) ",") == 0) ok = 0
+				} else if (fs[i] ~ /^name=/) {
+					pat = substr(fs[i], 6); gsub(/[\^$]/, "", pat)
+					if (("/" $2) != pat) ok = 0
+				}
+			}
+			if (ok) print $1
+		}' "$DK_FIXTURE"
+	;;
+stop) ;;
+rm)
+	shift
+	for id in "$@"; do
+		case "$id" in -*) continue ;; esac
+		grep -v "^$id " "$DK_FIXTURE" >"$DK_FIXTURE.n" || true
+		mv "$DK_FIXTURE.n" "$DK_FIXTURE"
+	done
+	;;
+*) exit 0 ;;
+esac
+DK
+chmod +x ubin/docker
+# shellcheck disable=SC2016
+sed '/^main "\$@"$/d' "$root/install/uninstall.sh" >uninstall-lib.sh
+cat >uninstall-run.sh <<'RUN'
+. ./uninstall-lib.sh
+REMOVE_ATTEMPTS=1
+REMOVE_DELAY=0
+purge=$1
+remove_managed_containers
+RUN
+M=dev.ciphera.managed=true
+mkfix() {
+	cat >fixture.txt <<FIX
+id1 ciphera-postgres $M,dev.ciphera.role=
+id2 ciphera-buildkitd-aaaaaaaaaaaa $M,dev.ciphera.role=buildkitd
+id3 ciphera-d-1111 $M,dev.ciphera.role=,dev.ciphera.deployment=d1
+id4 mon-app-compose $M,dev.ciphera.role=,dev.ciphera.compose=web
+id5 ciphera-postgres-copie $M,dev.ciphera.role=
+id6 hors-ciphera dev.ciphera.role=buildkitd
+FIX
+}
+mkfix
+DK_FIXTURE=$work/fixture.txt PATH="$work/ubin:$PATH" sh uninstall-run.sh no
+check "uninstall sans purge : PostgreSQL et buildkitd retires" \
+	bash -c "! grep -q -e '^id1 ' -e '^id2 ' fixture.txt"
+check "uninstall sans purge : conteneurs d'application conserves" \
+	bash -c "grep -q '^id3 ' fixture.txt && grep -q '^id4 ' fixture.txt"
+check "uninstall sans purge : nom voisin et conteneur non gere conserves" \
+	bash -c "grep -q '^id5 ' fixture.txt && grep -q '^id6 ' fixture.txt"
+mkfix
+DK_FIXTURE=$work/fixture.txt PATH="$work/ubin:$PATH" sh uninstall-run.sh yes
+check "uninstall --purge : tous les conteneurs geres retires" \
+	bash -c "test \"\$(cut -d' ' -f1 fixture.txt)\" = id6"
+
 
 # --- sign-release.sh ----------------------------------------------------------
 mkdir dist

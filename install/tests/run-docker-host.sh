@@ -772,6 +772,13 @@ fi
 
 # --- (b) desinstallation sans --purge ----------------------------------------------
 printf '== (b) desinstallation\n'
+# Conteneur d'application d'un utilisateur (memes etiquettes que l'agent, sans
+# role) : cree (sans demarrer) a partir de l'image de PostgreSQL deja presente.
+pg_image=$(docker inspect -f '{{.Image}}' ciphera-postgres)
+check "(b) conteneur d'application de test cree" \
+	docker create --name ciphera-d-r40test --label dev.ciphera.managed=true --label dev.ciphera.role= \
+	--label dev.ciphera.deployment=00000000-0000-4000-8000-000000000040 "$pg_image"
+
 check "(b) uninstall.sh" sh -c "sh '$root/install/uninstall.sh' >/dev/null"
 containers_removed() {
 	! docker inspect ciphera-postgres >/dev/null 2>&1 && test -z "$(docker ps -aq --filter name=ciphera-buildkitd)"
@@ -783,6 +790,7 @@ else
 	printf -- '--- conteneurs restants ---\n'
 	docker ps -a --filter label=dev.ciphera.managed=true --format '{{.ID}} {{.Names}} {{.Status}}' || true
 fi
+check "(b) conteneur d'application conserve (sans --purge)" docker inspect ciphera-d-r40test
 check "(b) volume de la base conserve" docker volume inspect ciphera-postgres-data
 check "(b) secrets conserves" test -s /etc/ciphera/db_password
 check "(b) proxy arrete, socket de pilotage retire" \
@@ -820,6 +828,7 @@ check "(c) plages de sous-uids et sous-gids de ciphera-build conservees (aucun d
 # --- (d) purge -------------------------------------------------------------------
 printf '== (d) purge\n'
 check "(d) uninstall.sh --purge" sh -c "sh '$root/install/uninstall.sh' --purge >/dev/null"
+check "(d) conteneur d'application supprime" sh -c '! docker inspect ciphera-d-r40test >/dev/null 2>&1'
 check "(d) volumes supprimes" sh -c '! docker volume inspect ciphera-postgres-data >/dev/null 2>&1 && ! docker volume inspect ciphera-buildkit-cache >/dev/null 2>&1'
 check "(d) reseaux supprimes" \
 	sh -c '! docker network inspect ciphera-internal >/dev/null 2>&1 && ! docker network inspect ciphera-build >/dev/null 2>&1'
