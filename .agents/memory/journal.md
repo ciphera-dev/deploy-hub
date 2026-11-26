@@ -469,3 +469,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 16:22 — Session v0.1-sdd — claude-code (orchestrateur) — Task R54 : rsa 0.10.0, garde-fous Pingora
 - fait : rsa 0.10.0 corrigée, exemption retirée, clippy interdit chargeurs YAML et clap Parser::parse, unmaintained = all
 - résultat : TERMINÉ (relecture approuvée, 1 petit tour)
+
+## 2026-11-26 16:23 — Session v0.1-sdd — claude-code (orchestrateur) — Task R41 : Updater root durci
+- fait : téléchargements bornés, clé HMAC update-hmac.key atomique, restore.sql effacé, CA en lecture seule pour l'updater
+- résultat : TERMINÉ (relecture approuvée, 2 tours)
