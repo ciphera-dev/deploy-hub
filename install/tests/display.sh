@@ -10,9 +10,12 @@
 #     sequence d'echappement, aucun journal ;
 #   - mode riche (force, sorties dans des fichiers) : logo, etapes cochees,
 #     avertissements visibles, details seulement dans le journal (0600,
-#     lien symbolique remplace sans etre suivi), jeton jamais journalise ;
+#     dossier dedie 0700 ; lien pose dans le dossier remplace sans etre
+#     suivi ; dossier en lien ou mal protege : mode simple), jeton jamais
+#     journalise, fin du journal sans caracteres de controle (C0, C1) ;
 #     echec : croix, message d'erreur, fin du journal ; interruption : aucun
-#     processus du spinner restant, curseur reaffiche ;
+#     processus du spinner restant (sleep compris), curseur reaffiche ;
+#     terminal disparu : trap EXIT complet, code inchange ;
 #   - install.sh lui-meme hors terminal : aucune sequence d'echappement ;
 #   - pseudo-terminal (`script`, si present) : mode riche detecte.
 #
@@ -96,9 +99,9 @@ Empreinte SHA-256 : AB:CD:EF
 Comparez cette empreinte a celle du certificat affiche par votre navigateur avant de continuer.'
 printf '%s\n' "$report" >"$work/report.txt"
 
-extra_env=("${utf[@]}" "INSTALL_LOG=$work/plain/ciphera-install.log")
+extra_env=("${utf[@]}")
 mkdir "$work/plain"
-ui_sh 'INSTALL_LOG=$W/plain/ciphera-install.log
+ui_sh 'INSTALL_LOG_DIR=$W/plain/log
 ui_choose_mode no no
 ui_start v9.9.9
 ui_step_begin 1 "Vérification du système" "Verification du systeme"
@@ -114,7 +117,7 @@ check "simple : adresse de l'assistant seule sur sa ligne" \
 	grep -qx 'https://192.0.2.10:8443/setup#token=SECRETjeton_123-abc' "$work/plain.out"
 check "simple : explications de validite gardees" has "$work/plain.out" 'valable 24 heures'
 check "simple : aucune sequence d'echappement" no_esc "$work/plain.out"
-check "simple : aucun journal cree" test ! -e "$work/plain/ciphera-install.log"
+check "simple : aucun journal cree" test ! -e "$work/plain/log"
 
 set +e
 ui_sh 'ui_choose_mode no no; ui_start v9.9.9
@@ -134,7 +137,7 @@ rich_run() { # <nom> <code> [VAR=valeur...] : sortie ecran dans $work/<nom>.out
 	extra_env=("$@")
 	mkdir -p "$work/$name"
 	set +e
-	ui_sh "INSTALL_LOG=\$W/$name/ciphera-install.log
+	ui_sh "INSTALL_LOG_DIR=\$W/$name/log
 ui_choose_mode yes yes
 $code" >"$work/$name.out" 2>&1
 	rc=$?
@@ -148,10 +151,11 @@ say "detail reserve au journal"
 warn "avertissement visible"
 sleep 1
 ui_step_end
+for p in /proc/[0-9]*; do tr "\000" " " <"$p/cmdline" 2>/dev/null; echo; done | grep -c "^sleep 0.1 " >"$W/ok/sleeps" || true
 ui_step_begin 2 "Téléchargement et vérification des signatures" "Telechargement et verification des signatures"
 ui_step_end
 ui_finish v9.9.9 "$(cat "$W/report.txt")" 192.0.2.10' "${utf[@]}"
-log=$work/ok/ciphera-install.log
+log=$work/ok/log/install.log
 check "riche : succes" test "$rc" -eq 0
 check "riche : logo exact (1re ligne)" has "$work/ok.out" '██████╗ ██╗ ██████╗  ██╗  ██╗ ████████╗ ██████╗   █████╗'
 check "riche : logo exact (6e ligne)" has "$work/ok.out" ' ╚═════╝ ╚═╝ ╚═╝      ╚═╝  ╚═╝ ╚═══════╝ ╚═╝  ╚═╝ ╚═╝     ╚═╝'
@@ -164,6 +168,9 @@ check "riche : details absents de l'ecran" lacks "$work/ok.out" 'detail reserve 
 check "riche : details dans le journal" has "$log" 'ciphera : detail reserve au journal'
 check "riche : avertissement dans le journal" has "$log" 'ciphera : attention : avertissement visible'
 check "riche : journal 0600" test "$(stat -c %a "$log")" = 600
+check "riche : dossier du journal cree en 0700" test "$(stat -c %a "$work/ok/log")" = 700
+check "riche : aucun fichier temporaire restant" test "$(ls -A "$work/ok/log")" = install.log
+check "spinner : son sleep est arrete avec lui" test "$(cat "$work/ok/sleeps")" = 0
 check "riche : Installation terminee" has "$work/ok.out" 'Installation terminée'
 check "riche : adresse de l'assistant a l'ecran" has "$work/ok.out" 'https://192.0.2.10:8443/setup#token=SECRETjeton_123-abc'
 check "riche : explications de validite a l'ecran" has "$work/ok.out" 'valable 24 heures'
@@ -186,17 +193,32 @@ check "riche ASCII : aucun caractere de boite" lacks "$work/ascii.out" '█'
 check "riche ASCII : libelle sans accent" has "$work/ascii.out" '[1/5] Verification du systeme'
 check "riche ASCII : aucun octet non ASCII" bash -c "! LC_ALL=C grep -q '[^ -~[:cntrl:]]' '$work/ascii.out'"
 
-mkdir -p "$work/link"
+mkdir -p "$work/link/log"
+chmod 0700 "$work/link/log"
 printf 'intact\n' >"$work/victim"
-ln -s "$work/victim" "$work/link/ciphera-install.log"
+ln -s "$work/victim" "$work/link/log/install.log"
 rich_run link 'ui_start v9.9.9; say "dans le journal"' "${utf[@]}"
-check "journal : cible d'un lien preexistant intacte" test "$(cat "$work/victim")" = intact
+check "journal : cible d'un lien pose dans le dossier intacte" test "$(cat "$work/victim")" = intact
 check "journal : lien remplace par un fichier ordinaire" \
-	sh -c "test -f '$work/link/ciphera-install.log' && test ! -L '$work/link/ciphera-install.log'"
-check "journal : ecrit dans le nouveau fichier" has "$work/link/ciphera-install.log" 'dans le journal'
+	sh -c "test -f '$work/link/log/install.log' && test ! -L '$work/link/log/install.log'"
+check "journal : ecrit dans le nouveau fichier" has "$work/link/log/install.log" 'dans le journal'
 
-mkdir -p "$work/nodir"
-rich_run nolog 'INSTALL_LOG=$W/absent/dossier/ciphera-install.log
+mkdir -p "$work/dirlink" "$work/realdir"
+chmod 0700 "$work/realdir"
+ln -s "$work/realdir" "$work/dirlink/log"
+rich_run dirlink 'ui_start v9.9.9; say "repli dossier lien"' "${utf[@]}"
+check "dossier du journal en lien : mode simple" grep -qx 'ciphera : repli dossier lien' "$work/dirlink.out"
+check "dossier du journal en lien : rien ecrit dans sa cible" test -z "$(ls -A "$work/realdir")"
+check "dossier du journal en lien : sans sequence d'echappement" no_esc "$work/dirlink.out"
+
+mkdir -p "$work/mode/log"
+chmod 0755 "$work/mode/log"
+rich_run mode 'ui_start v9.9.9; say "repli droits"' "${utf[@]}"
+check "dossier du journal en 0755 : mode simple" grep -qx 'ciphera : repli droits' "$work/mode.out"
+check "dossier du journal en 0755 : rien ecrit" test -z "$(ls -A "$work/mode/log")"
+check "dossier du journal en 0755 : signale" has "$work/mode.out" '0700'
+
+rich_run nolog 'INSTALL_LOG_DIR=$W/absent/dossier
 ui_start v9.9.9
 ui_step_begin 1 "É" "E"; say "repli"; ui_step_end' "${utf[@]}"
 check "journal impossible : repli en mode simple" grep -qx 'ciphera : repli' "$work/nolog.out"
@@ -209,6 +231,7 @@ ui_step_end
 ui_step_begin 2 "Téléchargement" "Telechargement"
 printf "%s\n" "$ui_spin_pid" >"$W/fail/spin.pid"
 say "ligne de contexte 42"
+say "$(printf "controles: C1 \302\233[31m ESC \033[31m BEL \007 fin")"
 warn "avertissement avant echec"
 die "signature invalide : rien n est installe"
 echo APRES_DIE' "${utf[@]}"
@@ -218,8 +241,11 @@ check "echec : croix" has "$work/fail.out" '✖'
 check "echec : message d'erreur" has "$work/fail.out" 'ciphera : erreur : signature invalide : rien n est installe'
 check "echec : avertissement montre" has "$work/fail.out" 'avertissement avant echec'
 check "echec : fin du journal montree" has "$work/fail.out" 'ligne de contexte 42'
-check "echec : chemin du journal" has "$work/fail.out" "$work/fail/ciphera-install.log"
-check "echec : erreur dans le journal" has "$work/fail/ciphera-install.log" 'ciphera : erreur : signature invalide'
+check "echec : chemin du journal" has "$work/fail.out" "$work/fail/log/install.log"
+check "echec : erreur dans le journal" has "$work/fail/log/install.log" 'ciphera : erreur : signature invalide'
+check "echec : ligne nettoyee montree" has "$work/fail.out" 'controles: C1 [31m ESC [31m BEL  fin'
+check "echec : aucun C1 (C2 9B) a l'ecran" bash -c "! LC_ALL=C grep -q \$'\\302\\233' '$work/fail.out'"
+check "echec : aucun BEL a l'ecran" bash -c "! LC_ALL=C grep -q \$'\\007' '$work/fail.out'"
 check "echec : rien apres die" lacks "$work/fail.out" APRES_DIE
 check "echec : spinner arrete" dead "$work/fail/spin.pid"
 check "echec : curseur reaffiche" has "$work/fail.out" "${esc}[?25h"
@@ -238,13 +264,15 @@ check "commande en echec (set -e) : spinner arrete" dead "$work/sete/spin.pid"
 # Interruption (TERM) pendant une etape : trap, spinner arrete, curseur rendu.
 mkdir -p "$work/term"
 extra_env=("${utf[@]}")
-ui_sh 'INSTALL_LOG=$W/term/ciphera-install.log
+ui_sh 'INSTALL_LOG_DIR=$W/term/log
 ui_choose_mode yes yes
 ui_start v9.9.9
 ui_step_begin 4 "Installation de Ciphera" "Installation de Ciphera"
 printf "%s\n" "$ui_spin_pid" >"$W/term/spin.pid"
 printf "%s\n" "$$" >"$W/term/sh.pid"
 sleep 30 &
+printf "%s
+" "$!" >"$W/term/sleep.pid"
 wait $!' >"$work/term.out" 2>&1 &
 bg=$!
 for _ in $(seq 50); do
@@ -256,11 +284,33 @@ set +e
 wait "$bg"
 rc=$?
 set -e
+kill "$(cat "$work/term/sleep.pid")" 2>/dev/null || true
 sleep 0.3
 check "interruption : sortie non nulle" test "$rc" -ne 0
 check "interruption : spinner arrete" dead "$work/term/spin.pid"
 check "interruption : croix" has "$work/term.out" '✖'
 check "interruption : curseur reaffiche" has "$work/term.out" "${esc}[?25h"
+
+# Terminal disparu (ecritures en echec) : le trap EXIT va jusqu'au bout,
+# code de sortie inchange.
+rich_run gone 'set -eu
+ui_start v9.9.9
+trap '"'"'ui_on_exit "$?"; : >"$W/gone/trap-fini"'"'"' EXIT
+ui_step_begin 2 "Téléchargement" "Telechargement"
+printf "%s\n" "$ui_spin_pid" >"$W/gone/spin.pid"
+exec 3>/dev/full 4>/dev/full
+false' "${utf[@]}"
+check "terminal disparu : code de sortie inchange (1)" test "$rc" -eq 1
+check "terminal disparu : suite du trap EXIT executee" test -e "$work/gone/trap-fini"
+check "terminal disparu : spinner arrete" dead "$work/gone/spin.pid"
+
+# ASCII : octets C1 bruts retires de la fin du journal
+rich_run asciifail 'ui_start v9.9.9
+ui_step_begin 1 "É" "E"
+say "$(printf "brut \233[31m fin")"
+die "x"' TERM=xterm LANG=C
+check "ASCII : octet C1 brut (9B) retire" bash -c "! LC_ALL=C grep -q \$'\\233' '$work/asciifail.out'"
+check "ASCII : ligne montree" has "$work/asciifail.out" 'brut [31m fin'
 
 # Question interactive : spinner suspendu (ligne effacee, curseur visible).
 rich_run pause 'ui_start v9.9.9
@@ -290,13 +340,23 @@ check "install.sh : syntaxe POSIX valide" sh -n "$installer"
 
 # --- pseudo-terminal ------------------------------------------------------------
 if command -v script >/dev/null 2>&1 && script -qec true /dev/null >/dev/null 2>&1; then
-	pty() { # <VAR=valeur...> : mode detecte sur un pseudo-terminal
+	# Entree standard : un tube qui reste ouvert pendant la commande (certaines
+	# versions de script arretent la session a la fin de l'entree, /dev/null
+	# compris) ; sortie gardee dans un fichier, montree en cas d'echec.
+	pty() { # <attendu> <VAR=valeur...> : mode detecte sur un pseudo-terminal
+		local want=$1 out=$work/pty.out
+		shift
 		env -i PATH="$PATH" UI="$work/ui.sh" "$@" \
-			script -qec 'sh -c ". \"\$UI\"; ui_detect; printf \"MODE=%s\\n\" \"\$ui_want\""' /dev/null </dev/null
+			script -qec 'sh -c ". \"\$UI\"; ui_detect; printf \"MODE=%s\\n\" \"\$ui_want\""' /dev/null \
+			< <(exec 2>/dev/null; sleep 5) >"$out" 2>&1 || true
+		grep -q "MODE=$want" "$out" || {
+			printf '  sortie de script : %s\n' "$(tr -d '\r' <"$out")" >&2
+			return 1
+		}
 	}
-	check "pseudo-terminal : mode riche detecte" sh -c "printf '%s' \"\$1\" | grep -q MODE=rich" _ "$(pty TERM=xterm-256color LANG=C.UTF-8)"
-	check "pseudo-terminal : NO_COLOR=1 force le mode simple" sh -c "printf '%s' \"\$1\" | grep -q MODE=plain" _ "$(pty TERM=xterm-256color LANG=C.UTF-8 NO_COLOR=1)"
-	check "pseudo-terminal : TERM=dumb force le mode simple" sh -c "printf '%s' \"\$1\" | grep -q MODE=plain" _ "$(pty TERM=dumb LANG=C.UTF-8)"
+	check "pseudo-terminal : mode riche detecte" pty rich TERM=xterm-256color LANG=C.UTF-8
+	check "pseudo-terminal : NO_COLOR=1 force le mode simple" pty plain TERM=xterm-256color LANG=C.UTF-8 NO_COLOR=1
+	check "pseudo-terminal : TERM=dumb force le mode simple" pty plain TERM=dumb LANG=C.UTF-8
 else
 	printf 'skip pseudo-terminal (script absent)\n'
 fi

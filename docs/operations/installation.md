@@ -26,7 +26,7 @@ Le script :
 
 Dans un terminal, l'installeur affiche le logo Ciphera puis cinq étapes (vérification du système, téléchargement et vérification des signatures, configuration du système, installation de Ciphera, démarrage des services), chacune avec un indicateur animé puis une coche verte, ou une croix rouge en cas d'échec. Les avertissements restent affichés sous leur étape ; à la fin, l'adresse de l'assistant est mise en valeur avec sa durée de validité et l'empreinte du certificat.
 
-Les sorties détaillées des commandes vont dans `/var/log/ciphera-install.log` (root, mode 0600, recréé à chaque lancement). En cas d'échec, l'installeur affiche l'erreur et les dernières lignes de ce journal. Le jeton de l'assistant n'y est jamais écrit. `uninstall.sh --purge` le supprime.
+Les sorties détaillées des commandes vont dans `/var/log/ciphera/install.log` (fichier 0600 recréé à chaque lancement, dans un dossier `root:root` 0700 créé au premier lancement). Si `/var/log/ciphera` existe sans être un vrai dossier de root en 0700 (lien symbolique, autre propriétaire, autres droits), l'installeur n'y écrit rien et passe en affichage simple. En cas d'échec, il affiche l'erreur et les dernières lignes du journal, sans caractères de contrôle. Le jeton de l'assistant n'y est jamais écrit. `uninstall.sh --purge` supprime ce dossier.
 
 Hors terminal (CI, redirection vers un fichier, `| tee`), avec `TERM=dumb` ou avec la variable `NO_COLOR` (non vide), la sortie reste du texte simple, ligne par ligne, sans couleur ni animation, et aucun journal n'est écrit : tout reste dans la sortie. `sudo` ne transmet pas `NO_COLOR` par défaut ; il faut la passer après `sudo` :
 

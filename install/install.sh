@@ -93,11 +93,15 @@ MISE_SHA256_ARM64='8f7fa64c3d08ba515aac501f18f6f43c00c381793185380fd1a92c411c00c
 # - riche (sorties standard et d'erreur sur un terminal, TERM ni vide ni
 #   dumb, NO_COLOR absent ou vide) : logo, une ligne par etape (spinner, puis
 #   coche ou croix), avertissements sous l'etape ; tout le reste (say, warn,
-#   die, sorties des commandes) va dans INSTALL_LOG (root 0600). Le jeton de
-#   setup n'y est jamais ecrit : seul ui_finish l'affiche, a l'ecran.
+#   die, sorties des commandes) va dans le journal (INSTALL_LOG_DIR, dossier
+#   root 0700 ; fichier 0600). Le jeton de setup n'y est jamais ecrit : seul
+#   ui_finish l'affiche, a l'ecran.
 # Logo et symboles en ASCII hors locale UTF-8. Ecran : descripteurs 3
-# (sortie standard) et 4 (erreurs), sauves par ui_start.
-INSTALL_LOG=/var/log/ciphera-install.log
+# (sortie standard) et 4 (erreurs), sauves par ui_start ; descripteur 5 :
+# journal en lecture (fin affichee en cas d'echec).
+INSTALL_LOG_DIR=/var/log/ciphera
+INSTALL_LOG_NAME=install.log
+INSTALL_LOG=$INSTALL_LOG_DIR/$INSTALL_LOG_NAME
 STEP_TOTAL=5
 ui_want=plain
 ui_mode=plain
@@ -188,24 +192,58 @@ ui_detect() {
 	ui_choose_mode "$ui_t1" "$ui_t2"
 }
 
-# Mode riche : journal neuf (cree par mktemp, 0600, puis renomme : un lien
-# deja present a ce chemin est remplace, jamais suivi), ecran sauve sur les
-# descripteurs 3 et 4, puis logo. Journal impossible : mode simple.
+# Dossier du journal : vrai dossier (pas un lien), au compte qui lance
+# l'installeur (root), en 0700 ; cree s'il manque. /var/log peut etre
+# modifiable par un groupe (root:syslog 0775 sur Ubuntu) : rien n'y est
+# ecrit directement.
+ui_log_dir_ok() { # <dossier>
+	if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+		(umask 077 && mkdir "$1") 2>/dev/null || return 1
+	fi
+	[ -d "$1" ] && [ ! -L "$1" ] || return 1
+	[ "$(stat -c %u:%a "$1" 2>/dev/null)" = "$(id -u):700" ]
+}
+
+# Journal neuf : cree par mktemp (0600) dans le dossier verifie, ouvert
+# (sortie standard et d'erreur ; lecture sur le descripteur 5) AVANT d'etre
+# renomme en INSTALL_LOG_NAME, et son chemin reel verifie par /proc : un
+# lien pose entre-temps (a la place du dossier ou du fichier) n'est jamais
+# suivi pour ecrire ni pour relire. Ecran sauve sur 3 et 4.
+ui_log_open() {
+	ui_log_dir_ok "$INSTALL_LOG_DIR" || return 1
+	ui_real=$(readlink -f "$INSTALL_LOG_DIR") || return 1
+	ui_log_dir_ok "$ui_real" || return 1
+	ui_new=$(umask 077 && mktemp "$ui_real/.install.XXXXXX" 2>/dev/null) || return 1
+	exec 3>&1 4>&2
+	# Ecriture (1, 2) et relecture (5) du meme journal : voulu.
+	# shellcheck disable=SC2094
+	exec >>"$ui_new" 2>&1 5<"$ui_new"
+	if [ "$(readlink "/proc/$$/fd/1")" != "$ui_new" ] || [ "$(readlink "/proc/$$/fd/5")" != "$ui_new" ] ||
+		! mv -fT "$ui_new" "$ui_real/$INSTALL_LOG_NAME" 2>/dev/null; then
+		exec >&3 2>&4 5<&- 3>&- 4>&-
+		rm -f "$ui_new"
+		return 1
+	fi
+}
+
+# Trap EXIT du mode riche : jamais en echec (terminal disparu, SIGHUP),
+# pour que la suite du trap (dossier temporaire) s'execute toujours ; code
+# de sortie inchange.
+ui_on_exit() { # <code de sortie>
+	ui_cleanup "$1" 2>/dev/null || true
+}
+
+# Mode riche : journal (ui_log_open), puis logo. Journal impossible : mode
+# simple.
 ui_start() { # <version>
 	[ "$ui_want" = rich ] || return 0
-	if ! ui_new=$(umask 077 && mktemp "${INSTALL_LOG%/*}/.ciphera-install.XXXXXX" 2>/dev/null); then
-		warn "journal $INSTALL_LOG impossible a creer : affichage simple"
+	INSTALL_LOG=$INSTALL_LOG_DIR/$INSTALL_LOG_NAME
+	if ! ui_log_open; then
+		warn "journal $INSTALL_LOG impossible a ouvrir ($INSTALL_LOG_DIR doit etre un dossier de root en 0700, sans lien) : affichage simple"
 		return 0
 	fi
-	if ! mv -fT "$ui_new" "$INSTALL_LOG" 2>/dev/null; then
-		rm -f "$ui_new"
-		warn "journal $INSTALL_LOG impossible a creer : affichage simple"
-		return 0
-	fi
-	exec 3>&1 4>&2
-	exec >>"$INSTALL_LOG" 2>&1
 	ui_mode=rich
-	trap 'ui_cleanup "$?"' EXIT
+	trap 'ui_on_exit "$?"' EXIT
 	trap 'exit 1' HUP INT TERM
 	printf "Journal de l'installation de Ciphera %s (%s). Le jeton de setup n'y est jamais ecrit.\n" \
 		"$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -260,15 +298,23 @@ ui_step_end() {
 ui_spin_start() {
 	ui_parent=$$
 	(
-		trap - EXIT HUP INT TERM
+		trap - EXIT HUP INT
+		# Arret : le sleep en cours est tue aussi (aucun processus restant).
+		ui_sl=
+		trap 'if [ -n "$ui_sl" ]; then kill "$ui_sl" 2>/dev/null; fi; exit 0' TERM
+		ui_d=0.1
+		sleep "$ui_d" 2>/dev/null || ui_d=1
 		while :; do
 			for ui_f in $ui_frames; do
 				kill -0 "$ui_parent" 2>/dev/null || exit 0
 				printf '\r  %s%s%s %s%s' "$c_blue" "$ui_f" "$c_reset" "$ui_label" "$c_eol" >&3
-				sleep 0.1 2>/dev/null || sleep 1
+				sleep "$ui_d" &
+				ui_sl=$!
+				wait "$ui_sl" || true
+				ui_sl=
 			done
 		done
-	) 4>&- 9>&- </dev/null &
+	) 4>&- 5<&- 9>&- </dev/null &
 	ui_spin_pid=$!
 }
 
@@ -306,12 +352,25 @@ ui_flush_warnings() {
 	ui_warnings=
 }
 
-# Fin du journal a l'ecran, caracteres de controle retires (pas de sequence
-# d'echappement venue d'une sortie de commande).
+# Caracteres de controle retires (aucune sequence d'echappement venue d'une
+# sortie de commande) : C0 et DEL, puis C1 (U+0080 a U+009F, octets C2 80 a
+# C2 9F) en UTF-8 ; hors UTF-8, tout octet non ASCII (C1 bruts 80 a 9F
+# compris).
+ui_sanitize() {
+	if [ "$ui_utf8" = yes ]; then
+		LC_ALL=C tr -d '\000-\010\013-\037\177' |
+			LC_ALL=C sed "s/$(printf '\302')[$(printf '\200')-$(printf '\237')]//g"
+	else
+		LC_ALL=C tr -d '\000-\010\013-\037\177-\377'
+	fi
+}
+
+# Fin du journal a l'ecran, relue par le descripteur 5 (jamais par son
+# chemin), nettoyee par ui_sanitize.
 ui_log_tail() {
 	printf "\n  Journal d'installation (%s) : %s\n" "$(ui_t 'dernières lignes' 'dernieres lignes')" \
 		"$INSTALL_LOG" >&4
-	tail -n 15 "$INSTALL_LOG" 2>/dev/null | LC_ALL=C tr -d '\000-\010\013-\037\177' |
+	tail -n 15 <&5 2>/dev/null | ui_sanitize |
 		while IFS= read -r ui_l; do
 			printf '    %s|%s %s\n' "$c_dim" "$c_reset" "$ui_l"
 		done >&4
@@ -1448,7 +1507,7 @@ main() {
 	ui_step_end
 
 	tmp=$(mktemp -d)
-	trap 'ui_cleanup "$?"; rm -rf "$tmp"' EXIT
+	trap 'ui_on_exit "$?"; rm -rf "$tmp"' EXIT
 	trap 'exit 1' HUP INT TERM
 
 	ui_step_begin 2 'Téléchargement et vérification des signatures' 'Telechargement et verification des signatures'
@@ -1493,8 +1552,14 @@ main() {
 	if [ "$ui_mode" = rich ] && [ -z "$init_report" ]; then
 		panel_ip=${public_ip:-$(detect_ip || true)}
 	fi
+	# Avertissement de ciphera.env repete en fin d'installation : apres le
+	# message final en mode simple (sortie inchangee), avant le resume (et
+	# compte) en mode riche.
+	if [ -n "$env_notice" ] && [ "$ui_mode" = rich ]; then
+		warn "$env_notice"
+	fi
 	ui_finish "$version" "$init_report" "$panel_ip"
-	if [ -n "$env_notice" ]; then
+	if [ -n "$env_notice" ] && [ "$ui_mode" != rich ]; then
 		warn "$env_notice"
 	fi
 }
