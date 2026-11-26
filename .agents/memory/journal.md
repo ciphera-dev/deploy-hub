@@ -465,3 +465,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 15:47 — Session v0.1-sdd — claude-code (orchestrateur) — Task R43 : Hygiène du dépôt avant publication
 - fait : données d'exemple réservées, masques du hook mémoire, CDN des prototypes, EXIF, CODEOWNERS @ciphera-dev/maintainers
 - résultat : TERMINÉ (relecture approuvée après 2 tours de correction)
+
+## 2026-11-26 16:22 — Session v0.1-sdd — claude-code (orchestrateur) — Task R54 : rsa 0.10.0, garde-fous Pingora
+- fait : rsa 0.10.0 corrigée, exemption retirée, clippy interdit chargeurs YAML et clap Parser::parse, unmaintained = all
+- résultat : TERMINÉ (relecture approuvée, 1 petit tour)
