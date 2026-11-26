@@ -481,3 +481,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 19:55 — Session v0.1-sdd — claude-code (orchestrateur) — Task R53 : latest.json signé, avec échéance
 - fait : shared::latest, updater --latest, sign-latest/check-latest, refresh-latest.yml (clé de la release seulement), latest_expired dans l'API et le panneau
 - résultat : TERMINÉ (relecture approuvée après 1 tour de correction)
+
+## 2026-11-26 21:53 — Session v0.1-sdd — claude-code (orchestrateur) — Task R56 : Step-up pour les changements d'équipe privilégiés
+- fait : step-up sur invitation, rôle, retrait, resets de membre et SMTP ; avis aux autres propriétaires toujours envoyés, destinataires figés ; recontrôle sous verrou ; agent 2 CA max
+- résultat : TERMINÉ (relecture approuvée, 3 tours)

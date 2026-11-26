@@ -222,3 +222,6 @@ Format : symptôme (date), Contexte, Cause, Solution, À ne pas refaire.
 
 ## 2026-11-26 — D-INST-3 : latest.json non signé et sans échéance — Résolu (R53)
 - Signature minisign avec commentaire de confiance (version, issued, expires +120 j), vérifiée par le plan de contrôle et l'updater ; fichier expiré signalé sans blocage.
+
+## 2026-11-26 — Changements d'équipe privilégiés sans second facteur (revue de clôture) — Résolu (R56)
+- Invitation, changement de rôle, retrait de membre, réinitialisation du mot de passe ou du second facteur d'un membre et réglages SMTP exigent désormais le step-up ; les autres propriétaires sont toujours prévenus. L'agent n'accepte plus que 2 CA au plus.
