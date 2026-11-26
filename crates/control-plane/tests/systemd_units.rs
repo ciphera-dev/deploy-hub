@@ -293,6 +293,14 @@ fn updater_is_a_hardened_root_oneshot() {
             .any(|v| v.split_whitespace().any(|p| p == "/etc/ciphera")),
         "/etc/ciphera non inscriptible : cle des demandes jamais creee"
     );
+    // ... mais pas l'autorite de certification (R48/R49) : l'updater n'y
+    // ecrit jamais (chemin plus profond : il l'emporte sur ReadWritePaths).
+    assert!(
+        values(&svc, "ReadOnlyPaths").iter().any(|v| v
+            .split_whitespace()
+            .any(|p| p.trim_start_matches('-') == "/etc/ciphera/ca")),
+        "/etc/ciphera/ca inscriptible par l'updater"
+    );
 }
 
 fn assert_hardened_root(svc: &str) {

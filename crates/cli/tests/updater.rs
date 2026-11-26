@@ -229,6 +229,9 @@ struct Mock {
     /// Fichier remplace par un dossier non vide au premier redemarrage :
     /// le retour arriere ne peut pas le remettre (retour incomplet).
     block_restore_of: Option<PathBuf>,
+    /// `restore.sql` observe a chaque arret des services : evenement
+    /// `restore.sql <octets>` s'il existe a ce moment.
+    watch_restore_sql: Option<PathBuf>,
 }
 
 /// Base simulee : schema (numero de migration) et donnees.
@@ -407,6 +410,15 @@ impl System for Mock {
 
     fn stop_services(&self) -> std::io::Result<()> {
         self.events.lock().unwrap().push("stop".into());
+        if let Some(sql) = &self.watch_restore_sql
+            && let Ok(text) = std::fs::read_to_string(sql)
+        {
+            assert!(updater::dump_complete(&text), "restore.sql non verifie");
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("restore.sql {}", text.len()));
+        }
         if self.fail_stop {
             return Err(std::io::Error::other("systemctl stop en echec"));
         }
@@ -2075,6 +2087,7 @@ fn restore_sql_removed_after_partial_rollback() {
     let env = env();
     let sys = Mock {
         block_restore_of: Some(env.paths.bin_dir.join("ciphera-proxy")),
+        watch_restore_sql: Some(env.paths.state_dir.join("restore.sql")),
         ..Mock::new(&env, false)
     };
     let r = updater::run(manual("v0.2.0"), &sys, &env.paths, &env.sources);
@@ -2084,6 +2097,19 @@ fn restore_sql_removed_after_partial_rollback() {
     }
     assert!(env.journal().exists(), "journal garde");
     assert_eq!(sys.count("restore_db"), 0, "base non restauree");
+    // restore.sql existait (verifie, non vide) a l'arret des services du
+    // retour arriere, puis a ete efface.
+    let seen: Vec<String> = sys
+        .events()
+        .into_iter()
+        .filter(|e| e.starts_with("restore.sql "))
+        .collect();
+    assert_eq!(seen.len(), 1, "{:?}", sys.events());
+    assert_ne!(seen[0], "restore.sql 0");
+    assert!(
+        sys.position(&seen[0]).unwrap() > sys.position("restart").unwrap(),
+        "observe pendant le retour arriere"
+    );
     assert!(
         !env.paths.state_dir.join("restore.sql").exists(),
         "restore.sql laisse sur disque"

@@ -339,6 +339,21 @@ async fn update_request_without_hmac_key_is_unavailable() {
     let (mut state, _db) = common::state_in(&config.0, &tmp.0).await;
     state.update_request_dir = tmp.0.clone();
     let owner = login(&state, "owner").await;
+    let attempts = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mfa_attempts")
+            .fetch_one(&state.db)
+            .await
+            .unwrap()
+    };
+    let failures = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_events WHERE action = 'system.update.failure'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+    };
+    let before = attempts().await;
     // Mot de passe faux : la cle manque d'abord, aucun essai consomme.
     let r = send(
         &state,
@@ -352,6 +367,34 @@ async fn update_request_without_hmac_key_is_unavailable() {
     assert_eq!(r.code(), "updates_unavailable");
     assert!(r.raw.contains("update-hmac.key"), "{}", r.raw);
     assert!(!tmp.0.join(REQUEST_FILE).exists());
+    assert_eq!(attempts().await, before, "aucun essai MFA consomme");
+    assert_eq!(failures().await, 0, "aucun echec audite");
+
+    // Reste d'une creation interrompue (0 octet) : meme 503, pas de 500.
+    std::fs::write(config.0.join(KEY_FILE), b"").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            config.0.join(KEY_FILE),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+    let r = send(
+        &state,
+        &owner,
+        "POST",
+        "/api/system/update",
+        Some(json!({ "version": "v99.0.0", "password": "faux" })),
+    )
+    .await;
+    assert_eq!(r.status, 503, "{}", r.raw);
+    assert_eq!(r.code(), "updates_unavailable");
+    assert!(r.raw.contains("invalide"), "{}", r.raw);
+    assert_eq!(attempts().await, before);
+    assert_eq!(failures().await, 0);
+    std::fs::remove_file(config.0.join(KEY_FILE)).unwrap();
 
     // Cle posee : la demande passe, signee avec elle.
     let (key, _) = shared::update::ensure_key(&config.0.join(KEY_FILE), None).unwrap();

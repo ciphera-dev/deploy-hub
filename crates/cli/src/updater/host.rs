@@ -78,6 +78,9 @@ pub struct Host {
     /// Profil AppArmor de buildkitd (`/etc/apparmor.d/ciphera-buildkitd`) :
     /// recharge par `apparmor.service` s'il est installe.
     pub apparmor_profile: PathBuf,
+    /// `curl` des telechargements (`program("curl")` ; un faux curl dans
+    /// les tests), lance avec un environnement vide.
+    pub curl: PathBuf,
 }
 
 /// Proprietes d'une unite (`systemctl show`).
@@ -305,6 +308,9 @@ impl Host {
     }
 }
 
+/// Code de sortie de curl quand `--max-filesize` refuse le fichier.
+const CURL_FILESIZE_EXCEEDED: i32 = 63;
+
 /// Copie `input` dans `out`, `max` octets au plus : des que la limite est
 /// depassee, abandon (`FileTooLarge`), sans rien lire ni ecrire de plus.
 /// Renvoie le nombre d'octets copies.
@@ -339,8 +345,8 @@ impl Host {
         let mut out = fs::File::create(dest)?;
         let max_time = left.as_secs().max(1).to_string();
         let max_size = max_bytes.to_string();
-        let mut cmd = clean_command("curl");
-        cmd.args([
+        let mut cmd = Command::new(&self.curl);
+        cmd.env_clear().env("PATH", CHILD_PATH).args([
             "--proto",
             "=https",
             "--proto-redir",
@@ -374,7 +380,16 @@ impl Host {
         }
         let s = child.wait();
         copied?;
-        status("curl", s)
+        match s {
+            // CURLE_FILESIZE_EXCEEDED : taille annoncee au-dela de
+            // `--max-filesize`, un depassement comme un autre (jamais
+            // reessaye).
+            Ok(s) if s.code() == Some(CURL_FILESIZE_EXCEEDED) => Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                format!("curl : taille maximale depassee ({max_bytes} octets)"),
+            )),
+            s => status("curl", s),
+        }
     }
 }
 
@@ -827,5 +842,92 @@ mod tests {
         fs::create_dir(dir.join("d")).unwrap();
         assert!(read_password(&dir.join("d")).is_err(), "dossier accepte");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Faux curl : `body` (script sh) apres avoir note son appel dans
+    /// `<dir>/appels` ; environnement vide, d'ou les chemins absolus.
+    fn fake_curl(dir: &Path, body: &str) -> Host {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::remove_dir_all(dir);
+        fs::create_dir_all(dir).unwrap();
+        let curl = dir.join("curl");
+        let calls = dir.join("appels");
+        fs::write(
+            &curl,
+            format!(
+                "#!/bin/sh
+echo x >> '{}'
+{body}
+",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o700)).unwrap();
+        Host {
+            db_password_file: dir.join("db_password"),
+            db_user: "ciphera".into(),
+            db_name: "ciphera".into(),
+            tmpfiles: dir.join("tmpfiles.conf"),
+            health_url: "http://127.0.0.1:1/api/health".into(),
+            test_ca_bundle: None,
+            cli: dir.join("ciphera-cli"),
+            apparmor_profile: dir.join("apparmor"),
+            curl,
+        }
+    }
+
+    fn calls(dir: &Path) -> usize {
+        fs::read_to_string(dir.join("appels"))
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// Flux sans fin : curl arrete des la limite depassee, un seul essai,
+    /// fichier partiel retire ; refus de `--max-filesize` (code 63) : idem.
+    /// Un autre echec est reessaye.
+    #[test]
+    fn oversized_download_kills_curl_and_is_never_retried() {
+        let base = std::env::temp_dir().join(format!("ciphera-curl-{}", std::process::id()));
+        let limit = Limit {
+            max_bytes: 1024 * 1024,
+            max_time: Duration::from_secs(60),
+        };
+        let url = "https://example.invalid/SHA256SUMS";
+
+        let dir = base.join("sans-fin");
+        let host = fake_curl(&dir, "exec yes");
+        let dest = dir.join("dest");
+        let started = Instant::now();
+        let e = host.download(url, &dest, limit).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::FileTooLarge, "{e}");
+        assert_eq!(calls(&dir), 1, "depassement reessaye");
+        assert!(!dest.exists(), "fichier partiel garde");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "curl non arrete"
+        );
+
+        let dir = base.join("code-63");
+        let host = fake_curl(&dir, "exit 63");
+        let dest = dir.join("dest");
+        let e = host.download(url, &dest, limit).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::FileTooLarge, "{e}");
+        assert_eq!(calls(&dir), 1, "code 63 reessaye");
+        assert!(!dest.exists());
+
+        let dir = base.join("echec");
+        let host = fake_curl(&dir, "exit 22");
+        let e = host.download(url, &dir.join("dest"), limit).unwrap_err();
+        assert_ne!(e.kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(calls(&dir), DOWNLOAD_ATTEMPTS as usize);
+
+        let dir = base.join("ok");
+        let host = fake_curl(&dir, "printf contenu");
+        let dest = dir.join("dest");
+        host.download(url, &dest, limit).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"contenu");
+        assert_eq!(calls(&dir), 1);
+        let _ = fs::remove_dir_all(&base);
     }
 }

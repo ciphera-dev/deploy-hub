@@ -211,6 +211,7 @@ fn run_updater(mode: Mode) -> ExitCode {
             test_ca_bundle,
             cli: paths.bin_dir.join("ciphera-cli"),
             apparmor_profile: paths.apparmor_dir.join(updater::APPARMOR_PROFILE),
+            curl: updater::host::program("curl"),
         };
         report(updater::run(mode, &host, &paths, &sources), &paths.request)
     }

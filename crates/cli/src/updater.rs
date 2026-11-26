@@ -838,8 +838,9 @@ impl Drop for RestoreSql {
 }
 
 /// Reecrit `sql` a zero (donnees sur disque), puis le retire ; journalise
-/// son chemin. Ouvert sans suivre de lien : un lien est seulement retire.
-/// Absent : rien.
+/// son chemin. Ouvert sans suivre de lien : un lien symbolique, ou un
+/// fichier a plusieurs noms (lien dur vers un autre fichier), est
+/// seulement retire, jamais reecrit. Absent : rien.
 fn scrub_restore_sql(sql: &Path) {
     let meta = match fs::symlink_metadata(sql) {
         Ok(m) => m,
@@ -869,7 +870,8 @@ fn scrub_restore_sql(sql: &Path) {
     }
 }
 
-/// Remplace tout le contenu de `path` par des zeros, sur place.
+/// Remplace tout le contenu de `path` par des zeros, sur place ; refuse un
+/// fichier qui a d'autres noms (il n'est pas a nous).
 fn zero_file(path: &Path) -> io::Result<()> {
     let mut opts = fs::OpenOptions::new();
     opts.write(true);
@@ -883,6 +885,13 @@ fn zero_file(path: &Path) -> io::Result<()> {
     let meta = file.metadata()?;
     if !meta.is_file() {
         return Err(io::Error::other("pas un fichier ordinaire"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.nlink() > 1 {
+            return Err(io::Error::other("lien dur vers un autre fichier"));
+        }
     }
     let zeros = vec![0u8; 64 * 1024];
     let mut left = meta.len();
@@ -1904,24 +1913,46 @@ mod tests {
     }
 
     /// La sauvegarde decompressee est reecrite a zero avant d'etre retiree :
-    /// un second nom (lien dur) du meme fichier ne montre plus que des zeros.
+    /// lu par un descripteur ouvert avant, le fichier ne montre plus que
+    /// des zeros.
     #[test]
     fn restore_sql_is_zeroed_then_removed() {
+        use std::io::{Seek, SeekFrom};
         let root = std::env::temp_dir().join(format!("ciphera-scrub-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let sql = root.join(RESTORE_SQL);
         let data = b"INSERT INTO secrets VALUES ('donnee');\n".repeat(5000);
         fs::write(&sql, &data).unwrap();
-        let other = root.join("autre-nom");
-        fs::hard_link(&sql, &other).unwrap();
+        let mut held = File::open(&sql).unwrap();
         drop(RestoreSql(sql.clone()));
         assert!(!sql.exists(), "restore.sql retire");
-        let left = fs::read(&other).unwrap();
+        let mut left = Vec::new();
+        held.seek(SeekFrom::Start(0)).unwrap();
+        held.read_to_end(&mut left).unwrap();
         assert_eq!(left.len(), data.len());
         assert!(left.iter().all(|b| *b == 0), "contenu reecrit a zero");
+        drop(held);
         // Absent : rien a faire, aucune erreur.
         scrub_restore_sql(&sql);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `restore.sql` lien dur vers un autre fichier (pose par un tiers) :
+    /// seulement retire, l'autre fichier garde son contenu.
+    #[cfg(unix)]
+    #[test]
+    fn hard_linked_restore_sql_is_only_unlinked() {
+        let root = std::env::temp_dir().join(format!("ciphera-scrub-ln-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let other = root.join("fichier-d-un-autre");
+        fs::write(&other, b"contenu a garder").unwrap();
+        let sql = root.join(RESTORE_SQL);
+        fs::hard_link(&other, &sql).unwrap();
+        drop(RestoreSql(sql.clone()));
+        assert!(!sql.exists(), "restore.sql retire");
+        assert_eq!(fs::read(&other).unwrap(), b"contenu a garder");
         let _ = fs::remove_dir_all(&root);
     }
 

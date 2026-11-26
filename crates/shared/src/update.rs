@@ -140,8 +140,35 @@ impl fmt::Display for RequestError {
 
 impl std::error::Error for RequestError {}
 
-/// Cle HMAC des demandes, effacee de la memoire a sa destruction.
-pub type RequestKey = Zeroizing<[u8; KEY_BYTES]>;
+/// Cle HMAC des demandes, effacee de la memoire a sa destruction. Son
+/// `Debug` n'affiche jamais les octets (`dbg!`, `{:?}` d'un `Result`).
+pub struct RequestKey(Zeroizing<[u8; KEY_BYTES]>);
+
+impl RequestKey {
+    fn zeroed() -> RequestKey {
+        RequestKey(Zeroizing::new([0u8; KEY_BYTES]))
+    }
+}
+
+impl std::ops::Deref for RequestKey {
+    type Target = [u8; KEY_BYTES];
+
+    fn deref(&self) -> &[u8; KEY_BYTES] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for RequestKey {
+    fn deref_mut(&mut self) -> &mut [u8; KEY_BYTES] {
+        &mut self.0
+    }
+}
+
+impl fmt::Debug for RequestKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RequestKey(..)")
+    }
+}
 
 #[derive(Debug)]
 pub enum KeyError {
@@ -223,25 +250,42 @@ pub fn load_key(path: &Path) -> Result<RequestKey, KeyError> {
         Err(e) => return Err(KeyError::Io(e)),
     };
     check_key_file(&file)?;
-    let mut key = Zeroizing::new([0u8; KEY_BYTES]);
+    let mut key = RequestKey::zeroed();
     file.read_exact(&mut key[..]).map_err(KeyError::Io)?;
     Ok(key)
 }
 
-/// Cle des demandes, creee si elle manque : [`KEY_BYTES`] octets
-/// aleatoires dans un fichier cree en 0600 (`O_EXCL` : jamais ecrase ;
-/// `O_NOFOLLOW` : aucun lien suivi), puis, avec `group`, donne a ce groupe
-/// en [`KEY_MODE`] par son descripteur (`fchown`, `fchmod`) ; sans `group`,
-/// il reste en 0600. Renvoie la cle et `true` si elle vient d'etre creee.
-/// Un fichier deja present est lu par [`load_key`], jamais remplace.
+/// Cle des demandes, creee si elle manque, de facon atomique : jamais de
+/// cle partielle sous le nom definitif, meme apres un arret brutal ou une
+/// coupure de courant.
+/// 1. [`KEY_BYTES`] octets aleatoires ecrits dans un fichier temporaire du
+///    meme dossier (`.update-hmac.key.<pid>.<alea>.tmp`, cree en 0600,
+///    `O_EXCL`, `O_NOFOLLOW`) ;
+/// 2. avec `group`, ce groupe et [`KEY_MODE`] par le descripteur (`fchown`,
+///    `fchmod`) ; sans `group`, 0600 ; donnees sur disque (`fsync`) ;
+/// 3. publication sans jamais remplacer une cle presente
+///    (`renameat2(RENAME_NOREPLACE)` sous Linux, sinon `link` puis retrait
+///    du temporaire), puis le dossier sur disque.
+///
+/// Renvoie la cle et `true` si elle vient d'etre creee. Un fichier deja
+/// present est lu par [`load_key`], jamais remplace. Un temporaire laisse
+/// par un arret brutal (root 0600) n'est jamais lu.
 pub fn ensure_key(path: &Path, group: Option<u32>) -> Result<(RequestKey, bool), KeyError> {
     match load_key(path) {
         Err(KeyError::Missing) => {}
         other => return other.map(|k| (k, false)),
     }
-    let mut key = Zeroizing::new([0u8; KEY_BYTES]);
+    let mut key = RequestKey::zeroed();
     getrandom::fill(&mut key[..])
         .map_err(|_| KeyError::Io(io::Error::other("generateur aleatoire indisponible")))?;
+    let mut tag = [0u8; 8];
+    getrandom::fill(&mut tag)
+        .map_err(|_| KeyError::Io(io::Error::other("generateur aleatoire indisponible")))?;
+    let tmp = path.with_file_name(format!(
+        ".{KEY_FILE}.{}.{:016x}.tmp",
+        std::process::id(),
+        u64::from_le_bytes(tag)
+    ));
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -250,24 +294,52 @@ pub fn ensure_key(path: &Path, group: Option<u32>) -> Result<(RequestKey, bool),
         opts.mode(0o600)
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
-    let mut file = match opts.open(path) {
-        Ok(f) => f,
-        // Creee entre-temps par un autre processus : c'est celle-la.
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            return load_key(path).map(|k| (k, false));
-        }
-        Err(e) => return Err(KeyError::Io(e)),
-    };
+    let mut file = opts.open(&tmp).map_err(KeyError::Io)?;
     let written = file
         .write_all(&key[..])
         .and_then(|()| share_key(&file, group))
         .and_then(|()| file.sync_all());
-    if let Err(e) = written {
-        drop(file);
-        let _ = fs::remove_file(path);
-        return Err(KeyError::Io(e));
+    drop(file);
+    let published = written.and_then(|()| publish_no_replace(&tmp, path));
+    let _ = fs::remove_file(&tmp);
+    match published {
+        Ok(()) => {
+            sync_parent(path);
+            Ok((key, true))
+        }
+        // Creee entre-temps par un autre processus : c'est celle-la.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => load_key(path).map(|k| (k, false)),
+        Err(e) => Err(KeyError::Io(e)),
     }
-    Ok((key, true))
+}
+
+/// Donne a `tmp` le nom `dest` sans jamais remplacer un `dest` present
+/// (`AlreadyExists`). Linux : `renameat2(RENAME_NOREPLACE)`, et `link` si le
+/// systeme de fichiers ne le prend pas en charge ; ailleurs : `link`
+/// (l'appelant retire `tmp`).
+fn publish_no_replace(tmp: &Path, dest: &Path) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        match renameat_with(CWD, tmp, CWD, dest, RenameFlags::NOREPLACE) {
+            Ok(()) => return Ok(()),
+            Err(e) if e == rustix::io::Errno::INVAL || e == rustix::io::Errno::NOSYS => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    fs::hard_link(tmp, dest)
+}
+
+/// Dossier de `path` sur disque (entree creee) ; au mieux.
+fn sync_parent(path: &Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent()
+        && let Ok(d) = File::open(dir)
+    {
+        let _ = d.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// Groupe `group` et droits [`KEY_MODE`] (0600 sans groupe), par le
@@ -457,6 +529,38 @@ mod tests {
             let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
             assert_eq!(mode, 0o600, "sans groupe : 0600");
         }
+    }
+
+    #[test]
+    fn key_is_published_without_leftover_nor_overwrite() {
+        let tmp = Tmp::new("atomic");
+        let path = tmp.0.join(KEY_FILE);
+        ensure_key(&path, None).unwrap();
+        let names: Vec<_> = fs::read_dir(&tmp.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            [std::ffi::OsString::from(KEY_FILE)],
+            "aucun temporaire"
+        );
+        // Publication : une cle presente n'est jamais remplacee.
+        let other = tmp.0.join("nouvelle.tmp");
+        fs::write(&other, [9u8; KEY_BYTES]).unwrap();
+        let before = fs::read(&path).unwrap();
+        let err = publish_no_replace(&other, &path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn key_debug_never_shows_the_bytes() {
+        let mut key = RequestKey::zeroed();
+        key[..].copy_from_slice(&[0xab; KEY_BYTES]);
+        let shown = format!("{key:?} {:?}", Ok::<_, ()>(&key));
+        assert!(!shown.contains("171") && !shown.to_lowercase().contains("ab,"));
+        assert!(shown.contains("RequestKey(..)"));
     }
 
     #[test]

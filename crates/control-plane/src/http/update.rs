@@ -228,7 +228,10 @@ async fn request_update(
     }
     // Cle des demandes lue avant la re-authentification : sans elle, rien
     // n'est demande ni consomme.
+    // Absente ou refusee (taille, droits, proprietaire : reste d'une creation
+    // interrompue, par exemple) : 503 documente, pas 500.
     let key_path = state.cfg.config_dir.join(KEY_FILE);
+    let shown = key_path.display().to_string();
     let key = tokio::task::spawn_blocking(move || load_key(&key_path))
         .await
         .map_err(|e| internal("cle des demandes de mise a jour", e))?
@@ -236,9 +239,27 @@ async fn request_update(
             KeyError::Missing => ApiError::new(
                 503,
                 "updates_unavailable",
-                "Ciphera : clé des demandes de mise à jour absente (/etc/ciphera/update-hmac.key). \
-                 La créer avec sudo systemctl start ciphera-updater.service, puis réessayer.",
+                format!(
+                    "Ciphera : clé des demandes de mise à jour absente ({shown}). \
+                     La créer avec sudo systemctl start ciphera-updater.service, puis réessayer."
+                ),
             ),
+            KeyError::Refused(why) => {
+                tracing::warn!(
+                    "cle des demandes de mise a jour refusee ({shown}) : {why} ; \
+                     la supprimer (sudo rm {shown}) puis la recreer avec \
+                     sudo systemctl start ciphera-updater.service"
+                );
+                ApiError::new(
+                    503,
+                    "updates_unavailable",
+                    format!(
+                        "Ciphera : clé des demandes de mise à jour invalide ({shown}). \
+                         La supprimer, la recréer avec sudo systemctl start \
+                         ciphera-updater.service, puis réessayer."
+                    ),
+                )
+            }
             other => internal("cle des demandes de mise a jour", other),
         })?;
     let ip = ip.to_string();

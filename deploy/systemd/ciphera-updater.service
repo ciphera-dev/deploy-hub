@@ -47,6 +47,8 @@ ReadWritePaths=-/run/ciphera-agent -/var/lib/ciphera-buildkit
 ReadWritePaths=-/etc/apparmor.d
 # Cle des demandes (update-hmac.key), creee si elle manque.
 ReadWritePaths=/etc/ciphera
+# ... mais jamais l'autorite de certification (cle de la CA).
+ReadOnlyPaths=-/etc/ciphera/ca
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
