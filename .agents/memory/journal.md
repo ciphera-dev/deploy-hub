@@ -489,3 +489,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-26 21:59 — Session v0.1-sdd — claude-code (orchestrateur) — Task R44 : Clôture de l'audit
 - fait : Document de clôture (139 constats : 132 résolus, 2 résiduels, 5 actions utilisateur), mémoire et docs de sécurité alignés sur R56
 - résultat : Relecture approuvée après 1 tour
+
+## 2026-11-26 23:00 — Session v0.1-sdd — claude-code (orchestrateur) — Task fixe2e : Test golden-path aligné sur le step-up de R56
+- fait : Le parcours e2e saisit mot de passe et code TOTP frais pour créer l'invitation ; échec en 15 s si le bouton reste désactivé
+- résultat : Relu par l'orchestrateur (diff de test seul)

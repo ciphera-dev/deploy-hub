@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-26 21:59
+# État courant — mis à jour le 2026-11-26 23:00
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R44 : Clôture de l'audit — statut : TERMINÉ (Relecture approuvée après 1 tour)
+Task fixe2e : Test golden-path aligné sur le step-up de R56 — statut : TERMINÉ (Relu par l'orchestrateur (diff de test seul))
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task fixe2e : Test golden-path aligné sur le step-up de R56
 - Task R44 : Clôture de l'audit
 - Task R56 : Step-up pour les changements d'équipe privilégiés
 - Task R53 : latest.json signé, avec échéance
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R41 : Updater root durci
 - Task R54 : rsa 0.10.0, garde-fous Pingora
 - Task R43 : Hygiène du dépôt avant publication
-- Task R40 : install.sh / uninstall.sh durcis
 
 ## Prochaine étape exacte
-Tag v0.1.0 : CI verte, Release (test) verte, action utilisateur 7 faite
+CI verte, Release (test), tag v0.1.0
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,7 +32,7 @@ Tag v0.1.0 : CI verte, Release (test) verte, action utilisateur 7 faite
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `docs/security/audit-2026-11-24-cloture.md`
+- `web/e2e/golden-path.spec.ts`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
