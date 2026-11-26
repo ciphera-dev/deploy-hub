@@ -153,9 +153,15 @@ p {
   font-weight: 500;
 }
 
+.skip:hover,
 .skip:focus {
   top: 12px;
-  color: var(--gray-50);
+  background: var(--gray-950);
+  color: var(--gray-0);
+}
+
+.skip:hover {
+  background: var(--gray-900);
 }
 
 .sr-only {
@@ -829,13 +835,27 @@ button.link-mono {
   color: var(--text-strong);
 }
 
-/* Fonctionnalites : cartes centrees. */
-.feat {
-  text-align: center;
+/* Fonctionnalites : icone a cote du titre. */
+.feat-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .feat .ico {
-  margin: 0 auto 20px;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--brand-grad-a);
+}
+
+.feat .ico .i {
+  width: 22px;
+  height: 22px;
 }
 
 /* Comment ca marche : grande carte a gauche, etapes a droite. */
