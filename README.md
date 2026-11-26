@@ -1,132 +1,171 @@
-# Ciphera
+<div align="center">
 
-Ciphera est un PaaS auto-hébergé et **entièrement open source**, écrit en Rust. Il vise la même place que Dokploy et Coolify, en plus léger et plus sûr :
-- **Un seul binaire** pour le plan de contrôle, qui sert aussi l'interface.
-- **Un agent natif** sur chaque nœud.
-- **Un proxy** Pingora + ACME.
-- **Des builds** BuildKit/Railpack.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="web/src/assets/brand/logo.svg">
+  <source media="(prefers-color-scheme: light)" srcset="web/src/assets/brand/logo-dark.svg">
+  <img alt="Ciphera" src="web/src/assets/brand/logo-dark.svg" width="360">
+</picture>
 
-Il n'existe qu'une version : celle que vous installez sur vos serveurs. Pas d'offre cloud et pas de fonctionnalités sous licence.
+<h3>Le PaaS auto-hébergé, léger et sûr, écrit en Rust.</h3>
 
-> **État : pré-production.** Le design (maquettes complètes du panneau) est rangé et prêt à être porté. Le code de la v0.1 est dans `crates/` et `web/` : voir « Démarrer le développement » et [CONTRIBUTING.md](CONTRIBUTING.md).
+<p>Déployez vos applications depuis GitHub sur vos propres serveurs, avec HTTPS automatique, sans offre cloud ni fonctionnalité sous licence.</p>
 
-## Installation (cible)
+<p>
+  <a href="https://github.com/ciphera-dev/deploy-hub/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ciphera-dev/deploy-hub/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/ciphera-dev/deploy-hub/releases"><img alt="Dernière release" src="https://img.shields.io/github/v/release/ciphera-dev/deploy-hub?label=release"></a>
+  <a href="LICENSE"><img alt="Licence AGPL-3.0" src="https://img.shields.io/github/license/ciphera-dev/deploy-hub"></a>
+</p>
+
+<p>
+  <a href="#installation">Installation</a> ·
+  <a href="#fonctionnalités">Fonctionnalités</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="CONTRIBUTING.md">Contribuer</a> ·
+  <a href="SECURITY.md">Sécurité</a>
+</p>
+
+</div>
+
+<br>
+
+## Qu'est-ce que Ciphera ?
+
+Ciphera est une plateforme de déploiement (PaaS) **auto-hébergée et entièrement open source**. Il occupe la même place que Dokploy ou Coolify, avec deux priorités : rester léger et être sûr par défaut.
+
+- **Un seul binaire** pour le plan de contrôle, qui sert aussi le panneau web.
+- **Un agent natif** sur le nœud, relié au plan de contrôle par QUIC et mTLS, avec une API étroite : jamais d'exécution arbitraire.
+- **Un proxy** Pingora avec certificats Let's Encrypt (ACME).
+- **Des builds** BuildKit : Railpack, Dockerfile ou Compose.
+
+Il n'existe qu'une version de Ciphera : celle que vous installez sur vos serveurs.
+
+## Fonctionnalités
+
+| Domaine | Ce qui est disponible |
+|---|---|
+| **Déploiement** | Projets et services reliés à un dépôt GitHub (GitHub App créée depuis le panneau), déploiement à chaque push, déploiement manuel, deploy hooks à expiration, annulation et rollback, redémarrage et arrêt des services |
+| **Builds** | Railpack sans configuration, Dockerfile ou Compose, un buildkitd isolé par projet, limites de taille, de mémoire et de durée ([détail](docs/operations/builds.md)) |
+| **Domaines et HTTPS** | Domaines par projet avec vérification, certificats Let's Encrypt émis et renouvelés par le proxy, domaine principal et redirections, domaine dédié au panneau avec HSTS |
+| **Variables et secrets** | Variables par projet et par environnement, import au format `.env`, variables globales, secrets chiffrés avec `age`, jamais renvoyés par l'API et masqués dans les journaux |
+| **Suivi** | Vue d'ensemble, métriques des nœuds, historique des déploiements, journaux de build et d'exécution en direct (WebSocket) |
+| **Équipe et accès** | Invitations, rôles (propriétaire, admin, développeur, ops, lecteur), passkeys (WebAuthn), TOTP et codes de secours, confirmation renforcée des actions sensibles, liste d'IP autorisées, sessions révocables |
+| **Notifications** | E-mails par votre serveur SMTP (connexion chiffrée obligatoire), préférences par membre, avis de sécurité aux propriétaires |
+| **Exploitation** | Installeur à releases signées (minisign), mise à jour vérifiée avec retour arrière, vérification de nouvelle version désactivée par défaut et sans télémétrie, export de la configuration sans secret, commandes `ciphera admin` de secours |
+
+## Installation
+
+Sur un serveur Linux avec systemd (Debian, Ubuntu ou Fedora ; x86_64 ou aarch64) :
 
 ```sh
 curl -fsSL https://get.ciphera.ch/install.sh | sudo sh
 ```
 
-Le script :
-1. télécharge l'archive de la release et `SHA256SUMS` ;
-2. vérifie la signature minisign puis le SHA-256 ;
-3. s'arrête sans rien installer si une vérification échoue ;
-4. installe les binaires et les unités systemd ;
-5. affiche l'URL de l'assistant d'installation avec un jeton à usage unique (`https://<IP>:8443/setup#token=…`), valable 24 heures. Passé ce délai, et tant qu'aucun compte n'existe, `sudo ciphera admin setup-token` en génère un nouveau et réimprime l'URL.
+L'installeur vérifie la signature minisign puis le SHA-256 de la release avant d'installer quoi que ce soit, puis affiche l'adresse de l'assistant d'installation (`https://<IP>:8443/setup#token=…`, valable 24 heures). Ouvrez-la pour créer le premier compte.
 
-`/etc/ciphera/ciphera.env` appartient à root (`root:ciphera`, mode 0640) : les commandes `sudo ciphera admin …` refusent un fichier qui n'appartient pas à root ou qui est modifiable par le groupe ou les autres (corriger avec `chown root:ciphera /etc/ciphera/ciphera.env && chmod 0640 /etc/ciphera/ciphera.env`).
+Pour aller plus loin :
 
-Le détail est dans [docs/adr/0003-installation-et-verification-des-releases.md](docs/adr/0003-installation-et-verification-des-releases.md).
+- [Installation détaillée](docs/operations/installation.md) : étapes de l'installeur, sortie réseau des conteneurs, accès au panneau par un nom DNS, domaine du panneau, HSTS, passkeys, commandes d'administration ;
+- [Vérifier une release](docs/security/release-signing.md) : minisign, cosign et attestation SLSA ;
+- [Certificats de l'instance](docs/operations/certificats.md) : autorité locale, renouvellement, rotation.
 
-Sortie réseau des conteneurs : les applications ne joignent ni l'hôte lui-même (sauf les ports 80 et 443 du proxy du nœud, pour un domaine servi par ce même serveur) ni les adresses de métadonnées des clouds (169.254.169.254 et le reste de 169.254.0.0/16, `fd00:ec2::254`, `fd20:ce::254`, 100.100.100.200, 168.63.129.16) ; les builds ne joignent en plus aucune plage privée. Les plages privées (10/8, 172.16/12, 192.168/16, 100.64/10, `fc00::/7`) restent permises aux applications par défaut. Pour les interdire :
-
-```sh
-curl -fsSL https://get.ciphera.ch/install.sh | sudo CIPHERA_APP_EGRESS_DENY_PRIVATE=1 sh
-```
-
-Le réglage est gardé dans `/etc/ciphera-egress/egress.env` (root, `CIPHERA_APP_EGRESS_DENY_PRIVATE=0` ou `1`) : après une modification à la main, il s'applique en 5 minutes au plus (`ciphera-egress-check.timer`) ou tout de suite par `sudo systemctl start ciphera-egress-check.service`.
-
-### Accès au panneau par un nom DNS
-
-L'accès direct au panneau (`https://<IP>:8443`, certificat auto-signé) répond par son adresse IP et par `localhost`. Pour le joindre sur ce port par un nom DNS, déclarez ce nom dans `/etc/ciphera/ciphera.env`, puis redémarrez le service `ciphera` :
-
-```sh
-CIPHERA_PANEL_ALIASES=admin.exemple.com,ops.exemple.com
-```
-
-Les noms reconnus sur le port 8443 sont l'hôte de `CIPHERA_PUBLIC_URL`, `CIPHERA_WEBAUTHN_RP_ID`, ces alias et le domaine du panneau confirmé. Tout autre nom reçoit `421 Misdirected Request`. Un nom internationalisé se déclare sous sa forme ASCII (punycode `xn--…`). Un nom réservé au panneau ne peut pas devenir le domaine d'un projet, et un domaine de projet ne peut pas être créé ni vérifié sous le nom par lequel on joint le panneau.
-
-Une fois le domaine du panneau confirmé (Paramètres › Domaine du panel), l'adresse IP du serveur ne mène plus au panneau : le port 8443 est fermé, et le proxy répond `404` à une requête HTTP ou HTTPS adressée à l'IP, sans révéler le domaine. Il en va de même pour le nom éventuellement déclaré dans `CIPHERA_PROXY_PANEL_HOST`, et l'écouteur facultatif `CIPHERA_HTTP_PORT` ne redirige plus que le domaine du panneau et les noms réservés au panneau (tout autre nom et toute adresse IP reçoivent `404`). Un nom réservé qui se déduit de l'IP (un nom `sslip.io`, le nom inverse PTR du serveur, etc.) reste redirigé vers le domaine du panneau : déclarer un tel nom dans `CIPHERA_PUBLIC_URL`, `CIPHERA_WEBAUTHN_RP_ID` ou les alias est un choix de l'opérateur, qui révèle alors le domaine à qui connaît l'IP. Prenez l'habitude d'ouvrir le panneau par son domaine avant de confirmer. Si le domaine ne répond plus, `sudo ciphera admin reset-panel-domain` rouvre l'accès direct au redémarrage du service. Une connexion TLS sans nom (SNI) ne reçoit jamais le certificat du panneau.
-
-HSTS (un an, jamais `preload`) couvre les sous-domaines du domaine du panneau quand il n'est pas à la racine de son domaine (`panel.exemple.com`). Pour un domaine racine (`exemple.com`), l'option « Inclure les sous-domaines (HSTS) » est désactivée par défaut : activée, elle impose HTTPS pendant un an à tous les sous-domaines de la zone, y compris ceux servis ailleurs.
-
-Les passkeys sont liées à l'origine publique du panneau (domaine confirmé, sinon `CIPHERA_PUBLIC_URL`). Si ce domaine change, les passkeys enregistrées sous l'ancien ne fonctionnent plus : il faut les enregistrer à nouveau. Elles ne servent qu'à cette adresse exacte (même hôte, même port) : par l'adresse IP, par `localhost`, par un alias, par un sous-domaine ou par un autre port, le panneau ne les propose pas et indique l'adresse publique ; on s'y connecte alors par mot de passe puis code TOTP ou code de secours. Pour un autre choix, fixez `CIPHERA_WEBAUTHN_RP_ID` et `CIPHERA_WEBAUTHN_RP_ORIGIN`.
-
-## Stack
+## Architecture
 
 | Couche | Choix |
 |---|---|
-| Interface | React 19 + Vite + TypeScript + TanStack Router/Query + Tailwind v4 + shadcn/ui. SPA statique embarquée dans le binaire via `rust-embed` |
-| Plan de contrôle | Axum (REST + WebSocket), PostgreSQL 17 + SQLx, files de tâches en Postgres (`SKIP LOCKED` / apalis), sans Redis |
-| Authentification | Passkeys/WebAuthn (`webauthn-rs`), TOTP, jetons API à permissions |
-| Secrets | Chiffrement enveloppe avec `age`, champs en écriture seule dans l'API |
-| Observabilité | OpenTelemetry + export Prometheus |
-| Agent de nœud | Tokio + QUIC (`quinn`), mTLS obligatoire (mini-PKI `rcgen`), Docker via `bollard`, état local SQLite (`rusqlite`). API étroite, jamais d'exécution arbitraire |
-| Builds | BuildKit (`buildkitd`) piloté par l'agent : Railpack par défaut, Dockerfile, Compose |
-| Proxy / TLS | Pingora + `instant-acme` |
-| CLI | Rust (`clap`), client généré depuis le même schéma OpenAPI que l'interface |
+| Panneau | React 19, Vite, TypeScript, TanStack Router et Query, Tailwind CSS v4, shadcn/ui ; SPA statique embarquée dans le binaire (`rust-embed`) |
+| Plan de contrôle | Axum (REST et WebSocket), PostgreSQL 17 et SQLx, file de tâches dans PostgreSQL (`SKIP LOCKED`), sans Redis ; schéma OpenAPI généré (`utoipa`) |
+| Authentification | Mots de passe Argon2, passkeys (`webauthn-rs`), TOTP, rôles par organisation |
+| Secrets | Chiffrement avec `age`, champs en écriture seule dans l'API |
+| Agent de nœud | Tokio, QUIC (`quinn`) avec mTLS obligatoire (PKI de l'instance, `rcgen`), Docker via `bollard`, état local SQLite |
+| Builds | BuildKit piloté par l'agent : Railpack, Dockerfile, Compose |
+| Proxy et TLS | Pingora, `instant-acme`, rustls |
+| Outils serveur | `ciphera admin` (secours) et `ciphera-cli updater` (mises à jour signées) |
 
-Les raisons de ces choix sont dans [docs/architecture/stack.md](docs/architecture/stack.md) et [docs/adr/](docs/adr/).
+Les raisons de ces choix sont dans [docs/architecture/stack.md](docs/architecture/stack.md) et les [décisions d'architecture](docs/adr/).
 
-Builds par Dockerfile (ou Compose) : la directive `# syntax=` n'accepte que `docker/dockerfile` en version `1`, `latest` ou `1.4` et plus (`1.N`, `1.N.M`), sans empreinte (`@sha256:…`) ni variante `-labs`. Un autre frontend, ou une version ancienne, pourrait ignorer le cloisonnement des caches de build par projet et par environnement. Le build échoue alors avec un message clair : retirer la ligne (frontend intégré à BuildKit) ou écrire `# syntax=docker/dockerfile:1`.
-
-Limites des builds : un seul build à la fois par nœud (les suivants attendent leur tour, ce qui est indiqué dans leur journal) ; le dépôt cloné ne dépasse pas 2 Gio et l'image construite 10 Gio ; BuildKit est limité à 4096 processus, à la moitié de la mémoire du nœud (1 Gio au moins) et à tous les CPU sauf un, et chaque projet a son propre buildkitd et son propre état (le premier build d'un projet est plus lent, cache vide ; un seul buildkitd tourne à la fois, arrêté après 10 min d'inactivité, état supprimé avec le projet ou après 30 jours) ; le ramasse-miettes d'un état garde 10 % du disque (entre 5 et 50 Gio) divisés par le nombre de projets (1 Gio au moins chacun), donc le total des états peut dépasser 10 %. Un outil de build qui dépasse son délai est arrêté avec tous ses processus.
-
-## Arborescence
+<details>
+<summary><strong>Arborescence du dépôt</strong></summary>
 
 ```
 .
-├── web/                        interface (SPA React) — composants et tokens déjà présents
-│   ├── public/                 favicon
-│   └── src/
-│       ├── design-system/      32 composants du design system (JSX + .d.ts + doc), à porter en TSX
-│       ├── styles/             index.css + tokens/ (couleurs, typo, espacements, effets)
-│       └── assets/             brand/ (logos Ciphera) + images/ (connecteurs, BDD, OS, SMTP, SSH, Cloudflare)
-├── prototypes/                 maquettes d'origine, lançables (référence visuelle, jamais importées)
-│   ├── dashboard/              ~45 écrans + login / register / 2fa / install / 404
-│   └── vendor/ds-bundle.js     bundle généré du design system (pour les maquettes uniquement)
-├── docs/
-│   ├── adr/                    décisions d'architecture
-│   ├── architecture/stack.md   stack, arborescence cible, contrat backend
-│   ├── design/screens.md       contrat de production : écran → route → endpoint
-│   ├── design-system/          fondations, specimens, captures de référence
-│   ├── research/analyse-paas/  analyse de Dokploy et Coolify (fonctionnalités, CVE, blueprint)
-│   ├── security/               fondations et exigences de sécurité
-│   └── cleanup/                trace du rangement de l'export design (file-map.json, report.md)
-├── config/                     règles oxlint d'adhérence au design system
-├── .agents/                    mémoire multi-agents (lire .agents/memory/etat.md en premier)
-├── AGENTS.md · CLAUDE.md       consignes pour les agents
-└── (à créer) crates/  install/  deploy/  scripts/  justfile  Cargo.toml
+├── crates/
+│   ├── control-plane/   plan de contrôle et API (binaire `ciphera`)
+│   ├── agent/           agent de nœud (builds, déploiements, métriques)
+│   ├── proxy/           proxy Pingora et ACME
+│   ├── cli/             mises à jour signées (`ciphera-cli`)
+│   ├── proto/           protocole agent ⇄ plan de contrôle
+│   ├── pki/             autorité de certification de l'instance
+│   ├── api-types/       types de l'API (OpenAPI)
+│   └── shared/          code commun
+├── web/                 panneau (SPA React) et tests Playwright
+├── install/             installeur, scripts de release et leurs tests
+├── deploy/              unités systemd, profils AppArmor, images épinglées
+├── scripts/             outils de release
+├── docs/                architecture, ADR, sécurité, exploitation, design
+├── prototypes/          maquettes d'origine (référence visuelle uniquement)
+└── openapi.json         schéma de l'API, régénéré par `just gen`
 ```
 
-## Voir les maquettes
+</details>
 
-Servir la **racine du dépôt** en HTTP (pas en `file://`, car Babel et les imports l'exigent), puis ouvrir `prototypes/dashboard/index.html` :
+## Documentation
 
-```sh
-python -m http.server 8000
-# → http://localhost:8000/prototypes/dashboard/index.html
-#   aussi : login.html, register.html, 2fa.html, install.html, 404.html
-```
+| Sujet | Document |
+|---|---|
+| Installation et exposition d'une instance | [docs/operations/installation.md](docs/operations/installation.md) |
+| Règles et limites des builds | [docs/operations/builds.md](docs/operations/builds.md) |
+| Certificats de l'instance | [docs/operations/certificats.md](docs/operations/certificats.md) |
+| Publier une release | [docs/operations/release.md](docs/operations/release.md) |
+| Signature et vérification des releases | [docs/security/release-signing.md](docs/security/release-signing.md) |
+| Modèle de menaces | [docs/security/threat-model.md](docs/security/threat-model.md) |
+| Stack et contrat backend | [docs/architecture/stack.md](docs/architecture/stack.md) |
+| Décisions d'architecture | [docs/adr/](docs/adr/) |
+| Écrans du panneau (écran → route → endpoint) | [docs/design/screens.md](docs/design/screens.md) |
+| Design system | [docs/design-system/README.md](docs/design-system/README.md) |
 
-Les maquettes chargent React 18 (dev) et Babel depuis unpkg. Elles servent de référence visuelle seulement, jamais de base de production.
+## Contribuer
 
-## Démarrer le développement
+Les contributions sont bienvenues. Prérequis, commandes qui reproduisent la CI (`just test`, `just lint`, `just audit`, `just gen`), tests de bout en bout et conventions : voir [CONTRIBUTING.md](CONTRIBUTING.md). La publication d'une version suit [docs/operations/release.md](docs/operations/release.md).
 
-Prérequis, commandes locales (`just dev`, `just gen`, `just test`, `just lint`) et conventions : voir [CONTRIBUTING.md](CONTRIBUTING.md). Pour signaler une faille en privé : [SECURITY.md](SECURITY.md).
+Ce projet adopte un [code de conduite](CODE_OF_CONDUCT.md) : en participant, vous vous engagez à le respecter.
 
-## Tests de bout en bout (Playwright)
+## Sécurité
 
-- `npm --prefix web run e2e` : la SPA construite servie par `vite preview` (aucune instance requise ; `golden-path.spec.ts` est ignoré).
-- Parcours golden-path (`web/e2e/golden-path.spec.ts` : setup → TOTP → GitHub App simulée → déploiement → domaine via Pebble → HTTPS → rollback) : seulement sur une machine Linux jetable avec systemd et Docker (job CI `e2e-golden-path`). `install/tests/golden-path/setup.sh` y installe Ciphera, Pebble et un GitHub simulé, puis écrit les variables `CIPHERA_E2E_*` :
+Ne signalez jamais une faille par une issue publique : suivez [SECURITY.md](SECURITY.md) (signalement privé par GitHub Security Advisories).
 
-  ```sh
-  sudo CIPHERA_DESTRUCTIVE_HOST_TEST=1 bash install/tests/golden-path/setup.sh /tmp/golden-path
-  set -a; . /tmp/golden-path/e2e.env; set +a
-  npm --prefix web run e2e -- golden-path
-  ```
+## Remerciements
 
-  Sans `CIPHERA_E2E_URL`, le parcours est sauté. Le script modifie la machine (`/etc/hosts`, magasin de certificats, unités systemd).
+Le développement de Ciphera a été réalisé avec l'aide de deux assistants de programmation : **Kimi**, puis **Claude Code**.
+
+<div align="center">
+<table>
+  <tr>
+    <td align="center" width="200">
+      <a href="https://www.kimi.com">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/kimi-dark.svg">
+          <source media="(prefers-color-scheme: light)" srcset="docs/assets/brand/kimi-light.svg">
+          <img alt="Kimi" src="docs/assets/brand/kimi-light.svg" height="48">
+        </picture>
+      </a>
+      <br><br>
+      <strong>Kimi</strong><br>
+      <sub>Moonshot AI</sub>
+    </td>
+    <td align="center" width="200">
+      <a href="https://claude.com/claude-code">
+        <img alt="Claude Code" src="docs/assets/brand/claude.svg" height="48">
+      </a>
+      <br><br>
+      <strong>Claude Code</strong><br>
+      <sub>Anthropic</sub>
+    </td>
+  </tr>
+</table>
+</div>
+
+<sub>Logos : <a href="https://simpleicons.org">Simple Icons</a> (CC0). Les marques citées appartiennent à leurs propriétaires ; sources et conditions dans <a href="docs/assets/brand/CREDITS.md">docs/assets/brand/CREDITS.md</a>.</sub>
 
 ## Licence
 
-Ciphera est distribué sous **GNU Affero General Public License v3.0** ([LICENSE](LICENSE)). Quiconque propose une version modifiée de Ciphera comme service réseau doit en publier le code source.
+Ciphera est distribué sous la **GNU Affero General Public License v3.0** ([LICENSE](LICENSE)). Quiconque propose une version modifiée de Ciphera comme service réseau doit en publier le code source.
