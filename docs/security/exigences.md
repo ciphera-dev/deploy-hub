@@ -86,7 +86,7 @@ Intentions : dashboard, backend. Source : `references/stacks.md` + écrans du de
 - [ ] Inscription publique désactivée par défaut ; ajout des membres par invitation.
 - [ ] WebAuthn (passkeys) + TOTP (seed chiffré) + codes de secours (hashés). 2FA obligatoire activable pour l'organisation, SSO SAML/OIDC sans licence.
 - [ ] Re-auth + MFA pour : reset du mot de passe root, révélation des identifiants de base de données, création de jeton, restauration, suppression d'organisation, ouverture du terminal.
-  - État v0.1 : step-up mot de passe + second facteur pour la suppression de l'organisation, la création d'un deploy hook et la prolongation de son expiration ; mot de passe seul pour la réinitialisation du second facteur d'un membre. Les autres actions de la liste n'existent pas encore en v0.1.
+  - État v0.1 : step-up mot de passe + second facteur pour la suppression de l'organisation, la création d'un deploy hook et la prolongation de son expiration, la modification des réglages SMTP et les changements d'équipe privilégiés (invitation, changement de rôle, retrait d'un membre, lien de réinitialisation du mot de passe et remise à zéro du second facteur d'un membre, R56) ; chaque changement d'équipe est notifié aux autres propriétaires quand SMTP est configuré. Les autres actions de la liste n'existent pas encore en v0.1.
 
 ### Livraison
 - [ ] `install.sh` (ADR 0003) :

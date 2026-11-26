@@ -15,7 +15,7 @@ Chaque écran existant est **porté et branché, jamais redessiné**.
 **Rôles** : `owner` › `admin` › `ops` / `developer` › `viewer`, plus un périmètre par projet.
 
 **Règles transverses :**
-- Re-auth + MFA pour les actions sensibles : reset root, révélation d'identifiants, création de jeton, restauration, suppression d'organisation, terminal. En v0.1, le step-up (mot de passe + second facteur) protège la suppression de l'organisation, la création d'un deploy hook et la prolongation de son expiration ; la réinitialisation du second facteur d'un membre demande le mot de passe de l'auteur.
+- Re-auth + MFA pour les actions sensibles : reset root, révélation d'identifiants, création de jeton, restauration, suppression d'organisation, terminal. En v0.1, le step-up (mot de passe + second facteur, `StepUpModal`) protège la suppression de l'organisation, la création d'un deploy hook et la prolongation de son expiration, les réglages SMTP et les changements d'équipe privilégiés (invitation, changement de rôle, retrait, lien de réinitialisation et remise à zéro du second facteur d'un membre, R56).
 - Secrets toujours en écriture seule.
 - Aucun CDN en production : d3-geo, world-atlas, lucide et les drapeaux sont embarqués.
 

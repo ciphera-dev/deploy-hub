@@ -1,6 +1,6 @@
 # Clôture de l'audit de sécurité du 2026-11-24
 
-Vérification de couverture faite le 2026-11-26 sur `main` (73937c3), avant le tag `v0.1.0`. Chaque constat de l'audit externe a été rapproché des commits de sa tâche de remédiation (R1 à R55, plus R3b) et, le cas échéant, des correctifs de CI qui ont suivi. L'audit et le plan détaillé restent hors du dépôt. Ce document décrit seulement l'état atteint, sans détail d'exploitation.
+Vérification de couverture faite le 2026-11-26 sur `main` (73937c3), avant le tag `v0.1.0`. Chaque constat de l'audit externe a été rapproché des commits de sa tâche de remédiation (R1 à R55, plus R3b) et, le cas échéant, des correctifs de CI qui ont suivi ; la revue de clôture a ajouté R56 (voir plus bas). L'audit et le plan détaillé restent hors du dépôt. Les constats que le plan classait d'abord en résiduels (par exemple D-INST-1, D-INST-3, D-PKI-2, D-PKI-8, D-PROXY-8, V04-N1) ont ensuite été fermés par R45 à R55, puis R56 : ils figurent ici en « Résolu ». Ce document décrit seulement l'état atteint, sans détail d'exploitation.
 
 ## À traiter
 
@@ -77,6 +77,20 @@ Commits par tâche (premiers caractères de l'empreinte sur `main`) :
 | R53 | cc8257d, d6954a2, 12c1081, 7d2ac39 |
 | R54 | 5a10089, 36f2d53 |
 | R55 | a58c0f9, 994fd17 ; suite CI : cb66674 |
+| R56 | c035e0b, 161218e, 4675625, f9f05d2, c8c69f7, c0a51f9, f54da42 |
+
+## Revue de clôture
+
+La revue de sécurité faite à la clôture (lecture du code, sans sonde) a trouvé un point important : les changements d'équipe privilégiés (invitation, changement de rôle, retrait d'un membre, lien de réinitialisation du mot de passe d'un membre) n'exigeaient pas de second facteur, et les autres propriétaires n'en étaient pas avertis. Deux points mineurs s'y ajoutaient : la remise à zéro du second facteur d'un membre ne demandait que le mot de passe de l'auteur, et l'agent acceptait jusqu'à 4 CA dans un jeu `TrustedCas`.
+
+R56 les a résolus : ces actions et les réglages SMTP exigent le step-up (mot de passe, plus TOTP ou code de secours), les rangs sont relus sous verrou après le step-up, chaque changement d'équipe est audité et notifié aux autres propriétaires quand SMTP est configuré, et l'agent n'accepte plus que 2 CA (courante et suivante).
+
+Résiduels acceptés de R56 :
+- au début d'une rotation, l'agent ne peut pas distinguer la CA suivante légitime d'une racine étrangère ajoutée par le plan de contrôle authentifié (elle ne remplace jamais la CA courante) ;
+- le réglage du domaine du panneau n'exige pas de step-up ;
+- les adresses des propriétaires destinataires restent dans la file des tâches jusqu'à la purge (7 jours), sans route ni journal qui les expose ;
+- un destinataire dont le compte a disparu peut recevoir jusqu'à 6 copies d'un avis ;
+- deux propriétaires qui se retirent l'un l'autre en même temps : le second peut recevoir une erreur 500, le résultat reste correct.
 
 ## Constats des sections 3 à 7 de l'audit
 
@@ -88,8 +102,8 @@ Commits par tâche (premiers caractères de l'empreinte sur `main`) :
 | H01-4 | R14 | 4a6792a, bb2711c | Résolu | Chaque lien de réinitialisation garde son origine ; une demande anonyme ne retire que les liens « mot de passe oublié » |
 | H01-5 | R15 | 52abc8a, a961161, 0faf876, 84da0ad | Résolu | L'inscription ouverte vérifie l'adresse avant d'activer le compte |
 | H02-1 | R4 | 7006ea0, 905e88a, f6615e4, 1fee2a2 | Résolu | Les réglages SMTP sont réservés au propriétaire |
-| H02-2 | R7 | bace1a6, 8812dc0 | Résolu | Le lien de réinitialisation suit les règles de rang, jamais pour soi-même |
-| H02-3 | R5, R6 | c0bc89e, f3c6219, 277155a | Résolu | Gestion de l'équipe par l'API et l'écran Paramètres › Équipe |
+| H02-2 | R7, R56 | bace1a6, 8812dc0, c035e0b, f54da42 | Résolu | Le lien de réinitialisation suit les règles de rang, jamais pour soi-même ; step-up exigé (R56) |
+| H02-3 | R5, R6, R56 | c0bc89e, f3c6219, 277155a, c035e0b, 161218e, f9f05d2, f54da42 | Résolu | Gestion de l'équipe par l'API et l'écran Paramètres › Équipe ; invitation, changement de rôle et retrait sous step-up, avis aux autres propriétaires (R56) |
 | H02-4 | R22 (couture R1) | 491e2e0, 3099ee7, fbc9142 | Résolu | Le nettoyage d'un déploiement attend l'accusé de l'agent et rattrape les restes |
 | H03-1 | R16 | 14e83a7, 670ebbd | Résolu | Tous les secrets scellés sont liés à leur ligne |
 | H03-2 | R18 | 5928f64, 17cc296, 7f03e53, 18b5d0d | Résolu | Les lignes de journal sont rassemblées et masquées avant toute coupe |
@@ -153,7 +167,7 @@ Commits par tâche (premiers caractères de l'empreinte sur `main`) :
 | D-AUTH-13 | R34 | d92a664 | Résolu | La version de `/api/health` n'est donnée qu'au pair local ou à une session |
 | D-AUTH-14 | R37 | 589c54a | Résolu | `ciphera init` change propriétaire et droits par descripteur, sans suivre de lien |
 | D-AUTH-15 | R37 | 589c54a, dd9ff7a | Résolu | Les commandes root refusent un `ciphera.env` qui n'appartient pas à root |
-| D-AUTH-16 | R14 | 4a6792a, 1bfb397 | Résolu | Remise à zéro du second facteur d'un membre (API et CLI) |
+| D-AUTH-16 | R14, R56 | 4a6792a, bb2711c, 1bfb397, c035e0b | Résolu | Remise à zéro du second facteur d'un membre (API et CLI) ; step-up exigé depuis le panneau (R56) |
 | D-AUTH-17 | R37 | 589c54a, dd9ff7a | Résolu | Suppression d'organisation : seul propriétaire, confirmation renforcée |
 
 ### Autorisations et données
