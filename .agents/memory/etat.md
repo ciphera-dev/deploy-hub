@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-27 00:33
+# État courant — mis à jour le 2026-11-27 00:44
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R58 : Affichage soigné de l'installeur — statut : TERMINÉ (Relecture approuvée après 2 tours)
+Task R59 : Landing page get.ciphera.ch — statut : TERMINÉ (Relecture approuvée, tour de finition fait)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R59 : Landing page get.ciphera.ch
 - Task R58 : Affichage soigné de l'installeur
 - Task readme : README refait, code de conduite, remerciements
 - Task fixe2e : Test golden-path aligné sur le step-up de R56
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task R56 : Step-up pour les changements d'équipe privilégiés
 - Task R53 : latest.json signé, avec échéance
 - Task R52 : Mode test retiré du binaire livré
-- Task R41 : Updater root durci
 
 ## Prochaine étape exacte
-R59 (landing get.ciphera.ch) puis bump 0.1.1, CI, tag v0.1.1
+Bump 0.1.1, CI verte, tag v0.1.1
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,8 +32,8 @@ R59 (landing get.ciphera.ch) puis bump 0.1.1, CI, tag v0.1.1
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `install/install.sh`
-- `install/tests/display.sh`
+- `install/pages-site.sh`
+- `install/site/index.html`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?

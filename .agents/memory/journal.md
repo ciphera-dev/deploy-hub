@@ -501,3 +501,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-27 00:33 — Session v0.1-sdd — claude-code (orchestrateur) — Task R58 : Affichage soigné de l'installeur
 - fait : Logo bleu, 5 étapes animées, journal sûr /var/log/ciphera/install.log, sortie simple hors terminal
 - résultat : Relecture approuvée après 2 tours
+
+## 2026-11-27 00:44 — Session v0.1-sdd — claude-code (orchestrateur) — Task R59 : Landing page get.ciphera.ch
+- fait : Site Pages refait (style de la référence, capture réelle du panneau, polices Geist locales, liens Releases/Deployments/Packages/docs, contact info@ciphera.ch), liste blanche des fichiers publiés, keep_signed inchangé
+- résultat : Relecture approuvée, tour de finition fait
