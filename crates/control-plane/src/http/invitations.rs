@@ -238,12 +238,14 @@ async fn create(
     .execute(&mut *tx)
     .await
     .map_err(|e| internal("verrou d'invitation", e))?;
-    // Role de l'invitant relu dans la transaction (change pendant le step-up).
-    let actor: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
-        .bind(auth.user.id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| internal("lecture de l'invitant", e))?;
+    // Role de l'invitant relu sous verrou dans la transaction (change pendant
+    // le step-up).
+    let actor: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(auth.user.id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| internal("lecture de l'invitant", e))?;
     if !actor
         .and_then(|r| Role::parse(&r))
         .is_some_and(|actor| actor.can_grant(role))

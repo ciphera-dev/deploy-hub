@@ -921,3 +921,170 @@ async fn step_up_bodies_reject_unknown_fields() {
         assert!(!changed(&state, action, &t).await, "{action:?}");
     }
 }
+
+/// Attend qu'une requete de la base de test soit bloquee sur `FOR UPDATE`.
+async fn wait_for_row_lock(state: &AppState) -> bool {
+    for _ in 0..400 {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock' \
+             AND query ILIKE '%FOR UPDATE%')",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        if waiting {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    false
+}
+
+/// Role de `user` change par une transaction concurrente non validee : le
+/// premier controle de la requete voit encore l'ancien role. Valide une fois
+/// la requete bloquee sur le verrou de ligne (step-up deja passe).
+async fn demote_during_step_up(
+    state: &AppState,
+    user: Uuid,
+    role: &str,
+    start: impl FnOnce() -> tokio::task::JoinHandle<Reply>,
+) -> Reply {
+    let mut hold = state.db.begin().await.unwrap();
+    sqlx::query("UPDATE users SET role = $2 WHERE id = $1")
+        .bind(user)
+        .bind(role)
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+    // La requete ne demarre qu'une fois la modification en attente.
+    let request = start();
+    let waiting = wait_for_row_lock(state).await;
+    hold.commit().await.unwrap();
+    let r = request.await.unwrap();
+    assert!(
+        waiting,
+        "la requete n'a pas attendu le verrou de ligne ({})",
+        r.raw
+    );
+    r
+}
+
+/// n2 : proprietaire retrograde pendant le step-up des reglages SMTP : refus
+/// sous verrou, reglages inchanges.
+#[tokio::test]
+async fn smtp_save_rechecks_owner_under_lock() {
+    let (state, _pg, _outbox) = env().await;
+    smtp(&state).await;
+    let owner_id = user(&state, "owner@example.com", "owner").await;
+    user(&state, "owner2@example.com", "owner").await;
+    let owner = session(&state, "owner@example.com").await;
+    let start = || {
+        let (state, owner) = (state.clone(), owner.clone());
+        tokio::spawn(async move {
+            send(
+                &state,
+                &owner,
+                "PUT",
+                "/api/settings/notifications",
+                smtp_body(PASSWORD, None),
+            )
+            .await
+        })
+    };
+    let r = demote_during_step_up(&state, owner_id, "admin", start).await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    let host: String = sqlx::query_scalar("SELECT host FROM smtp_settings")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(host, "smtp.example.com");
+}
+
+/// n2 : invitant retrograde pendant le step-up : refus sous verrou, aucune
+/// invitation.
+#[tokio::test]
+async fn invitation_rechecks_inviter_under_lock() {
+    let (state, _pg, _outbox) = env().await;
+    user(&state, "owner@example.com", "owner").await;
+    let admin_id = user(&state, "admin@example.com", "admin").await;
+    let admin = session(&state, "admin@example.com").await;
+    let start = || {
+        let (state, admin) = (state.clone(), admin.clone());
+        tokio::spawn(async move {
+            send(
+                &state,
+                &admin,
+                "POST",
+                "/api/team/invitations",
+                json!({ "email": "cible@example.com", "role": "developer", "password": PASSWORD }),
+            )
+            .await
+        })
+    };
+    let r = demote_during_step_up(&state, admin_id, "viewer", start).await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert_eq!(count(&state, "SELECT count(*) FROM invitations").await, 0);
+}
+
+/// n1 : administrateur retrograde pendant le step-up d'une remise a zero du
+/// second facteur : refus sous verrou, facteur intact.
+#[tokio::test]
+async fn mfa_reset_rechecks_actor_under_lock() {
+    let (state, _pg, _outbox) = env().await;
+    user(&state, "owner@example.com", "owner").await;
+    let admin_id = user(&state, "admin@example.com", "admin").await;
+    let admin = session(&state, "admin@example.com").await;
+    let t = target(&state, Action::ResetMfa, 1).await;
+    let start = || {
+        let (state, admin, t) = (state.clone(), admin.clone(), t.clone());
+        tokio::spawn(async move {
+            act(
+                &state,
+                &admin,
+                Action::ResetMfa,
+                &t,
+                json!({ "password": PASSWORD }),
+            )
+            .await
+        })
+    };
+    let r = demote_during_step_up(&state, admin_id, "viewer", start).await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert!(!changed(&state, Action::ResetMfa, &t).await);
+    assert_eq!(audit_count(&state, Action::ResetMfa.audit()).await, 0);
+}
+
+/// n1 : refus sous verrou apres un step-up reussi : le code TOTP n'est pas
+/// consomme, il sert encore a la demande valide suivante.
+#[tokio::test]
+async fn refusal_under_lock_leaves_the_code_unused() {
+    let (state, _pg, _outbox) = env().await;
+    user(&state, "owner@example.com", "owner").await;
+    user(&state, "admin@example.com", "admin").await;
+    let admin = session(&state, "admin@example.com").await;
+    let (admin, totp) = enrol_totp(&state, &admin).await;
+    let refused = target(&state, Action::ResetLink, 1).await;
+    let allowed = target(&state, Action::ResetLink, 2).await;
+    away_from_step_boundary().await;
+    let code = totp_now(&totp);
+    let start = || {
+        let (state, admin, t) = (state.clone(), admin.clone(), refused.clone());
+        let body = json!({ "password": PASSWORD, "code": code });
+        tokio::spawn(async move { act(&state, &admin, Action::ResetLink, &t, body).await })
+    };
+    // Cible promue administrateur pendant le step-up de l'administrateur.
+    let r = demote_during_step_up(&state, refused.0, "admin", start).await;
+    assert_eq!(r.status, 403, "{}", r.raw);
+    assert!(!changed(&state, Action::ResetLink, &refused).await);
+    let r = act(
+        &state,
+        &admin,
+        Action::ResetLink,
+        &allowed,
+        json!({ "password": PASSWORD, "code": code }),
+    )
+    .await;
+    assert_eq!(r.status, 201, "meme code reutilise : {}", r.raw);
+    assert!(changed(&state, Action::ResetLink, &allowed).await);
+}

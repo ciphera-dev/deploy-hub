@@ -195,6 +195,17 @@ async fn update(
         .begin()
         .await
         .map_err(|e| internal("transaction des reglages SMTP", e))?;
+    // Role relu sous verrou apres le step-up : un proprietaire retrograde
+    // pendant la verification n'enregistre rien.
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(auth.user.id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| internal("lecture du compte", e))?;
+    if role.as_deref() != Some("owner") {
+        return Err(crate::authz::forbidden());
+    }
     // Le mot de passe enregistre n'est conserve que pour le meme serveur, le
     // meme port et le meme utilisateur : sinon il pourrait etre envoye a un
     // serveur controle par un tiers. Ligne verrouillee jusqu'a l'ecriture.

@@ -228,8 +228,8 @@ pub(crate) struct Locked {
     owners: usize,
 }
 
-/// Verrouille les proprietaires (par identifiant), relit le role de l'acteur
-/// et celui de la cible (verrouillee aussi), puis applique `can_manage`.
+/// Verrouille les proprietaires (par identifiant), relit sous verrou le role
+/// de l'acteur et celui de la cible, puis applique `can_manage`.
 pub(crate) async fn lock_and_check(
     tx: &mut PgConnection,
     actor_id: Uuid,
@@ -240,12 +240,14 @@ pub(crate) async fn lock_and_check(
             .fetch_all(&mut *tx)
             .await
             .map_err(|e| internal("verrou des proprietaires", e))?;
-    // Un acteur retire entre-temps n'a plus aucun droit.
-    let actor: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
-        .bind(actor_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| internal("lecture de l'acteur", e))?;
+    // Un acteur retire entre-temps n'a plus aucun droit ; sa ligne est
+    // verrouillee aussi (retrogradation concurrente prise en compte).
+    let actor: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(actor_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| internal("lecture de l'acteur", e))?;
     let actor = actor.and_then(|r| Role::parse(&r)).ok_or_else(forbidden)?;
     let target: Option<String> =
         sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
