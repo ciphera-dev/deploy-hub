@@ -242,6 +242,13 @@ impl Identity {
     /// l'est aussi : une fois l'agent passe a une nouvelle CA, aucun jeu qui
     /// l'exclut (retour a l'ancienne seule, racine etrangere) n'est adopte.
     /// `Ok(None)` : jeu identique au sien. Rien n'est ecrit ici.
+    ///
+    /// La seconde CA d'un jeu de deux peut ne couvrir ni le lien ni l'agent :
+    /// c'est le debut d'une rotation (`rotate-ca`), ou la CA suivante arrive
+    /// avant le certificat qu'elle emet ([`Self::check_renewed`] exige une CA
+    /// deja adoptee) et le lien reste sur la courante jusqu'a `--finish`.
+    /// Elle est donc acceptee sur la seule foi du plan de controle, joint par
+    /// un lien que la CA courante authentifie.
     pub fn check_trusted(
         &self,
         ca_pem: &str,
@@ -576,6 +583,8 @@ mod tests {
             identity.check_trusted(&three, &link).unwrap_err(),
             "trop de CA"
         );
+        // Debut de rotation : la suivante ne couvre encore ni le lien ni
+        // l'agent (son certificat arrive apres elle) ; acceptee.
         let two = format!("{}{}", old.cert_pem(), next.cert_pem());
         assert_eq!(
             identity.check_trusted(&two, &link).unwrap().unwrap().len(),
