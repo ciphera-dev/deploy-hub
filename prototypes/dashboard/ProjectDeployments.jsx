@@ -7,11 +7,11 @@ const STAGES=['Clonage','Build','Image','Démarrage','Healthcheck','Bascule'];
 const LOG=[
   ['cmd','$ ciphera deploy --project ciphera-web',0],['muted','Agent srv-par-01 connecté (QUIC · mTLS)',0],['info','Clonage github.com/ciphera/web@{sha}',0],
   ['info','Railpack : Node 22 détecté, pnpm 9',1],['muted','BuildKit : 14 / 18 couches en cache',1],['info','#4 pnpm install --frozen-lockfile',1],['ok','#4 DONE 6.8s',1],['info','#5 pnpm build',1],['ok','#5 ✓ Compiled successfully',1],
-  ['info','Image poussée : registry.ciphera.dev/web:{id}',2],['info','Démarrage de 2 réplicas sur srv-par-01',3],['ok','Healthcheck GET /health → 200',4],['ok','Trafic basculé via Caddy, ancienne version arrêtée',5]];
+  ['info','Image poussée : registry.example.com/web:{id}',2],['info','Démarrage de 2 réplicas sur srv-par-01',3],['ok','Healthcheck GET /health → 200',4],['ok','Trafic basculé via Caddy, ancienne version arrêtée',5]];
 const DEPS=[
   {id:'4821',sha:'c81e0a9',msg:'feat: graphiques de latence',branch:'main',author:'Lina Moreau',av:'LM',trigger:'push',env:'Production',st:'running',stage:1,when:'il y a 2 min',dur:null,times:[3,null,null,null,null,null]},
   {id:'4818',sha:'a3f91c2',msg:'fix: cache des en-têtes',branch:'main',author:'Alex Martin',av:'AM',trigger:'push',env:'Production',st:'ok',current:true,when:'il y a 4 h',dur:'1 min 36 s',times:[3,62,9,8,4,2]},
-  {id:'4815',sha:'e19b44d',msg:'feat: filtre des logs par niveau',branch:'feat/logs',author:'Yanis Benali',av:'YB',trigger:'PR #212',env:'Preview',st:'ok',when:'il y a 6 h',dur:'1 min 22 s',times:[2,58,8,7,4,3],url:'pr-212.preview.ciphera.dev'},
+  {id:'4815',sha:'e19b44d',msg:'feat: filtre des logs par niveau',branch:'feat/logs',author:'Yanis Benali',av:'YB',trigger:'PR #212',env:'Preview',st:'ok',when:'il y a 6 h',dur:'1 min 22 s',times:[2,58,8,7,4,3],url:'pr-212.preview.example.com'},
   {id:'4812',sha:'0d77f21',msg:'chore: mise à jour Node 22',branch:'main',author:'Alex Martin',av:'AM',trigger:'manuel',env:'Production',st:'ok',when:'hier',dur:'2 min 05 s',times:[3,88,12,10,9,3]},
   {id:'4809',sha:'5b2e0c8',msg:'revert: bascule CDN',branch:'main',author:'Lina Moreau',av:'LM',trigger:'rollback',env:'Production',st:'cancelled',when:'il y a 2 j',dur:'18 s',times:[3,15,null,null,null,null]},
   {id:'4807',sha:'9fa3c10',msg:'feat: page tarifs',branch:'main',author:'Yanis Benali',av:'YB',trigger:'push',env:'Production',st:'error',when:'il y a 2 j',dur:'41 s',failAt:1,times:[3,38,null,null,null,null]},

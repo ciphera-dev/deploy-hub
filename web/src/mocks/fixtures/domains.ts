@@ -39,9 +39,9 @@ export const WEB_DOMAINS: ProjectDomains = {
   node_ip6: null,
   generated_domain: true,
   domains: [
-    d(1, { host: "app.ciphera.dev", primary: true }),
-    d(2, { host: "ciphera.dev", redirect: true, redirect_to: "app.ciphera.dev", service_id: null, service_name: null, internal_port: null }),
-    d(3, { host: "api.ciphera.dev", path_prefix: "/v1", dns_status: "error", dns_error: "api.ciphera.dev résout vers 198.51.100.7, attendu 203.0.113.10.", cert_status: "none", cert_expires_at: null, cert_issuer: null }),
+    d(1, { host: "app.example.com", primary: true }),
+    d(2, { host: "example.com", redirect: true, redirect_to: "app.example.com", service_id: null, service_name: null, internal_port: null }),
+    d(3, { host: "api.example.com", path_prefix: "/v1", dns_status: "error", dns_error: "api.example.com résout vers 198.51.100.7, attendu 203.0.113.10.", cert_status: "none", cert_expires_at: null, cert_issuer: null }),
     d(4, { host: "ciphera-web.203.0.113.10.sslip.io", generated: true, cert_status: "none", cert_expires_at: null, cert_issuer: null }),
   ],
 };

@@ -27,7 +27,7 @@ export const WEB_SERVICES: ProjectService[] = [
 export const WEB_OVERVIEW: ProjectOverview = {
   status: "running",
   production: DEPLOYMENTS[1],
-  domain: "app.ciphera.dev",
+  domain: "app.example.com",
   metrics: {
     requests: { value: 1_240_000, series: REQUESTS },
     latency_p95_ms: { value: 182, series: LATENCY },

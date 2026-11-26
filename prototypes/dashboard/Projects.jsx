@@ -7,11 +7,11 @@ const lbl={font:'400 12px/1 var(--font-sans)',color:'var(--text-subtle)'};
 const PROVIDERS={github:{icon:'github',name:'GitHub'},gitlab:{icon:'gitlab',name:'GitLab'},gitea:{icon:'git-branch',name:'Gitea'},bitbucket:{icon:'git-fork',name:'Bitbucket'},git:{icon:'link',name:'URL Git'},docker:{icon:'container',name:'Image Docker'}};
 const provOf=repo=>repo.startsWith('gitlab')?'gitlab':repo.startsWith('gitea')?'gitea':'github';
 const META={
-  web:{domain:'app.ciphera.dev',commit:'a3f91c2',msg:'feat: nouveau tableau de bord',author:'Alex Martin',hist:'oooooooooxoooo',dur:'1 min 36 s',lang:'Next.js'},
-  billing:{domain:'api.ciphera.dev',commit:'7be20d4',msg:'chore: bump sqlx 0.8',author:'Yanis Benali',hist:'oooooooooooxxx',dur:'—',lang:'Rust'},
-  dash:{domain:'feat-charts.preview.ciphera.dev',commit:'c81e0a9',msg:'wip: graphiques de latence',author:'Lina Moreau',hist:'oooooxoooooop',dur:'—',lang:'Vite'},
-  auth:{domain:'auth.ciphera.dev',commit:'19d4b7e',msg:'fix: rotation des clés JWT',author:'Alex Martin',hist:'oooooooooooooo',dur:'2 min 05 s',lang:'Go'},
-  mkt:{domain:'ciphera.dev',commit:'5e02f3a',msg:'content: page tarifs',author:'Lina Moreau',hist:'ooooxooooooooo',dur:'48 s',lang:'Astro'},
+  web:{domain:'app.example.com',commit:'a3f91c2',msg:'feat: nouveau tableau de bord',author:'Alex Martin',hist:'oooooooooxoooo',dur:'1 min 36 s',lang:'Next.js'},
+  billing:{domain:'api.example.com',commit:'7be20d4',msg:'chore: bump sqlx 0.8',author:'Yanis Benali',hist:'oooooooooooxxx',dur:'—',lang:'Rust'},
+  dash:{domain:'feat-charts.preview.example.com',commit:'c81e0a9',msg:'wip: graphiques de latence',author:'Lina Moreau',hist:'oooooxoooooop',dur:'—',lang:'Vite'},
+  auth:{domain:'auth.example.com',commit:'19d4b7e',msg:'fix: rotation des clés JWT',author:'Alex Martin',hist:'oooooooooooooo',dur:'2 min 05 s',lang:'Go'},
+  mkt:{domain:'example.com',commit:'5e02f3a',msg:'content: page tarifs',author:'Lina Moreau',hist:'ooooxooooooooo',dur:'48 s',lang:'Astro'},
 };
 const REPOS=[
   {p:'github',name:'ciphera/docs',lang:'Astro',upd:'il y a 3 h',priv:false},

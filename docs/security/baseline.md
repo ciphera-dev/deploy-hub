@@ -19,7 +19,7 @@ Source : `docs/security/baseline.json` (`security_check.py scan`) et `docs/secur
 |---|---|---|
 | `prototypes/vendor/ds-bundle.js` minifié, sans licence | maquette seulement | Bundle généré par l'outil de design à partir des sources de `web/src/design-system/` (les empreintes des sources correspondent). Utilisé uniquement par les maquettes, jamais par la production. Il sera supprimé quand les maquettes seront gelées. |
 | Blocs base64 dans `logo.svg`, `logo-dark.svg`, `ciphera-icon.svg`, `favicon.svg` | vérifié, sans danger | Ce sont des **manifestes C2PA** (Content Credentials) dans `<metadata>` : provenance signée par Anthropic, indiquant que le fichier a été fourni par Claude. Pas de script, pas de lien externe, pas de `foreignObject`. Les garder ou les retirer est une décision utilisateur (voir `.agents/memory/etat.md`). |
-| Commandes `curl … \| sh` dans README, ADR, stack.md, maquettes, CodeBlock.prompt.md | voulu (documentation) | C'est la commande d'installation décidée (ADR 0003). Elle ne doit jamais être exécutée par un agent. La commande d'installation réelle utilise `get.ciphera.ch` (README, ADR, stack.md) ; les maquettes (`prototypes/`) gardent des domaines d'exemple `ciphera.dev`, non servis, à unifier au portage sur le même script signé. |
+| Commandes `curl … \| sh` dans README, ADR, stack.md, maquettes, CodeBlock.prompt.md | voulu (documentation) | C'est la commande d'installation décidée (ADR 0003). Elle ne doit jamais être exécutée par un agent. La commande d'installation réelle utilise `get.ciphera.ch` (README, ADR, stack.md) ; les maquettes (`prototypes/`) gardent des domaines d'exemple `example.com`, non servis, à unifier au portage sur le même script signé. |
 
 ## Ne pas reproduire au portage (repris dans `exigences.md`)
 

@@ -32,7 +32,7 @@ function AttackMap({events,paused}){
   const ref=React.useRef(null),api=React.useRef(null);
   React.useEffect(()=>{
     let alive=true;const el=ref.current;
-    fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json').then(r=>r.json()).then(topo=>{
+    fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json',{integrity:'sha384-yOCJ+8ShBm8UDqtAVtAvxTDDf4gXo5edxl/YG0FmVC5OTmqVLl7utuVGBDEeZWHf'}).then(r=>r.json()).then(topo=>{
       if(!alive)return;
       const W=el.clientWidth,H=el.clientHeight;
       const land=topojson.feature(topo,topo.objects.countries);

@@ -17,7 +17,7 @@ export const handlers: RequestHandler[] = [
   http.get("*/api/overview", ({ request }) => HttpResponse.json({ ...OVERVIEW, period: new URL(request.url).searchParams.get("period") === "7d" ? "7d" : "30d" })),
   http.get("*/api/domains", () => HttpResponse.json(WEB_DOMAINS)),
   http.patch("*/api/domains", () => HttpResponse.json(WEB_DOMAINS)),
-  http.post("*/api/domains", () => HttpResponse.json({ ...WEB_DOMAINS.domains[2]!, id: "00000000-0000-4000-8000-0000000000df", host: "new.ciphera.dev", path_prefix: "/", dns_status: "pending", dns_error: null }, { status: 201 })),
+  http.post("*/api/domains", () => HttpResponse.json({ ...WEB_DOMAINS.domains[2]!, id: "00000000-0000-4000-8000-0000000000df", host: "new.example.com", path_prefix: "/", dns_status: "pending", dns_error: null }, { status: 201 })),
   http.post("*/api/domains/:id/verify", ({ params }) => HttpResponse.json(WEB_DOMAINS.domains.find((d) => d.id === params.id) ?? WEB_DOMAINS.domains[0])),
   http.post("*/api/domains/:id/renew", ({ params }) => HttpResponse.json({ ...(WEB_DOMAINS.domains.find((d) => d.id === params.id) ?? WEB_DOMAINS.domains[0]!), cert_status: "issuing" }, { status: 202 })),
   http.post("*/api/domains/:id/primary", () => HttpResponse.json(WEB_DOMAINS)),

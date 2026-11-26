@@ -225,7 +225,7 @@ function ConnectorsPage({addOpen,closeAdd}){
   const match=c=>(cat==='Tous'||c.cat===cat)&&(c.n+c.d).toLowerCase().includes(q.toLowerCase());
   const connected=LIB.filter(c=>isOn(c)&&match(c)).map(full),avail=LIB.filter(c=>!isOn(c)&&match(c));
   const nOn=LIB.filter(isOn).length;
-  const done=(c,o={})=>{if(c.id==='crowdsec'){try{localStorage.setItem('ciphera.crowdsec',JSON.stringify({plan:o.key&&o.key.length>=6?'pro':'free',share:!!o.share}))}catch(e){}window.dispatchEvent(new Event('ciphera:connectors'))}if(c.id==='cloudflare')setCf({account:'Ciphera SAS',email:'alex@ciphera.dev',zones:['ciphera.com','ciphera.dev'],via:'oauth',at:"à l'instant",proxy:true});else setOn(s=>new Set([...s,c.id]));setConn(null);flash(c.n+' connecté')};
+  const done=(c,o={})=>{if(c.id==='crowdsec'){try{localStorage.setItem('ciphera.crowdsec',JSON.stringify({plan:o.key&&o.key.length>=6?'pro':'free',share:!!o.share}))}catch(e){}window.dispatchEvent(new Event('ciphera:connectors'))}if(c.id==='cloudflare')setCf({account:'Ciphera SAS',email:'alex@example.com',zones:['ciphera.com','example.com'],via:'oauth',at:"à l'instant",proxy:true});else setOn(s=>new Set([...s,c.id]));setConn(null);flash(c.n+' connecté')};
   const disconnect=c=>{if(c.id==='cloudflare')setCf(null);else setOn(s=>{const n=new Set(s);n.delete(c.id);return n});setConfirm(null);setCfg(null);flash(c.n+' déconnecté')};
   React.useEffect(()=>{if(addOpen){setPick(true);closeAdd&&closeAdd()}},[addOpen]);
   const box={borderRadius:20,border:'1px solid rgba(255,255,255,.08)',background:'#0c0c0f'};

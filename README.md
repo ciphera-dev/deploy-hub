@@ -13,7 +13,7 @@ Il n'existe qu'une version : celle que vous installez sur vos serveurs. Pas d'of
 ## Installation (cible)
 
 ```sh
-curl -fsSL https://get.ciphera.ch/install.sh | sh
+curl -fsSL https://get.ciphera.ch/install.sh | sudo sh
 ```
 
 Le script :

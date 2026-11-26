@@ -5,7 +5,7 @@ const lbl={font:'400 12px/1 var(--font-sans)',color:'var(--text-subtle)'};
 const CF='#f38020',CF2='#faae40';
 const MARK='../../web/src/assets/images/cloudflare/cloudflare-mark.png',LOGO='../../web/src/assets/images/cloudflare/cloudflare-logo-light.png';
 const KEY='ciphera.cloudflare';
-const ZONES=[{name:'ciphera.com',plan:'Pro',records:7},{name:'ciphera.dev',plan:'Pro',records:14},{name:'ciphera.io',plan:'Free',records:6},{name:'ciphera-status.com',plan:'Free',records:3}];
+const ZONES=[{name:'ciphera.com',plan:'Pro',records:7},{name:'example.com',plan:'Pro',records:14},{name:'ciphera.io',plan:'Free',records:6},{name:'ciphera-status.com',plan:'Free',records:3}];
 function useCloudflare(){
   const [cf,setCf]=React.useState(()=>{try{return JSON.parse(localStorage.getItem(KEY))}catch(e){return null}});
   const save=v=>{setCf(v);try{v?localStorage.setItem(KEY,JSON.stringify(v)):localStorage.removeItem(KEY)}catch(e){}};
@@ -42,7 +42,7 @@ function ConnectModal({onClose,onConnect}){
     <span style={{display:'flex',flexDirection:'column',gap:6}}><span style={{display:'flex',alignItems:'center',gap:6,font:'500 13px/1 var(--font-sans)',color:'var(--text-strong)'}}><Icon name={ic} size={13}/>{t}</span><span style={{...lbl,fontSize:11,lineHeight:1.4}}>{d}</span></span>
   </button>};
   return <Modal title="" onClose={onClose} width={560}
-    footer={step===2?<><Button onClick={onClose}>Annuler</Button><CfButton icon="check" disabled={!zones.length} onClick={()=>onConnect({account:'Ciphera SAS',email:'alex@ciphera.dev',zones,via:mode,at:"à l'instant",proxy:true,plan:'Pro'})}>Terminer la connexion</CfButton></>
+    footer={step===2?<><Button onClick={onClose}>Annuler</Button><CfButton icon="check" disabled={!zones.length} onClick={()=>onConnect({account:'Ciphera SAS',email:'alex@example.com',zones,via:mode,at:"à l'instant",proxy:true,plan:'Pro'})}>Terminer la connexion</CfButton></>
       :<><Button onClick={onClose}>Annuler</Button><CfButton icon={step===1?'loader':mode==='oauth'?'log-in':'shield-check'} disabled={step===1||(mode==='token'&&!validTok)} onClick={auth}>{step===1?'Connexion…':mode==='oauth'?'Continuer avec Cloudflare':'Vérifier le token'}</CfButton></>}>
     <div style={{display:'flex',flexDirection:'column',gap:20,marginTop:-8}}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:18,padding:'22px 0 20px',borderRadius:'var(--radius-lg)',background:'radial-gradient(120% 140% at 50% 0%,rgba(243,128,32,.14),transparent 70%)',border:'1px solid rgba(243,128,32,.15)'}}>

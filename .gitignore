@@ -43,3 +43,9 @@ web/playwright/.cache/
 
 # Fichiers temporaires du generateur de routes TanStack
 web/.tanstack/
+
+# Brouillons des agents et fichiers parasites Windows
+.superpowers/
+NUL
+nul
+C:

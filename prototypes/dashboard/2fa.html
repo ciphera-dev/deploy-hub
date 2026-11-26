@@ -65,7 +65,7 @@ function In({label,type='text',value,onChange,autoFocus,right,error}){const [f,s
     </span></label>}
 const Sec=({children,onClick,flex})=><button type="button" onClick={onClick} style={{flex,display:'flex',alignItems:'center',justifyContent:'center',gap:8,height:42,borderRadius:10,border:'1px solid var(--border-default)',background:'transparent',cursor:'pointer',font:'500 14px/1 var(--font-sans)',color:'var(--text-strong)',transition:'background .15s'}} onMouseEnter={e=>e.currentTarget.style.background='var(--surface-raised)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>{children}</button>;
 const Or=()=><div style={{display:'flex',alignItems:'center',gap:14,font:'400 12px/1 var(--font-sans)',color:'var(--text-subtle)'}}><span style={{flex:1,height:1,background:'var(--border-subtle)'}}></span>ou<span style={{flex:1,height:1,background:'var(--border-subtle)'}}></span></div>;
-const PROFILES=[['alex@ciphera.com',true],['admin@ciphera.mondomaine.com',false]];
+const PROFILES=[['alex@example.com',true],['admin@ciphera.mondomaine.com',false]];
 function Login(){
   const [step,setStep]=React.useState('2fa');const [name,setName]=React.useState('');const [email,setEmail]=React.useState('');const [pwd,setPwd]=React.useState('');const [show,setShow]=React.useState(false);const [rem,setRem]=React.useState(true);const [busy,setBusy]=React.useState(false);const [err,setErr]=React.useState('');const [lang,setLang]=React.useState(false);
   const valid=/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(email)&&pwd.length>=6;

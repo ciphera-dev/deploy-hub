@@ -6,7 +6,7 @@ const INIT=[
   {id:3,ic:'lock',tone:'#fbbf24',t:'Certificat bientôt expiré',d:'ciphera.com expire dans 12 jours. Renouvellement auto le 25 nov.',w:'il y a 1 h',nav:'Domaines',cat:'Domaines'},
   {id:4,ic:'circle-x',tone:'#f87171',t:'Échec du build billing-api',d:'#4807 · pnpm install a échoué (ERR_PNPM_LOCKFILE).',w:'il y a 3 h',nav:'Projets',cat:'Déploiements'},
   {id:5,ic:'server',tone:'#c4b5fd',t:'Agent srv-iad-01 injoignable',d:'Dernier contact il y a 3 h. Diagnostic recommandé.',w:'il y a 3 h',nav:'Serveurs',cat:'Infrastructure'},
-  {id:6,ic:'user-plus',tone:'#7dd3fc',t:'Nora a rejoint l\'espace',d:'nora@ciphera.com · rôle Développeur.',w:'hier',nav:'Équipe',cat:'Équipe'},
+  {id:6,ic:'user-plus',tone:'#7dd3fc',t:'Nora a rejoint l\'espace',d:'nora@example.com · rôle Développeur.',w:'hier',nav:'Équipe',cat:'Équipe'},
   {id:7,ic:'archive',tone:'#86efac',t:'Sauvegarde terminée',d:'prod-main · 39,7 Go · chiffrée et vérifiée.',w:'hier',nav:'Bases de données',cat:'Infrastructure'},
 ];
 function NotifItem({n,onOpen,onRead,onDel}){

@@ -16,16 +16,16 @@ const ROLES=[
 ];
 const U=(o)=>({mfa:true,status:'active',projects:'all',...o});
 const INIT=[
-  U({id:1,name:'Alex Martin',email:'alex@ciphera.com',role:'owner',last:'maintenant',since:'mars 2024'}),
-  U({id:2,name:'Lina Moreau',email:'lina@ciphera.com',role:'admin',last:'il y a 3 min',since:'avr. 2024'}),
-  U({id:3,name:'Yanis Benali',email:'yanis@ciphera.com',role:'dev',last:'il y a 1 h',since:'juin 2024',projects:['ciphera-web','dashboard-v2','analytics']}),
-  U({id:4,name:'Camille Roux',email:'camille@ciphera.com',role:'ops',last:'il y a 4 h',since:'sept. 2024'}),
-  U({id:5,name:'Hugo Lefèvre',email:'hugo@ciphera.com',role:'dev',last:'hier',since:'janv. 2025',mfa:false,projects:['billing-api']}),
-  U({id:6,name:'Inès Garnier',email:'ines@agence-nord.fr',role:'viewer',last:'il y a 6 j',since:'août 2025',projects:['marketing-site'],guest:true}),
-  U({id:7,name:'Thomas Petit',email:'thomas@ciphera.com',role:'dev',last:'il y a 2 mois',since:'févr. 2025',status:'suspended',projects:['ciphera-web']}),
-  U({id:8,name:'',email:'nora@ciphera.com',role:'dev',last:'—',since:'',status:'invited',mfa:false,sent:'il y a 2 j',projects:['ciphera-web']}),
+  U({id:1,name:'Alex Martin',email:'alex@example.com',role:'owner',last:'maintenant',since:'mars 2024'}),
+  U({id:2,name:'Lina Moreau',email:'lina@example.com',role:'admin',last:'il y a 3 min',since:'avr. 2024'}),
+  U({id:3,name:'Yanis Benali',email:'yanis@example.com',role:'dev',last:'il y a 1 h',since:'juin 2024',projects:['ciphera-web','dashboard-v2','analytics']}),
+  U({id:4,name:'Camille Roux',email:'camille@example.com',role:'ops',last:'il y a 4 h',since:'sept. 2024'}),
+  U({id:5,name:'Hugo Lefèvre',email:'hugo@example.com',role:'dev',last:'hier',since:'janv. 2025',mfa:false,projects:['billing-api']}),
+  U({id:6,name:'Inès Garnier',email:'ines@agence-nord.example',role:'viewer',last:'il y a 6 j',since:'août 2025',projects:['marketing-site'],guest:true}),
+  U({id:7,name:'Thomas Petit',email:'thomas@example.com',role:'dev',last:'il y a 2 mois',since:'févr. 2025',status:'suspended',projects:['ciphera-web']}),
+  U({id:8,name:'',email:'nora@example.com',role:'dev',last:'—',since:'',status:'invited',mfa:false,sent:'il y a 2 j',projects:['ciphera-web']}),
 ];
-const AUDIT=[['Lina Moreau','a changé le rôle de','Camille Roux','Développeur → Ops','il y a 2 h'],['Alex Martin','a invité','nora@ciphera.com','Développeur · ciphera-web','il y a 2 j'],['Alex Martin','a suspendu','Thomas Petit','Inactif depuis 60 j','il y a 5 j'],['Lina Moreau','a révoqué une session de','Hugo Lefèvre','Chrome · Lyon','il y a 1 sem.'],['Alex Martin','a modifié le rôle','Ops','Sécurité : Écriture → Admin','il y a 2 sem.']];
+const AUDIT=[['Lina Moreau','a changé le rôle de','Camille Roux','Développeur → Ops','il y a 2 h'],['Alex Martin','a invité','nora@example.com','Développeur · ciphera-web','il y a 2 j'],['Alex Martin','a suspendu','Thomas Petit','Inactif depuis 60 j','il y a 5 j'],['Lina Moreau','a révoqué une session de','Hugo Lefèvre','Chrome · Lyon','il y a 1 sem.'],['Alex Martin','a modifié le rôle','Ops','Sécurité : Écriture → Admin','il y a 2 sem.']];
 const initials=n=>(n||'?').split(/[ @.]/).filter(Boolean).slice(0,2).map(x=>x[0].toUpperCase()).join('');
 const hue=s=>[...s].reduce((a,c)=>a+c.charCodeAt(0),0)%360;
 function Avatar({u,size=32}){return <span style={{width:size,height:size,borderRadius:99,flex:'none',display:'flex',alignItems:'center',justifyContent:'center',font:`600 ${size*.36}px/1 var(--font-sans)`,color:u.status==='invited'?'var(--text-subtle)':'#0b0b0b',background:u.status==='invited'?'transparent':`oklch(0.82 0.06 ${hue(u.email)})`,border:u.status==='invited'?'1px dashed var(--gray-500)':'none'}}>{u.status==='invited'?<Icon name="mail" size={size*.42}/>:initials(u.name)}</span>}
@@ -65,7 +65,7 @@ function UserModal({user,onClose,onSave}){
       </div>}
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
         <TextField label={method==='invite'&&!edit?'Nom (facultatif)':'Nom complet'} placeholder="Nora Kaci" value={name} onChange={setName}/>
-        <TextField label="E-mail" placeholder="nora@ciphera.com" value={email} onChange={setEmail}/>
+        <TextField label="E-mail" placeholder="nora@example.com" value={email} onChange={setEmail}/>
       </div>
       {method==='pwd'&&!edit&&<div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:'var(--radius-md)',border:'1px solid var(--border-default)',background:'var(--gray-0)'}}><Icon name="lock" size={13} color="var(--text-subtle)"/><span style={{flex:1,font:'500 13px/1 var(--font-mono)',color:'var(--text-strong)'}}>{pwd}</span><IconButton size={28} variant="ghost" icon="copy" label="Copier" onClick={()=>navigator.clipboard&&navigator.clipboard.writeText(pwd)}/></div>}
       <div style={{display:'flex',flexDirection:'column',gap:10}}>

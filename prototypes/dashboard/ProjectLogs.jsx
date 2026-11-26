@@ -4,7 +4,7 @@ const hair='1px solid var(--border-subtle)';
 const LV={info:{c:'var(--text-muted)',bg:'transparent',t:'INFO',n:'Info'},warn:{c:'#e5b454',bg:'rgba(229,180,84,.10)',t:'WARN',n:'Warn'},error:{c:'#f87171',bg:'rgba(239,68,68,.12)',t:'ERR',n:'Erreur'},debug:{c:'var(--text-faint)',bg:'transparent',t:'DBG',n:'Debug'}};
 const SAMPLES={
   web:[['info','GET / 200 12ms'],['info','GET /api/projects 200 34ms'],['info','GET /_next/static/chunks/app.js 304 2ms'],['debug','cache hit key=dashboard:alex'],['warn','Slow query 812ms: SELECT * FROM deployments ORDER BY created_at'],['info','POST /api/deploy 202 48ms'],['error','Unhandled rejection: fetch failed (ECONNRESET) upstream=billing-api'],['info','GET /health 200 1ms']],
-  worker:[['info','job deploy#4821 picked (SKIP LOCKED)'],['info','job deploy#4821 step=build status=running'],['debug','buildkit session 7f3a opened'],['info','job email#9912 sent to lina@ciphera.dev'],['warn','retrying job webhook#331 (attempt 2/5)'],['info','job deploy#4821 done in 96s']],
+  worker:[['info','job deploy#4821 picked (SKIP LOCKED)'],['info','job deploy#4821 step=build status=running'],['debug','buildkit session 7f3a opened'],['info','job email#9912 sent to lina@example.com'],['warn','retrying job webhook#331 (attempt 2/5)'],['info','job deploy#4821 done in 96s']],
   postgres:[['info','checkpoint starting: time'],['info','checkpoint complete: wrote 412 buffers (2.5%)'],['warn','duration: 812.4 ms statement: SELECT * FROM deployments'],['info','connection authorized: user=ciphera database=web'],['debug','autovacuum: processing table public.events']],
 };
 const CONTAINERS=[

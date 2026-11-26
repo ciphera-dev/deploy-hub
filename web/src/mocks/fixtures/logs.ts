@@ -19,7 +19,7 @@ export const LOG_SAMPLES: Record<string, [string, string][]> = {
     ["info", "job deploy#4821 picked (SKIP LOCKED)"],
     ["info", "job deploy#4821 step=build status=running"],
     ["debug", "buildkit session 7f3a opened"],
-    ["info", "job email#9912 sent to lina@ciphera.dev"],
+    ["info", "job email#9912 sent to lina@example.com"],
     ["warn", "retrying job webhook#331 (attempt 2/5)"],
     ["info", "job deploy#4821 done in 96s"],
   ],

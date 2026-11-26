@@ -16,7 +16,7 @@ const ago = (days: number) => new Date(Date.parse("2026-05-15T10:00:00.000Z") - 
 export const PROJECT_VARIABLES: ProjectVariable[] = [
   { key: "DATABASE_URL", value: null, secret: true, inherited: false, pending_apply: false, updated_at: ago(3), updated_by: "Alex Martin" },
   { key: "LOG_LEVEL", value: "warn", secret: false, inherited: false, pending_apply: true, updated_at: ago(1), updated_by: "Alex Martin" },
-  { key: "NEXT_PUBLIC_API_URL", value: "https://app.ciphera.dev/api", secret: false, inherited: false, pending_apply: false, updated_at: ago(5), updated_by: "Lina Moreau" },
+  { key: "NEXT_PUBLIC_API_URL", value: "https://app.example.com/api", secret: false, inherited: false, pending_apply: false, updated_at: ago(5), updated_by: "Lina Moreau" },
   { key: "NODE_ENV", value: "production", secret: false, inherited: false, pending_apply: false, updated_at: ago(60), updated_by: "Alex Martin" },
   { key: "OTEL_EXPORTER_OTLP_ENDPOINT", value: "http://otel.internal:4317", secret: false, inherited: true, pending_apply: false, updated_at: ago(21), updated_by: "Alex Martin" },
   { key: "PORT", value: "3000", secret: false, inherited: false, pending_apply: false, updated_at: ago(60), updated_by: "Alex Martin" },

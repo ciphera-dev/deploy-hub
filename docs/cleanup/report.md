@@ -1,7 +1,7 @@
 # Rapport de nettoyage — 2026-11-21 12:48
 
-- Source (intacte) : `c:/Users/Lenovo/Documents/Projets/ciphera-deploy-main`
-- Cible : `c:/Users/Lenovo/Documents/Projets/ciphera-deploy`
+- Source (intacte) : `<dossier-source>`
+- Cible : `<dossier-cible>`
 - Gardés : 234 (déplacés : 234) · Supprimés : 311 · Gain : 23.7 Mo
 - Chemins réécrits : 297 · Références vers des fichiers supprimés : 1
 

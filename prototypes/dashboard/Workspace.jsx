@@ -46,7 +46,7 @@ function WsModal({ws,onClose,onSave}){
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:7,paddingBottom:8,minWidth:0}}>
           <span style={{font:'600 18px/1.1 var(--font-sans)',color:'var(--text-strong)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name||'Nouvel espace'}</span>
-          <span style={{font:'400 12px/1 var(--font-mono)',color:'var(--text-subtle)'}}>ciphera.dev/{slug}</span>
+          <span style={{font:'400 12px/1 var(--font-mono)',color:'var(--text-subtle)'}}>example.com/{slug}</span>
         </div>
       </div>
       <div style={{padding:'22px 22px 20px',display:'flex',flexDirection:'column',gap:20}}>

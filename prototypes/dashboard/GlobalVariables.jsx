@@ -41,7 +41,7 @@ function VarModal({initial,onClose,onSave}){
 }
 
 function ImportModal({onClose,onImport}){
-  const [txt,setTxt]=React.useState('# Collez le contenu d\'un fichier .env\nAPI_URL=https://api.ciphera.dev\nFEATURE_FLAGS=charts,logs\n');
+  const [txt,setTxt]=React.useState('# Collez le contenu d\'un fichier .env\nAPI_URL=https://api.example.com\nFEATURE_FLAGS=charts,logs\n');
   const [secret,setSecret]=React.useState(false);
   const rows=txt.split('\n').map(l=>l.trim()).filter(l=>l&&!l.startsWith('#')&&l.includes('=')).map(l=>{const i=l.indexOf('=');return [l.slice(0,i).trim(),l.slice(i+1).trim().replace(/^["']|["']$/g,'')]});
   return <Modal title="Importer un fichier .env" description={rows.length+' variable(s) détectée(s), appliquées à tous les projets et environnements.'} onClose={onClose} width={560}

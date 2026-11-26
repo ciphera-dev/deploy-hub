@@ -156,7 +156,7 @@ function InviteModal({ roles, onClose, onCreated }: { roles: TeamRole[]; onClose
     >
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <TextField label="Nom (facultatif)" placeholder="Nora Kaci" value={name} onChange={(v) => { setName(v); setErr(""); }} />
-        <TextField label="E-mail" placeholder="nora@ciphera.com" value={email} onChange={(v) => { setEmail(v); setErr(""); }} />
+        <TextField label="E-mail" placeholder="nora@example.com" value={email} onChange={(v) => { setEmail(v); setErr(""); }} />
       </div>
       <div role="radiogroup" aria-label="Rôle" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <span style={{ font: "400 12px/1 var(--font-sans)", color: "var(--text-muted)" }}>Rôle</span>

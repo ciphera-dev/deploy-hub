@@ -113,7 +113,7 @@ function Notif(){
 }
 function ProfilePage(){
   const [tab,setTab]=React.useState('info');
-  const [p,setP]=React.useState({name:'Alex Martin',address:'Route de Chancy 12, Petit-Lancy, CH',phone:'+41 79 533 72 90',company:'Ciphera SAS',email:'alex@ciphera.com',recovery:''});
+  const [p,setP]=React.useState({name:'Alex Martin',address:'Rue de l'Exemple 1, 1000 Lausanne, CH',phone:'+41 00 000 00 00',company:'Ciphera SAS',email:'alex@example.com',recovery:''});
   const [toast,setToast]=React.useState('');const flash=m=>{setToast(m);clearTimeout(flash.t);flash.t=setTimeout(()=>setToast(''),2000)};
   const T=SUB.find(s=>s[0]===tab);
   return <div style={{display:'grid',gridTemplateColumns:'240px minmax(0,1fr)',minHeight:'100%'}}>

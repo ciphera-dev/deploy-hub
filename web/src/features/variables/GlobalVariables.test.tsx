@@ -69,7 +69,7 @@ it("nouvelle variable : POST avec le jeton CSRF et la sélection de projets", as
   screen.getByRole("button", { name: "Nouvelle variable" }).click();
   const dialog = await screen.findByRole("dialog", { name: "Nouvelle variable globale" });
   fireEvent.change(within(dialog).getByLabelText("Clé"), { target: { value: "api_url" } });
-  fireEvent.change(within(dialog).getByLabelText("Valeur"), { target: { value: "https://api.ciphera.dev" } });
+  fireEvent.change(within(dialog).getByLabelText("Valeur"), { target: { value: "https://api.example.com" } });
   within(dialog).getByRole("button", { name: "Preview" }).click();
   within(dialog).getByRole("button", { name: "Sélection" }).click();
   (await within(dialog).findByRole("button", { name: "billing-api" })).click();
@@ -79,7 +79,7 @@ it("nouvelle variable : POST avec le jeton CSRF et la sélection de projets", as
   save.click();
   await waitFor(() => expect(posts).toHaveLength(1));
   expect(posts[0]).toEqual({
-    body: { key: "API_URL", value: "https://api.ciphera.dev", secret: false, environments: ["production", "staging"], all_projects: false, projects: [PROJECT_SUMMARIES[1].id] },
+    body: { key: "API_URL", value: "https://api.example.com", secret: false, environments: ["production", "staging"], all_projects: false, projects: [PROJECT_SUMMARIES[1].id] },
     csrf: "csrf-1",
   });
 });

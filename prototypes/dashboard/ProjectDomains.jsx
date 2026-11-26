@@ -7,12 +7,12 @@ const IP='51.15.204.12';
 let uid=0;
 const D=(o)=>({id:++uid,svc:'web',port:'3000',path:'/',strip:false,primary:false,redirect:null,dns:'ok',ssl:'ok',issuer:"Let's Encrypt (R11)",exp:'14 mars 2027',days:116,...o});
 const INIT=()=>[
-  D({name:'app.ciphera.dev',primary:true}),
-  D({name:'app.ciphera.dev',path:'/api',svc:'api',port:'8080',strip:true}),
-  D({name:'app.ciphera.dev',path:'/docs',svc:'docs',port:'4321'}),
-  D({name:'www.ciphera.dev',redirect:'app.ciphera.dev'}),
+  D({name:'app.example.com',primary:true}),
+  D({name:'app.example.com',path:'/api',svc:'api',port:'8080',strip:true}),
+  D({name:'app.example.com',path:'/docs',svc:'docs',port:'4321'}),
+  D({name:'www.example.com',redirect:'app.example.com'}),
   D({name:'web-a3f91c.ciphera.app',generated:true,issuer:'Certificat wildcard Ciphera',exp:'2 févr. 2027',days:76}),
-  D({name:'preview.ciphera.dev',dns:'pending',ssl:'pending',exp:null,days:null}),
+  D({name:'preview.example.com',dns:'pending',ssl:'pending',exp:null,days:null}),
 ];
 const records=d=>{const apex=d.name.split('.').length<=2;return apex?[{type:'A',host:'@',value:IP},{type:'AAAA',host:'@',value:'2001:bc8:1820:2a::1'}]:[{type:'CNAME',host:d.name.split('.')[0],value:'edge.ciphera.app'}]};
 

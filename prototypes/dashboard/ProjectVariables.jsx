@@ -10,7 +10,7 @@ const INIT=()=>[
   V({k:'STRIPE_SECRET_KEY',v:'sk_live_••••',secret:true,envs:['Production'],upd:'il y a 12 j',by:'Yanis Benali'}),
   V({k:'NODE_ENV',v:'production'}),
   V({k:'PORT',v:'3000'}),
-  V({k:'NEXT_PUBLIC_API_URL',v:'https://app.ciphera.dev/api',envs:['Production'],upd:'il y a 5 j',by:'Lina Moreau'}),
+  V({k:'NEXT_PUBLIC_API_URL',v:'https://app.example.com/api',envs:['Production'],upd:'il y a 5 j',by:'Lina Moreau'}),
   V({k:'LOG_LEVEL',v:'warn',envs:['Production'],upd:'hier'}),
 ];
 const field={height:32,padding:'0 10px',borderRadius:'var(--radius-md)',border:'1px solid var(--border-strong)',background:'var(--gray-0)',color:'var(--text-strong)',font:'400 12px/1 var(--font-mono)',outline:'none',minWidth:0};

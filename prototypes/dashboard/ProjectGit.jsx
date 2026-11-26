@@ -33,7 +33,7 @@ function ProjectGit({project='ciphera-web',repo='github.com/ciphera/web',branch=
   const init={branch,root:'./',previews:['feat/*','fix/*'],watch:['apps/web/**','packages/ui/**'],auto:true,prev:true,comment:true,skip:true,ignoreBots:false};
   const [s,setS]=React.useState(init);const [saved,setSaved]=React.useState(init);
   const [reveal,setReveal]=React.useState(false);const [secret,setSecret]=React.useState('whsec_9f2a7c41e0b84d1cb63a');
-  const [hooks,setHooks]=React.useState([{name:'CI externe',branch:'main',url:'https://api.ciphera.dev/v1/hooks/deploy/dh_7Kq2xP9mVb'}]);
+  const [hooks,setHooks]=React.useState([{name:'CI externe',branch:'main',url:'https://api.example.com/v1/hooks/deploy/dh_7Kq2xP9mVb'}]);
   const [dl,setDl]=React.useState(DELIVERIES);
   const [confirm,setConfirm]=React.useState(null);
   const [toast,setToast]=React.useState('');
@@ -41,7 +41,7 @@ function ProjectGit({project='ciphera-web',repo='github.com/ciphera/web',branch=
   const set=(k,v)=>setS(x=>({...x,[k]:v}));
   const dirty=JSON.stringify(s)!==JSON.stringify(saved);
   const prov=repo.startsWith('gitlab')?'gitlab':'github';
-  const whUrl='https://api.ciphera.dev/v1/webhooks/'+prov+'/prj_web_4f2a';
+  const whUrl='https://api.example.com/v1/webhooks/'+prov+'/prj_web_4f2a';
   return <div style={{position:'relative',paddingBottom:dirty?72:0}}>
     <Section title="Dépôt" desc="Ciphera reçoit les événements push et pull request de ce dépôt via un webhook signé (HMAC SHA-256).">
       <div style={{borderRadius:'var(--radius-lg)',border:'1px solid var(--border-default)',overflow:'hidden'}}>
@@ -99,7 +99,7 @@ function ProjectGit({project='ciphera-web',repo='github.com/ciphera/web',branch=
         <div style={{display:'flex',flexDirection:'column',gap:6,flex:1,minWidth:0}}><span style={{font:'500 13px/1 var(--font-sans)',color:'var(--text-strong)'}}>{h.name} <span style={{...lbl,fontWeight:400}}>· {h.branch}</span></span><span style={{font:'400 11px/1 var(--font-mono)',color:'var(--text-subtle)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{h.url}</span></div>
         <Copy text={'curl -X POST '+h.url} flash={flash}/><IconButton size={28} variant="ghost" icon="trash-2" label="Supprimer" onClick={()=>setHooks(x=>x.filter((_,j)=>j!==i))}/>
       </div>)}
-      <div><Button icon="plus" onClick={()=>{setHooks(x=>[...x,{name:'Hook '+(x.length+1),branch:s.branch,url:'https://api.ciphera.dev/v1/hooks/deploy/dh_'+Math.random().toString(36).slice(2,12)}]);flash('Deploy hook créé')}}>Créer un deploy hook</Button></div>
+      <div><Button icon="plus" onClick={()=>{setHooks(x=>[...x,{name:'Hook '+(x.length+1),branch:s.branch,url:'https://api.example.com/v1/hooks/deploy/dh_'+Math.random().toString(36).slice(2,12)}]);flash('Deploy hook créé')}}>Créer un deploy hook</Button></div>
     </Section>
     {dirty&&<div style={{position:'sticky',bottom:16,marginTop:-56,display:'flex',justifyContent:'center',pointerEvents:'none'}}>
       <div style={{pointerEvents:'auto',display:'flex',alignItems:'center',gap:12,padding:'8px 8px 8px 16px',borderRadius:12,background:'var(--surface-tooltip)',boxShadow:'var(--shadow-tooltip)'}}>

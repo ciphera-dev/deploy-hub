@@ -35,10 +35,10 @@ Contrôlé par design-to-dev v2.7.0 sur `ciphera-deploy/` (hors ligne ; base de 
 - [ ] `README.md:16` : « curl -fsSL https://get.ciphera.ch/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
 - [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/final-review-C.md:85` : « curl … | sudo sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
 - [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-34d-report.md:103` : « curl | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
-- [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-35-brief.md:7` : « curl -fsSL https://get.ciphera.dev/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
-- [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-35-report.md:92` : « curl -fsSL https://get.ciphera.dev/install.sh | sudo sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
-- [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-35-report.md:167` : « curl -fsSL https://get.ciphera.dev/install.sh | sudo sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
-- [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-35-report.md:229` : « curl -fsSL https://get.ciphera.dev/install.sh | sudo sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
+- [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-35-brief.md:7` : « curl -fsSL https://get.ciphera.ch/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
+- [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-35-report.md:92` : « curl -fsSL https://get.ciphera.ch/install.sh | sudo sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
+- [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-35-report.md:167` : « curl -fsSL https://get.ciphera.ch/install.sh | sudo sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
+- [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-35-report.md:229` : « curl -fsSL https://get.ciphera.ch/install.sh | sudo sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
 - [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-35-review.md:39` : « curl | sudo sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
 - [ ] `.superpowers/sdd/2026-11-21-ciphera-v0.1/task-35-review.md:58` : « curl | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
 - [ ] `docs/adr/0001-structure-du-projet.md:32` : « curl -fsSL https://get.ciphera.ch/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
@@ -49,13 +49,13 @@ Contrôlé par design-to-dev v2.7.0 sur `ciphera-deploy/` (hors ligne ; base de 
 - [ ] `docs/operations/release.md:74` : « curl -fsSL https://get.ciphera.ch/install.sh | sudo sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
 - [ ] `docs/security/baseline.md:22` : « curl … \| sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
 - [ ] `docs/superpowers/plans/2026-11-21-ciphera-v0.1.md:5` : « curl | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
-- [ ] `docs/superpowers/plans/2026-11-21-ciphera-v0.1.md:936` : « curl -fsSL https://get.ciphera.dev/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
+- [ ] `docs/superpowers/plans/2026-11-21-ciphera-v0.1.md:936` : « curl -fsSL https://get.ciphera.ch/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
 - [ ] `docs/superpowers/specs/2026-11-21-ciphera-v0.1-design.md:22` : « curl -fsSL https://get.ciphera.ch/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
 - [ ] `docs/superpowers/specs/2026-11-21-ciphera-v0.2-design.md:20` : « curl … | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
-- [ ] `prototypes/dashboard/ApiPage.jsx:13` : « curl -fsSL https://ciphera.dev/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
-- [ ] `prototypes/dashboard/Servers.jsx:60` : « curl -fsSL https://get.ciphera.dev | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
-- [ ] `prototypes/vendor/ds-bundle.js:2098` : « curl -fsSL https://ciphera.dev/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
-- [ ] `web/src/design-system/components/data/CodeBlock.prompt.md:3` : « curl -fsSL https://get.ciphera.dev | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
+- [ ] `prototypes/dashboard/ApiPage.jsx:13` : « curl -fsSL https://get.ciphera.ch/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
+- [ ] `prototypes/dashboard/Servers.jsx:60` : « curl -fsSL https://get.ciphera.ch | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
+- [ ] `prototypes/vendor/ds-bundle.js:2098` : « curl -fsSL https://get.ciphera.ch/install.sh | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
+- [ ] `web/src/design-system/components/data/CodeBlock.prompt.md:3` : « curl -fsSL https://get.ciphera.ch | sh » — commande ou formule à vérifier, ne pas l'exécuter sans l'accord de l'utilisateur
 
 ## ✅ Sain
 

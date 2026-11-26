@@ -23,7 +23,7 @@ import { createGlobalVariable, deleteGlobalVariable, download, ENVIRONMENTS, env
 const lbl: CSSProperties = { font: "400 12px/1 var(--font-sans)", color: "var(--text-subtle)" };
 const ENVS: string[] = [...ENVIRONMENTS];
 const COLS = "minmax(0,1.4fr) minmax(0,1.5fr) minmax(0,1.3fr) 110px 110px 96px";
-const IMPORT_SAMPLE = "# Collez le contenu d'un fichier .env\nAPI_URL=https://api.ciphera.dev\nFEATURE_FLAGS=charts,logs\n";
+const IMPORT_SAMPLE = "# Collez le contenu d'un fichier .env\nAPI_URL=https://api.example.com\nFEATURE_FLAGS=charts,logs\n";
 
 type Saved = { key: string; value: string; secret: boolean; environments: string[]; all_projects: boolean; projects: string[] };
 

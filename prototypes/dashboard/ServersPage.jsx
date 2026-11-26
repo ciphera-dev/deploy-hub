@@ -28,7 +28,7 @@ const PLAN=s=>'KVM '+(s.cores||2)+' · '+s.cores+' vCPU · '+s.ram.split('/')[1]
 function DotGlobe({servers,focus,onPick,primary='srv-par-01'}){
   const ref=React.useRef(null);const st=React.useRef({rot:[-2.35,-48.86+12],target:null,mask:null,dots:null,drag:null,vel:[0,0],idle:0});const [grab,setGrab]=React.useState(false);const pinEls=React.useRef({});
   React.useEffect(()=>{let alive=true,raf;const cv=ref.current;const ctx=cv.getContext('2d');
-    fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r=>r.json()).then(topo=>{
+    fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json',{integrity:'sha384-5oFOGoMd0tkagYW08lVco4uAi7XDEDBwBxOdeKx+SA1ihbsHiR/aFAJGretluTzG'}).then(r=>r.json()).then(topo=>{
       if(!alive)return;const land=topojson.feature(topo,topo.objects.land);
       const mw=720,mh=360,m=document.createElement('canvas');m.width=mw;m.height=mh;const mx=m.getContext('2d');
       const ep=d3.geoEquirectangular().scale(mw/(2*Math.PI)).translate([mw/2,mh/2]);mx.fillStyle='#000';mx.beginPath();d3.geoPath(ep,mx)(land);mx.fill();

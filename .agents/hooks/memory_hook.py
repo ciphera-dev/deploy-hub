@@ -48,7 +48,10 @@ SECRET = re.compile(
 BEARER = re.compile(r"(?i)\b(bearer\s+)[\w.~+/-]{16,}=*")
 SECRET_SHAPES = re.compile(
     r"(gh[pousr]_\w+|github_pat_\w+|sk-[\w-]{10,}|xox[abpr]-[\w-]+|AKIA\w{16}|AIza[\w-]{30,}|eyJ[\w-]+\.[\w-]+\.[\w-]+"
-    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----)"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"|sk_(?:live|test)_\w+|glpat-[\w-]{10,}|AGE-SECRET-KEY-[A-Z0-9]+"
+    # clé minisign : « RW » + 54 caractères base64 (56 au total) ; ligne d'en-tête des fichiers .pub / .minisig / .key
+    r"|(?<![A-Za-z0-9+/])RW[A-Za-z0-9+/]{54}(?![A-Za-z0-9+/])|untrusted comment:[^\r\n]*)"
 )
 URL_CREDS = re.compile(r"(//[^/\s:@]+):[^@\s/]+@")
 # une note est une donnée : on refuse ce qui ressemble à une consigne adressée à un agent
@@ -76,6 +79,11 @@ JOURNAL_MAX = 400
 
 def now():
     return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def refuse_injection(text):
+    """Filtre anti-consigne : à appliquer à tout texte qu'une commande va écrire dans la mémoire ou les journaux."""
+    return bool(INJECTION.search(text or ""))
 
 
 def redact(s):
@@ -462,7 +470,7 @@ def cli(args):
                 print(f"  {e['src']} -[{e['rel']}]-> {e['dst']}")
     elif cmd == "note" and len(args) >= 3:
         text = redact(" ".join(args[2:]))
-        if INJECTION.search(text):
+        if refuse_injection(text) or refuse_injection(args[1]):
             sys.exit("refusé : une note décrit un fait du projet, pas une consigne pour un agent")
         g = load()
         nid = node(g, f"concept:{args[1]}", "concept")
@@ -518,7 +526,8 @@ def hook(ev, agent):
                 log.setdefault("paths", []).append(rel)
         elif tool in SHELL_TOOLS:
             cmd = inp.get("command", "")
-            log["cmd"] = redact(" ".join(cmd) if isinstance(cmd, list) else str(cmd))[:300]
+            line = redact(" ".join(cmd) if isinstance(cmd, list) else str(cmd))[:300]
+            log["cmd"] = "[commande non journalisée : ressemble à une consigne]" if refuse_injection(line) else line
         elif tool in AGENT_TOOLS and (inp.get("subagent_type") or inp.get("agent_type")):
             who = inp.get("subagent_type") or inp.get("agent_type")
             edge(g, sess, "INVOKED", node(g, f"agent:{who}", "agent"))

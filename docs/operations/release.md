@@ -32,7 +32,7 @@ Dans cet ordre :
    - Règles à cocher : **Restrict creations**, **Restrict updates**, **Restrict deletions**, **Block force pushes**.
    - Cliquer *Create*.
 6. **Environnement `release` et releases immuables.** L'environnement `release` existe déjà : il a été créé à la publication du dépôt. Aller dans Settings → Environments → `release` :
-   - *Required reviewers* : coché, avec **au moins deux relecteurs** (`duckysface` et un second compte, distinct de celui qui pousse les tags).
+   - *Required reviewers* : coché, avec **au moins deux relecteurs** (deux comptes distincts, dont aucun n'est celui de celui qui pousse les tags).
      Le contrôle compte les entrées de la liste : une équipe compte pour **un seul** relecteur, quel que soit son nombre de membres. Ajouter deux comptes (ou une équipe et un compte), pas une seule équipe.
    - **Prevent self-review** : coché. Celui qui a poussé le tag ne peut pas approuver seul la signature : l'autre relecteur doit le faire.
    - *Save protection rules*.

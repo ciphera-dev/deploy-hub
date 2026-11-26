@@ -35,7 +35,7 @@ const buildLog=[
 {time:'12:04:32',text:'Clonage github.com/ciphera/web@a3f91c2',tone:'info'},
 {time:'12:04:34',text:'Railpack : Node 22 détecté, pnpm 9',tone:'info'},
 {time:'12:04:35',text:'BuildKit : 14 / 18 couches en cache',tone:'muted'},
-{time:'12:04:49',text:'Image poussée : registry.ciphera.dev/web:4821',tone:'info'},
+{time:'12:04:49',text:'Image poussée : registry.example.com/web:4821',tone:'info'},
 {time:'12:04:51',text:'Healthcheck GET /health → 200',tone:'ok'},
 {time:'12:04:52',text:'Trafic basculé via Caddy, ancienne version arrêtée',tone:'ok'}];
 return {days,long,deploys,latency,periods,servers,projects,services,deployments,buildLog};

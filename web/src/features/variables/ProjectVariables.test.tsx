@@ -129,7 +129,7 @@ it("mode .env : secrets sans valeur, enregistrement en un envoi ; téléchargeme
   const area = await screen.findByLabelText("Contenu .env");
   const text = (area as HTMLTextAreaElement).value;
   expect(text).toContain("DATABASE_URL=  # secret");
-  expect(text).toContain("NEXT_PUBLIC_API_URL=https://app.ciphera.dev/api");
+  expect(text).toContain("NEXT_PUBLIC_API_URL=https://app.example.com/api");
   expect(text).not.toContain("SENTRY_DSN");
   fireEvent.change(area, { target: { value: text + "NEW_FLAG=on\n" } });
   screen.getByRole("button", { name: "Enregistrer" }).click();

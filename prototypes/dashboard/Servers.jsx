@@ -42,7 +42,7 @@ function ServerDetail({id,back}){
     {tab==='Agent'&&<div style={{padding:'28px 32px 40px 46px',display:'grid',gridTemplateColumns:'minmax(0,420px) minmax(0,1fr)',gap:40}}>
       <KeyValueList title="Agent nœud" rows={[{label:'Version :',value:'v'+S.agent},{label:'Transport :',value:'QUIC · mTLS'},{label:'Latence plan de contrôle :',value:S.rtt},{label:'Certificat :',value:S.cert},{label:'Système :',value:S.os+' · '+S.cores+' vCPU'},{label:'API exposée :',value:<Badge>deploy · stop · logs · metrics · pull</Badge>}]}/>
       <div style={{display:'flex',flexDirection:'column',gap:12}}><span style={{font:'400 12px/1 var(--font-sans)',color:'var(--text-subtle)'}}>Journal de l'agent</span>
-        <CodeBlock maxHeight={260} lines={[{time:'12:04:31',text:'quic: session reprise (0-RTT)',tone:'muted'},{time:'12:04:32',text:'deploy(spec=ciphera-web#4821) reçu',tone:'info'},{time:'12:04:49',text:'pull registry.ciphera.dev/web:4821 ok',tone:'info'},{time:'12:04:52',text:'2 conteneurs sains, ancien set arrêté',tone:'ok'},{time:'12:10:00',text:'metrics: cpu=38% ram=5.2G disk=61G',tone:'muted'}]}/>
+        <CodeBlock maxHeight={260} lines={[{time:'12:04:31',text:'quic: session reprise (0-RTT)',tone:'muted'},{time:'12:04:32',text:'deploy(spec=ciphera-web#4821) reçu',tone:'info'},{time:'12:04:49',text:'pull registry.example.com/web:4821 ok',tone:'info'},{time:'12:04:52',text:'2 conteneurs sains, ancien set arrêté',tone:'ok'},{time:'12:10:00',text:'metrics: cpu=38% ram=5.2G disk=61G',tone:'muted'}]}/>
       </div>
     </div>}
   </div>;
@@ -57,7 +57,7 @@ function AddServerModal({onClose}){
     </div>
     <div style={{display:'flex',flexDirection:'column',gap:8}}>
       <span style={{font:'400 12px/1 var(--font-sans)',color:'var(--text-muted)'}}>Commande à exécuter sur le serveur</span>
-      <CodeBlock code={os==='linux'?'curl -fsSL https://get.ciphera.dev | sh -s -- \\\n  --token cph_join_7f3a••••••••92c1':'docker run -d --name ciphera-agent \\\n  -v /var/run/docker.sock:/var/run/docker.sock \\\n  ghcr.io/ciphera/agent:0.9.4 --token cph_join_7f3a••••••••92c1'}/>
+      <CodeBlock code={os==='linux'?'curl -fsSL https://get.ciphera.ch | sh -s -- \\\n  --token cph_join_7f3a••••••••92c1':'docker run -d --name ciphera-agent \\\n  -v /var/run/docker.sock:/var/run/docker.sock \\\n  ghcr.io/ciphera/agent:0.9.4 --token cph_join_7f3a••••••••92c1'}/>
       <span style={{display:'flex',alignItems:'center',gap:8,font:'400 12px/1 var(--font-sans)',color:'var(--text-subtle)'}}><StatusDot status="pending"/>En attente de la connexion de l'agent… · le jeton expire dans 15 min</span>
     </div>
   </Modal>;

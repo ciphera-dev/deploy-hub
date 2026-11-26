@@ -6,7 +6,7 @@ function Check({on,onClick,disabled}){return <button onClick={onClick} disabled=
 function ProfileNotif(){
   const [n,setN]=React.useState({dep:[1,1],fail:[1,1],sec:[1,1],dns:[0,1],team:[1,0],week:[1,0]});
   const [ch,setCh]=React.useState([true,true]);const [quiet,setQuiet]=React.useState(false);
-  const CH=[['mail','#38bdf8','E-mail','alex@ciphera.com'],['layout-dashboard','#8b6cff','Dashboard','Cloche en haut à droite']];
+  const CH=[['mail','#38bdf8','E-mail','alex@example.com'],['layout-dashboard','#8b6cff','Dashboard','Cloche en haut à droite']];
   const col=j=>Object.values(n).filter(v=>v[j]).length;
   return <>
     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:12}}>

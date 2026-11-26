@@ -1,5 +1,5 @@
 {
-  "root": "C:\\Users\\Lenovo\\Documents\\Projets\\ciphera-deploy",
+  "root": ".",
   "findings": [
     {
       "rule": "supabase-service-key",

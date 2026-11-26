@@ -17,7 +17,7 @@ const EVENTS=['deploy.succeeded','deploy.failed','server.offline','domain.ssl_ex
 const HOOKS=[
   {id:1,url:'https://hooks.slack.com/services/T04/B07/xyz',name:'Slack #deploys',events:['deploy.succeeded','deploy.failed'],on:true,rate:99.8,hist:[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],last:'il y a 2 min',lat:'84 ms'},
   {id:2,url:'https://api.pagerduty.com/v2/enqueue',name:'PagerDuty astreinte',events:['server.offline','deploy.failed','security.ban'],on:true,rate:96.1,hist:[1,1,1,0,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1],last:'il y a 3 h',lat:'212 ms'},
-  {id:3,url:'https://ci.ciphera.dev/hooks/ciphera',name:'CI interne',events:['deploy.succeeded'],on:false,rate:72.4,hist:[1,0,0,1,0,1,1,0,1,1,0,1,1,1,0,1,1,0,1,1],last:'il y a 2 j',lat:'1,4 s'},
+  {id:3,url:'https://ci.example.com/hooks/ciphera',name:'CI interne',events:['deploy.succeeded'],on:false,rate:72.4,hist:[1,0,0,1,0,1,1,0,1,1,0,1,1,1,0,1,1,0,1,1],last:'il y a 2 j',lat:'1,4 s'},
 ];
 const DELIV=[[1,'deploy.succeeded',200,'84 ms','il y a 2 min'],[2,'deploy.failed',200,'230 ms','il y a 3 h'],[2,'server.offline',503,'—','il y a 3 h'],[1,'deploy.failed',200,'91 ms','hier'],[3,'deploy.succeeded',404,'1,4 s','il y a 2 j']];
 function Fav({url,size=18}){

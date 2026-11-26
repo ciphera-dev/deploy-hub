@@ -10,7 +10,7 @@ const POL=[['plus','Commencer de zéro','Politique personnalisée','Custom'],['s
 function Tools({flash}){
   const [t,setT]=React.useState('claude');const [m,setM]=React.useState('auto');const [q,setQ]=React.useState('');const [msgs,setMsgs]=React.useState([]);
   const name=TOOLS.flatMap(g=>g[1]).find(x=>x[0]===t)[1];
-  const cmd=t==='cli'?'curl -fsSL https://ciphera.dev/install.sh | sh':'npx -y @ciphera/mcp add --client '+t;
+  const cmd=t==='cli'?'curl -fsSL https://get.ciphera.ch/install.sh | sh':'npx -y @ciphera/mcp add --client '+t;
   const send=()=>{if(!q.trim())return;setMsgs(x=>[...x,['u',q],['a','Je déploie ciphera-web sur srv-par-01… ✓ build 42 s, en ligne sur app.ciphera.com']]);setQ('')};
   return <div style={{...card,display:'grid',gridTemplateColumns:'230px minmax(0,1fr)',overflow:'hidden'}}>
     <div style={{padding:14,borderRight:hair,display:'flex',flexDirection:'column',gap:14}}>
@@ -137,7 +137,7 @@ function Tokens({flash,create,setCreate}){
 function ApiPage(){
   const tab='tokens';const [create,setCreate]=React.useState(false);const [toast,setToast]=React.useState('');const flash=m=>{setToast(m);clearTimeout(flash.t);flash.t=setTimeout(()=>setToast(''),2200)};
   return <div style={{padding:'0 32px 48px 34px',display:'flex',flexDirection:'column',gap:18}}>
-    <div style={{display:'flex',alignItems:'center',gap:12}}><span style={{flex:1,font:'400 14px/1.5 var(--font-sans)',color:'var(--text-muted)'}}>Créez des jetons pour accéder à l'API Ciphera depuis vos scripts, votre CI et vos outils.</span><Button iconRight="external-link" onClick={()=>flash('docs.ciphera.dev/api')}>Documentation</Button>{tab==='tokens'&&!create&&<button onClick={()=>setCreate(true)} style={{height:36,padding:'0 16px',borderRadius:'var(--radius-md)',border:0,cursor:'pointer',background:V,color:'#fff',font:'600 13px/1 var(--font-sans)'}}>Créer un jeton</button>}</div>
+    <div style={{display:'flex',alignItems:'center',gap:12}}><span style={{flex:1,font:'400 14px/1.5 var(--font-sans)',color:'var(--text-muted)'}}>Créez des jetons pour accéder à l'API Ciphera depuis vos scripts, votre CI et vos outils.</span><Button iconRight="external-link" onClick={()=>flash('docs.example.com/api')}>Documentation</Button>{tab==='tokens'&&!create&&<button onClick={()=>setCreate(true)} style={{height:36,padding:'0 16px',borderRadius:'var(--radius-md)',border:0,cursor:'pointer',background:V,color:'#fff',font:'600 13px/1 var(--font-sans)'}}>Créer un jeton</button>}</div>
     <Tokens flash={flash} create={create} setCreate={setCreate}/>
     {toast&&<div style={{position:'fixed',bottom:24,right:24,zIndex:60,padding:'10px 14px',borderRadius:'var(--radius-md)',background:'var(--surface-tooltip)',boxShadow:'var(--shadow-tooltip)',font:'400 12px/1 var(--font-sans)',color:'var(--text-strong)',display:'flex',alignItems:'center',gap:8}}><Icon name="check" size={12} color="var(--green-500)"/>{toast}</div>}
   </div>;

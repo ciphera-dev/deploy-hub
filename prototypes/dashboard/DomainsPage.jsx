@@ -13,8 +13,8 @@ const INIT=[
   Dm({name:'app.ciphera.com',project:'ciphera-web',zone:'ciphera.com',exp:'14 mars 2027',days:114}),
   Dm({name:'api.ciphera.com',project:'billing-api',zone:'ciphera.com',exp:'14 mars 2027',days:114,path:'/v1'}),
   Dm({name:'auth.ciphera.com',project:'auth-service',zone:'ciphera.com',exp:'2 déc. 2026',days:14,ssl:'expiring',proxy:false}),
-  Dm({name:'preview.ciphera.dev',project:'dashboard-v2',zone:'ciphera.dev',exp:'9 juin 2027',days:201}),
-  Dm({name:'stats.ciphera.dev',project:'analytics',zone:'ciphera.dev',exp:null,days:null,ssl:'pending'}),
+  Dm({name:'preview.example.com',project:'dashboard-v2',zone:'example.com',exp:'9 juin 2027',days:201}),
+  Dm({name:'stats.example.com',project:'analytics',zone:'example.com',exp:null,days:null,ssl:'pending'}),
 ];
 const sslInfo=d=>d.ssl==='ok'?['ok','Valide']:d.ssl==='expiring'?['pending','Expire dans '+d.days+' j']:d.ssl==='issuing'?['pending','Émission…']:['off','En attente DNS'];
 const zoneOf=(n,zones)=>zones.find(z=>n===z||n.endsWith('.'+z));
@@ -30,7 +30,7 @@ function AddModal({zones,onClose,onAdd,taken}){
   const [sub,setSub]=React.useState('');const [zone,setZone]=React.useState(zones[0]);const [project,setProject]=React.useState(PROJECTS[0]);const [path,setPath]=React.useState('/');const [proxy,setProxy]=React.useState(true);const [focus,setFocus]=React.useState(true);
   const s0=sub.trim().toLowerCase();const host=(s0?s0+'.':'')+zone;
   const okSub=!s0||/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(s0);const dup=taken(host);const err=s0&&(!okSub||dup);const ready=okSub&&!dup;
-  const rec=s0?{type:'CNAME',name:s0,value:'edge.ciphera.dev'}:{type:'A',name:'@',value:IP};
+  const rec=s0?{type:'CNAME',name:s0,value:'edge.example.com'}:{type:'A',name:'@',value:IP};
   const L=(t,hint)=><div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}><span style={{font:'400 12px/1 var(--font-sans)',color:'var(--text-muted)'}}>{t}</span>{hint&&<span style={{...lbl,fontSize:11}}>{hint}</span>}</div>;
   const field={display:'flex',alignItems:'center',height:36,borderRadius:'var(--radius-md)',background:'var(--surface-control)',boxShadow:'var(--shadow-control)',overflow:'hidden'};
   const mono={font:'400 13px/1 var(--font-mono)'};
@@ -131,7 +131,7 @@ function DomainsTab({list,setList,cf,flash,onAdd,onOpen}){
   </div>;
 }
 
-const RECS0={'ciphera.com':[['A','@',IP,true],['CNAME','www','ciphera.com',true],['CNAME','app','edge.ciphera.dev',true],['CNAME','api','edge.ciphera.dev',true],['CNAME','auth','edge.ciphera.dev',false],['MX','@','mx1.mail.ovh.net',false],['TXT','@','v=spf1 include:mx.ovh.com ~all',false]],'ciphera.dev':[['CNAME','preview','edge.ciphera.dev',true],['CNAME','stats','edge.ciphera.dev',true],['TXT','_acme-challenge','x8f2…k1',false]],'ciphera.io':[['A','@',IP,true]],'ciphera-status.com':[['CNAME','@','status.ciphera.dev',true]]};
+const RECS0={'ciphera.com':[['A','@',IP,true],['CNAME','www','ciphera.com',true],['CNAME','app','edge.example.com',true],['CNAME','api','edge.example.com',true],['CNAME','auth','edge.example.com',false],['MX','@','mx1.mail.ovh.net',false],['TXT','@','v=spf1 include:mx.ovh.com ~all',false]],'example.com':[['CNAME','preview','edge.example.com',true],['CNAME','stats','edge.example.com',true],['TXT','_acme-challenge','x8f2…k1',false]],'ciphera.io':[['A','@',IP,true]],'ciphera-status.com':[['CNAME','@','status.example.com',true]]};
 function ZonesTab({cf,list,flash}){
   const [zone,setZone]=React.useState(cf.zones[0]);const [recs,setRecs]=React.useState(RECS0);const [add,setAdd]=React.useState(false);const [nr,setNr]=React.useState({type:'CNAME',name:'',value:'',proxy:true});
   const R=recs[zone]||[];const auto=n=>list.some(d=>d.zone===zone&&(d.name===zone?'@':d.name.slice(0,-zone.length-1))===n);
@@ -298,7 +298,7 @@ function DomainDetail({d,cf,flash,back}){
         {rows.map((x,i)=><div key={i} style={{display:'grid',gridTemplateColumns:'130px minmax(0,1.3fr) minmax(0,1.3fr) 100px 120px auto',gap:8,alignItems:'end'}}>
           <label style={{display:'flex',flexDirection:'column',gap:8}}>{i===0&&<Lb t="Type"/>}<TypePicker value={x.type} onChange={v=>setRows(rs=>rs.map((y,j)=>j===i?{...y,type:v}:y))} field={field}/></label>
           <label style={{display:'flex',flexDirection:'column',gap:8}}>{i===0&&<Lb t="Nom" tip/>}<span style={{display:'flex',...field,padding:0,overflow:'hidden'}}><input value={x.name} onChange={e=>setRows(rs=>rs.map((y,j)=>j===i?{...y,name:e.target.value}:y))} placeholder="@" style={{flex:1,minWidth:0,height:'100%',padding:'0 12px',border:0,background:'transparent',outline:'none',color:'var(--text-strong)',font:'400 13px/1 var(--font-mono)'}}/><span style={{display:'flex',alignItems:'center',padding:'0 12px',borderLeft:'1px solid var(--border-strong)',background:'var(--surface-raised)',font:'400 12px/1 var(--font-mono)',color:'var(--text-subtle)',whiteSpace:'nowrap'}}>.{zone}</span></span></label>
-          <label style={{display:'flex',flexDirection:'column',gap:8}}>{i===0&&<Lb t="Valeur" tip/>}<input value={x.value} onChange={e=>setRows(rs=>rs.map((y,j)=>j===i?{...y,value:e.target.value}:y))} placeholder={x.type==='A'?IP:x.type==='CNAME'?'edge.ciphera.dev':x.type==='TXT'?'v=spf1 …':'—'} style={{...field,fontFamily:'var(--font-mono)'}}/></label>
+          <label style={{display:'flex',flexDirection:'column',gap:8}}>{i===0&&<Lb t="Valeur" tip/>}<input value={x.value} onChange={e=>setRows(rs=>rs.map((y,j)=>j===i?{...y,value:e.target.value}:y))} placeholder={x.type==='A'?IP:x.type==='CNAME'?'edge.example.com':x.type==='TXT'?'v=spf1 …':'—'} style={{...field,fontFamily:'var(--font-mono)'}}/></label>
           <label style={{display:'flex',flexDirection:'column',gap:8}}>{i===0&&<Lb t="TTL" tip/>}<input value={prox(x.type)&&x.proxy?'Auto':x.ttl} disabled={prox(x.type)&&x.proxy} onChange={e=>setRows(rs=>rs.map((y,j)=>j===i?{...y,ttl:e.target.value.replace(/\D/g,'')}:y))} style={{...field,fontFamily:'var(--font-mono)',opacity:prox(x.type)&&x.proxy?.5:1}}/></label>
           <div style={{display:'flex',flexDirection:'column',gap:8}}>{i===0&&<Lb t="Proxy"/>}<div style={{height:42,display:'flex',alignItems:'center'}}>{prox(x.type)?<Cloud on={x.proxy} onClick={()=>setRows(rs=>rs.map((y,j)=>j===i?{...y,proxy:!y.proxy}:y))}/>:<span style={lbl}>—</span>}</div></div>
           {i===0?<window.CfButton onClick={addAll}>{rows.length>1?'Ajouter '+rows.length+' enregistrements':'Ajouter un enregistrement'}</window.CfButton>:<IconButton size={42} variant="ghost" icon="x" label="Retirer" onClick={()=>setRows(rs=>rs.filter((_,j)=>j!==i))}/>}

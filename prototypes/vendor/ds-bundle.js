@@ -2095,7 +2095,7 @@ try { (() => {
     const [q, setQ] = React.useState('');
     const [msgs, setMsgs] = React.useState([]);
     const name = TOOLS.flatMap(g => g[1]).find(x => x[0] === t)[1];
-    const cmd = t === 'cli' ? 'curl -fsSL https://ciphera.dev/install.sh | sh' : 'npx -y @ciphera/mcp add --client ' + t;
+    const cmd = t === 'cli' ? 'curl -fsSL https://get.ciphera.ch/install.sh | sh' : 'npx -y @ciphera/mcp add --client ' + t;
     const send = () => {
       if (!q.trim()) return;
       setMsgs(x => [...x, ['u', q], ['a', 'Je déploie ciphera-web sur srv-par-01… ✓ build 42 s, en ligne sur app.ciphera.com']]);
@@ -3352,7 +3352,7 @@ try { (() => {
       }
     }, "Cr\xE9ez des jetons pour acc\xE9der \xE0 l'API Ciphera depuis vos scripts, votre CI et vos outils."), /*#__PURE__*/React.createElement(Button, {
       iconRight: "external-link",
-      onClick: () => flash('docs.ciphera.dev/api')
+      onClick: () => flash('docs.example.com/api')
     }, "Documentation"), tab === 'tokens' && !create && /*#__PURE__*/React.createElement("button", {
       onClick: () => setCreate(true),
       style: {
@@ -3582,7 +3582,7 @@ function _extends() { return _extends = Object.assign ? Object.assign.bind() : f
         textOverflow: 'ellipsis',
         whiteSpace: 'nowrap'
       }
-    }, "alex@ciphera.com")), /*#__PURE__*/React.createElement(Icon, {
+    }, "alex@example.com")), /*#__PURE__*/React.createElement(Icon, {
       name: "chevrons-up-down",
       size: 14,
       color: "var(--text-subtle)"
@@ -3668,7 +3668,7 @@ function _extends() { return _extends = Object.assign ? Object.assign.bind() : f
         font: '400 11px/1 var(--font-sans)',
         color: 'var(--text-subtle)'
       }
-    }, "Propri\xE9taire \xB7 alex@ciphera.com"))), sep, item('user', 'Mon profil', () => onNav('Profil')), sep, item('users', 'Équipe', () => onNav('Équipe')), item('braces', 'Variables globales', () => onNav('Variables globales')), item('key-round', 'Clés API', () => onNav('Clés API')), item('webhook', 'Webhooks', () => onNav('Webhooks')), sep, item('keyboard', 'Raccourcis clavier', () => onNav('Raccourcis clavier'), false, '⌘ /'), item('book-open', 'Documentation', () => onNav('Documentation')), sep, item('log-out', 'Se déconnecter', null, true)), document.body));
+    }, "Propri\xE9taire \xB7 alex@example.com"))), sep, item('user', 'Mon profil', () => onNav('Profil')), sep, item('users', 'Équipe', () => onNav('Équipe')), item('braces', 'Variables globales', () => onNav('Variables globales')), item('key-round', 'Clés API', () => onNav('Clés API')), item('webhook', 'Webhooks', () => onNav('Webhooks')), sep, item('keyboard', 'Raccourcis clavier', () => onNav('Raccourcis clavier'), false, '⌘ /'), item('book-open', 'Documentation', () => onNav('Documentation')), sep, item('log-out', 'Se déconnecter', null, true)), document.body));
   }
   function AppSidebar({
     active,
@@ -7171,8 +7171,8 @@ try { (() => {
       }
       if (c.id === 'cloudflare') setCf({
         account: 'Ciphera SAS',
-        email: 'alex@ciphera.dev',
-        zones: ['ciphera.com', 'ciphera.dev'],
+        email: 'alex@example.com',
+        zones: ['ciphera.com', 'example.com'],
         via: 'oauth',
         at: "à l'instant",
         proxy: true
@@ -9349,7 +9349,7 @@ try { (() => {
       items: [C({
         id: 'a1f3',
         n: 'web-1',
-        img: 'registry.ciphera.dev/web:4821',
+        img: 'registry.example.com/web:4821',
         st: 'running',
         cpu: 38,
         mem: 236,
@@ -9359,7 +9359,7 @@ try { (() => {
       }), C({
         id: 'b7c2',
         n: 'web-2',
-        img: 'registry.ciphera.dev/web:4821',
+        img: 'registry.example.com/web:4821',
         st: 'running',
         cpu: 31,
         mem: 221,
@@ -9369,7 +9369,7 @@ try { (() => {
       }), C({
         id: 'c9d1',
         n: 'worker-1',
-        img: 'registry.ciphera.dev/worker:4821',
+        img: 'registry.example.com/worker:4821',
         st: 'running',
         cpu: 22,
         mem: 388,
@@ -9391,7 +9391,7 @@ try { (() => {
       items: [C({
         id: 'e2a9',
         n: 'api-1',
-        img: 'registry.ciphera.dev/billing:4807',
+        img: 'registry.example.com/billing:4807',
         st: 'restarting',
         cpu: 3,
         mem: 96,
@@ -9443,7 +9443,7 @@ try { (() => {
       }), C({
         id: '0dd4',
         n: 'old-migration',
-        img: 'registry.ciphera.dev/web:4790',
+        img: 'registry.example.com/web:4790',
         st: 'exited',
         up: '—'
       })]
@@ -9463,7 +9463,7 @@ try { (() => {
       }), C({
         id: '1bb2',
         n: 'ingest-1',
-        img: 'registry.ciphera.dev/ingest:212',
+        img: 'registry.example.com/ingest:212',
         st: 'running',
         cpu: 9,
         mem: 180,
@@ -9473,7 +9473,7 @@ try { (() => {
     }],
     'srv-fra-01': []
   };
-  const IMAGES = [['registry.ciphera.dev/web', '4821', '412 Mo', 'il y a 4 h', 2], ['registry.ciphera.dev/worker', '4821', '398 Mo', 'il y a 4 h', 1], ['postgres', '17-alpine', '238 Mo', 'il y a 12 j', 1], ['redis', '7-alpine', '41 Mo', 'il y a 12 j', 1], ['caddy', '2.8', '49 Mo', 'il y a 31 j', 1], ['registry.ciphera.dev/web', '4790', '409 Mo', 'il y a 5 j', 0]];
+  const IMAGES = [['registry.example.com/web', '4821', '412 Mo', 'il y a 4 h', 2], ['registry.example.com/worker', '4821', '398 Mo', 'il y a 4 h', 1], ['postgres', '17-alpine', '238 Mo', 'il y a 12 j', 1], ['redis', '7-alpine', '41 Mo', 'il y a 12 j', 1], ['caddy', '2.8', '49 Mo', 'il y a 31 j', 1], ['registry.example.com/web', '4790', '409 Mo', 'il y a 5 j', 0]];
   const VOLUMES = [['ciphera-web_pgdata', '39,7 Go', 'postgres-1'], ['ciphera-web_uploads', '4,2 Go', 'web-1, web-2'], ['billing-api_redis', '118 Mo', 'redis-1'], ['caddy_data', '12 Mo', 'caddy']];
   const ST = {
     running: ['En marche', '#86efac'],
@@ -10674,15 +10674,15 @@ try { (() => {
     ssl: 'expiring',
     proxy: false
   }), Dm({
-    name: 'preview.ciphera.dev',
+    name: 'preview.example.com',
     project: 'dashboard-v2',
-    zone: 'ciphera.dev',
+    zone: 'example.com',
     exp: '9 juin 2027',
     days: 201
   }), Dm({
-    name: 'stats.ciphera.dev',
+    name: 'stats.example.com',
     project: 'analytics',
-    zone: 'ciphera.dev',
+    zone: 'example.com',
     exp: null,
     days: null,
     ssl: 'pending'
@@ -10814,7 +10814,7 @@ try { (() => {
     const rec = s0 ? {
       type: 'CNAME',
       name: s0,
-      value: 'edge.ciphera.dev'
+      value: 'edge.example.com'
     } : {
       type: 'A',
       name: '@',
@@ -11541,10 +11541,10 @@ try { (() => {
     }));
   }
   const RECS0 = {
-    'ciphera.com': [['A', '@', IP, true], ['CNAME', 'www', 'ciphera.com', true], ['CNAME', 'app', 'edge.ciphera.dev', true], ['CNAME', 'api', 'edge.ciphera.dev', true], ['CNAME', 'auth', 'edge.ciphera.dev', false], ['MX', '@', 'mx1.mail.ovh.net', false], ['TXT', '@', 'v=spf1 include:mx.ovh.com ~all', false]],
-    'ciphera.dev': [['CNAME', 'preview', 'edge.ciphera.dev', true], ['CNAME', 'stats', 'edge.ciphera.dev', true], ['TXT', '_acme-challenge', 'x8f2…k1', false]],
+    'ciphera.com': [['A', '@', IP, true], ['CNAME', 'www', 'ciphera.com', true], ['CNAME', 'app', 'edge.example.com', true], ['CNAME', 'api', 'edge.example.com', true], ['CNAME', 'auth', 'edge.example.com', false], ['MX', '@', 'mx1.mail.ovh.net', false], ['TXT', '@', 'v=spf1 include:mx.ovh.com ~all', false]],
+    'example.com': [['CNAME', 'preview', 'edge.example.com', true], ['CNAME', 'stats', 'edge.example.com', true], ['TXT', '_acme-challenge', 'x8f2…k1', false]],
     'ciphera.io': [['A', '@', IP, true]],
-    'ciphera-status.com': [['CNAME', '@', 'status.ciphera.dev', true]]
+    'ciphera-status.com': [['CNAME', '@', 'status.example.com', true]]
   };
   function ZonesTab({
     cf,
@@ -12904,7 +12904,7 @@ try { (() => {
         ...y,
         value: e.target.value
       } : y)),
-      placeholder: x.type === 'A' ? IP : x.type === 'CNAME' ? 'edge.ciphera.dev' : x.type === 'TXT' ? 'v=spf1 …' : '—',
+      placeholder: x.type === 'A' ? IP : x.type === 'CNAME' ? 'edge.example.com' : x.type === 'TXT' ? 'v=spf1 …' : '—',
       style: {
         ...field,
         fontFamily: 'var(--font-mono)'
@@ -13725,7 +13725,7 @@ try { (() => {
     onClose,
     onImport
   }) {
-    const [txt, setTxt] = React.useState('# Collez le contenu d\'un fichier .env\nAPI_URL=https://api.ciphera.dev\nFEATURE_FLAGS=charts,logs\n');
+    const [txt, setTxt] = React.useState('# Collez le contenu d\'un fichier .env\nAPI_URL=https://api.example.com\nFEATURE_FLAGS=charts,logs\n');
     const [secret, setSecret] = React.useState(false);
     const rows = txt.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#') && l.includes('=')).map(l => {
       const i = l.indexOf('=');
@@ -15226,7 +15226,7 @@ try { (() => {
     ic: 'user-plus',
     tone: '#7dd3fc',
     t: 'Nora a rejoint l\'espace',
-    d: 'nora@ciphera.com · rôle Développeur.',
+    d: 'nora@example.com · rôle Développeur.',
     w: 'hier',
     nav: 'Équipe',
     cat: 'Équipe'
@@ -20771,7 +20771,7 @@ try { (() => {
     lat: '212 ms'
   }, {
     id: 3,
-    url: 'https://ci.ciphera.dev/hooks/ciphera',
+    url: 'https://ci.example.com/hooks/ciphera',
     name: 'CI interne',
     events: ['deploy.succeeded'],
     on: false,
@@ -21706,7 +21706,7 @@ try { (() => {
     });
     const [ch, setCh] = React.useState([true, true]);
     const [quiet, setQuiet] = React.useState(false);
-    const CH = [['mail', '#38bdf8', 'E-mail', 'alex@ciphera.com'], ['layout-dashboard', '#8b6cff', 'Dashboard', 'Cloche en haut à droite']];
+    const CH = [['mail', '#38bdf8', 'E-mail', 'alex@example.com'], ['layout-dashboard', '#8b6cff', 'Dashboard', 'Cloche en haut à droite']];
     const col = j => Object.values(n).filter(v => v[j]).length;
     return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -22794,10 +22794,10 @@ try { (() => {
     const [tab, setTab] = React.useState('info');
     const [p, setP] = React.useState({
       name: 'Alex Martin',
-      address: 'Route de Chancy 12, Petit-Lancy, CH',
-      phone: '+41 79 533 72 90',
+      address: 'Rue de l'Exemple 1, 1000 Lausanne, CH',
+      phone: '+41 00 000 00 00',
       company: 'Ciphera SAS',
-      email: 'alex@ciphera.com',
+      email: 'alex@example.com',
       recovery: ''
     });
     const [toast, setToast] = React.useState('');
@@ -23455,7 +23455,7 @@ try { (() => {
     plan: 'Pro',
     records: 7
   }, {
-    name: 'ciphera.dev',
+    name: 'example.com',
     plan: 'Pro',
     records: 14
   }, {
@@ -23718,7 +23718,7 @@ try { (() => {
         disabled: !zones.length,
         onClick: () => onConnect({
           account: 'Ciphera SAS',
-          email: 'alex@ciphera.dev',
+          email: 'alex@example.com',
           zones,
           via: mode,
           at: "à l'instant",
@@ -24188,7 +24188,7 @@ try { (() => {
     color: 'var(--text-subtle)'
   };
   const STAGES = ['Clonage', 'Build', 'Image', 'Démarrage', 'Healthcheck', 'Bascule'];
-  const LOG = [['cmd', '$ ciphera deploy --project ciphera-web', 0], ['muted', 'Agent srv-par-01 connecté (QUIC · mTLS)', 0], ['info', 'Clonage github.com/ciphera/web@{sha}', 0], ['info', 'Railpack : Node 22 détecté, pnpm 9', 1], ['muted', 'BuildKit : 14 / 18 couches en cache', 1], ['info', '#4 pnpm install --frozen-lockfile', 1], ['ok', '#4 DONE 6.8s', 1], ['info', '#5 pnpm build', 1], ['ok', '#5 ✓ Compiled successfully', 1], ['info', 'Image poussée : registry.ciphera.dev/web:{id}', 2], ['info', 'Démarrage de 2 réplicas sur srv-par-01', 3], ['ok', 'Healthcheck GET /health → 200', 4], ['ok', 'Trafic basculé via Caddy, ancienne version arrêtée', 5]];
+  const LOG = [['cmd', '$ ciphera deploy --project ciphera-web', 0], ['muted', 'Agent srv-par-01 connecté (QUIC · mTLS)', 0], ['info', 'Clonage github.com/ciphera/web@{sha}', 0], ['info', 'Railpack : Node 22 détecté, pnpm 9', 1], ['muted', 'BuildKit : 14 / 18 couches en cache', 1], ['info', '#4 pnpm install --frozen-lockfile', 1], ['ok', '#4 DONE 6.8s', 1], ['info', '#5 pnpm build', 1], ['ok', '#5 ✓ Compiled successfully', 1], ['info', 'Image poussée : registry.example.com/web:{id}', 2], ['info', 'Démarrage de 2 réplicas sur srv-par-01', 3], ['ok', 'Healthcheck GET /health → 200', 4], ['ok', 'Trafic basculé via Caddy, ancienne version arrêtée', 5]];
   const DEPS = [{
     id: '4821',
     sha: 'c81e0a9',
@@ -24230,7 +24230,7 @@ try { (() => {
     when: 'il y a 6 h',
     dur: '1 min 22 s',
     times: [2, 58, 8, 7, 4, 3],
-    url: 'pr-212.preview.ciphera.dev'
+    url: 'pr-212.preview.example.com'
   }, {
     id: '4812',
     sha: '0d77f21',
@@ -24863,22 +24863,22 @@ try { (() => {
     ...o
   });
   const INIT = () => [D({
-    name: 'app.ciphera.dev',
+    name: 'app.example.com',
     primary: true
   }), D({
-    name: 'app.ciphera.dev',
+    name: 'app.example.com',
     path: '/api',
     svc: 'api',
     port: '8080',
     strip: true
   }), D({
-    name: 'app.ciphera.dev',
+    name: 'app.example.com',
     path: '/docs',
     svc: 'docs',
     port: '4321'
   }), D({
-    name: 'www.ciphera.dev',
-    redirect: 'app.ciphera.dev'
+    name: 'www.example.com',
+    redirect: 'app.example.com'
   }), D({
     name: 'web-a3f91c.ciphera.app',
     generated: true,
@@ -24886,7 +24886,7 @@ try { (() => {
     exp: '2 févr. 2027',
     days: 76
   }), D({
-    name: 'preview.ciphera.dev',
+    name: 'preview.example.com',
     dns: 'pending',
     ssl: 'pending',
     exp: null,
@@ -26322,7 +26322,7 @@ try { (() => {
     const [hooks, setHooks] = React.useState([{
       name: 'CI externe',
       branch: 'main',
-      url: 'https://api.ciphera.dev/v1/hooks/deploy/dh_7Kq2xP9mVb'
+      url: 'https://api.example.com/v1/hooks/deploy/dh_7Kq2xP9mVb'
     }]);
     const [dl, setDl] = React.useState(DELIVERIES);
     const [confirm, setConfirm] = React.useState(null);
@@ -26338,7 +26338,7 @@ try { (() => {
     }));
     const dirty = JSON.stringify(s) !== JSON.stringify(saved);
     const prov = repo.startsWith('gitlab') ? 'gitlab' : 'github';
-    const whUrl = 'https://api.ciphera.dev/v1/webhooks/' + prov + '/prj_web_4f2a';
+    const whUrl = 'https://api.example.com/v1/webhooks/' + prov + '/prj_web_4f2a';
     return /*#__PURE__*/React.createElement("div", {
       style: {
         position: 'relative',
@@ -26700,7 +26700,7 @@ try { (() => {
         setHooks(x => [...x, {
           name: 'Hook ' + (x.length + 1),
           branch: s.branch,
-          url: 'https://api.ciphera.dev/v1/hooks/deploy/dh_' + Math.random().toString(36).slice(2, 12)
+          url: 'https://api.example.com/v1/hooks/deploy/dh_' + Math.random().toString(36).slice(2, 12)
         }]);
         flash('Deploy hook créé');
       }
@@ -26842,7 +26842,7 @@ try { (() => {
   };
   const SAMPLES = {
     web: [['info', 'GET / 200 12ms'], ['info', 'GET /api/projects 200 34ms'], ['info', 'GET /_next/static/chunks/app.js 304 2ms'], ['debug', 'cache hit key=dashboard:alex'], ['warn', 'Slow query 812ms: SELECT * FROM deployments ORDER BY created_at'], ['info', 'POST /api/deploy 202 48ms'], ['error', 'Unhandled rejection: fetch failed (ECONNRESET) upstream=billing-api'], ['info', 'GET /health 200 1ms']],
-    worker: [['info', 'job deploy#4821 picked (SKIP LOCKED)'], ['info', 'job deploy#4821 step=build status=running'], ['debug', 'buildkit session 7f3a opened'], ['info', 'job email#9912 sent to lina@ciphera.dev'], ['warn', 'retrying job webhook#331 (attempt 2/5)'], ['info', 'job deploy#4821 done in 96s']],
+    worker: [['info', 'job deploy#4821 picked (SKIP LOCKED)'], ['info', 'job deploy#4821 step=build status=running'], ['debug', 'buildkit session 7f3a opened'], ['info', 'job email#9912 sent to lina@example.com'], ['warn', 'retrying job webhook#331 (attempt 2/5)'], ['info', 'job deploy#4821 done in 96s']],
     postgres: [['info', 'checkpoint starting: time'], ['info', 'checkpoint complete: wrote 412 buffers (2.5%)'], ['warn', 'duration: 812.4 ms statement: SELECT * FROM deployments'], ['info', 'connection authorized: user=ciphera database=web'], ['debug', 'autovacuum: processing table public.events']]
   };
   const CONTAINERS = [{
@@ -28577,7 +28577,7 @@ try { (() => {
     v: '3000'
   }), V({
     k: 'NEXT_PUBLIC_API_URL',
-    v: 'https://app.ciphera.dev/api',
+    v: 'https://app.example.com/api',
     envs: ['Production'],
     upd: 'il y a 5 j',
     by: 'Lina Moreau'
@@ -29374,7 +29374,7 @@ try { (() => {
   const provOf = repo => repo.startsWith('gitlab') ? 'gitlab' : repo.startsWith('gitea') ? 'gitea' : 'github';
   const META = {
     web: {
-      domain: 'app.ciphera.dev',
+      domain: 'app.example.com',
       commit: 'a3f91c2',
       msg: 'feat: nouveau tableau de bord',
       author: 'Alex Martin',
@@ -29383,7 +29383,7 @@ try { (() => {
       lang: 'Next.js'
     },
     billing: {
-      domain: 'api.ciphera.dev',
+      domain: 'api.example.com',
       commit: '7be20d4',
       msg: 'chore: bump sqlx 0.8',
       author: 'Yanis Benali',
@@ -29392,7 +29392,7 @@ try { (() => {
       lang: 'Rust'
     },
     dash: {
-      domain: 'feat-charts.preview.ciphera.dev',
+      domain: 'feat-charts.preview.example.com',
       commit: 'c81e0a9',
       msg: 'wip: graphiques de latence',
       author: 'Lina Moreau',
@@ -29401,7 +29401,7 @@ try { (() => {
       lang: 'Vite'
     },
     auth: {
-      domain: 'auth.ciphera.dev',
+      domain: 'auth.example.com',
       commit: '19d4b7e',
       msg: 'fix: rotation des clés JWT',
       author: 'Alex Martin',
@@ -29410,7 +29410,7 @@ try { (() => {
       lang: 'Go'
     },
     mkt: {
-      domain: 'ciphera.dev',
+      domain: 'example.com',
       commit: '5e02f3a',
       msg: 'content: page tarifs',
       author: 'Lina Moreau',
@@ -31316,7 +31316,7 @@ try { (() => {
     React.useEffect(() => {
       let alive = true;
       const el = ref.current;
-      fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json').then(r => r.json()).then(topo => {
+      fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json',{integrity:'sha384-yOCJ+8ShBm8UDqtAVtAvxTDDf4gXo5edxl/YG0FmVC5OTmqVLl7utuVGBDEeZWHf'}).then(r => r.json()).then(topo => {
         if (!alive) return;
         const W = el.clientWidth,
           H = el.clientHeight;
@@ -32713,7 +32713,7 @@ try { (() => {
           x.fill();
         }
       };
-      const go = () => LAND_DOTS ? paint(LAND_DOTS) : fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r => r.json()).then(topo => {
+      const go = () => LAND_DOTS ? paint(LAND_DOTS) : fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json',{integrity:'sha384-5oFOGoMd0tkagYW08lVco4uAi7XDEDBwBxOdeKx+SA1ihbsHiR/aFAJGretluTzG'}).then(r => r.json()).then(topo => {
         const land = topojson.feature(topo, topo.objects.land);
         const mw = 720,
           mh = 360,
@@ -35298,7 +35298,7 @@ try { (() => {
         tone: 'info'
       }, {
         time: '12:04:49',
-        text: 'pull registry.ciphera.dev/web:4821 ok',
+        text: 'pull registry.example.com/web:4821 ok',
         tone: 'info'
       }, {
         time: '12:04:52',
@@ -35359,7 +35359,7 @@ try { (() => {
         color: 'var(--text-muted)'
       }
     }, "Commande \xE0 ex\xE9cuter sur le serveur"), /*#__PURE__*/React.createElement(CodeBlock, {
-      code: os === 'linux' ? 'curl -fsSL https://get.ciphera.dev | sh -s -- \\\n  --token cph_join_7f3a••••••••92c1' : 'docker run -d --name ciphera-agent \\\n  -v /var/run/docker.sock:/var/run/docker.sock \\\n  ghcr.io/ciphera/agent:0.9.4 --token cph_join_7f3a••••••••92c1'
+      code: os === 'linux' ? 'curl -fsSL https://get.ciphera.ch | sh -s -- \\\n  --token cph_join_7f3a••••••••92c1' : 'docker run -d --name ciphera-agent \\\n  -v /var/run/docker.sock:/var/run/docker.sock \\\n  ghcr.io/ciphera/agent:0.9.4 --token cph_join_7f3a••••••••92c1'
     }), /*#__PURE__*/React.createElement("span", {
       style: {
         display: 'flex',
@@ -35629,7 +35629,7 @@ try { (() => {
         raf;
       const cv = ref.current;
       const ctx = cv.getContext('2d');
-      fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r => r.json()).then(topo => {
+      fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json',{integrity:'sha384-5oFOGoMd0tkagYW08lVco4uAi7XDEDBwBxOdeKx+SA1ihbsHiR/aFAJGretluTzG'}).then(r => r.json()).then(topo => {
         if (!alive) return;
         const land = topojson.feature(topo, topo.objects.land);
         const mw = 720,
@@ -37416,21 +37416,21 @@ try { (() => {
   const INIT = [U({
     id: 1,
     name: 'Alex Martin',
-    email: 'alex@ciphera.com',
+    email: 'alex@example.com',
     role: 'owner',
     last: 'maintenant',
     since: 'mars 2024'
   }), U({
     id: 2,
     name: 'Lina Moreau',
-    email: 'lina@ciphera.com',
+    email: 'lina@example.com',
     role: 'admin',
     last: 'il y a 3 min',
     since: 'avr. 2024'
   }), U({
     id: 3,
     name: 'Yanis Benali',
-    email: 'yanis@ciphera.com',
+    email: 'yanis@example.com',
     role: 'dev',
     last: 'il y a 1 h',
     since: 'juin 2024',
@@ -37438,14 +37438,14 @@ try { (() => {
   }), U({
     id: 4,
     name: 'Camille Roux',
-    email: 'camille@ciphera.com',
+    email: 'camille@example.com',
     role: 'ops',
     last: 'il y a 4 h',
     since: 'sept. 2024'
   }), U({
     id: 5,
     name: 'Hugo Lefèvre',
-    email: 'hugo@ciphera.com',
+    email: 'hugo@example.com',
     role: 'dev',
     last: 'hier',
     since: 'janv. 2025',
@@ -37454,7 +37454,7 @@ try { (() => {
   }), U({
     id: 6,
     name: 'Inès Garnier',
-    email: 'ines@agence-nord.fr',
+    email: 'ines@agence-nord.example',
     role: 'viewer',
     last: 'il y a 6 j',
     since: 'août 2025',
@@ -37463,7 +37463,7 @@ try { (() => {
   }), U({
     id: 7,
     name: 'Thomas Petit',
-    email: 'thomas@ciphera.com',
+    email: 'thomas@example.com',
     role: 'dev',
     last: 'il y a 2 mois',
     since: 'févr. 2025',
@@ -37472,7 +37472,7 @@ try { (() => {
   }), U({
     id: 8,
     name: '',
-    email: 'nora@ciphera.com',
+    email: 'nora@example.com',
     role: 'dev',
     last: '—',
     since: '',
@@ -37481,7 +37481,7 @@ try { (() => {
     sent: 'il y a 2 j',
     projects: ['ciphera-web']
   })];
-  const AUDIT = [['Lina Moreau', 'a changé le rôle de', 'Camille Roux', 'Développeur → Ops', 'il y a 2 h'], ['Alex Martin', 'a invité', 'nora@ciphera.com', 'Développeur · ciphera-web', 'il y a 2 j'], ['Alex Martin', 'a suspendu', 'Thomas Petit', 'Inactif depuis 60 j', 'il y a 5 j'], ['Lina Moreau', 'a révoqué une session de', 'Hugo Lefèvre', 'Chrome · Lyon', 'il y a 1 sem.'], ['Alex Martin', 'a modifié le rôle', 'Ops', 'Sécurité : Écriture → Admin', 'il y a 2 sem.']];
+  const AUDIT = [['Lina Moreau', 'a changé le rôle de', 'Camille Roux', 'Développeur → Ops', 'il y a 2 h'], ['Alex Martin', 'a invité', 'nora@example.com', 'Développeur · ciphera-web', 'il y a 2 j'], ['Alex Martin', 'a suspendu', 'Thomas Petit', 'Inactif depuis 60 j', 'il y a 5 j'], ['Lina Moreau', 'a révoqué une session de', 'Hugo Lefèvre', 'Chrome · Lyon', 'il y a 1 sem.'], ['Alex Martin', 'a modifié le rôle', 'Ops', 'Sécurité : Écriture → Admin', 'il y a 2 sem.']];
   const initials = n => (n || '?').split(/[ @.]/).filter(Boolean).slice(0, 2).map(x => x[0].toUpperCase()).join('');
   const hue = s => [...s].reduce((a, c) => a + c.charCodeAt(0), 0) % 360;
   function Avatar({
@@ -37718,7 +37718,7 @@ try { (() => {
       onChange: setName
     }), /*#__PURE__*/React.createElement(TextField, {
       label: "E-mail",
-      placeholder: "nora@ciphera.com",
+      placeholder: "nora@example.com",
       value: email,
       onChange: setEmail
     })), method === 'pwd' && !edit && /*#__PURE__*/React.createElement("div", {
@@ -42103,7 +42103,7 @@ try { (() => {
         font: '400 12px/1 var(--font-mono)',
         color: 'var(--text-subtle)'
       }
-    }, "ciphera.dev/", slug))), /*#__PURE__*/React.createElement("div", {
+    }, "example.com/", slug))), /*#__PURE__*/React.createElement("div", {
       style: {
         padding: '22px 22px 20px',
         display: 'flex',
@@ -43019,7 +43019,7 @@ window.CIPHERA = (() => {
     tone: 'muted'
   }, {
     time: '12:04:49',
-    text: 'Image poussée : registry.ciphera.dev/web:4821',
+    text: 'Image poussée : registry.example.com/web:4821',
     tone: 'info'
   }, {
     time: '12:04:51',
@@ -43088,13 +43088,13 @@ window.CIPHERA_PAGES = {
     action: ['plus', 'Ajouter un domaine'],
     stats: [['Domaines', '5'], ['Certificats valides', '5'], ['Expirent bientôt', '1']],
     cols: [['name', 'Domaine', '1.4fr'], ['project', 'Projet'], ['status', 'SSL', '', 1], ['exp', 'Expiration', '', '', 'right']],
-    rows: [['ciphera.com', 'marketing-site', ['ok', 'Valide'], '2 déc. 2026'], ['app.ciphera.com', 'ciphera-web', ['ok', 'Valide'], '14 mars 2027'], ['api.ciphera.com', 'billing-api', ['ok', 'Valide'], '14 mars 2027'], ['auth.ciphera.com', 'auth-service', ['pending', 'Expire dans 14 j'], '2 déc. 2026'], ['preview.ciphera.dev', 'dashboard-v2', ['ok', 'Valide'], '9 juin 2027']]
+    rows: [['ciphera.com', 'marketing-site', ['ok', 'Valide'], '2 déc. 2026'], ['app.ciphera.com', 'ciphera-web', ['ok', 'Valide'], '14 mars 2027'], ['api.ciphera.com', 'billing-api', ['ok', 'Valide'], '14 mars 2027'], ['auth.ciphera.com', 'auth-service', ['pending', 'Expire dans 14 j'], '2 déc. 2026'], ['preview.example.com', 'dashboard-v2', ['ok', 'Valide'], '9 juin 2027']]
   },
   'Équipe': {
     action: ['user-plus', 'Inviter'],
     stats: [['Membres', '8'], ['Administrateurs', '2'], ['Invitations en attente', '1']],
     cols: [['name', 'Nom', '1.2fr'], ['email', 'E-mail', '1.4fr'], ['role', 'Rôle'], ['status', 'Statut', '', 1], ['last', 'Dernière activité', '', '', 'right']],
-    rows: [['Alex Martin', 'alex@ciphera.com', 'Propriétaire', ['ok', 'Actif'], 'maintenant'], ['Lina Moreau', 'lina@ciphera.com', 'Administratrice', ['ok', 'Actif'], 'il y a 3 min'], ['Yanis Benali', 'yanis@ciphera.com', 'Développeur', ['ok', 'Actif'], 'il y a 1 h'], ['claire@ciphera.com', 'claire@ciphera.com', 'Lecteur', ['pending', 'Invitée'], '—']]
+    rows: [['Alex Martin', 'alex@example.com', 'Propriétaire', ['ok', 'Actif'], 'maintenant'], ['Lina Moreau', 'lina@example.com', 'Administratrice', ['ok', 'Actif'], 'il y a 3 min'], ['Yanis Benali', 'yanis@example.com', 'Développeur', ['ok', 'Actif'], 'il y a 1 h'], ['claire@example.com', 'claire@example.com', 'Lecteur', ['pending', 'Invitée'], '—']]
   },
   'Clés API': {
     action: ['plus', 'Créer une clé'],
