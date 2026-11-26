@@ -1,14 +1,18 @@
 //! Version de l'instance et demande de mise a jour (`/api/system/*`).
 //! La verification de la derniere version est testee contre un serveur
-//! simule local (wiremock) : jamais le vrai reseau.
+//! simule local (wiremock) : jamais le vrai reseau. `latest.json` y est
+//! signe par une cle jetable, donnee au plan de controle a la place des
+//! cles integrees.
 
 mod common;
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::TempDir;
 use common::api::{DIRECT, Reply, Req, call};
 use control_plane::auth::password;
+use control_plane::http::update::LatestRelease;
 use control_plane::state::AppState;
 use serde_json::{Value, json};
 use shared::config::Config;
@@ -82,6 +86,73 @@ fn current() -> String {
     format!("v{}", env!("CARGO_PKG_VERSION"))
 }
 
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// Cle jetable qui signe les `latest.json` de test.
+struct Signer(minisign::KeyPair);
+
+impl Signer {
+    fn new() -> Self {
+        Signer(minisign::KeyPair::generate_unencrypted_keypair().unwrap())
+    }
+
+    /// Le plan de controle ne fait confiance qu'a cette cle.
+    fn trust(&self, state: &mut AppState) {
+        state.releases = LatestRelease::with_pubkeys(vec![self.0.pk.to_base64()]);
+    }
+
+    fn sign(&self, data: &str, comment: &str) -> String {
+        minisign::sign(
+            Some(&self.0.pk),
+            &self.0.sk,
+            data.as_bytes(),
+            Some(comment),
+            None,
+        )
+        .unwrap()
+        .to_string()
+    }
+}
+
+/// Commentaire de confiance de `latest.json` (install/sign-latest.sh).
+fn comment(version: &str, issued: u64) -> String {
+    let expires = issued + shared::latest::VALIDITY_SECS;
+    format!("ciphera-latest version={version} issued={issued} expires={expires}")
+}
+
+/// Sert `latest.json` (`json`) et sa signature `sig`.
+async fn serve_latest(server: &MockServer, json: &str, sig: &str, expect: u64) {
+    Mock::given(method("GET"))
+        .and(path("/releases/latest.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(json))
+        .expect(expect)
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/releases/latest.json.minisig"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sig))
+        .expect(expect)
+        .mount(server)
+        .await;
+}
+
+/// `GET /api/system/version` d'un panneau qui lit `server` et ne fait
+/// confiance qu'a `signer`.
+async fn version_seen(server: &MockServer, signer: &Signer) -> Value {
+    let (mut state, _db) = common::state().await;
+    with_check(&mut state, true, &server.uri());
+    signer.trust(&mut state);
+    let admin = login(&state, "admin").await;
+    let r = send(&state, &admin, "GET", "/api/system/version", None).await;
+    assert_eq!(r.status, 200, "{}", r.raw);
+    r.json()
+}
+
 #[tokio::test]
 async fn version_check_is_off_by_default_and_contacts_nothing() {
     let server = MockServer::start().await;
@@ -108,17 +179,17 @@ async fn version_check_is_off_by_default_and_contacts_nothing() {
 #[tokio::test]
 async fn version_check_opt_in_reads_latest_once() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/releases/latest.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "version": "v9.9.9",
-            "changelog_url": "https://get.ciphera.ch/releases/v9.9.9/CHANGELOG.md"
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+    let signer = Signer::new();
+    let json = json!({
+        "version": "v9.9.9",
+        "changelog_url": "https://get.ciphera.ch/releases/v9.9.9/CHANGELOG.md"
+    })
+    .to_string();
+    let sig = signer.sign(&json, &comment("v9.9.9", now() - 3600));
+    serve_latest(&server, &json, &sig, 1).await;
     let (mut state, _db) = common::state().await;
     with_check(&mut state, true, &server.uri());
+    signer.trust(&mut state);
     let admin = login(&state, "admin").await;
 
     for _ in 0..2 {
@@ -136,43 +207,133 @@ async fn version_check_opt_in_reads_latest_once() {
     server.verify().await;
     // Aucune donnee de l'instance : ni requete, ni version dans l'agent.
     let received = server.received_requests().await.unwrap();
-    assert_eq!(received[0].url.query(), None);
-    assert_eq!(received[0].headers["user-agent"], "ciphera");
-    assert!(received[0].headers.get("cookie").is_none());
+    assert_eq!(received.len(), 2);
+    for r in &received {
+        assert_eq!(r.url.query(), None);
+        assert_eq!(r.headers["user-agent"], "ciphera");
+        assert!(r.headers.get("cookie").is_none());
+    }
 }
 
 #[tokio::test]
 async fn bad_latest_answer_is_ignored() {
+    let signer = Signer::new();
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/releases/latest.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "version": "v1.0.0",
-            "changelog_url": "javascript:alert(1)"
-        })))
-        .mount(&server)
-        .await;
-    let (mut state, _db) = common::state().await;
-    with_check(&mut state, true, &server.uri());
-    let admin = login(&state, "admin").await;
-    let r = send(&state, &admin, "GET", "/api/system/version", None).await;
+    let json = json!({ "version": "v1.0.0", "changelog_url": "javascript:alert(1)" }).to_string();
+    serve_latest(
+        &server,
+        &json,
+        &signer.sign(&json, &comment("v1.0.0", now())),
+        1,
+    )
+    .await;
     assert_eq!(
-        r.json(),
+        version_seen(&server, &signer).await,
         json!({ "current": current(), "latest": "v1.0.0" }),
         "lien non https retire"
     );
 
+    // Version mal formee, meme signee.
+    let server = MockServer::start().await;
+    let json = "{\"version\":\"latest\"}";
+    serve_latest(
+        &server,
+        json,
+        &signer.sign(json, &comment("v1.0.0", now())),
+        1,
+    )
+    .await;
+    assert_eq!(
+        version_seen(&server, &signer).await,
+        json!({ "current": current() })
+    );
+}
+
+#[tokio::test]
+async fn latest_signature_required() {
+    let signer = Signer::new();
+    let json = "{\"version\":\"v9.9.9\"}";
+    let good = signer.sign(json, &comment("v9.9.9", now() - 3600));
+
+    // Sans signature (404) : ignore.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("{\"version\":\"latest\"}"))
+        .and(path("/releases/latest.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(json))
         .mount(&server)
         .await;
+    assert_eq!(
+        version_seen(&server, &signer).await,
+        json!({ "current": current() })
+    );
+
+    // Signe par une autre cle.
+    let server = MockServer::start().await;
+    let other = Signer::new().sign(json, &comment("v9.9.9", now() - 3600));
+    serve_latest(&server, json, &other, 1).await;
+    assert_eq!(
+        version_seen(&server, &signer).await,
+        json!({ "current": current() })
+    );
+
+    // Version annoncee modifiee apres la signature.
+    let server = MockServer::start().await;
+    serve_latest(&server, "{\"version\":\"v9.9.8\"}", &good, 1).await;
+    assert_eq!(
+        version_seen(&server, &signer).await,
+        json!({ "current": current() })
+    );
+
+    // Commentaire de confiance par defaut (ni version ni echeance).
+    let server = MockServer::start().await;
+    let plain = signer.sign(json, "timestamp:1800000000\tfile:latest.json");
+    serve_latest(&server, json, &plain, 1).await;
+    assert_eq!(
+        version_seen(&server, &signer).await,
+        json!({ "current": current() })
+    );
+
+    // Cles integrees (production) : la cle jetable n'est pas acceptee.
+    let server = MockServer::start().await;
+    serve_latest(&server, json, &good, 1).await;
     let (mut state, _db) = common::state().await;
     with_check(&mut state, true, &server.uri());
     let admin = login(&state, "admin").await;
     let r = send(&state, &admin, "GET", "/api/system/version", None).await;
-    assert_eq!(r.status, 200);
     assert_eq!(r.json(), json!({ "current": current() }));
+}
+
+#[tokio::test]
+async fn latest_version_mismatch_refused() {
+    let signer = Signer::new();
+    let server = MockServer::start().await;
+    // Signature valide, mais le commentaire signe annonce une autre version.
+    let json = "{\"version\":\"v9.9.9\"}";
+    serve_latest(
+        &server,
+        json,
+        &signer.sign(json, &comment("v9.9.8", now())),
+        1,
+    )
+    .await;
+    assert_eq!(
+        version_seen(&server, &signer).await,
+        json!({ "current": current() })
+    );
+}
+
+#[tokio::test]
+async fn expired_latest_warns_not_blocks() {
+    let signer = Signer::new();
+    let server = MockServer::start().await;
+    // Signe il y a 200 jours : echeance (120 jours) depassee.
+    let json = "{\"version\":\"v9.9.9\"}";
+    let sig = signer.sign(json, &comment("v9.9.9", now() - 200 * 24 * 3600));
+    serve_latest(&server, json, &sig, 1).await;
+    assert_eq!(
+        version_seen(&server, &signer).await,
+        json!({ "current": current(), "latest": "v9.9.9", "latest_expired": true })
+    );
 }
 
 #[tokio::test]

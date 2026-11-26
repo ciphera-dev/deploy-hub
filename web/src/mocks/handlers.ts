@@ -80,6 +80,7 @@ export const handlers: RequestHandler[] = [
   http.post("*/api/projects/:id/services/:sid/:action", () => HttpResponse.json({ deployment_id: DEPLOYMENTS[1].id }, { status: 202 })),
   http.post("*/api/projects/:id/redeploy", ({ params }) => HttpResponse.json(queuedDeployment(String(params.id)), { status: 201 })),
   http.get("*/api/settings/general", () => HttpResponse.json(GENERAL)),
+  http.get("*/api/system/version", () => HttpResponse.json({ current: "v0.1.0", latest: "v0.1.0" })),
   http.patch("*/api/settings/general", async ({ request }) => HttpResponse.json({ ...GENERAL, ...((await request.json()) as object) })),
   http.get("*/api/settings/deployments", () => HttpResponse.json(DEPLOY)),
   http.patch("*/api/settings/deployments", async ({ request }) => HttpResponse.json({ ...DEPLOY, ...((await request.json()) as object) })),

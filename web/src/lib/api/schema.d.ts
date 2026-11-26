@@ -3018,9 +3018,17 @@ export interface components {
             current: string;
             /**
              * @description Derniere version publiee, si la verification est activee
-             *     (`CIPHERA_UPDATE_CHECK=1`) et a abouti.
+             *     (`CIPHERA_UPDATE_CHECK=1`) et a abouti : `latest.json` signe par une
+             *     cle de confiance, version identique a celle du commentaire signe.
+             *     Signature invalide : absente (fichier ignore, echec journalise).
              */
             latest?: string | null;
+            /**
+             * @description Signature de `latest.json` echue (plus de 120 jours) : la version
+             *     reste indiquee, mais rien ne garantit que c'est la derniere. Le
+             *     panneau affiche un avertissement ; rien n'est bloque.
+             */
+            latest_expired?: boolean;
         };
         /** @description Membre de l'organisation. */
         TeamMember: {

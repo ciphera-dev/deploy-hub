@@ -26,6 +26,7 @@ const server = setupServer(
   http.get("*/api/me", () => HttpResponse.json(me)),
   http.get("*/api/deployments", () => HttpResponse.json([])),
   http.get("*/api/settings/general", () => HttpResponse.json(GENERAL)),
+  http.get("*/api/system/version", () => HttpResponse.json({ current: "v0.1.0" })),
   http.patch("*/api/settings/general", async ({ request }) => {
     await record(request);
     return HttpResponse.json({ ...GENERAL, ...(requests.at(-1)!.body as object) });

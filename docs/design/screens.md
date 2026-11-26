@@ -108,7 +108,7 @@ Chaque écran existant est **porté et branché, jamais redessiné**.
 9. Détail d'un déploiement avec une URL partageable (`/deployments/:id`).
 10. Journal d'audit global.
 11. Modale standard « jeton créé, copiez-le maintenant » (API, deploy hook, secret de webhook). (composant `TokenCreatedModal` créé en Task 27, utilisé pour les deploy hooks)
-12. Maintenance et mise à jour de l'instance (version, changelog).
+12. Maintenance et mise à jour de l'instance (version, changelog). Commencé : carte « Version de Ciphera » de Paramètres › Général (`features/settings/sections/UpdateStatus.tsx`, `GET /api/system/version`) : version installée, dernière version publiée (`latest.json` signé ; « Non vérifiée » sinon), notes de version, avertissement si les métadonnées ont plus de 120 jours. Reste : bouton de mise à jour (`POST /api/system/update`).
 13. Recherche globale ⌘K (le bouton existe mais ne fait rien).
 14. Détail d'une alerte et gestion des règles d'alerte.
 

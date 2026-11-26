@@ -7,6 +7,7 @@ import { REGIONS } from "@/features/setup/regions";
 
 import { fetchGeneral, GENERAL_QUERY_KEY, saveGeneral, type GeneralSettings } from "../api";
 import { Card, Input, Row, SECTION_FORM_ID, SectionState } from "../ui";
+import { UpdateStatus } from "./UpdateStatus";
 
 const LANGUAGES: [string, string][] = [
   ["fr", "Français"],
@@ -71,9 +72,14 @@ function GeneralForm({ initial }: { initial: GeneralSettings }) {
   );
 }
 
-/** Parametres › General (Pages2.jsx#SettingsV2) : nom, identifiant, fuseau, langue. */
+/** Parametres › General (Pages2.jsx#SettingsV2) : nom, identifiant, fuseau, langue ; etat de la mise a jour. */
 export function GeneralSection() {
   const query = useQuery({ queryKey: GENERAL_QUERY_KEY, queryFn: fetchGeneral });
   if (!query.data) return <SectionState error={query.error} what="les paramètres généraux" denied="Accès refusé : réservé aux administrateurs." />;
-  return <GeneralForm initial={query.data} />;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <GeneralForm initial={query.data} />
+      <UpdateStatus />
+    </div>
+  );
 }

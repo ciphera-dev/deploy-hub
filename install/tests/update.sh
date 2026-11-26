@@ -14,6 +14,9 @@
 #   - (b) demande valide pour la version installee : refusee ;
 #   - (c) release signee par une autre cle : echec avant toute
 #     modification, aucune sauvegarde ;
+#   - (c2) `ciphera-cli updater --latest` avec un latest.json altere
+#     (version changee apres la signature) ou dont la version differe de
+#     celle du commentaire signe : refus avant toute modification ;
 #   - (d) demande valide pour v_B deposee comme le plan de controle
 #     (ecriture atomique, compte ciphera) : l'unite .path lance l'updater,
 #     sauvegarde /var/backups/ciphera/<ts>.sql.zst, v_B installee, outils
@@ -22,7 +25,8 @@
 #     une unite ciphera-* ecrite par l'administrateur (hors registre
 #     units.list) reste en place et active, une unite de Ciphera qu'il a
 #     desactivee (ciphera-agent.service) le reste ;
-#   - (e) release v_C dont `ciphera` modifie la base puis ne demarre pas :
+#   - (e) release v_C, annoncee par le latest.json signe (--latest), dont
+#     `ciphera` modifie la base puis ne demarre pas :
 #     retour aux binaires de v_B apres 60 s, base restauree (modification
 #     de v_C disparue), panneau de nouveau joignable ; l'unite de v_B que
 #     v_C retire est de nouveau activee ;
@@ -161,6 +165,24 @@ EOF
 chmod 0755 "$work/bins-broken/ciphera"
 release "$v_c" good "$work/bins-broken"
 release "$v_other" other
+
+# latest.json signe (comme install/sign-latest.sh) : <dossier> <version
+# annoncee> <version du commentaire signe>. Servi sous srv/good/releases
+# (ciphera-cli updater --latest) : v_C valide ; copies de cote pour le cas
+# (c2), JSON modifie apres la signature et version differente de celle du
+# commentaire signe.
+latest_signed() {
+	local dir="$work/$1" ts
+	ts=$(date -u +%s)
+	mkdir -p "$dir"
+	printf '{"version":"%s"}\n' "$2" >"$dir/latest.json"
+	msign -S -s keys/good.key -m "$1/latest.json" \
+		-t "ciphera-latest version=$3 issued=$ts expires=$((ts + 120 * 86400))" >/dev/null
+}
+latest_signed srv/good/releases "$v_c" "$v_c"
+latest_signed latest-tampered "$v_b" "$v_b"
+printf '{"version":"%s"}\n' "$v_c" >"$work/latest-tampered/latest.json"
+latest_signed latest-mismatch "$v_c" "$v_b"
 
 # --- outils tiers (railpack, buildctl, mise) ----------------------------------
 # Manifeste d'install.sh (source unique des empreintes), telecharges une
@@ -378,6 +400,25 @@ run_distro() {
 	check "(c) rien ne change" test "$(bin_sums)" = "$sums_a"
 	check "(c) aucune sauvegarde" test "$(backups)" = 0
 
+	# (c2) latest.json altere (version changee apres la signature), puis
+	# signe mais d'une version differente de celle du commentaire signe :
+	# --latest refuse avant toute modification.
+	local rel="$work/srv/good/releases"
+	mkdir -p "$work/latest-valid"
+	cp "$rel/latest.json" "$rel/latest.json.minisig" "$work/latest-valid/"
+	out="$work/$distro-c2.log"
+	for kase in tampered:'signature minisign invalide' mismatch:'version differente'; do
+		cp "$work/latest-${kase%%:*}/latest.json" "$work/latest-${kase%%:*}/latest.json.minisig" "$rel/"
+		if manual "$out" --latest; then
+			check "(c2) latest.json ${kase%%:*} : refus" false
+		else
+			check "(c2) latest.json ${kase%%:*} : refus" grep -q "${kase#*:}" "$out"
+		fi
+		check "(c2) latest.json ${kase%%:*} : rien ne change" test "$(bin_sums)" = "$sums_a"
+	done
+	check "(c2) aucune sauvegarde" test "$(backups)" = 0
+	cp "$work/latest-valid/latest.json" "$work/latest-valid/latest.json.minisig" "$rel/"
+
 	# Unite de l'administrateur (hors registre) et unite de Ciphera qu'il a
 	# desactivee : jamais touchees par l'updater (cas d a f).
 	check "registre des unites ecrit par install.sh" \
@@ -413,12 +454,14 @@ run_distro() {
 	local dump_a
 	dump_a=$(in_ctr 'ls /var/backups/ciphera/*.sql.zst | head -n 1')
 
-	# (e) v_C modifie la base puis ne demarre pas : retour a v_B et a la base.
+	# (e) v_C, annoncee par latest.json signe (--latest), modifie la base
+	# puis ne demarre pas : retour a v_B et a la base.
 	out="$work/$distro-e.log"
-	if manual "$out" --version "$v_c"; then
+	if manual "$out" --latest; then
 		check "(e) panneau muet : echec" false
 	else
 		check "(e) panneau muet : echec" grep -q 'retour a la version precedente' "$out"
+		check "(e) version lue dans latest.json signe" grep -q "derniere version publiee : $v_c" "$out"
 	fi
 	check "(e) binaires de $v_b remis" test "$(bin_sums)" = "$sums_b"
 	check "(e) version $v_b remise" test "$(installed)" = "$v_b"

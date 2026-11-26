@@ -16,6 +16,7 @@ export type TeamMember = components["schemas"]["TeamMember"];
 export type PendingInvitation = components["schemas"]["PendingInvitation"];
 export type RemovedMember = components["schemas"]["RemovedMember"];
 export type TeamRole = "owner" | "admin" | "ops" | "developer" | "viewer";
+export type SystemVersion = components["schemas"]["SystemVersion"];
 
 export const NOTIFICATIONS_QUERY_KEY = ["settings", "notifications"] as const;
 export const GENERAL_QUERY_KEY = ["settings", "general"] as const;
@@ -25,6 +26,12 @@ export const DANGER_QUERY_KEY = ["settings", "danger"] as const;
 export const PANEL_DOMAIN_QUERY_KEY = ["settings", "panel-domain"] as const;
 export const TEAM_MEMBERS_QUERY_KEY = ["team", "members"] as const;
 export const TEAM_INVITATIONS_QUERY_KEY = ["team", "invitations"] as const;
+export const SYSTEM_VERSION_QUERY_KEY = ["system", "version"] as const;
+
+/** Version installee et derniere version publiee verifiee (`latest_expired` : signature echue). */
+export async function fetchSystemVersion(): Promise<SystemVersion> {
+  return unwrap(await api.GET("/api/system/version"));
+}
 
 /** Echec d'une ecriture : message affichable et code de l'API (ex. `ip_allowlist_lockout`). */
 export type Failure = { ok: false; status: number; code: string; message: string };

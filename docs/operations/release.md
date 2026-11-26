@@ -7,7 +7,7 @@ Toute la chaîne est dans `.github/workflows/release.yml` : build, tests de bout
 | push sur `main` (install/, deploy/, crates/…) ou lancement manuel, **même sur un tag** | Release de **test** : clé de test (`CIPHERA_TEST_MINISIGN_KEY`), artefacts de workflow seulement. Rien n'est publié. |
 | push d'un tag `v*` | Release de **production**, dans cet ordre : tests de bout en bout et exécution de l'archive aarch64 ; vérification que le commit du tag est sur `main` ; approbation de l'environnement `release` ; archives comparées (SHA-256) à celles du job `build` ; signature minisign (clé de production, binaire minisign épinglé), cosign keyless et attestation SLSA ; GitHub Release ; site construit depuis les fichiers signés **de ce run** ; approbation de l'environnement `github-pages` ; déploiement. |
 
-Il n'existe aucun autre moyen de publier le site. Si le déploiement échoue, utiliser *Re-run failed jobs* sur le même run.
+Le site n'est publié que par ces deux workflows : `release.yml` (tag `v*`) et `refresh-latest.yml` (re-signature mensuelle de `latest.json`, plus bas). Si le déploiement échoue, utiliser *Re-run failed jobs* sur le même run.
 
 ## Mise en place (une seule fois, par la personne qui garde la clé)
 
@@ -95,8 +95,18 @@ Dans cet ordre :
 |---|---|
 | `/install.sh`, `/install.sh.minisig`, `/install.sh.sha256` | Copies exactes des fichiers signés par le run de la release. |
 | `/ciphera.pub` | Clés publiques minisign de confiance (une seule, ou deux pendant une rotation). |
-| `/releases/latest.json` | Dernière version, utilisée pour la vérification des mises à jour du panneau. Ce fichier n'est pas signé. |
+| `/releases/latest.json`, `/releases/latest.json.minisig` | Dernière version (`{"version":"vX.Y.Z"}`), signée minisign. Le commentaire de confiance porte la version et une échéance : `ciphera-latest version=<v> issued=<ts> expires=<ts + 120 jours>` (secondes Unix). Lu par le plan de contrôle (vérification des mises à jour du panneau) et par `ciphera-cli updater --latest`, qui l'ignorent si la signature, le commentaire ou la version ne vont pas. `pages-site.sh` refuse de construire le site avec un fichier échu. |
 | `/releases/<version>/…` | Assets de la release, plus ceux des 4 releases précédentes qui se vérifient avec une clé de confiance ou une clé retirée (`install/ciphera.retired.pub`). Seule la liste signée est servie : archives nommées dans `SHA256SUMS`, `SHA256SUMS`, `install.sh`, leurs `.minisig` et `install.sh.sha256`. Tout autre fichier d'une release (ajouté après coup, bundle cosign, `latest.json`) est retiré, avec un avertissement dans le job `pages-site`. Lus par `install.sh` et `ciphera-cli updater`. |
 | Autres chemins | Page 404 avec un lien vers GitHub Releases. |
 
 GitHub Pages ne fait pas de redirection HTTP, donc les assets sont recopiés sur le site : environ 45 Mo par release, pour une limite de 1 Go. La bande passante de Pages est limitée à environ 100 Go/mois ; au-delà, prévoir un CDN devant le même contenu.
+
+## Re-signature mensuelle de `latest.json` (`refresh-latest.yml`)
+
+La signature de `latest.json` expire au bout de 120 jours. Au-delà, rien n'est bloqué, mais le panneau affiche « Impossible de garantir que Ciphera est à jour (métadonnées de version de plus de 120 jours) » : un miroir ou un attaquant pourrait servir un ancien fichier pour cacher une nouvelle version.
+
+- Le 3 de chaque mois, `refresh-latest.yml` relance ce même workflow sur le tag de la dernière release publiée (job `dispatch`, sans secret). Un lancement manuel (Actions → Refresh latest.json → *Run workflow* sur `main`) fait de même.
+- Sur le tag, le job `sign` attend une **approbation** de l'environnement `release` (même règle que les releases : tags `v*`). Il vérifie que le commit du tag est sur `main` et que c'est la dernière release publiée, télécharge le `latest.json` de cette release, vérifie qu'il annonce exactement cette version, puis le re-signe avec `install/sign-latest.sh` (nouvelle échéance). Il ne signe rien d'autre et ne change jamais la version.
+- `pages-site` reconstruit le site depuis les fichiers signés de la release (GitHub Release), avec le `latest.json` re-signé, et revérifie tout. `pages-deploy` attend l'approbation de `github-pages`.
+- **Action (facultative) de la personne qui garde la clé** : approuver chaque mois les deux déploiements. Sans approbation, le site garde l'ancien fichier, qui expire 120 jours après sa signature ; une nouvelle release le remplace aussi.
+- Le fichier joint à la GitHub Release (immuable) garde sa signature d'origine : seul le site sert la version re-signée.

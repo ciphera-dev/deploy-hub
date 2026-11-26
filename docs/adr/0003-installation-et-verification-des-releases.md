@@ -47,6 +47,13 @@ curl -fsSL https://get.ciphera.ch/install.sh | sh
 - Les demandes du panneau sont signées par HMAC avec une clé propre, `/etc/ciphera/update-hmac.key` : 32 octets aléatoires, `root:ciphera 0640`, créés par `ciphera init` ou, s'ils manquent, par l'updater. Le plan de contrôle signe avec, l'updater vérifie avec ; l'updater ne lit jamais l'identité age `age.key`.
 - La sauvegarde décompressée utilisée par un retour arrière (`/var/lib/ciphera-updater/restore.sql`) est réécrite à zéro puis supprimée à la fin du retour arrière, qu'il ait réussi ou échoué ; son chemin est journalisé.
 
+**Note (métadonnées de version signées et horodatées, audit 2026-11-24, D-INST-3) :** `releases/latest.json` est signé et porte une échéance.
+- La release le signe avec minisign (`install/sign-latest.sh`, appelé par `sign-release.sh`). Commentaire de confiance : `ciphera-latest version=<v> issued=<ts> expires=<ts + 120 jours>` (secondes Unix). Il est couvert par la signature globale de minisign. `install/check-latest.sh` le vérifie (clé de confiance, forme exacte, version, échéance non passée) ; `pages-site.sh` publie `latest.json.minisig` à côté de `releases/latest.json` et refuse un fichier échu.
+- Le plan de contrôle (`GET /api/system/version`, `CIPHERA_UPDATE_CHECK=1`) et `ciphera-cli updater --latest` le vérifient avant tout usage (`shared::latest`, même vérificateur `minisign-verify` que l'updater), avec les clés intégrées au binaire (plusieurs pendant une rotation ; jamais les clés retirées, comme pour les releases). Signature invalide, commentaire mal formé, ou version du JSON différente de celle du commentaire : fichier ignoré, échec journalisé. Le panneau affiche alors « Non vérifiée », comme lorsque la vérification est désactivée ou que le site est injoignable.
+- Échéance passée : rien n'est bloqué. La version reste affichée et le panneau ajoute « Impossible de garantir que Ciphera est à jour (métadonnées de version de plus de 120 jours) » (`latest_expired` dans l'API) ; `updater --latest` l'écrit en avertissement et continue.
+- L'anti-rétrogradation reste : l'updater refuse toute version inférieure ou égale à la version installée. Un ancien `latest.json` rejoué ne peut donc que cacher une version plus récente, ce que l'échéance borne à 120 jours.
+- `refresh-latest.yml` (mensuel, environnement `release` avec approbation, puis `github-pages`) re-signe le `latest.json` de la dernière release avec une nouvelle échéance, sans en changer la version, et republie le site.
+
 ## Conséquences
 
 - (+) Installation en une commande ; une altération est détectée avant toute exécution.

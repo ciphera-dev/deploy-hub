@@ -1067,6 +1067,7 @@ dependencies = [
  "image",
  "jiff 1.0.2",
  "lettre",
+ "minisign",
  "pki",
  "proto",
  "psl",

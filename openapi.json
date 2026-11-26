@@ -9024,7 +9024,11 @@
               "string",
               "null"
             ],
-            "description": "Derniere version publiee, si la verification est activee\n(`CIPHERA_UPDATE_CHECK=1`) et a abouti."
+            "description": "Derniere version publiee, si la verification est activee\n(`CIPHERA_UPDATE_CHECK=1`) et a abouti : `latest.json` signe par une\ncle de confiance, version identique a celle du commentaire signe.\nSignature invalide : absente (fichier ignore, echec journalise)."
+          },
+          "latest_expired": {
+            "type": "boolean",
+            "description": "Signature de `latest.json` echue (plus de 120 jours) : la version\nreste indiquee, mais rien ne garantit que c'est la derniere. Le\npanneau affiche un avertissement ; rien n'est bloque."
           }
         }
       },

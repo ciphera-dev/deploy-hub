@@ -2,10 +2,16 @@
 //! - `GET /api/system/version` (administrateur) : version installee et,
 //!   seulement si `CIPHERA_UPDATE_CHECK=1` (desactive par defaut), derniere
 //!   version publiee, lue dans `<CIPHERA_RELEASE_BASE_URL>/releases/latest.json`
-//!   (`{ "version": "vX.Y.Z", "changelog_url": "https://…" }`). Une simple
-//!   requete GET, sans aucune donnee de l'instance (ni identifiant, ni
-//!   version dans l'agent utilisateur) : aucune telemetrie. Resultat garde en
-//!   memoire 6 h (15 min apres un echec) ;
+//!   (`{ "version": "vX.Y.Z", "changelog_url": "https://…" }`) et sa
+//!   signature `latest.json.minisig`. Deux simples requetes GET, sans aucune
+//!   donnee de l'instance (ni identifiant, ni version dans l'agent
+//!   utilisateur) : aucune telemetrie. Le fichier n'est utilise qu'apres
+//!   verification (`shared::latest` : cle integree, commentaire de confiance
+//!   `ciphera-latest version=… issued=… expires=…`, meme version) ; sinon il
+//!   est ignore et l'echec journalise. Echeance passee : la version reste
+//!   affichee, avec `latest_expired` (le panneau avertit que la mise a jour
+//!   ne peut pas etre garantie). Resultat garde en memoire 6 h (15 min apres
+//!   un echec) ;
 //! - `POST /api/system/update { version, password }` (proprietaire, CSRF,
 //!   re-authentification par mot de passe) : refuse une version inferieure
 //!   ou egale a la version installee, puis ecrit de facon atomique
@@ -34,9 +40,9 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
 use serde_json::json;
 use shared::error::ApiError;
+use shared::latest::{MAX_LATEST_BYTES, embedded_pubkeys, verify_latest};
 use shared::update::{KEY_FILE, KeyError, REQUEST_FILE, UpdateRequest, Version, load_key};
 
 use crate::auth::{internal, rate_limit};
@@ -50,8 +56,6 @@ const MAX_BODY: usize = 8 * 1024;
 const CHECK_TTL: Duration = Duration::from_secs(6 * 3600);
 /// Delai avant un nouvel essai apres un echec.
 const CHECK_RETRY: Duration = Duration::from_secs(15 * 60);
-/// Taille maximale de `latest.json`.
-const MAX_LATEST_BYTES: usize = 4096;
 /// Avertissement renvoye avec une demande acceptee.
 const NOTICE: &str = "Mise à jour demandée. Le panneau redémarre pendant l'opération. \
     En cas d'échec, Ciphera revient automatiquement à la version précédente et restaure \
@@ -70,9 +74,20 @@ pub fn current_version() -> Version {
     Version::from_pkg(env!("CARGO_PKG_VERSION")).expect("version du paquet au format X.Y.Z")
 }
 
-/// Derniere version publiee, gardee en memoire.
-#[derive(Clone, Default)]
-pub struct LatestRelease(Arc<Mutex<Option<Cached>>>);
+/// Derniere version publiee, gardee en memoire, et cles de confiance qui
+/// verifient `latest.json`.
+#[derive(Clone)]
+pub struct LatestRelease {
+    cache: Arc<Mutex<Option<Cached>>>,
+    pubkeys: Arc<Vec<String>>,
+}
+
+impl Default for LatestRelease {
+    /// Cles integrees (`install/ciphera.pub`), celles de l'updater.
+    fn default() -> Self {
+        Self::with_pubkeys(embedded_pubkeys())
+    }
+}
 
 #[derive(Clone)]
 struct Cached {
@@ -84,18 +99,22 @@ struct Cached {
 struct Latest {
     version: Version,
     changelog_url: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct LatestJson {
-    version: String,
-    #[serde(default)]
-    changelog_url: Option<String>,
+    /// Echeance de la signature (secondes Unix).
+    expires: u64,
 }
 
 impl LatestRelease {
+    /// Autres cles de confiance (tests : releases signees par une cle
+    /// jetable).
+    pub fn with_pubkeys(pubkeys: Vec<String>) -> Self {
+        LatestRelease {
+            cache: Arc::default(),
+            pubkeys: Arc::new(pubkeys),
+        }
+    }
+
     fn cached(&self) -> Option<Cached> {
-        let guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let guard = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         guard.clone().filter(|c| {
             let ttl = if c.latest.is_some() {
                 CHECK_TTL
@@ -110,14 +129,14 @@ impl LatestRelease {
         if let Some(c) = self.cached() {
             return c.latest;
         }
-        let latest = match fetch_latest(base_url).await {
+        let latest = match fetch_latest(base_url, &self.pubkeys).await {
             Ok(l) => Some(l),
             Err(e) => {
                 tracing::warn!("verification de la derniere version : {e}");
                 None
             }
         };
-        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(Cached {
+        *self.cache.lock().unwrap_or_else(|p| p.into_inner()) = Some(Cached {
             at: Instant::now(),
             latest: latest.clone(),
         });
@@ -125,7 +144,7 @@ impl LatestRelease {
     }
 }
 
-async fn fetch_latest(base_url: &str) -> Result<Latest, String> {
+async fn fetch_latest(base_url: &str, pubkeys: &[String]) -> Result<Latest, String> {
     let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -142,8 +161,30 @@ async fn fetch_latest(base_url: &str) -> Result<Latest, String> {
         .user_agent("ciphera")
         .build()
         .map_err(|e| e.to_string())?;
+    let body = get_capped(&client, &format!("{base_url}/releases/latest.json")).await?;
+    let sig = get_capped(&client, &format!("{base_url}/releases/latest.json.minisig")).await?;
+    let sig = String::from_utf8(sig).map_err(|_| "latest.json.minisig : signature illisible")?;
+    // Rien n'est utilise avant la verification (signature, commentaire de
+    // confiance, version identique).
+    let latest = verify_latest(pubkeys, &body, &sig).map_err(|e| e.to_string())?;
+    // Lien affiche dans le panneau : https seulement, caracteres surs.
+    let changelog_url = latest.changelog_url.filter(|u| {
+        u.starts_with("https://")
+            && u.len() <= 512
+            && u.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b":/._-~#?=&%+".contains(&b))
+    });
+    Ok(Latest {
+        version: latest.version,
+        changelog_url,
+        expires: latest.expires,
+    })
+}
+
+/// `GET url`, corps de [`MAX_LATEST_BYTES`] octets au plus.
+async fn get_capped(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
     let res = client
-        .get(format!("{base_url}/releases/latest.json"))
+        .get(url)
         .send()
         .await
         .map_err(|e| e.without_url().to_string())?;
@@ -156,23 +197,7 @@ async fn fetch_latest(base_url: &str) -> Result<Latest, String> {
     {
         return Err("reponse trop longue".into());
     }
-    let body = read_capped(res, MAX_LATEST_BYTES).await?;
-    let parsed: LatestJson = serde_json::from_slice(&body).map_err(|_| "JSON invalide")?;
-    let version = parsed
-        .version
-        .parse()
-        .map_err(|_| "version invalide".to_string())?;
-    // Lien affiche dans le panneau : https seulement, caracteres surs.
-    let changelog_url = parsed.changelog_url.filter(|u| {
-        u.starts_with("https://")
-            && u.len() <= 512
-            && u.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b":/._-~#?=&%+".contains(&b))
-    });
-    Ok(Latest {
-        version,
-        changelog_url,
-    })
+    read_capped(res, MAX_LATEST_BYTES).await
 }
 
 /// `GET /api/system/version`
@@ -182,9 +207,11 @@ async fn version(State(state): State<AppState>, _auth: Admin) -> Result<Response
     } else {
         None
     };
+    let now = state.clock.unix_secs() as u64;
     let body = SystemVersion {
         current: current_version().to_string(),
         latest: latest.as_ref().map(|l| l.version.to_string()),
+        latest_expired: latest.as_ref().is_some_and(|l| now >= l.expires),
         changelog_url: latest.and_then(|l| l.changelog_url),
     };
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response())

@@ -13,7 +13,7 @@ Ce document complète l'ADR 0003 (installation et vérification des releases). L
 
 **Seul minisign protège réellement les installations.** `install.sh` et l'updater ne vérifient ni cosign ni l'attestation. Un attaquant qui détient une clé minisign de confiance et contrôle l'hébergement (`get.ciphera.ch` ou les releases) peut donc livrer du code aux serveurs, même si ses fichiers ne passeraient pas la vérification cosign. cosign et l'attestation servent à l'audit : quiconque vérifie à la main voit qu'un artefact ne vient pas du workflow attendu, et l'entrée Rekor d'un artefact frauduleux, s'il en existe une, est publique.
 
-`releases/latest.json` n'est pas signé. Il ne sert qu'à afficher « mise à jour disponible » dans le panneau : la mise à jour elle-même vérifie la signature de la release visée.
+`releases/latest.json` (dernière version) est signé minisign par la même clé (`install/sign-latest.sh`). Le commentaire de confiance, couvert par la signature globale, porte la version et une échéance de 120 jours : `ciphera-latest version=<v> issued=<ts> expires=<ts + 120 jours>`. Le plan de contrôle et `ciphera-cli updater --latest` le vérifient avec les clés intégrées à leur binaire (`install/ciphera.pub`, jamais les clés retirées) : signature invalide, commentaire mal formé ou version différente de celle du commentaire, le fichier est ignoré et l'échec journalisé. Une échéance passée ne bloque rien : le panneau avertit qu'il ne peut pas garantir que Ciphera est à jour. `refresh-latest.yml` re-signe le fichier chaque mois (approbation de `release`). La mise à jour elle-même vérifie toujours la signature de la release visée, et l'updater refuse toute version inférieure ou égale à la version installée.
 
 ## Clés
 

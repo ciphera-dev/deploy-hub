@@ -12,9 +12,16 @@ pub struct SystemVersion {
     /// Version installee (`vX.Y.Z`).
     pub current: String,
     /// Derniere version publiee, si la verification est activee
-    /// (`CIPHERA_UPDATE_CHECK=1`) et a abouti.
+    /// (`CIPHERA_UPDATE_CHECK=1`) et a abouti : `latest.json` signe par une
+    /// cle de confiance, version identique a celle du commentaire signe.
+    /// Signature invalide : absente (fichier ignore, echec journalise).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest: Option<String>,
+    /// Signature de `latest.json` echue (plus de 120 jours) : la version
+    /// reste indiquee, mais rien ne garantit que c'est la derniere. Le
+    /// panneau affiche un avertissement ; rien n'est bloque.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub latest_expired: bool,
     /// Notes de version de `latest` (https), si publiees.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changelog_url: Option<String>,
