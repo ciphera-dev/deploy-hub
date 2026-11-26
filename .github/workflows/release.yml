@@ -141,10 +141,20 @@ jobs:
               [ -f "$b" ] || continue
               n=$((n + 1))
               strings -a "$b" > "$check.strings"
-              if grep -E 'CIPHERA_INSTALL_TEST|CIPHERA_TEST_' "$check.strings"; then
+              # Echec par defaut : 0 = fuite, 1 = propre, autre = erreur de grep.
+              rc=0
+              grep -E 'CIPHERA_INSTALL_TEST|CIPHERA_TEST_' "$check.strings" || rc=$?
+              case "$rc" in
+              0)
                 echo "::error::$(basename "$a") : $(basename "$b") contient le mode test"
                 exit 1
-              fi
+                ;;
+              1) ;;
+              *)
+                echo "::error::$(basename "$a") : $(basename "$b") : grep en erreur (code $rc), controle impossible"
+                exit 1
+                ;;
+              esac
             done
             [ "$n" -eq 4 ] || { echo "::error::$(basename "$a") : 4 binaires attendus, $n verifies"; exit 1; }
             found=$((found + 1))
