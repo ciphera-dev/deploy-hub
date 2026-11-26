@@ -14,5 +14,12 @@ disallowed-methods = [
     { path = "pingora_core::server::configuration::ServerConf::new_with_opt_override", reason = "lit le YAML de Pingora : construire ServerConf dans le code" },
     { path = "pingora_core::server::configuration::Opt::parse_args", reason = "lit la ligne de commande (dont le chemin du YAML) : passer None à Server::new_with_opt_and_conf" },
     { path = "pingora_core::server::configuration::Opt::parse_from_args", reason = "lit la ligne de commande (dont le chemin du YAML) : passer None à Server::new_with_opt_and_conf" },
+    # `Opt` dérive clap::Parser : clippy ne peut pas interdire une méthode de trait pour un seul type,
+    # donc ces points d'entrée sont interdits partout. Un usage légitime (CLI de Ciphera) porte un
+    # `#[allow(clippy::disallowed_methods)]` justifié.
+    { path = "clap::Parser::parse", reason = "Opt de Pingora dérive clap::Parser et lirait argv (chemin du YAML) : réservé à notre propre CLI, avec #[allow] justifié" },
+    { path = "clap::Parser::parse_from", reason = "même raison que Parser::parse" },
+    { path = "clap::Parser::try_parse", reason = "même raison que Parser::parse" },
+    { path = "clap::Parser::try_parse_from", reason = "même raison que Parser::parse" },
     { path = "pingora_core::server::Server::new", reason = "charge le YAML de Pingora : utiliser Server::new_with_opt_and_conf(None, conf)" },
 ]

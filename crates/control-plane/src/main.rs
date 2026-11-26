@@ -133,6 +133,9 @@ struct InitArgs {
 
 #[tokio::main]
 async fn main() {
+    // Notre propre ligne de commande ; clippy.toml interdit Parser::parse pour que
+    // l'Opt de Pingora ne soit jamais lu depuis argv.
+    #[allow(clippy::disallowed_methods)]
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Init(args)) => std::process::exit(run_init(args)),
