@@ -41,3 +41,7 @@ La divulgation est coordonnée : nous publions l'avis et le correctif ensemble, 
 Seule la signature **minisign** protège réellement les installations. La clé publique est dans `install/ciphera.pub` et sur https://get.ciphera.ch/ciphera.pub. La procédure de vérification est dans la section « Vérifier une release » de [`docs/security/release-signing.md`](docs/security/release-signing.md), qui décrit aussi la garde, la rotation et la révocation des clés.
 
 Un soupçon de compromission de la clé de signature se signale par le même canal privé.
+
+## Contact général
+
+Pour une question qui n'est pas une faille (fonctionnement, code de conduite, presse) : [info@ciphera.ch](mailto:info@ciphera.ch). N'envoyez jamais le détail d'une faille à cette adresse : utilisez le signalement privé décrit plus haut.

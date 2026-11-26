@@ -133,6 +133,10 @@ Ce projet adopte un [code de conduite](CODE_OF_CONDUCT.md) : en participant, vou
 
 Ne signalez jamais une faille par une issue publique : suivez [SECURITY.md](SECURITY.md) (signalement privé par GitHub Security Advisories).
 
+## Contact
+
+Pour toute question générale sur le projet : [info@ciphera.ch](mailto:info@ciphera.ch). Les failles de sécurité ne passent jamais par cette adresse : voir [SECURITY.md](SECURITY.md).
+
 ## Remerciements
 
 Le développement de Ciphera a été réalisé avec l'aide de deux assistants de programmation : **Kimi**, puis **Claude Code**.

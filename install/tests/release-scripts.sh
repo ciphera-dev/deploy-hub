@@ -15,6 +15,9 @@
 #     artefacts signes du run et les releases publiees precedentes (gh
 #     remplace par un bouchon), install.sh identique au fichier signe,
 #     release alteree refusee, fichiers hors de la liste signee retires.
+#     Page d'accueil et 404 (install/site/) : fichiers publies sous
+#     /assets/, version et liens de signature injectes, aucune URL externe
+#     hors de github.com/ciphera-dev/deploy-hub et mailto:info@ciphera.ch.
 #
 #   bash install/tests/release-scripts.sh      (exige minisign, sha256sum)
 set -euo pipefail
@@ -447,7 +450,44 @@ check "site : CNAME" grep -qx get.ciphera.ch site/CNAME
 check "site : cles publiques = ensemble courant seulement" cmp -s site/ciphera.pub plain.pub
 check "site : index et 404 vers GitHub Releases" \
 	grep -q 'https://github.com/ciphera-dev/deploy-hub/releases' site/index.html site/404.html
-check "site : aucune ressource tierce" bash -c "! grep -Eq '<(script|link|img)' site/index.html site/404.html"
+# Page d'accueil (install/site/) : fichiers publies sous /assets/, version
+# et liens de signature injectes, aucune ressource ni URL tierce.
+check "site : fichiers statiques de la page d'accueil publies" \
+	diff -r --exclude=brand "$root/install/site/assets" site/assets
+check "site : logo officiel" cmp -s "$root/web/src/assets/brand/logo.svg" site/assets/brand/logo.svg
+check "site : favicon officiel" cmp -s "$root/web/public/favicon.svg" site/assets/brand/favicon.svg
+check "site : sources du site non publiees (CREDITS.md)" test ! -e site/CREDITS.md
+check "site : aucun fichier de la page d'accueil sous /releases/" \
+	test -z "$(find site/releases \( -name '*.css' -o -name '*.js' -o -name '*.webp' -o -name '*.svg' -o -name '*.html' -o -name assets \) -print)"
+check "site : capture du panneau < 400 Ko" test "$(wc -c <site/assets/dashboard.webp)" -lt 409600
+check "site : capture du panneau sans EXIF ni XMP" bash -c "! grep -aq -e EXIF -e 'XMP ' site/assets/dashboard.webp"
+for p in index.html 404.html; do
+	check "site : $p : version publiee injectee" grep -q "Version publiée : $version" "site/$p"
+	check "site : $p : aucun marqueur de gabarit restant" bash -c "! grep -q '@@' site/$p"
+	check "site : $p : CSP stricte" grep -q "Content-Security-Policy\" content=\"default-src 'none'; script-src 'self'; style-src 'self'" "site/$p"
+	# Toute URL absolue est une page du depot, le site lui-meme (commande
+	# d'installation) ou un exemple en texte (example.com, <IP>).
+	check "site : $p : aucune URL externe hors du depot" bash -c "! grep -Eo '(https?:)?//[^\"<> ]+' site/$p |
+		grep -Ev '^https://(github\.com/ciphera-dev/deploy-hub(/[^\"<> ]*)?|get\.ciphera\.ch/install\.sh|app\.example\.com|&lt;IP&gt;:8443/setup#token=…)\$'"
+	check "site : $p : liens absolus vers le depot seulement" bash -c "! grep -Eo '(href|src)=\"(https?:)?//[^\"]*\"' site/$p |
+		grep -Ev '^(href|src)=\"https://github\.com/ciphera-dev/deploy-hub(/[^\"]*)?\"\$'"
+	check "site : $p : seul mailto:info@ciphera.ch" bash -c "! grep -Eo 'mailto:[^\"<> ]*' site/$p | grep -vx 'mailto:info@ciphera.ch'"
+	check "site : $p : scripts, styles et images locaux" bash -c "! grep -Eo '<(script|link|img)[^>]*(src|href)=\"[^\"]*\"' site/$p | grep -Ev '(src|href)=\"/assets/'"
+	check "site : $p : aucun style ni script en ligne" bash -c "! grep -Eq '<script>|<style|style=\"| on[a-z]+=\"' site/$p"
+	# Chaque fichier local reference existe dans le site construit.
+	missing=$(grep -Eo '(src|href)="/[^"#]*"' "site/$p" | sed 's/^[a-z]*="\///; s/"$//' | sort -u |
+		while IFS= read -r f; do [ -z "$f" ] || [ -f "site/$f" ] || printf '%s ' "$f"; done)
+	check "site : $p : liens locaux presents ($missing)" test -z "$missing"
+done
+for f in install.sh install.sh.minisig install.sh.sha256 ciphera.pub releases/latest.json; do
+	check "site : index.html : lien vers /$f" grep -q "href=\"/$f\"" site/index.html
+done
+for u in 'https://github.com/ciphera-dev/deploy-hub"' 'deploy-hub/releases"' 'deploy-hub/deployments"' \
+	'deploy-hub/packages"' 'href="mailto:info@ciphera.ch"'; do
+	check "site : index.html : lien $u" grep -qF -- "$u" site/index.html
+done
+check "site : index.html : commande d'installation" grep -q 'curl -fsSL https://get.ciphera.ch/install.sh | sudo sh' site/index.html
+check "site : 404.html : contact" grep -q 'mailto:info@ciphera.ch' site/404.html
 
 pages absent.pub dist "$version" site-noretired >/dev/null 2>&1
 check "site : sans cles retirees, release de cle retiree ignoree" test ! -e "site-noretired/releases/$ret"

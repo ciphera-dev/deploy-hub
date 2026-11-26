@@ -14,7 +14,12 @@
 #                                      4 releases publiees precedentes
 #                                      (chemins lus par install.sh et
 #                                      ciphera-cli updater)
-#   /index.html, /404.html             liens vers GitHub Releases
+#   /index.html, /404.html             page d'accueil et page introuvable :
+#                                      gabarits de install/site/ (version,
+#                                      depot et domaine injectes)
+#   /assets/...                        fichiers statiques de ces pages
+#                                      (install/site/assets/, plus le logo et
+#                                      le favicon officiels de web/)
 #   /CNAME                             get.ciphera.ch
 # Chaque release est verifiee (minisign de SHA256SUMS et de install.sh, puis
 # SHA-256). Celle du run : par une cle de <cles publiques> (ensemble de
@@ -171,31 +176,36 @@ done
 cp "$pub" "$out/ciphera.pub"
 printf '%s\n' "$domain" >"$out/CNAME"
 
-releases_url="https://github.com/$repo/releases"
-page() { # <titre> <corps html>
-	cat <<EOF
-<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>$1</title>
-</head>
-<body>
-$2
-</body>
-</html>
-EOF
+# Page d'accueil et page 404 : sources versionnees de install/site/. Seuls
+# ces fichiers sont ajoutes, a la racine et sous /assets/, jamais sous
+# /releases/ : le filtrage des releases (keep_signed) n'est pas concerne.
+site=$here/site
+logo=$here/../web/src/assets/brand/logo.svg
+favicon=$here/../web/public/favicon.svg
+for f in "$site/index.html" "$site/404.html" "$logo" "$favicon"; do
+	if [ ! -f "$f" ] || [ -L "$f" ]; then
+		die "fichier du site absent : $f"
+	fi
+done
+if [ ! -d "$site/assets" ] || [ -L "$site/assets" ]; then
+	die "dossier du site absent : $site/assets"
+fi
+# Uniquement des fichiers et dossiers ordinaires (aucun lien publie).
+odd=$(find "$site/assets" ! -type f ! -type d)
+[ -z "$odd" ] || die "entree non ordinaire dans $site/assets : $odd"
+[ ! -e "$out/assets" ] || die "$out/assets existe deja"
+cp -R "$site/assets" "$out/assets"
+mkdir "$out/assets/brand"
+cp "$logo" "$out/assets/brand/logo.svg"
+cp "$favicon" "$out/assets/brand/favicon.svg"
+# render <gabarit> <sortie> : version, depot et domaine (deja valides : aucun
+# caractere special pour sed) ; un marqueur restant arrete tout.
+render() {
+	sed -e "s|@@VERSION@@|$latest|g" -e "s|@@REPO@@|$repo|g" -e "s|@@DOMAIN@@|$domain|g" "$1" >"$2"
+	if grep -q '@@[A-Z_]*@@' "$2"; then
+		die "gabarit $1 : marqueur non remplace"
+	fi
 }
-page "Ciphera : installation" "<h1>Ciphera</h1>
-<p>Installation (Linux, root) :</p>
-<pre>curl -fsSL https://$domain/install.sh | sudo sh</pre>
-<p>Version publiee : $latest. Script signe : <a href=\"/install.sh.minisig\">install.sh.minisig</a>,
-empreinte : <a href=\"/install.sh.sha256\">install.sh.sha256</a>, cles publiques :
-<a href=\"/ciphera.pub\">ciphera.pub</a>.</p>
-<p>Toutes les releases, signatures cosign et attestations : <a href=\"$releases_url\">$releases_url</a>.</p>" \
-	>"$out/index.html"
-page "Ciphera : page introuvable" "<h1>Page introuvable</h1>
-<p>Les releases de Ciphera sont publiees sur <a href=\"$releases_url\">$releases_url</a>.</p>" \
-	>"$out/404.html"
+render "$site/index.html" "$out/index.html"
+render "$site/404.html" "$out/404.html"
 printf 'site construit : %s (release %s)\n' "$out" "$latest"

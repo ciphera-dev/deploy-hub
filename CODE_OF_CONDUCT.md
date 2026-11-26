@@ -36,7 +36,7 @@ Ce code de conduite s'applique à tous les espaces communautaires et s'applique 
 
 ## Application
 
-Les cas de comportements abusifs, harcelants ou tout autre comportement inacceptable peuvent être signalés aux responsables de la communauté chargés de l'application du code de conduite, en privé, par l'onglet **Security** du dépôt puis **Report a vulnerability** (signalement privé via GitHub Security Advisories, le canal décrit dans [SECURITY.md](SECURITY.md)), en indiquant dans le titre qu'il s'agit du code de conduite. N'utilisez une issue publique que pour une question générale sur ce code, jamais pour signaler une personne. Toutes les plaintes seront examinées et feront l'objet d'une enquête rapide et équitable.
+Les cas de comportements abusifs, harcelants ou tout autre comportement inacceptable peuvent être signalés aux responsables de la communauté chargés de l'application du code de conduite, en privé, par e-mail à [info@ciphera.ch](mailto:info@ciphera.ch), en indiquant dans l'objet qu'il s'agit du code de conduite. N'utilisez une issue publique que pour une question générale sur ce code, jamais pour signaler une personne. Les failles de sécurité ne passent pas par cette adresse : elles se signalent en privé par GitHub Security Advisories (onglet **Security** du dépôt, puis **Report a vulnerability**), comme le décrit [SECURITY.md](SECURITY.md). Toutes les plaintes seront examinées et feront l'objet d'une enquête rapide et équitable.
 
 Tous les responsables de la communauté sont tenus de respecter la vie privée et la sécurité de la personne qui signale un incident.
 
