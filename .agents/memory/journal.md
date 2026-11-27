@@ -505,3 +505,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-27 00:44 — Session v0.1-sdd — claude-code (orchestrateur) — Task R59 : Landing page get.ciphera.ch
 - fait : Site Pages refait (style de la référence, capture réelle du panneau, polices Geist locales, liens Releases/Deployments/Packages/docs, contact info@ciphera.ch), liste blanche des fichiers publiés, keep_signed inchangé
 - résultat : Relecture approuvée, tour de finition fait
+
+## 2026-11-27 01:07 — Session v0.1-sdd — claude-code (orchestrateur) — Task bump011 : Version 0.1.1
+- fait : Cargo.toml/lock, fuzz lock, DEFAULT_VERSION, web package, openapi.json passés à 0.1.1
+- résultat : Vérifié par l'orchestrateur (diff mécanique, cargo check)
