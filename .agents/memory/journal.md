@@ -513,3 +513,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-27 01:14 — Session v0.1-sdd — claude-code (orchestrateur) — Task R60 : Audit de design de la landing
 - fait : 34 constats, 26 corrigés de 320 à 2560 px (impeccable + web-design-guidelines)
 - résultat : Vérifié par l'orchestrateur sur captures ; release-scripts vert
+
+## 2026-11-27 13:13 — Session v0.1-sdd — claude-code (orchestrateur) — Task R66 : En-tête conforme à la maquette et navigation mobile
+- fait : Pilule d'espace compacte, en-tête de la maquette (dégradé, recherche, cloche, avatar), barre d'onglets en bas et feuille Plus sur mobile, rail en tablette
+- résultat : Revue sonnet approuvée après un tour ; vitest 387/387

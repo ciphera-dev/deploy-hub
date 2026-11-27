@@ -1,15 +1,16 @@
-# État courant — mis à jour le 2026-11-27 01:14
+# État courant — mis à jour le 2026-11-27 13:13
 
 ## Objectif global
 Exécuter le plan v0.1 (docs/superpowers/plans/2026-11-21-ciphera-v0.1.md) par sous-agents (subagent-driven-development), commit + push par tâche
 
 ## Tâche en cours
-Task R60 : Audit de design de la landing — statut : TERMINÉ (Vérifié par l'orchestrateur sur captures ; release-scripts vert)
+Task R66 : En-tête conforme à la maquette et navigation mobile — statut : TERMINÉ (Revue sonnet approuvée après un tour ; vitest 387/387)
 
 ## Tâche précédente
 Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md et CONTRIBUTING.md — statut : TERMINÉ (relectures propres ; CI à confirmer sur le dernier commit)
 
 ## Fait récemment
+- Task R66 : En-tête conforme à la maquette et navigation mobile
 - Task R60 : Audit de design de la landing
 - Task bump011 : Version 0.1.1
 - Task R59 : Landing page get.ciphera.ch
@@ -17,10 +18,9 @@ Task 35b : Domaine get.ciphera.ch, clé de production, tri CodeQL, SECURITY.md e
 - Task readme : README refait, code de conduite, remerciements
 - Task fixe2e : Test golden-path aligné sur le step-up de R56
 - Task R44 : Clôture de l'audit
-- Task R56 : Step-up pour les changements d'équipe privilégiés
 
 ## Prochaine étape exacte
-CI verte puis tag v0.1.1
+R61 (seul en compilation), puis R62, R65, R63, R64, R67, R68
 
 ## Action en cours au moment de l'arrêt (si applicable)
 - Commande / modification : aucune
@@ -32,8 +32,9 @@ CI verte puis tag v0.1.1
 - cargo test --workspace (PowerShell) ; npm --prefix web test
 
 ## Fichiers clés touchés dans cette tâche
-- `install/site/index.html`
-- `install/site/assets/site.css`
+- `web/src/app/layout/AppShell.tsx`
+- `web/src/app/layout/AppHeader.tsx`
+- `web/src/app/layout/MobileTabBar.tsx`
 
 ## Questions ouvertes pour l'utilisateur
 - Qui se connecte (admin seul, admin + utilisateurs) ? MFA obligatoire ?
