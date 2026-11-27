@@ -223,7 +223,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "api-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "ciphera-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bollard",
  "bytes",
@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "ciphera-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flate2",
  "minisign",
@@ -904,7 +904,7 @@ dependencies = [
 
 [[package]]
 name = "ciphera-proxy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1050,7 +1050,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "control-plane"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "age",
  "aho-corasick",
@@ -3934,7 +3934,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "pki"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rand 0.10.4",
  "rcgen",
@@ -4152,7 +4152,7 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "postcard",
@@ -5195,7 +5195,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "age",
  "axum",

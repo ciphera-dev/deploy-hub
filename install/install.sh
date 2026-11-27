@@ -22,7 +22,7 @@ set -eu
 # construction de la release (install/release-script.sh). Sans cle injectee,
 # le script refuse de s'executer hors mode test (resolve_sources).
 CIPHERA_PUBKEYS='@CIPHERA_RELEASE_PUBKEYS@'
-DEFAULT_VERSION='v0.1.0'
+DEFAULT_VERSION='v0.1.1'
 DEFAULT_BASE_URL='https://get.ciphera.ch'
 # Origine des outils tiers (railpack, buildctl, mise) : releases GitHub.
 DEFAULT_TOOLS_BASE_URL='https://github.com'
