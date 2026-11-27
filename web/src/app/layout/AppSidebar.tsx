@@ -17,6 +17,12 @@ export interface AppSidebarProps {
   user: AppSidebarUser;
   collapsed?: boolean;
   onLogout?: () => void;
+  /** appele apres le choix d'une destination (ferme la feuille mobile, meme vers la page courante) */
+  onNavigate?: () => void;
+  /** prend toute la largeur du conteneur (feuille mobile) au lieu de celle de la barre */
+  fill?: boolean;
+  /** nom de la navigation, « Navigation principale » par defaut */
+  navLabel?: string;
 }
 
 /** Clic simple : navigation SPA ; clic modifie (nouvel onglet) : comportement du navigateur. */
@@ -25,11 +31,14 @@ function isPlainLeftClick(e: MouseEvent): boolean {
 }
 
 /** Entrees du menu du compte (pied de la barre laterale et avatar de l'en-tete). */
-export function accountMenuItems(router: ReturnType<typeof useRouter>, onLogout?: () => void): MenuItem[] {
+export function accountMenuItems(router: ReturnType<typeof useRouter>, onLogout?: () => void, onNavigate?: () => void): MenuItem[] {
   const toMenuAction = (entry: NavEntry): MenuItem =>
     entry.since
       ? { icon: entry.icon, label: entry.label, disabled: true, tag: soonTooltip(entry.since), onSelect: () => undefined }
-      : { icon: entry.icon, label: entry.label, onSelect: () => void router.navigate({ to: entry.to }) };
+      : { icon: entry.icon, label: entry.label, onSelect: () => {
+            onNavigate?.();
+            void router.navigate({ to: entry.to });
+          } };
 
   return [
     ...USER_MENU.slice(0, 1).map(toMenuAction),
@@ -42,7 +51,7 @@ export function accountMenuItems(router: ReturnType<typeof useRouter>, onLogout?
   ];
 }
 
-export function AppSidebar({ user, collapsed = false, onLogout }: AppSidebarProps) {
+export function AppSidebar({ user, collapsed = false, onLogout, onNavigate, fill = false, navLabel = "Navigation principale" }: AppSidebarProps) {
   const router = useRouter();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
@@ -70,26 +79,27 @@ export function AppSidebar({ user, collapsed = false, onLogout }: AppSidebarProp
         onClick={(e) => {
           if (!isPlainLeftClick(e)) return;
           e.preventDefault();
+          onNavigate?.();
           void router.navigate({ to });
         }}
       />
     );
   };
 
-  const menuItems = accountMenuItems(router, onLogout);
+  const menuItems = accountMenuItems(router, onLogout, onNavigate);
 
   return (
     <TooltipProvider delayDuration={150}>
       <Sidebar
         collapsed={collapsed}
-        style={{ height: "100%", background: "transparent" }}
+        style={{ height: "100%", background: "transparent", ...(fill ? { width: "100%", boxSizing: "border-box" } : {}) }}
         bottom={
           <div style={{ borderTop: "1px solid var(--border-subtle)", margin: "0 -12px", padding: "10px 8px 0" }}>
             <Menu label="Menu du compte" side="top" align="start" width={240} items={menuItems} trigger={<UserMenu name={user.name} email={user.email} avatar={user.avatar} collapsed={collapsed} />} />
           </div>
         }
       >
-        <nav aria-label="Navigation principale" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        <nav aria-label={navLabel} style={{ display: "flex", flexDirection: "column", gap: 20 }}>
           {NAV.map((group) => (
             <NavSection key={group.label} eyebrow collapsed={collapsed} label={group.label} gap={2}>
               {group.items.map(renderEntry)}

@@ -1,7 +1,7 @@
 import { Outlet, useMatches, useRouter, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Forbidden } from "@/app/errors/Forbidden";
 import { Offline } from "@/app/errors/Offline";
@@ -13,7 +13,7 @@ import { fetchMe, logout, ME_QUERY_KEY, MFA_PENDING } from "@/features/auth/api"
 import { AppHeader } from "./AppHeader";
 import { AppSidebar } from "./AppSidebar";
 import { MobileTabBar } from "./MobileTabBar";
-import { MOBILE_QUERY, useMedia } from "./useMedia";
+import { MOBILE_QUERY, TABLET_QUERY, useMedia } from "./useMedia";
 import { DashboardHeader } from "./DashboardHeader";
 
 // Fond du theme par defaut (maquette, cipheraThemeBg) : cinq lueurs radiales sur #050505.
@@ -40,8 +40,12 @@ export function AppShell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const title = useMatches({ select: (m) => m.findLast((x) => x.staticData.title)?.staticData.title });
   const mobile = useMedia(MOBILE_QUERY);
-  // Tablette : rail d'icones par defaut. Mobile : la barre est un tiroir, ferme a l'ouverture.
-  const [collapsed, setCollapsed] = useState(() => typeof window.matchMedia === "function" && window.matchMedia("(max-width: 1023.98px)").matches);
+  // Rail d'icones force en tablette ; au-dela, c'est la preference de l'utilisateur (repli explicite).
+  const tablet = useMedia(TABLET_QUERY);
+  const [preferred, setPreferred] = useState<boolean | null>(null);
+  const collapsed = preferred ?? tablet;
+  const toggleCollapsed = () => setPreferred(!collapsed);
+  const moreRef = useRef<HTMLButtonElement>(null);
   // Feuille « Plus » (mobile) : ouverte pour une page donnee, donc fermee d'office des qu'on navigue
   // ou que l'ecran s'elargit.
   const [sheetPath, setSheetPath] = useState<string | null>(null);
@@ -79,12 +83,12 @@ export function AppShell() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b" && !isEditable(e.target)) {
         e.preventDefault();
-        setCollapsed((v) => !v);
+        setPreferred(!collapsed);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [collapsed]);
 
   // Une erreur plein ecran ne survit pas a un changement de page.
   useEffect(() => {
@@ -107,16 +111,24 @@ export function AppShell() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100dvh", background: PAGE_BACKGROUND }}>
-      <AppHeader user={user} collapsed={collapsed} mobile={mobile} onToggle={() => setCollapsed((v) => !v)} onLogout={() => signOut.mutate()} />
+      <AppHeader user={user} collapsed={collapsed} mobile={mobile} onToggle={toggleCollapsed} onLogout={() => signOut.mutate()} />
       <div style={{ flex: 1, minHeight: 0, display: "flex", margin: mobile ? "0 4px 0" : "0 8px 8px", borderRadius: mobile ? 16 : 20, border: "1px solid var(--border-default)", overflow: "hidden", background: "var(--surface-app)" }}>
         {mobile ? (
           <Dialog.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
             <Dialog.Portal>
               <Dialog.Overlay className="app-sheet__overlay" />
-              <Dialog.Content className="app-sheet" aria-describedby={undefined}>
+              <Dialog.Content
+                className="app-sheet"
+                aria-describedby={undefined}
+                onCloseAutoFocus={(e) => {
+                  // Safari/iOS ne rend pas toujours le focus au declencheur : on le fait nous-memes.
+                  e.preventDefault();
+                  moreRef.current?.focus();
+                }}
+              >
                 <span className="app-sheet__grip" aria-hidden="true" />
                 <Dialog.Title className="sr-only">Plus de navigation</Dialog.Title>
-                <AppSidebar user={user} collapsed={false} onLogout={() => signOut.mutate()} />
+                <AppSidebar user={user} collapsed={false} fill navLabel="Navigation complète" onNavigate={() => setDrawerOpen(false)} onLogout={() => signOut.mutate()} />
               </Dialog.Content>
             </Dialog.Portal>
           </Dialog.Root>
@@ -132,7 +144,7 @@ export function AppShell() {
           </div>
         </main>
       </div>
-      {mobile && <MobileTabBar moreOpen={drawerOpen} onMore={() => setDrawerOpen(true)} />}
+      {mobile && <MobileTabBar moreRef={moreRef} moreOpen={drawerOpen} onMore={() => setDrawerOpen(true)} />}
     </div>
   );
 }

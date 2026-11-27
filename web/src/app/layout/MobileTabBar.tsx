@@ -1,5 +1,5 @@
 import { useRouter, useRouterState } from "@tanstack/react-router";
-import type { MouseEvent } from "react";
+import type { MouseEvent, Ref } from "react";
 
 import { Icon } from "@/design-system";
 
@@ -16,11 +16,12 @@ const TABS = TAB_LABELS.map((label) => NAV.flatMap((g) => g.items).find((e) => e
 
 export interface MobileTabBarProps {
   moreOpen: boolean;
+  moreRef?: Ref<HTMLButtonElement>;
   onMore: () => void;
 }
 
 /** Barre d'onglets fixee en bas sous 768 px (applications mobiles). */
-export function MobileTabBar({ moreOpen, onMore }: MobileTabBarProps) {
+export function MobileTabBar({ moreOpen, onMore, moreRef }: MobileTabBarProps) {
   const router = useRouter();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const onTab = TABS.some((t) => isActivePath(pathname, t.to));
@@ -31,7 +32,7 @@ export function MobileTabBar({ moreOpen, onMore }: MobileTabBarProps) {
         return (
           <a
             key={t.label}
-            aria-label={t.label}
+            title={t.label}
             href={router.buildLocation({ to: t.to }).href}
             className="app-tabbar__item"
             aria-current={active ? "page" : undefined}
@@ -46,7 +47,7 @@ export function MobileTabBar({ moreOpen, onMore }: MobileTabBarProps) {
           </a>
         );
       })}
-      <button type="button" className="app-tabbar__item" aria-haspopup="dialog" aria-expanded={moreOpen} data-active={!onTab || moreOpen ? "true" : undefined} onClick={onMore}>
+      <button ref={moreRef} type="button" className="app-tabbar__item" aria-haspopup="dialog" aria-expanded={moreOpen} data-active={!onTab || moreOpen ? "true" : undefined} onClick={onMore}>
         <Icon name="Ellipsis" size={20} />
         <span>Plus</span>
       </button>

@@ -21,8 +21,9 @@ export function WorkspaceSwitcher({ name = "Ciphera", collapsed = false, onClick
   return (
     <button
       type="button"
-      title={name}
-      aria-label={collapsed ? name : undefined}
+      title={onClick ? name : `${name} : changement d'espace bientôt disponible`}
+      aria-label={name}
+      aria-disabled={onClick ? undefined : true}
       onClick={onClick}
       onMouseEnter={() => setH(true)}
       onMouseLeave={() => setH(false)}
@@ -38,13 +39,13 @@ export function WorkspaceSwitcher({ name = "Ciphera", collapsed = false, onClick
         height: 30,
         padding: collapsed ? "0 6px" : "0 10px 0 6px",
         borderRadius: 99,
-        background: h ? "rgba(10,10,14,.7)" : "rgba(10,10,14,.45)",
+        background: h ? "rgba(10,10,14,.7)" : "var(--glass-bg)",
         backdropFilter: "blur(10px)",
         WebkitBackdropFilter: "blur(10px)",
-        border: "1px solid rgba(255,255,255,.18)",
+        border: "1px solid var(--glass-border)",
         color: "var(--text-strong)",
         font: "500 12px/1 var(--font-sans)",
-        cursor: "pointer",
+        cursor: onClick ? "pointer" : "default",
         ...style,
       }}
     >

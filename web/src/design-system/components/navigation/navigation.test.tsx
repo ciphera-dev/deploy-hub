@@ -20,7 +20,7 @@ describe("WorkspaceSwitcher", () => {
     const name = "Une entreprise au nom vraiment tres long pour un en-tete";
     render(<WorkspaceSwitcher name={name} />);
     const btn = screen.getByRole("button", { name: new RegExp(name) });
-    expect(btn).toHaveAttribute("title", name);
+    expect(btn).toHaveAttribute("title", expect.stringContaining(name));
     const label = screen.getByText(name);
     expect(label.style.textOverflow).toBe("ellipsis");
     expect(label.style.overflow).toBe("hidden");

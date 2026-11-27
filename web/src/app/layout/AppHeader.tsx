@@ -47,7 +47,7 @@ export function AppHeader({ user, collapsed, onToggle, onLogout, mobile = false 
         {!mobile && (
           <IconButton variant="ghost" size={28} icon={collapsed ? "PanelLeftOpen" : "PanelLeftClose"} label={collapsed ? "Déplier le menu" : "Replier le menu"} onClick={onToggle} />
         )}
-        <WorkspaceSwitcher collapsed={narrow} />
+        <WorkspaceSwitcher collapsed={narrow} style={mobile ? { height: 40 } : undefined} />
       </div>
       <button type="button" className="app-header__search" aria-disabled="true" aria-label="Rechercher" title="Recherche : bientôt disponible" onClick={(e) => e.preventDefault()}>
         <Icon name="Search" size={14} />
@@ -56,7 +56,7 @@ export function AppHeader({ user, collapsed, onToggle, onLogout, mobile = false 
       </button>
       <div className="app-header__right">
         <span className="app-header__bell">
-          <IconButton size={32} icon="Bell" label="Notifications" aria-disabled="true" title="Notifications : bientôt disponibles" onClick={(e) => e.preventDefault()} />
+          <IconButton size={mobile ? 40 : 32} icon="Bell" label="Notifications" aria-disabled="true" title="Notifications : bientôt disponibles" onClick={(e) => e.preventDefault()} />
         </span>
         <Menu
           label="Menu du compte"
