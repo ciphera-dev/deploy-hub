@@ -509,3 +509,7 @@ Chaque entrée indique l'agent qui l'a écrite.
 ## 2026-11-27 01:07 — Session v0.1-sdd — claude-code (orchestrateur) — Task bump011 : Version 0.1.1
 - fait : Cargo.toml/lock, fuzz lock, DEFAULT_VERSION, web package, openapi.json passés à 0.1.1
 - résultat : Vérifié par l'orchestrateur (diff mécanique, cargo check)
+
+## 2026-11-27 01:14 — Session v0.1-sdd — claude-code (orchestrateur) — Task R60 : Audit de design de la landing
+- fait : 34 constats, 26 corrigés de 320 à 2560 px (impeccable + web-design-guidelines)
+- résultat : Vérifié par l'orchestrateur sur captures ; release-scripts vert
