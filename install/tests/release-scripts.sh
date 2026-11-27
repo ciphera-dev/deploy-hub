@@ -494,7 +494,9 @@ for u in 'https://github.com/ciphera-dev/deploy-hub"' 'deploy-hub/releases"' 'de
 	'deploy-hub/packages"' 'href="mailto:info@ciphera.ch"'; do
 	check "site : index.html : lien $u" grep -qF -- "$u" site/index.html
 done
-check "site : index.html : commande d'installation" grep -q 'curl -fsSL https://get.ciphera.ch/install.sh | sudo sh' site/index.html
+# Texte de la commande (balises retirees : "| sudo sh" est insecable).
+check "site : index.html : commande d'installation" \
+	bash -c "sed 's/<[^>]*>//g' site/index.html | grep -qF 'curl -fsSL https://get.ciphera.ch/install.sh | sudo sh'"
 check "site : 404.html : contact" grep -q 'mailto:info@ciphera.ch' site/404.html
 
 # Liste blanche des fichiers du site : un fichier d'un autre type ou un nom
