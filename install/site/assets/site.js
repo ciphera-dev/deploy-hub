@@ -48,3 +48,33 @@
     });
   });
 })();
+
+// Menu mobile (details/summary, utilisable sans JavaScript) : se ferme avec
+// Echap (le focus revient sur « Menu »), au choix d'un lien et au clic ou au
+// focus hors du menu.
+(function () {
+  var menus = document.querySelectorAll("details.menu");
+  Array.prototype.forEach.call(menus, function (menu) {
+    var summary = menu.querySelector("summary");
+    function close(refocus) {
+      if (!menu.open) return;
+      menu.open = false;
+      if (refocus && summary) summary.focus();
+    }
+    menu.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close(true);
+      }
+    });
+    menu.addEventListener("click", function (e) {
+      if (e.target.closest && e.target.closest("a")) close(false);
+    });
+    document.addEventListener("click", function (e) {
+      if (!menu.contains(e.target)) close(false);
+    });
+    menu.addEventListener("focusout", function (e) {
+      if (e.relatedTarget && !menu.contains(e.relatedTarget)) close(false);
+    });
+  });
+})();
