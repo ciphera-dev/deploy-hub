@@ -24,6 +24,24 @@ function isPlainLeftClick(e: MouseEvent): boolean {
   return e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
 }
 
+/** Entrees du menu du compte (pied de la barre laterale et avatar de l'en-tete). */
+export function accountMenuItems(router: ReturnType<typeof useRouter>, onLogout?: () => void): MenuItem[] {
+  const toMenuAction = (entry: NavEntry): MenuItem =>
+    entry.since
+      ? { icon: entry.icon, label: entry.label, disabled: true, tag: soonTooltip(entry.since), onSelect: () => undefined }
+      : { icon: entry.icon, label: entry.label, onSelect: () => void router.navigate({ to: entry.to }) };
+
+  return [
+    ...USER_MENU.slice(0, 1).map(toMenuAction),
+    "separator",
+    ...USER_MENU.slice(1, 5).map(toMenuAction),
+    "separator",
+    ...USER_MENU.slice(5).map(toMenuAction),
+    "separator",
+    { icon: "LogOut", label: "Se déconnecter", danger: true, onSelect: () => onLogout?.() },
+  ];
+}
+
 export function AppSidebar({ user, collapsed = false, onLogout }: AppSidebarProps) {
   const router = useRouter();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -58,20 +76,7 @@ export function AppSidebar({ user, collapsed = false, onLogout }: AppSidebarProp
     );
   };
 
-  const toMenuAction = (entry: NavEntry): MenuItem =>
-    entry.since
-      ? { icon: entry.icon, label: entry.label, disabled: true, tag: soonTooltip(entry.since), onSelect: () => undefined }
-      : { icon: entry.icon, label: entry.label, onSelect: () => void router.navigate({ to: entry.to }) };
-
-  const menuItems: MenuItem[] = [
-    ...USER_MENU.slice(0, 1).map(toMenuAction),
-    "separator",
-    ...USER_MENU.slice(1, 5).map(toMenuAction),
-    "separator",
-    ...USER_MENU.slice(5).map(toMenuAction),
-    "separator",
-    { icon: "LogOut", label: "Se déconnecter", danger: true, onSelect: () => onLogout?.() },
-  ];
+  const menuItems = accountMenuItems(router, onLogout);
 
   return (
     <TooltipProvider delayDuration={150}>

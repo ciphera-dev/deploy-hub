@@ -6,11 +6,22 @@ import { Forbidden } from "@/app/errors/Forbidden";
 import { Offline } from "@/app/errors/Offline";
 import { ServerError } from "@/app/errors/ServerError";
 import { MUTATION_ERROR_MESSAGES, fatalError, mutationErrors, useFatalError } from "@/app/errors/fatal-error-store";
-import { BrandMark, IconButton, WorkspaceSwitcher, useToast } from "@/design-system";
+import { useToast } from "@/design-system";
 import { fetchMe, logout, ME_QUERY_KEY, MFA_PENDING } from "@/features/auth/api";
 
+import { AppHeader } from "./AppHeader";
 import { AppSidebar } from "./AppSidebar";
 import { DashboardHeader } from "./DashboardHeader";
+
+// Fond du theme par defaut (maquette, cipheraThemeBg) : cinq lueurs radiales sur #050505.
+const PAGE_BACKGROUND = [
+  "radial-gradient(38% 60% at 8% 0%,rgba(124,77,255,.28),transparent 70%)",
+  "radial-gradient(30% 55% at 52% -10%,rgba(56,189,248,.16),transparent 70%)",
+  "radial-gradient(34% 60% at 96% 4%,rgba(249,115,22,.22),transparent 70%)",
+  "radial-gradient(40% 50% at 70% 110%,rgba(236,72,153,.14),transparent 70%)",
+  "radial-gradient(35% 50% at 0% 100%,rgba(34,192,138,.10),transparent 70%)",
+  "#050505",
+].join(",");
 
 // Affiche seulement si GET /api/me echoue autrement que par un 401 (ecran d'erreur plein page).
 const UNKNOWN_USER = { name: "Compte", email: "" };
@@ -85,12 +96,8 @@ export function AppShell() {
   else if (fatal === "server") body = <ServerError onRetry={retry} />;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "var(--surface-page)" }}>
-      <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 14, height: 56, padding: "0 14px 0 18px" }}>
-        <BrandMark />
-        <IconButton variant="ghost" size={28} icon={collapsed ? "PanelLeftOpen" : "PanelLeftClose"} label={collapsed ? "Déplier le menu" : "Replier le menu"} onClick={() => setCollapsed((v) => !v)} />
-        <WorkspaceSwitcher />
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: PAGE_BACKGROUND }}>
+      <AppHeader user={user} collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} onLogout={() => signOut.mutate()} />
       <div style={{ flex: 1, minHeight: 0, display: "flex", margin: "0 8px 8px", borderRadius: 20, border: "1px solid var(--border-default)", overflow: "hidden", background: "var(--surface-app)" }}>
         <div style={{ flex: "none", height: "100%", background: "var(--surface-sidebar)", borderRight: "1px solid var(--border-subtle)", overflow: "auto" }}>
           <AppSidebar user={user} collapsed={collapsed} onLogout={() => signOut.mutate()} />

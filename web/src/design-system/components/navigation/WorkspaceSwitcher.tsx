@@ -9,22 +9,50 @@ export interface WorkspaceSwitcherProps {
   style?: CSSProperties;
 }
 
+/** Largeur maximale de la pilule : au-dela, le nom est tronque (nom complet en infobulle). */
+const MAX_WIDTH = 240;
+
+/**
+ * Pilule compacte (maquette dashboard/Workspace.jsx) : elle prend la largeur de son contenu,
+ * jamais celle de l'en-tete qui la contient.
+ */
 export function WorkspaceSwitcher({ name = "Ciphera", collapsed = false, onClick, style }: WorkspaceSwitcherProps) {
   const [h, setH] = useState(false);
   return (
     <button
       type="button"
-      title={collapsed ? name : undefined}
+      title={name}
+      aria-label={collapsed ? name : undefined}
       onClick={onClick}
       onMouseEnter={() => setH(true)}
       onMouseLeave={() => setH(false)}
-      style={{ display: "flex", alignItems: "center", justifyContent: collapsed ? "center" : "flex-start", gap: 10, width: "100%", height: collapsed ? 44 : 48, padding: collapsed ? 0 : "0 12px 0 10px", borderRadius: "var(--radius-lg)", background: h ? "var(--surface-control-hover)" : "var(--surface-control)", border: "1px solid var(--border-strong)", boxShadow: "var(--shadow-control)", color: "var(--text-body)", font: "500 14px/1 var(--font-sans)", cursor: "pointer", ...style }}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        flex: "0 1 auto",
+        width: "fit-content",
+        maxWidth: MAX_WIDTH,
+        minWidth: 0,
+        height: 30,
+        padding: collapsed ? "0 6px" : "0 10px 0 6px",
+        borderRadius: 99,
+        background: h ? "rgba(10,10,14,.7)" : "rgba(10,10,14,.45)",
+        backdropFilter: "blur(10px)",
+        WebkitBackdropFilter: "blur(10px)",
+        border: "1px solid rgba(255,255,255,.18)",
+        color: "var(--text-strong)",
+        font: "500 12px/1 var(--font-sans)",
+        cursor: "pointer",
+        ...style,
+      }}
     >
-      <span style={{ width: 24, height: 24, borderRadius: 99, background: "var(--grad-brand)", flex: "none" }} />
+      <span style={{ width: 18, height: 18, borderRadius: 99, background: "var(--grad-brand)", flex: "none" }} />
       {!collapsed && (
         <>
-          <span style={{ flex: 1, textAlign: "left", whiteSpace: "nowrap" }}>{name}</span>
-          <Icon name="ChevronsUpDown" size={14} color="var(--text-muted)" />
+          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", whiteSpace: "nowrap" }}>{name}</span>
+          <Icon name="ChevronsUpDown" size={12} color="var(--text-subtle)" />
         </>
       )}
     </button>
