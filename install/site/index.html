@@ -6,9 +6,11 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="dark">
-<title>Ciphera : le PaaS auto-hébergé, léger et sûr</title>
+<meta name="theme-color" content="#000000">
+<title>Ciphera&nbsp;: le PaaS auto-hébergé, léger et sûr</title>
 <meta name="description" content="Ciphera déploie vos applications depuis GitHub sur vos propres serveurs, avec HTTPS automatique. PaaS open source (AGPL-3.0) écrit en Rust.">
 <link rel="icon" href="/assets/brand/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/assets/fonts/geist-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/assets/site.css">
 <script src="/assets/site.js" defer></script>
 </head>
@@ -20,8 +22,8 @@
     <a class="brand" href="/" aria-label="Ciphera, accueil"><img src="/assets/brand/logo.svg" alt="Ciphera" width="114" height="15"></a>
     <nav aria-label="Navigation principale">
       <ul class="nav">
-        <li><a href="#fonctionnalites">Fonctionnalités</a></li>
         <li><a href="#fonctionnement">Comment ça marche</a></li>
+        <li><a href="#fonctionnalites">Fonctionnalités</a></li>
         <li><a href="#securite">Sécurité</a></li>
         <li><a href="#documentation">Documentation</a></li>
         <li><a href="https://github.com/@@REPO@@/releases">Releases</a></li>
@@ -32,8 +34,8 @@
       <details class="menu">
         <summary>Menu</summary>
         <ul>
-          <li><a href="#fonctionnalites">Fonctionnalités</a></li>
           <li><a href="#fonctionnement">Comment ça marche</a></li>
+          <li><a href="#fonctionnalites">Fonctionnalités</a></li>
           <li><a href="#securite">Sécurité</a></li>
           <li><a href="#installation">Installation</a></li>
           <li><a href="#documentation">Documentation</a></li>
@@ -62,25 +64,24 @@
 
     <div class="cmd cmd-quiet">
       <span class="prompt" aria-hidden="true">$</span>
-      <code id="cmd-hero">curl -fsSL https://@@DOMAIN@@/install.sh | sudo sh</code>
+      <code id="cmd-hero" translate="no">curl -fsSL https://@@DOMAIN@@/install.sh | sudo sh</code>
       <button class="copy" type="button" data-copy="cmd-hero" data-status="copy-status" hidden>
         <svg class="i cp" viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
         <svg class="i ok" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
         <span class="lbl">Copier</span>
-        <span class="sr-only"> la commande d'installation</span>
+        <span class="sr-only"> la commande d’installation</span>
       </button>
     </div>
     <p class="sr-only" id="copy-status" role="status"></p>
     <p class="meta">Version publiée : <span class="v">@@VERSION@@</span> · <a href="/install.sh.minisig">script signé</a></p>
   </div>
 
-  <figure class="stage">
+  <div class="stage">
     <div class="stage-glow" aria-hidden="true"></div>
     <div class="device">
-      <img src="/assets/dashboard.webp" width="2160" height="1350" alt="Vue d'ensemble du panneau Ciphera en thème sombre : projets et serveurs en ligne, déploiements du jour, courbe des déploiements sur 30 jours, points à traiter et déploiements récents (données de démonstration).">
+      <img src="/assets/dashboard.webp" width="2160" height="1350" fetchpriority="high" decoding="async" alt="Vue d’ensemble du panneau Ciphera en thème sombre : projets et serveurs en ligne, déploiements du jour, courbe des déploiements sur 30 jours, points à traiter et déploiements récents (données de démonstration).">
     </div>
-    <figcaption class="sr-only">Le panneau, page Vue d'ensemble (données de démonstration).</figcaption>
-  </figure>
+  </div>
 </section>
 
 <section class="stack" aria-labelledby="titre-stack">
@@ -91,7 +92,7 @@
         <li><img src="/assets/icons/rust.svg" alt="" width="20" height="20">Rust</li>
         <li><img src="/assets/icons/postgresql.svg" alt="" width="20" height="20">PostgreSQL</li>
         <li><img src="/assets/icons/docker.svg" alt="" width="20" height="20">Docker et BuildKit</li>
-        <li><img src="/assets/icons/letsencrypt.svg" alt="" width="20" height="20">Let's Encrypt</li>
+        <li><img src="/assets/icons/letsencrypt.svg" alt="" width="20" height="20">Let’s Encrypt</li>
         <li><img src="/assets/icons/github.svg" alt="" width="20" height="20">GitHub</li>
         <li><img src="/assets/icons/webauthn.svg" alt="" width="20" height="20">WebAuthn</li>
         <li><img src="/assets/icons/react.svg" alt="" width="20" height="20">React</li>
@@ -101,7 +102,7 @@
         <li><img src="/assets/icons/rust.svg" alt="" width="20" height="20">Rust</li>
         <li><img src="/assets/icons/postgresql.svg" alt="" width="20" height="20">PostgreSQL</li>
         <li><img src="/assets/icons/docker.svg" alt="" width="20" height="20">Docker et BuildKit</li>
-        <li><img src="/assets/icons/letsencrypt.svg" alt="" width="20" height="20">Let's Encrypt</li>
+        <li><img src="/assets/icons/letsencrypt.svg" alt="" width="20" height="20">Let’s Encrypt</li>
         <li><img src="/assets/icons/github.svg" alt="" width="20" height="20">GitHub</li>
         <li><img src="/assets/icons/webauthn.svg" alt="" width="20" height="20">WebAuthn</li>
         <li><img src="/assets/icons/react.svg" alt="" width="20" height="20">React</li>
@@ -116,32 +117,32 @@
   <div class="wrap">
     <div class="section-head">
       <p class="kicker"><span class="rule" aria-hidden="true"></span><span class="pill">Comment ça marche</span><span class="rule r" aria-hidden="true"></span></p>
-      <h2 id="titre-fonct">De la commande d'installation<br>au premier déploiement</h2>
+      <h2 id="titre-fonct">De la commande d’installation <br class="br-lg">au premier déploiement</h2>
     </div>
     <div class="how">
       <article class="card how-main">
         <p class="label">Le panneau</p>
         <h3>Tout se pilote depuis le navigateur</h3>
-        <p>Projets, déploiements, domaines, variables et équipe, avec les journaux de build et d'exécution en direct.</p>
-        <div class="how-shot"><img src="/assets/dashboard.webp" width="2160" height="1350" alt="" loading="lazy"></div>
+        <p>Projets, déploiements, domaines, variables et équipe, avec les journaux de build et d’exécution en direct.</p>
+        <div class="how-shot"><img src="/assets/dashboard.webp" width="2160" height="1350" alt="" loading="lazy" decoding="async"></div>
       </article>
       <ol class="how-steps" role="list">
         <li class="card how-step">
           <p class="label">01 · Installer</p>
           <h3>Une commande sur votre serveur</h3>
-          <p>L'installeur vérifie la signature minisign puis le SHA-256 avant d'installer quoi que ce soit, puis affiche l'adresse de l'assistant (valable 24 heures).</p>
+          <p>L’installeur vérifie la signature minisign puis le SHA-256 avant d’installer quoi que ce soit, puis affiche l’adresse de l’assistant (valable 24 heures).</p>
           <div class="mini" aria-hidden="true"><span class="mini-dot ok"></span><span class="mono">signature minisign</span><span class="mini-end mono">vérifiée</span></div>
         </li>
         <li class="card how-step">
           <p class="label">02 · Connecter GitHub</p>
           <h3>La GitHub App, créée depuis le panneau</h3>
-          <p>Créez le premier compte dans l'assistant, puis la GitHub App depuis Connecteurs, et reliez un dépôt à un projet.</p>
+          <p>Créez le premier compte dans l’assistant, puis la GitHub App depuis Connecteurs, et reliez un dépôt à un projet.</p>
           <div class="mini" aria-hidden="true"><img src="/assets/icons/github.svg" alt="" width="16" height="16"><span>Connecteurs › GitHub</span><span class="mini-end mono">GitHub App</span></div>
         </li>
         <li class="card how-step">
           <p class="label">03 · Déployer</p>
           <h3>Chaque push devient un déploiement</h3>
-          <p>Build Railpack, Dockerfile ou Compose suivi en direct ; le proxy obtient le certificat Let's Encrypt du domaine.</p>
+          <p>Build Railpack, Dockerfile ou Compose suivi en direct&#8239;; le proxy obtient le certificat Let’s Encrypt du domaine.</p>
           <div class="mini" aria-hidden="true"><span class="mini-dot ok"></span><span class="mono">app.example.com</span><span class="mini-end mono">HTTPS</span></div>
         </li>
       </ol>
@@ -153,8 +154,8 @@
   <div class="wrap">
     <div class="section-head">
       <p class="kicker"><span class="rule" aria-hidden="true"></span><span class="pill">Fonctionnalités</span><span class="rule r" aria-hidden="true"></span></p>
-      <h2 id="titre-fonc">Tout ce qu'il faut pour déployer,<br>rien de superflu</h2>
-      <p>Un seul binaire pour le plan de contrôle, qui sert aussi le panneau web. Un proxy Pingora avec certificats Let's Encrypt. Des builds BuildKit.</p>
+      <h2 id="titre-fonc">Tout ce qu’il faut pour déployer, <br class="br-lg">rien de superflu</h2>
+      <p>Un seul binaire pour le plan de contrôle, qui sert aussi le panneau web. Un proxy Pingora avec certificats Let’s Encrypt. Des builds BuildKit.</p>
     </div>
     <div class="grid grid-4">
       <article class="card feat">
@@ -176,28 +177,28 @@
           <span class="ico"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg></span>
           <h3>Domaines et HTTPS</h3>
         </div>
-        <p>Domaines par projet avec vérification, certificats Let's Encrypt émis et renouvelés par le proxy, domaine dédié au panneau avec HSTS.</p>
+        <p>Domaines par projet avec vérification, certificats Let’s Encrypt émis et renouvelés par le proxy, domaine dédié au panneau avec HSTS.</p>
       </article>
       <article class="card feat">
         <div class="feat-head">
           <span class="ico"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="16" r="1"/><rect x="3" y="10" width="18" height="12" rx="2"/><path d="M7 10V7a5 5 0 0 1 10 0v3"/></svg></span>
           <h3>Variables et secrets</h3>
         </div>
-        <p>Variables par projet et par environnement, import <code>.env</code>, variables globales. Secrets chiffrés avec age, jamais renvoyés par l'API.</p>
+        <p>Variables par projet et par environnement, import <code>.env</code>, variables globales. Secrets chiffrés avec age, jamais renvoyés par l’API.</p>
       </article>
       <article class="card feat">
         <div class="feat-head">
           <span class="ico"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg></span>
           <h3>Suivi</h3>
         </div>
-        <p>Vue d'ensemble, métriques des nœuds, historique des déploiements, journaux de build et d'exécution en direct.</p>
+        <p>Vue d’ensemble, métriques des nœuds, historique des déploiements, journaux de build et d’exécution en direct.</p>
       </article>
       <article class="card feat">
         <div class="feat-head">
           <span class="ico"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></svg></span>
           <h3>Équipe et accès</h3>
         </div>
-        <p>Invitations et rôles, passkeys (WebAuthn), TOTP et codes de secours, liste d'IP autorisées, sessions révocables.</p>
+        <p>Invitations et rôles, passkeys (WebAuthn), TOTP et codes de secours, liste d’IP autorisées, sessions révocables.</p>
       </article>
       <article class="card feat">
         <div class="feat-head">
@@ -221,7 +222,7 @@
   <div class="wrap">
     <div class="section-head">
       <p class="kicker"><span class="rule" aria-hidden="true"></span><span class="pill">Sécurité</span><span class="rule r" aria-hidden="true"></span></p>
-      <h2 id="titre-secu">Sûr par défaut,<br>vérifiable de bout en bout</h2>
+      <h2 id="titre-secu">Sûr par défaut, <br class="br-lg">vérifiable de bout en bout</h2>
       <p>Chaque couche est décrite dans la documentation du dépôt.</p>
     </div>
     <div class="split">
@@ -229,15 +230,15 @@
         <ul class="checks">
           <li>
             <span class="ico"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.364 13.634a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506l4.013-4.009a1 1 0 0 0-3.004-3.004z"/><path d="M14.487 7.858A1 1 0 0 1 14 7V2"/><path d="M20 19.645V20a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l2.516 2.516"/><path d="M8 18h1"/></svg></span>
-            <div><strong>Releases signées</strong><span>minisign protège l'installation et les mises à jour ; cosign et l'attestation SLSA permettent l'audit de la provenance.</span></div>
+            <div><strong>Releases signées</strong><span>minisign protège l’installation et les mises à jour&#8239;; cosign et l’attestation SLSA permettent l’audit de la provenance.</span></div>
           </li>
           <li>
             <span class="ico"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/></svg></span>
-            <div><strong>Agent relié en mTLS</strong><span>QUIC avec mTLS obligatoire, PKI propre à l'instance, API étroite : jamais d'exécution arbitraire sur le nœud.</span></div>
+            <div><strong>Agent relié en mTLS</strong><span>QUIC avec mTLS obligatoire, PKI propre à l’instance, API étroite&nbsp;: jamais d’exécution arbitraire sur le nœud.</span></div>
           </li>
           <li>
             <span class="ico"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5"/></svg></span>
-            <div><strong>Secrets chiffrés</strong><span>Chiffrement avec age, champs en écriture seule dans l'API, valeurs masquées dans les journaux.</span></div>
+            <div><strong>Secrets chiffrés</strong><span>Chiffrement avec age, champs en écriture seule dans l’API, valeurs masquées dans les journaux.</span></div>
           </li>
           <li>
             <span class="ico"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
@@ -247,10 +248,10 @@
       </div>
       <div class="card" id="verifier">
         <p class="label">Version publiée : <span class="v">@@VERSION@@</span></p>
-        <h3>Vérifier avant d'installer</h3>
+        <h3>Vérifier avant d’installer</h3>
         <p>Téléchargez le script et sa signature, vérifiez-la avec les clés publiques, lisez le script, puis lancez-le.</p>
         <ul class="files">
-          <li><a href="/install.sh">install.sh <span>script d'installation</span></a></li>
+          <li><a href="/install.sh">install.sh <span>script d’installation</span></a></li>
           <li><a href="/install.sh.minisig">install.sh.minisig <span>signature minisign</span></a></li>
           <li><a href="/install.sh.sha256">install.sh.sha256 <span>empreinte SHA-256</span></a></li>
           <li><a href="/ciphera.pub">ciphera.pub <span>clés publiques de confiance</span></a></li>
@@ -265,17 +266,17 @@
   <div class="wrap">
     <div class="section-head">
       <p class="kicker"><span class="rule" aria-hidden="true"></span><span class="pill">Installation</span><span class="rule r" aria-hidden="true"></span></p>
-      <h2 id="titre-inst">Une commande,<br>sur votre serveur</h2>
-      <p>En root, sur un serveur Linux avec systemd. L'installeur s'arrête sans rien installer si une vérification échoue.</p>
+      <h2 id="titre-inst">Une commande, <br class="br-lg">sur votre serveur</h2>
+      <p>En root, sur un serveur Linux avec systemd. L’installeur s’arrête sans rien installer si une vérification échoue.</p>
     </div>
     <div class="cmd">
       <span class="prompt" aria-hidden="true">$</span>
-      <code id="cmd-install">curl -fsSL https://@@DOMAIN@@/install.sh | sudo sh</code>
+      <code id="cmd-install" translate="no">curl -fsSL https://@@DOMAIN@@/install.sh | sudo sh</code>
       <button class="copy" type="button" data-copy="cmd-install" data-status="copy-status" hidden>
         <svg class="i cp" viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
         <svg class="i ok" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
         <span class="lbl">Copier</span>
-        <span class="sr-only"> la commande d'installation</span>
+        <span class="sr-only"> la commande d’installation</span>
       </button>
     </div>
     <ul class="prereq" aria-label="Systèmes pris en charge">
@@ -292,7 +293,7 @@
   <section class="oss" aria-labelledby="titre-oss">
     <p class="kicker"><span class="rule" aria-hidden="true"></span><span class="pill">AGPL-3.0</span><span class="rule r" aria-hidden="true"></span></p>
     <h2 id="titre-oss">Entièrement open source</h2>
-    <p>Il n'existe qu'une version de Ciphera : celle que vous installez sur vos serveurs. Le code est publié sous licence GNU AGPL v3.0 ; les contributions sont bienvenues.</p>
+    <p>Il n’existe qu’une version de Ciphera&nbsp;: celle que vous installez sur vos serveurs. Le code est publié sous licence GNU AGPL v3.0&#8239;; les contributions sont bienvenues.</p>
     <div class="hero-actions">
       <a class="btn btn-primary" href="https://github.com/@@REPO@@">Voir le dépôt</a>
       <a class="btn" href="https://github.com/@@REPO@@/blob/@@VERSION@@/CONTRIBUTING.md">Contribuer</a>
@@ -308,32 +309,32 @@
     </div>
     <div class="grid grid-3">
       <a class="card doc" href="https://github.com/@@REPO@@/blob/@@VERSION@@/docs/operations/installation.md">
-        <p class="label">Exploitation</p>
+        <div class="doc-head"><p class="label">Exploitation</p><svg class="i doc-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></div>
         <h3>Installer et exposer une instance</h3>
-        <p>Étapes de l'installeur, sortie réseau des conteneurs, domaine du panneau, passkeys.</p>
+        <p>Étapes de l’installeur, sortie réseau des conteneurs, domaine du panneau, passkeys.</p>
       </a>
       <a class="card doc" href="https://github.com/@@REPO@@/blob/@@VERSION@@/docs/security/release-signing.md">
-        <p class="label">Sécurité</p>
+        <div class="doc-head"><p class="label">Sécurité</p><svg class="i doc-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></div>
         <h3>Vérifier une release</h3>
-        <p>minisign, cosign et attestation SLSA : ce que prouve chaque couche et comment la vérifier.</p>
+        <p>minisign, cosign et attestation SLSA&nbsp;: ce que prouve chaque couche et comment la vérifier.</p>
       </a>
       <a class="card doc" href="https://github.com/@@REPO@@/blob/@@VERSION@@/docs/operations/release.md">
-        <p class="label">Exploitation</p>
+        <div class="doc-head"><p class="label">Exploitation</p><svg class="i doc-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></div>
         <h3>Publier une release</h3>
-        <p>La chaîne de publication, de l'étiquette au site get.ciphera.ch.</p>
+        <p>La chaîne de publication, de l’étiquette au site get.ciphera.ch.</p>
       </a>
       <a class="card doc" href="https://github.com/@@REPO@@/blob/@@VERSION@@/README.md">
-        <p class="label">Projet</p>
+        <div class="doc-head"><p class="label">Projet</p><svg class="i doc-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></div>
         <h3>README</h3>
         <p>Présentation, fonctionnalités, architecture et arborescence du dépôt.</p>
       </a>
       <a class="card doc" href="https://github.com/@@REPO@@/tree/@@VERSION@@/docs/adr">
-        <p class="label">Architecture</p>
-        <h3>Décisions d'architecture</h3>
-        <p>Les ADR : structure du projet, installation, enrôlement des agents.</p>
+        <div class="doc-head"><p class="label">Architecture</p><svg class="i doc-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></div>
+        <h3>Décisions d’architecture</h3>
+        <p>Les ADR&nbsp;: structure du projet, installation, enrôlement des agents.</p>
       </a>
       <a class="card doc" href="https://github.com/@@REPO@@/blob/@@VERSION@@/SECURITY.md">
-        <p class="label">Sécurité</p>
+        <div class="doc-head"><p class="label">Sécurité</p><svg class="i doc-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></div>
         <h3>Politique de sécurité</h3>
         <p>Signaler une faille en privé, versions prises en charge, périmètre.</p>
       </a>
@@ -393,7 +394,7 @@
     </div>
     <div class="foot-bottom">
       <p>Ciphera, logiciel libre sous GNU AGPL v3.0. Les failles de sécurité se signalent en privé (GitHub Security Advisories), jamais par e-mail ni par issue publique.</p>
-      <p>Logos : Simple Icons (CC0), icônes : Lucide (ISC). Les marques citées appartiennent à leurs propriétaires ; <a class="link-mono" href="https://github.com/@@REPO@@/blob/@@VERSION@@/install/site/CREDITS.md">Sources et conditions</a></p>
+      <p>Logos&nbsp;: Simple Icons (CC0), icônes&nbsp;: Lucide (ISC). Les marques citées appartiennent à leurs propriétaires&#8239;; <a class="link-mono" href="https://github.com/@@REPO@@/blob/@@VERSION@@/install/site/CREDITS.md">Sources et conditions</a></p>
     </div>
   </div>
 </footer>

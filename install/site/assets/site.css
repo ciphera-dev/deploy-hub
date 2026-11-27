@@ -82,7 +82,14 @@
 
 html {
   scroll-behavior: smooth;
+  scroll-padding-top: 88px;
   -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: rgba(58, 213, 122, 0.18);
+}
+
+::selection {
+  background: rgba(47, 127, 224, 0.45);
+  color: #fff;
 }
 
 body {
@@ -92,6 +99,12 @@ body {
   color: var(--text-body);
   font: 400 16px/1.6 var(--font-sans);
   -webkit-font-smoothing: antialiased;
+}
+
+a,
+button,
+summary {
+  touch-action: manipulation;
 }
 
 img,
@@ -113,7 +126,6 @@ a:hover {
 :focus-visible {
   outline: 2px solid var(--brand-grad-a);
   outline-offset: 3px;
-  border-radius: var(--radius-sm);
 }
 
 code,
@@ -128,10 +140,19 @@ h3 {
   margin: 0;
   color: var(--text-strong);
   font-weight: 400;
+  text-wrap: balance;
 }
 
 p {
   margin: 0;
+  text-wrap: pretty;
+}
+
+/* Retour a la ligne des grands titres : seulement sur grand ecran. */
+@media (max-width: 860px) {
+  .br-lg {
+    display: none;
+  }
 }
 
 .wrap {
@@ -205,6 +226,11 @@ p {
   text-transform: none;
 }
 
+/* Dans une pilule (flex), la valeur suit le libelle sans double espace. */
+.pill .v {
+  margin-left: -4px;
+}
+
 .link-mono {
   color: var(--text-muted);
   font: 400 12px/1.15 var(--font-mono);
@@ -252,6 +278,7 @@ button.link-mono {
   align-items: center;
   flex: none;
   width: 160px;
+  min-height: 44px;
 }
 
 .brand img {
@@ -298,7 +325,8 @@ button.link-mono {
 .menu summary {
   display: inline-flex;
   align-items: center;
-  padding: 7px 14px;
+  min-height: 40px;
+  padding: 0 16px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-pill);
   color: var(--text-body);
@@ -311,22 +339,33 @@ button.link-mono {
   display: none;
 }
 
+.menu summary:hover,
+.menu[open] summary {
+  border-color: var(--gray-600);
+  color: var(--text-strong);
+}
+
 .menu ul {
   position: absolute;
   right: 0;
   top: calc(100% + 8px);
-  min-width: 220px;
+  width: max-content;
+  min-width: min(240px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
   margin: 0;
   padding: 6px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: var(--gray-200);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
   list-style: none;
 }
 
 .menu li a {
-  display: block;
-  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px;
   border-radius: var(--radius-md);
   color: var(--text-body);
   font-size: 14px;
@@ -492,7 +531,7 @@ button.link-mono {
 .hero h1 {
   max-width: 980px;
   margin: 32px auto 0;
-  font-size: clamp(36px, 6vw, 72px);
+  font-size: clamp(40px, 6vw, 72px);
   font-weight: 400;
   line-height: 1.02;
   letter-spacing: -0.035em;
@@ -549,7 +588,7 @@ button.link-mono {
   color: var(--text-body);
   font-size: 13px;
   line-height: 1.5;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .cmd-quiet code {
@@ -621,7 +660,7 @@ button.link-mono {
   overflow: hidden;
   max-width: 1416px;
   margin: 72px auto 0;
-  padding: 72px var(--gutter) 0;
+  padding: 72px clamp(20px, 8vw, 120px) 0;
   border-radius: 0 0 24px 24px;
   background:
     linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.92) 18%, rgba(0, 0, 0, 0.35) 55%, rgba(0, 0, 0, 0) 100%),
@@ -675,6 +714,14 @@ button.link-mono {
    defilement continu, pause au survol, au focus et par le bouton. */
 .marquee {
   overflow: hidden;
+}
+
+/* Largeur bornee : chaque moitie de la piste (une copie de la liste) doit
+   rester plus large que la zone visible, sinon un vide apparait en fin de
+   boucle sur les grands ecrans. */
+.marquee.anim {
+  max-width: 1200px;
+  margin: 0 auto;
 }
 
 .chips {
@@ -814,8 +861,18 @@ button.link-mono {
   line-height: 1.6;
 }
 
-.card .label + h3 {
+.card .label + h3,
+.doc-head + h3 {
   margin-top: 12px;
+}
+
+.card p code {
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-body);
+  font-size: 0.9em;
 }
 
 .card h3 + p {
@@ -884,7 +941,7 @@ button.link-mono {
 .how-shot {
   flex: 1;
   min-height: 300px;
-  margin: 32px -8px 0 0;
+  margin: 32px -32px 0 0;
   padding: 10px 0 0 10px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -910,7 +967,17 @@ button.link-mono {
 }
 
 .how-step {
+  display: flex;
+  flex-direction: column;
   text-align: center;
+}
+
+.how-step > p:not(.label) {
+  margin-bottom: 20px;
+}
+
+.how-step .mini {
+  margin-top: auto;
 }
 
 .mini {
@@ -1107,11 +1174,31 @@ button.link-mono {
 /* Documentation. */
 .doc {
   display: block;
-  transition: border-color var(--dur-base) var(--ease-out);
+  transition: border-color var(--dur-base) var(--ease-out), background-color var(--dur-base) var(--ease-out);
+}
+
+.doc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.doc-arrow {
+  width: 16px;
+  height: 16px;
+  color: var(--text-subtle);
+  transition: color var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
 }
 
 .doc:hover {
   border-color: rgba(255, 255, 255, 0.18);
+}
+
+.doc:hover .doc-arrow,
+.doc:focus-visible .doc-arrow {
+  color: var(--brand-grad-a);
+  transform: translate(2px, -2px);
 }
 
 /* --- Pied de page ------------------------------------------------------- */
@@ -1199,10 +1286,7 @@ button.link-mono {
   font-weight: 400;
   line-height: 1;
   letter-spacing: -0.05em;
-  background: var(--grad-brand);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--gray-700);
 }
 
 .lost h1 {
@@ -1245,10 +1329,6 @@ button.link-mono {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .how {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .foot-in {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1260,14 +1340,41 @@ button.link-mono {
 
 @media (max-width: 860px) {
   .grid-3,
-  .split {
+  .split,
+  .how {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .how-shot {
+    max-height: 420px;
   }
 }
 
 @media (max-width: 560px) {
   :root {
     --gutter: 16px;
+  }
+
+  .top-in {
+    gap: 12px;
+  }
+
+  /* Panneau du menu sur toute la largeur, sous l'en-tete. */
+  .menu {
+    position: static;
+  }
+
+  .menu ul {
+    left: var(--gutter);
+    right: var(--gutter);
+    top: calc(100% + 8px);
+    width: auto;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .top-in {
+    position: relative;
   }
 
   .hero {
@@ -1280,10 +1387,6 @@ button.link-mono {
 
   .grid-4 {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .copy .lbl {
-    display: none;
   }
 
   .stage {
@@ -1316,6 +1419,8 @@ button.link-mono {
 
   .how-shot {
     min-height: 180px;
+    max-height: 260px;
+    margin-right: -24px;
   }
 
   .oss {
@@ -1324,7 +1429,11 @@ button.link-mono {
   }
 
   .foot-in {
-    grid-template-columns: minmax(0, 1fr);
+    gap: 32px 16px;
+  }
+
+  .foot-bottom {
+    font-size: 14px;
   }
 
   .files a {
@@ -1343,14 +1452,84 @@ button.link-mono {
 }
 
 @media (max-width: 480px) {
+  /* Commande sur toute la largeur, coupee aux espaces ; bouton Copier dessous. */
   .cmd {
+    flex-wrap: wrap;
     align-items: flex-start;
-    padding: 10px 8px 10px 14px;
+    padding: 12px 10px 10px 14px;
     border-radius: var(--radius-xl);
   }
 
   .cmd .prompt {
     line-height: 1.5;
+  }
+
+  .cmd code,
+  .cmd-quiet code {
+    flex-basis: calc(100% - 24px);
+    font-size: 12.5px;
+  }
+
+  .copy {
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 374px) {
+  .foot-in {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* L'URL de la commande tient sur une ligne des 320 px. */
+  .cmd code,
+  .cmd-quiet code {
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 359px) {
+  .brand img {
+    width: 100px;
+  }
+
+  .top-cta {
+    gap: 6px;
+  }
+}
+
+/* Ecrans tactiles : cibles d'au moins 44 px. */
+@media (pointer: coarse) {
+  .btn,
+  .btn-sm,
+  .menu summary {
+    min-height: 44px;
+  }
+
+  .copy {
+    min-height: 44px;
+    padding: 0 16px;
+  }
+
+  button.link-mono {
+    padding: 16px 4px;
+  }
+
+  .files a {
+    padding: 14px 0;
+  }
+
+  .more .link-mono {
+    display: inline-block;
+    padding: 15px 4px;
+  }
+
+  .foot li + li {
+    margin-top: 4px;
+  }
+
+  .foot ul a {
+    display: inline-block;
+    padding: 6px 0;
   }
 }
 
