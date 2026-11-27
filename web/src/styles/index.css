@@ -61,3 +61,22 @@
   .app-header__search { width: 260px; }
   .app-header__kbd { display: none; }
 }
+
+/* Mobile (< 768 px) : la barre laterale devient un tiroir ; en-tete reduit. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.app-sheet__overlay { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.6); }
+.app-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 51; max-height: 85dvh; overflow: auto; background: var(--surface-sidebar); border-top: 1px solid var(--border-default); border-radius: 20px 20px 0 0; padding-bottom: env(safe-area-inset-bottom); outline: none; box-shadow: 0 -20px 60px rgba(0,0,0,.6); animation: app-sheet-in .22s cubic-bezier(.2,.8,.2,1); }
+.app-sheet aside { width: 100% !important; box-sizing: border-box; }
+.app-sheet__grip { display: block; width: 36px; height: 4px; border-radius: 99px; background: var(--border-strong); margin: 8px auto 0; }
+@keyframes app-sheet-in { from { transform: translateY(100%); } to { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .app-sheet { animation: none; } }
+.app-tabbar { flex: none; display: flex; align-items: stretch; height: calc(64px + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); background: rgba(10,10,14,.92); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-top: 1px solid rgba(255,255,255,.1); }
+.app-tabbar__item { position: relative; flex: 1 1 0; min-width: 0; min-height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 0 2px; border: 0; background: transparent; color: var(--text-muted); font: 500 10.5px/1 var(--font-sans); text-decoration: none; cursor: pointer; }
+.app-tabbar__item span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-tabbar__item[aria-current="page"], .app-tabbar__item[data-active="true"] { color: #fff; }
+.app-tabbar__item[aria-current="page"]::before, .app-tabbar__item[data-active="true"]::before { content: ""; position: absolute; top: 0; left: 28%; right: 28%; height: 2px; border-radius: 0 0 99px 99px; background: var(--grad-brand); }
+@media (max-width: 479.98px) {
+  .app-header { padding: 0 10px; gap: 6px; }
+  .app-header__left { gap: 6px; }
+  .app-header__brand { display: none; }
+}

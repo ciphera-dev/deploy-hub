@@ -2,12 +2,15 @@ import { useRouter } from "@tanstack/react-router";
 
 import { BrandMark, Icon, IconButton, Menu, WorkspaceSwitcher } from "@/design-system";
 
+import { useMedia, NARROW_QUERY } from "./useMedia";
 import { accountMenuItems, type AppSidebarUser } from "./AppSidebar";
 
 export interface AppHeaderProps {
   user: AppSidebarUser;
   collapsed: boolean;
   onToggle: () => void;
+  /** sous 768 px : pas de bouton de repli (navigation en barre d'onglets) */
+  mobile?: boolean;
   onLogout?: () => void;
 }
 
@@ -30,16 +33,21 @@ const HEADER_VARS = {
  * La recherche et les notifications n'ont pas encore de service : elles restent visibles
  * mais inactives (meme principe que les entrees « Bientot » de la barre laterale).
  */
-export function AppHeader({ user, collapsed, onToggle, onLogout }: AppHeaderProps) {
+export function AppHeader({ user, collapsed, onToggle, onLogout, mobile = false }: AppHeaderProps) {
   const router = useRouter();
+  const narrow = useMedia(NARROW_QUERY);
   const initials = (user.name || "").split(" ").map((s) => s[0]).join("").slice(0, 2).toUpperCase();
   const shortcut = isApple() ? "⌘K" : "Ctrl K";
   return (
     <div className="app-header" style={{ color: "#fff", ...HEADER_VARS }}>
       <div className="app-header__left">
-        <BrandMark />
-        <IconButton variant="ghost" size={28} icon={collapsed ? "PanelLeftOpen" : "PanelLeftClose"} label={collapsed ? "Déplier le menu" : "Replier le menu"} onClick={onToggle} />
-        <WorkspaceSwitcher />
+        <span className="app-header__brand">
+          <BrandMark />
+        </span>
+        {!mobile && (
+          <IconButton variant="ghost" size={28} icon={collapsed ? "PanelLeftOpen" : "PanelLeftClose"} label={collapsed ? "Déplier le menu" : "Replier le menu"} onClick={onToggle} />
+        )}
+        <WorkspaceSwitcher collapsed={narrow} />
       </div>
       <button type="button" className="app-header__search" aria-disabled="true" aria-label="Rechercher" title="Recherche : bientôt disponible" onClick={(e) => e.preventDefault()}>
         <Icon name="Search" size={14} />

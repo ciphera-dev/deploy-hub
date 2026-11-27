@@ -1,5 +1,6 @@
 import { Outlet, useMatches, useRouter, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Dialog } from "radix-ui";
 import { useEffect, useState } from "react";
 
 import { Forbidden } from "@/app/errors/Forbidden";
@@ -11,6 +12,8 @@ import { fetchMe, logout, ME_QUERY_KEY, MFA_PENDING } from "@/features/auth/api"
 
 import { AppHeader } from "./AppHeader";
 import { AppSidebar } from "./AppSidebar";
+import { MobileTabBar } from "./MobileTabBar";
+import { MOBILE_QUERY, useMedia } from "./useMedia";
 import { DashboardHeader } from "./DashboardHeader";
 
 // Fond du theme par defaut (maquette, cipheraThemeBg) : cinq lueurs radiales sur #050505.
@@ -36,7 +39,14 @@ export function AppShell() {
   const fatal = useFatalError();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const title = useMatches({ select: (m) => m.findLast((x) => x.staticData.title)?.staticData.title });
-  const [collapsed, setCollapsed] = useState(false);
+  const mobile = useMedia(MOBILE_QUERY);
+  // Tablette : rail d'icones par defaut. Mobile : la barre est un tiroir, ferme a l'ouverture.
+  const [collapsed, setCollapsed] = useState(() => typeof window.matchMedia === "function" && window.matchMedia("(max-width: 1023.98px)").matches);
+  // Feuille « Plus » (mobile) : ouverte pour une page donnee, donc fermee d'office des qu'on navigue
+  // ou que l'ecran s'elargit.
+  const [sheetPath, setSheetPath] = useState<string | null>(null);
+  const drawerOpen = mobile && sheetPath === pathname;
+  const setDrawerOpen = (open: boolean) => setSheetPath(open ? pathname : null);
   const { flash } = useToast();
   const me = useQuery({ queryKey: ME_QUERY_KEY, queryFn: fetchMe });
   // Session connue une fois (donnee ou erreur) : un rechargement ulterieur de
@@ -96,12 +106,25 @@ export function AppShell() {
   else if (fatal === "server") body = <ServerError onRetry={retry} />;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: PAGE_BACKGROUND }}>
-      <AppHeader user={user} collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} onLogout={() => signOut.mutate()} />
-      <div style={{ flex: 1, minHeight: 0, display: "flex", margin: "0 8px 8px", borderRadius: 20, border: "1px solid var(--border-default)", overflow: "hidden", background: "var(--surface-app)" }}>
-        <div style={{ flex: "none", height: "100%", background: "var(--surface-sidebar)", borderRight: "1px solid var(--border-subtle)", overflow: "auto" }}>
-          <AppSidebar user={user} collapsed={collapsed} onLogout={() => signOut.mutate()} />
-        </div>
+    <div style={{ display: "flex", flexDirection: "column", height: "100dvh", background: PAGE_BACKGROUND }}>
+      <AppHeader user={user} collapsed={collapsed} mobile={mobile} onToggle={() => setCollapsed((v) => !v)} onLogout={() => signOut.mutate()} />
+      <div style={{ flex: 1, minHeight: 0, display: "flex", margin: mobile ? "0 4px 0" : "0 8px 8px", borderRadius: mobile ? 16 : 20, border: "1px solid var(--border-default)", overflow: "hidden", background: "var(--surface-app)" }}>
+        {mobile ? (
+          <Dialog.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
+            <Dialog.Portal>
+              <Dialog.Overlay className="app-sheet__overlay" />
+              <Dialog.Content className="app-sheet" aria-describedby={undefined}>
+                <span className="app-sheet__grip" aria-hidden="true" />
+                <Dialog.Title className="sr-only">Plus de navigation</Dialog.Title>
+                <AppSidebar user={user} collapsed={false} onLogout={() => signOut.mutate()} />
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
+        ) : (
+          <div style={{ flex: "none", height: "100%", background: "var(--surface-sidebar)", borderRight: "1px solid var(--border-subtle)", overflow: "auto" }}>
+            <AppSidebar user={user} collapsed={collapsed} onLogout={() => signOut.mutate()} />
+          </div>
+        )}
         <main style={{ flex: 1, minWidth: 0, overflowY: "auto", overflowX: "hidden" }}>
           <div style={{ maxWidth: 1180, margin: "0 auto", padding: "14px 8px 0" }}>
             {title && !fatal && <DashboardHeader title={title} />}
@@ -109,6 +132,7 @@ export function AppShell() {
           </div>
         </main>
       </div>
+      {mobile && <MobileTabBar moreOpen={drawerOpen} onMore={() => setDrawerOpen(true)} />}
     </div>
   );
 }
